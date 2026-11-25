@@ -313,9 +313,9 @@ void TestAuctionWalk()
 
     FakeReader empty;
     Check(LoadConfigFamily(AuctionFamily, config, empty, warn) == 0 && warnings.empty(), "Auction: no key, no warning");
-    Check(config.PublishSeconds == 60 && config.HistoryDays == 7 && config.OpenBidsMax == 3 &&
-              config.UndercutPercent == 3 && config.RelistStepPercent == 10 && config.RelistLimit == 3 &&
-              config.FirstDurationHours == 24 && config.RelistDurationHours == 48,
+    Check(config.PublishSeconds == 60 && config.SaveSeconds == 300 && config.HistoryDays == 7 &&
+              config.OpenBidsMax == 3 && config.UndercutPercent == 3 && config.RelistStepPercent == 10 &&
+              config.RelistLimit == 3 && config.FirstDurationHours == 24 && config.RelistDurationHours == 48,
           "Auction: the walk resets to the initializers");
 
     FakeReader probe;
@@ -323,7 +323,7 @@ void TestAuctionWalk()
     Check(LoadConfigFamily(AuctionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.OpenBidsMax == 5 && config.FirstDurationHours == 48,
           "Auction: a value in range kept, one above its bound clamped with a warning");
-    Check(AuctionFamily.Rows.size() == 8, "Auction: eight rows");
+    Check(AuctionFamily.Rows.size() == 9, "Auction: nine rows");
     Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
               AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
           "Auction: the decision words");

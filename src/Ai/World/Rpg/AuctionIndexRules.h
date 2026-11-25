@@ -75,6 +75,29 @@ struct ItemHistory
     std::vector<ExpiryRecord> expiries;
 };
 
+// One stored record of an item's history (WA1d), a row of playerbots_auction_history: the records themselves, not a
+// summary, so a load puts the book where it was and the median keeps re-weighting as time passes
+constexpr std::uint8_t HISTORY_SALE = 0;
+constexpr std::uint8_t HISTORY_EXPIRY = 1;
+
+struct HistoryRow
+{
+    std::uint32_t item = 0;
+    std::uint8_t kind = HISTORY_SALE;
+    std::int64_t time = 0;        // game time, s
+    std::uint32_t unitPrice = 0;  // 0 for an expiry
+    std::uint32_t count = 0;
+    std::uint32_t auctionId = 0;
+};
+
+// What the book's history holds: the load's log line
+struct HistoryCounts
+{
+    std::uint64_t sales = 0;
+    std::uint64_t expiries = 0;
+    std::uint32_t items = 0;
+};
+
 // View 1 (WA.4), read anywhere: an item's typical unit price, the recency-weighted median of its sales in the window
 struct TypicalPrice
 {
@@ -146,6 +169,7 @@ public:
         InsertCapped(_items[facts.item].history.sales, record, SALES_MAX);
         _outcomes.push_back(facts.id);
         ++_sales;
+        _historyDirty = true;
     }
 
     void Expire(AuctionFacts const& facts, std::int64_t now)
@@ -158,6 +182,7 @@ public:
         InsertCapped(_items[facts.item].history.expiries, record, EXPIRIES_MAX);
         _outcomes.push_back(facts.id);
         ++_expiries;
+        _historyDirty = true;
     }
 
     void Remove(std::uint32_t id)
@@ -202,8 +227,12 @@ public:
         for (auto it = _items.begin(); it != _items.end();)
         {
             ItemHistory& history = it->second.history;
-            std::erase_if(history.sales, [oldest](SaleRecord const& sale) { return sale.time < oldest; });
-            std::erase_if(history.expiries, [oldest](ExpiryRecord const& expiry) { return expiry.time < oldest; });
+            std::size_t erased =
+                std::erase_if(history.sales, [oldest](SaleRecord const& sale) { return sale.time < oldest; });
+            erased +=
+                std::erase_if(history.expiries, [oldest](ExpiryRecord const& expiry) { return expiry.time < oldest; });
+            if (erased)
+                _historyDirty = true;
             if (it->second.offers.empty() && history.sales.empty() && history.expiries.empty())
                 it = _items.erase(it);
             else
@@ -235,6 +264,52 @@ public:
         auto const it = _items.find(item);
         return it == _items.end() ? nullptr : &it->second.history;
     }
+
+    // The stored history, read once at startup: a record later than now is set to now (a clock that went back), one
+    // the book already holds is skipped and the caps keep the newest whatever the order; then the window prunes. The
+    // book is clean afterwards unless a row needed a correction the table should get too.
+    HistoryCounts LoadHistory(std::vector<HistoryRow> const& rows, std::int64_t now, std::int64_t windowSeconds)
+    {
+        bool corrected = false;
+        for (HistoryRow const& row : rows)
+            if (!LoadRow(row, now))
+                corrected = true;
+        _historyDirty = false;
+        Prune(now, windowSeconds);
+        _historyDirty = _historyDirty || corrected;
+        return CountHistory();
+    }
+
+    // Every record as a row, items in id order and each list oldest first: the save's full rewrite
+    std::vector<HistoryRow> ExportHistory() const
+    {
+        std::vector<HistoryRow> rows;
+        for (auto const& [item, book] : _items)
+        {
+            for (SaleRecord const& sale : book.history.sales)
+                rows.push_back({item, HISTORY_SALE, sale.time, sale.unitPrice, sale.count, sale.auctionId});
+            for (ExpiryRecord const& expiry : book.history.expiries)
+                rows.push_back({item, HISTORY_EXPIRY, expiry.time, 0, expiry.count, expiry.auctionId});
+        }
+        return rows;
+    }
+
+    HistoryCounts CountHistory() const
+    {
+        HistoryCounts counts;
+        for (auto const& [item, book] : _items)
+        {
+            counts.sales += book.history.sales.size();
+            counts.expiries += book.history.expiries.size();
+            if (!book.history.sales.empty() || !book.history.expiries.empty())
+                ++counts.items;
+        }
+        return counts;
+    }
+
+    // A sale, an expiry or a prune that dropped records changed the history since the last save
+    bool HistoryDirty() const { return _historyDirty; }
+    void MarkHistorySaved() { _historyDirty = false; }
 
 private:
     struct ItemBook
@@ -319,15 +394,56 @@ private:
             typical.unitPrice = weighted.back().first->unitPrice;  // rounding left the last sum short
     }
 
-    // Kept sorted by (time, auction id) whatever order the events come in; the oldest go past the cap
     template <typename Record>
-    static void InsertCapped(std::vector<Record>& records, Record const& record, std::size_t cap)
+    static bool Earlier(Record const& a, Record const& b)
     {
-        auto const at = std::upper_bound(records.begin(), records.end(), record, [](Record const& a, Record const& b)
-                                         { return std::tie(a.time, a.auctionId) < std::tie(b.time, b.auctionId); });
-        records.insert(at, record);
-        if (records.size() > cap)
-            records.erase(records.begin(), records.begin() + (records.size() - cap));
+        return std::tie(a.time, a.auctionId) < std::tie(b.time, b.auctionId);
+    }
+
+    // Kept sorted by (time, auction id) whatever order the events come in; the oldest go past the cap. True when the
+    // cap dropped a record
+    template <typename Record>
+    static bool InsertCapped(std::vector<Record>& records, Record const& record, std::size_t cap)
+    {
+        records.insert(std::upper_bound(records.begin(), records.end(), record, Earlier<Record>), record);
+        if (records.size() <= cap)
+            return false;
+        records.erase(records.begin(), records.begin() + (records.size() - cap));
+        return true;
+    }
+
+    // A stored record into the history unless the list holds the same (time, auction id); false when the row was
+    // skipped, set to now, or the cap dropped a record
+    bool LoadRow(HistoryRow const& row, std::int64_t now)
+    {
+        if (row.kind != HISTORY_SALE && row.kind != HISTORY_EXPIRY)
+            return false;
+        bool const future = row.time > now;
+        std::int64_t const time = future ? now : row.time;
+        ItemHistory& history = _items[row.item].history;
+        if (row.kind == HISTORY_SALE)
+        {
+            SaleRecord record;
+            record.time = time;
+            record.unitPrice = row.unitPrice;
+            record.count = row.count;
+            record.auctionId = row.auctionId;
+            return InsertNew(history.sales, record, SALES_MAX) && !future;
+        }
+        ExpiryRecord record;
+        record.time = time;
+        record.count = row.count;
+        record.auctionId = row.auctionId;
+        return InsertNew(history.expiries, record, EXPIRIES_MAX) && !future;
+    }
+
+    template <typename Record>
+    static bool InsertNew(std::vector<Record>& records, Record const& record, std::size_t cap)
+    {
+        auto const at = std::lower_bound(records.begin(), records.end(), record, Earlier<Record>);
+        if (at != records.end() && at->time == record.time && at->auctionId == record.auctionId)
+            return false;
+        return !InsertCapped(records, record, cap);
     }
 
     // Drops an auction's offer; true when it was listed
@@ -350,6 +466,7 @@ private:
     std::uint64_t _expiries = 0;
     std::uint64_t _cancels = 0;
     std::uint64_t _vanished = 0;
+    bool _historyDirty = false;  // the history changed since the last save or load
 };
 
 // The snapshot as text, items in id order: the selftest's comparison

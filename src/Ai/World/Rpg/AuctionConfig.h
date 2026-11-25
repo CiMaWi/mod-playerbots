@@ -24,6 +24,9 @@ struct AuctionConfig
     // Market.PublishSeconds (10-600): seconds between two snapshots of the house the world thread publishes for the
     // bots' prices
     std::uint32_t PublishSeconds = 60;
+    // Market.SaveSeconds (60-3600): seconds between two asynchronous saves of the trade history when it changed; the
+    // shutdown saves too
+    std::uint32_t SaveSeconds = 300;
     // Market.HistoryDays (1-60): days of sales and expiries an item's price history keeps
     std::uint32_t HistoryDays = 7;
     // Bid.OpenMax (0-20): bids a bot holds at once on auctions it does not lead to buy out

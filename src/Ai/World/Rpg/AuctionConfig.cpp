@@ -14,8 +14,9 @@ namespace
 {
 using Row = ConfigRow<AuctionConfig>;
 
-constexpr std::array<Row, 8> AuctionRows = {{
+constexpr std::array<Row, 9> AuctionRows = {{
     {"Market.PublishSeconds", &AuctionConfig::PublishSeconds, 10, 600},
+    {"Market.SaveSeconds", &AuctionConfig::SaveSeconds, 60, 3600},
     {"Market.HistoryDays", &AuctionConfig::HistoryDays, 1, 60},
     {"Bid.OpenMax", &AuctionConfig::OpenBidsMax, 0, 20},
     {"Post.UndercutPercent", &AuctionConfig::UndercutPercent, 0, 50},

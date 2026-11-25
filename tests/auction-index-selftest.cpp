@@ -277,6 +277,172 @@ void CheckDeterminism()
     Check(dumpA != Dump(Take(c)), "one more cancel: another snapshot (the comparison can fail)");
     Check(Dump(Take(a)) == dumpA, "taking a snapshot does not change the book");
 }
+
+bool SameHistory(ItemHistory const* a, ItemHistory const* b)
+{
+    if (!a || !b)
+        return a == b;
+    if (a->sales.size() != b->sales.size() || a->expiries.size() != b->expiries.size())
+        return false;
+    for (std::size_t i = 0; i < a->sales.size(); ++i)
+    {
+        SaleRecord const& x = a->sales[i];
+        SaleRecord const& y = b->sales[i];
+        if (x.time != y.time || x.unitPrice != y.unitPrice || x.count != y.count || x.auctionId != y.auctionId)
+            return false;
+    }
+    for (std::size_t i = 0; i < a->expiries.size(); ++i)
+    {
+        ExpiryRecord const& x = a->expiries[i];
+        ExpiryRecord const& y = b->expiries[i];
+        if (x.time != y.time || x.count != y.count || x.auctionId != y.auctionId)
+            return false;
+    }
+    return true;
+}
+
+bool SameTypical(Snapshot const& a, Snapshot const& b, std::uint32_t item)
+{
+    ItemEntry const* x = a.Find(item);
+    ItemEntry const* y = b.Find(item);
+    return x && y && x->typical.unitPrice == y->typical.unitPrice && x->typical.sample == y->typical.sample &&
+           x->typical.weight == y->typical.weight && x->typical.expiries == y->typical.expiries;
+}
+
+bool SameRows(std::vector<HistoryRow> const& a, std::vector<HistoryRow> const& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].item != b[i].item || a[i].kind != b[i].kind || a[i].time != b[i].time ||
+            a[i].unitPrice != b[i].unitPrice || a[i].count != b[i].count || a[i].auctionId != b[i].auctionId)
+            return false;
+    return true;
+}
+
+// WA1d: the table as plain rows, written by the book's export and read by its import
+void CheckHistoryStore()
+{
+    // Round trip: stacks, both caps hit, an item with offers only
+    Book a;
+    for (std::uint32_t i = 1; i <= 60; ++i)
+    {
+        a.Sale(Bought(Auction(i, 800, 1 + i % 5, 10, 100 + 7 * i), 9), NOW - static_cast<std::int64_t>(i) * 600);
+        a.Remove(i);
+    }
+    for (std::uint32_t i = 101; i <= 110; ++i)
+    {
+        a.Sale(Bought(Auction(i, 801, 20, 10, 2000 + i), 9), NOW - static_cast<std::int64_t>(i) * 300);
+        a.Remove(i);
+        a.Expire(Auction(i + 100, 801, 5, 10, 0), NOW - static_cast<std::int64_t>(i) * 200);
+        a.Remove(i + 100);
+    }
+    for (std::uint32_t i = 301; i <= 350; ++i)
+    {
+        a.Expire(Auction(i, 802, 1, 10, 50), NOW - static_cast<std::int64_t>(i) * 60);
+        a.Remove(i);
+    }
+    a.Add(Auction(400, 803, 1, 10, 20));
+    std::vector<HistoryRow> const rows = a.ExportHistory();
+    Check(rows.size() == SALES_MAX + 10 + 10 + EXPIRIES_MAX, "export: every record one row, the caps held");
+    Book b;
+    HistoryCounts const loaded = b.LoadHistory(rows, NOW, WINDOW);
+    Check(loaded.sales == SALES_MAX + 10 && loaded.expiries == 10 + EXPIRIES_MAX && loaded.items == 3,
+          "import: the counts of the log line");
+    Check(SameHistory(a.History(800), b.History(800)) && SameHistory(a.History(801), b.History(801)) &&
+              SameHistory(a.History(802), b.History(802)),
+          "round trip: each history equal field by field");
+    Check(!b.History(803), "round trip: an item with offers only stores nothing");
+    Snapshot const sa = Take(a);
+    Snapshot const sb = Take(b);
+    Check(SameTypical(sa, sb, 800) && SameTypical(sa, sb, 801) && SameTypical(sa, sb, 802) &&
+              sb.Find(800)->typical.sample == SALES_MAX,
+          "round trip: the same typical prices");
+    Check(SameRows(rows, b.ExportHistory()), "round trip: the import exports the same rows");
+
+    // Negative control: one changed price is seen
+    std::vector<HistoryRow> changed = rows;
+    changed.back().count += 1;
+    changed.front().unitPrice += 1;
+    Book c;
+    c.LoadHistory(changed, NOW, WINDOW);
+    Check(!SameHistory(a.History(800), c.History(800)) && !SameHistory(a.History(802), c.History(802)),
+          "a changed row gives another history (the comparison can fail)");
+
+    // Order does not matter, duplicates do not double
+    std::vector<HistoryRow> reversed(rows.rbegin(), rows.rend());
+    reversed.push_back(rows.front());
+    reversed.push_back(rows.back());
+    Book d;
+    d.LoadHistory(reversed, NOW, WINDOW);
+    Check(SameRows(rows, d.ExportHistory()), "reversed order and duplicate rows: the same history");
+
+    // The cap holds the newest whatever the order: 60 stored sales of one item keep the newest 48
+    std::vector<HistoryRow> many;
+    for (std::uint32_t i = 1; i <= 60; ++i)
+        many.push_back({900, HISTORY_SALE, NOW - static_cast<std::int64_t>(i) * 60, i, 1, i});
+    Book capped;
+    capped.LoadHistory(many, NOW, WINDOW);
+    ItemHistory const* h = capped.History(900);
+    Check(h && h->sales.size() == SALES_MAX && h->sales.front().auctionId == SALES_MAX &&
+              h->sales.back().auctionId == 1 && capped.HistoryDirty(),
+          "more stored than the cap: the newest kept, the table due a rewrite");
+
+    // Window: older than the window goes, the edge stays, an item with only old rows leaves no entry
+    std::vector<HistoryRow> const old = {
+        {910, HISTORY_SALE, NOW - WINDOW - 1, 100, 1, 1},
+        {910, HISTORY_SALE, NOW - WINDOW, 120, 1, 2},
+        {911, HISTORY_EXPIRY, NOW - WINDOW - 5, 0, 1, 3},
+        {911, HISTORY_SALE, NOW - 2 * WINDOW, 90, 1, 4},
+    };
+    Book w;
+    HistoryCounts const windowed = w.LoadHistory(old, NOW, WINDOW);
+    h = w.History(910);
+    Check(h && h->sales.size() == 1 && h->sales.front().time == NOW - WINDOW && h->sales.front().unitPrice == 120,
+          "window: the older sale dropped, the one at the edge kept");
+    Check(!w.History(911) && windowed.items == 1 && windowed.sales == 1 && windowed.expiries == 0,
+          "window: an item with only old rows leaves no entry");
+    Check(w.HistoryDirty(), "window: a load that dropped rows leaves the table due a rewrite");
+
+    // Empty table: an empty book, nothing to write
+    Book e;
+    HistoryCounts const none = e.LoadHistory({}, NOW, WINDOW);
+    Check(none.sales == 0 && none.expiries == 0 && none.items == 0, "empty: counts 0");
+    Check(Take(e).items.empty() && !e.History(800) && e.ExportHistory().empty() && !e.HistoryDirty(),
+          "empty: no items, no history, nothing to save");
+
+    // Future times are set to now; an unknown kind is skipped
+    std::vector<HistoryRow> const future = {
+        {920, HISTORY_SALE, NOW + 3600, 50, 2, 1},
+        {920, HISTORY_EXPIRY, NOW + 60, 0, 1, 2},
+        {921, 7, NOW - 60, 10, 1, 3},
+    };
+    Book f;
+    f.LoadHistory(future, NOW, WINDOW);
+    h = f.History(920);
+    Check(h && h->sales.size() == 1 && h->sales.front().time == NOW && h->expiries.size() == 1 &&
+              h->expiries.front().time == NOW,
+          "future: records set to now");
+    Check(!f.History(921) && f.HistoryDirty(), "future: an unknown kind skipped, the table due a rewrite");
+
+    // Dirty: clean after a clean import, set by a sale, an expiry and a pruning erase, cleared by the save
+    Book g;
+    g.LoadHistory(rows, NOW, WINDOW);
+    Check(!g.HistoryDirty(), "dirty: false after a clean import");
+    g.Sale(Bought(Auction(500, 800, 1, 10, 99), 9), NOW);
+    g.Remove(500);
+    Check(g.HistoryDirty(), "dirty: true after a sale");
+    g.MarkHistorySaved();
+    Check(!g.HistoryDirty(), "dirty: false after the save");
+    g.Expire(Auction(501, 800, 1, 10, 99), NOW);
+    g.Remove(501);
+    Check(g.HistoryDirty(), "dirty: true after an expiry");
+    g.MarkHistorySaved();
+    g.Prune(NOW, WINDOW);
+    Check(!g.HistoryDirty(), "dirty: a prune that drops nothing leaves it clean");
+    g.Prune(NOW + WINDOW, WINDOW);
+    Check(g.HistoryDirty(), "dirty: true after a prune that dropped records");
+}
 }  // namespace
 
 int main()
@@ -286,6 +452,7 @@ int main()
     CheckBidAndVanish();
     CheckMedian();
     CheckDeterminism();
+    CheckHistoryStore();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

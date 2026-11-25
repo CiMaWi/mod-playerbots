@@ -15,6 +15,7 @@
 #include "AuctionConfig.h"
 #include "AuctionHouseMgr.h"
 #include "Chat.h"
+#include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "ObjectGuid.h"
@@ -22,6 +23,8 @@
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotsDatabase.h"
+#include "QueryResult.h"
 #include "ScriptMgr.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
@@ -33,6 +36,8 @@ namespace
 Book book;                              // world thread only
 Planner::SharedSlot<Snapshot> current;  // any thread
 std::uint32_t publishTimer = 0;         // world thread only
+std::uint32_t saveTimer = 0;            // world thread only
+bool historyLoaded = false;             // world thread only: no save before the load, so a failed start keeps the table
 std::uint64_t sequence = 0;             // world thread only
 std::uint32_t startupAuctions = 0;      // set once by the startup walk
 std::uint32_t startupHouses = 0;
@@ -103,6 +108,61 @@ void Publish()
     current.Publish(std::move(snapshot));
 }
 
+// Startup, world thread, before the first publication: the stored trade history into the book (WA1d)
+void LoadHistory()
+{
+    std::uint32_t const start = getMSTime();
+    std::vector<HistoryRow> rows;
+    if (PreparedQueryResult result =
+            PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_AUCTION_HISTORY)))
+    {
+        rows.reserve(result->GetRowCount());
+        do
+        {
+            Field* fields = result->Fetch();
+            HistoryRow row;
+            row.item = fields[0].Get<uint32>();
+            row.kind = fields[1].Get<uint8>();
+            row.time = fields[2].Get<int64>();
+            row.unitPrice = fields[3].Get<uint32>();
+            row.count = fields[4].Get<uint32>();
+            row.auctionId = fields[5].Get<uint32>();
+            rows.push_back(row);
+        } while (result->NextRow());
+    }
+    HistoryCounts const counts = book.LoadHistory(rows, GameNow(), WindowSeconds());
+    historyLoaded = true;
+    LOG_INFO("server.loading", "Auction index: history loaded {} sales, {} expiries of {} items ({} rows read, {} ms)",
+             counts.sales, counts.expiries, counts.items, rows.size(), GetMSTimeDiffToNow(start));
+}
+
+// World thread: the whole history rewritten in one asynchronous transaction when it changed since the last save;
+// the world thread only builds the statements
+void SaveHistory(bool atShutdown)
+{
+    if (!historyLoaded || !book.HistoryDirty())
+        return;
+    std::vector<HistoryRow> const rows = book.ExportHistory();
+    PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();
+    transaction->Append(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_AUCTION_HISTORY));
+    for (HistoryRow const& row : rows)
+    {
+        PlayerbotsDatabasePreparedStatement* stmt =
+            PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_INS_AUCTION_HISTORY);
+        stmt->SetData(0, row.item);
+        stmt->SetData(1, row.kind);
+        stmt->SetData(2, row.time);
+        stmt->SetData(3, row.unitPrice);
+        stmt->SetData(4, row.count);
+        stmt->SetData(5, row.auctionId);
+        transaction->Append(stmt);
+    }
+    PlayerbotsDatabase.CommitTransaction(transaction);
+    book.MarkHistorySaved();
+    if (atShutdown)
+        LOG_INFO("playerbots", "Auction index: history saved at shutdown, {} rows", rows.size());
+}
+
 // After World::SetInitialWorldSettings loaded the auctions, which fires no OnAuctionAdd
 void Walk()
 {
@@ -123,6 +183,7 @@ void Walk()
     startupAuctions = found;
     startupHouses = static_cast<std::uint32_t>(houses.size());
     walkMs = GetMSTimeDiffToNow(start);
+    LoadHistory();
     Publish();
     std::shared_ptr<Snapshot const> const snapshot = current.Current();
     LOG_INFO("server.loading", "Auction index: {} auctions of {} items in {} houses found, walked in {} ms", found,
@@ -173,9 +234,17 @@ public:
 class AuctionIndexWorldScript : public WorldScript
 {
 public:
-    AuctionIndexWorldScript() : WorldScript("AuctionIndexWorldScript", {WORLDHOOK_ON_STARTUP}) {}
+    AuctionIndexWorldScript() : WorldScript("AuctionIndexWorldScript", {WORLDHOOK_ON_STARTUP, WORLDHOOK_ON_SHUTDOWN}) {}
 
     void OnStartup() override { Walk(); }
+
+    // After the world loop, before the databases close; the pool's close drains the asynchronous queue, so the
+    // last transaction is written
+    void OnShutdown() override
+    {
+        PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex shutdown");
+        SaveHistory(true);
+    }
 };
 }  // namespace
 
@@ -184,14 +253,25 @@ std::shared_ptr<Snapshot const> Current() { return current.Current(); }
 void Update(std::uint32_t diff)
 {
     publishTimer += diff;
-    if (publishTimer < sPlayerbotAIConfig.Auction.PublishSeconds * IN_MILLISECONDS)
-        return;
-    publishTimer = 0;
-    PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex::Update");
-    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "auction index");
-    Publish();
-    if (pmo)
-        pmo->finish();
+    saveTimer += diff;
+    if (publishTimer >= sPlayerbotAIConfig.Auction.PublishSeconds * IN_MILLISECONDS)
+    {
+        publishTimer = 0;
+        PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex::Update");
+        PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "auction index");
+        Publish();
+        if (pmo)
+            pmo->finish();
+    }
+    if (saveTimer >= sPlayerbotAIConfig.Auction.SaveSeconds * IN_MILLISECONDS)
+    {
+        saveTimer = 0;
+        PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex::Update save");
+        PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "auction history save");
+        SaveHistory(false);
+        if (pmo)
+            pmo->finish();
+    }
 }
 
 void PublishNow()
