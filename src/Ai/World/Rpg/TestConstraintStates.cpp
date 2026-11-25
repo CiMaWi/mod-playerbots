@@ -11,6 +11,7 @@
 #include "BotTravel.h"
 #include "CombatRecord.h"
 #include "EventLog.h"
+#include "GoalInterface.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "NewRpgInternal.h"
@@ -101,6 +102,17 @@ void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder
     if (TestConstraints::FreesErrands(before, after))
         WorldTravel::ForgetErrandChecks(
             botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
+    // A release ends the planner goals the bot holds (GoalApply::Release); the snapshot due above gives its first goal.
+    // A status that runs on (a route order on a held bot) is not the goal's: the hold ended the goal's own
+    if (TestConstraints::Releases(before, after) && botAI->planner.goals)
+    {
+        Planner::GoalApply::BotGoals& goals = *botAI->planner.goals;
+        Planner::Goals::GoalKind const kind = goals.slot.Query().kind;
+        uint32 const target = goals.slot.Query().target;
+        if (Planner::GoalApply::Release(goals))
+            LOG_INFO("playerbots", "[Route] {} goal {}:{} ended by the release", bot->GetName(),
+                     Planner::Goals::KindWord(kind), target);
+    }
     TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);
     std::string const set = TestConstraints::Format(after);
     uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);

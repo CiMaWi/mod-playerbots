@@ -274,7 +274,9 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
         if (shopping)
             UpkeepNeeds::SampleUse(measure, StockLevelsOf(botAI), bot->getClass(), bot->GetLevel(), getMSTime());
-        botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+        // At the vendor it stands at (WR30: a scan of the nearest npcs filters by line of sight, which a tall bot
+        // on Thurman Mullby's spot lacked, so its sale failed silently while the shop step reached him)
+        botAI->DoSpecificAction("sell", Event("sell", vendor->GetGUID()), true);
         // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
         if (WorldTravel::MoveSpareBagToBackpack(bot, ItemUsageValue::SmallestBagSize(bot)))
             botAI->DoSpecificAction("equip upgrades packet action");

@@ -111,7 +111,8 @@ constexpr Row ROWS[] = {
     {"status", Kind::Hold, STATUS, "idle status pick"},
     {"errand", Kind::Hold, ERRAND, "errand and inn triggers (an order passes)"},
     {"hearth", Kind::Hold, HEARTH, "trip and planner hearth, off-mesh hearth"},
-    {"noquest", Kind::Hold, NOQUEST, "rpg quest pick: no quest accepted, none dropped by the log upkeep"},
+    {"noquest", Kind::Hold, NOQUEST,
+     "rpg quest pick: no quest accepted, none dropped by the log upkeep; planner: no quest goal offered or kept"},
     {"nofight", Kind::Other, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::Other, NODAMAGE, "god mode (CHEAT_GOD)"},
     {"flyfail", Kind::Other, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
@@ -237,6 +238,10 @@ inline bool EndsStatus(std::uint32_t before, std::uint32_t after) { return (afte
 // ItemWorthRules.h) starts over from no check, so a check from before the hold does not delay the released bot's first
 // errand by up to five minutes
 inline bool FreesErrands(std::uint32_t before, std::uint32_t after) { return (before & ~after & ERRAND) != 0; }
+
+// A release: a hold row turning off (`route release`, `route constraint <row> off`). The planner goals the bot holds
+// end there (GoalApply::Release), so its first goal after it is chosen under the rows the release keeps (WR30)
+inline bool Releases(std::uint32_t before, std::uint32_t after) { return (before & ~after & CHOICES) != 0; }
 
 // The gates. What an idle bot's status update may do on its own
 struct IdleGate

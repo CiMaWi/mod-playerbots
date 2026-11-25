@@ -274,8 +274,7 @@ void TestProfessionWalk()
     FakeReader empty;
     Check(LoadConfigFamily(ProfessionFamily, config, empty, warn) == 0 && warnings.empty(),
           "Professions: no key, no warning");
-    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 &&
-              config.FishTripDeadlineSeconds == 1200 && config.VisitStepSeconds == 10,
+    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 && config.VisitStepSeconds == 10,
           "Professions: the walk resets to the initializers");
 
     FakeReader probe;
@@ -284,7 +283,7 @@ void TestProfessionWalk()
     Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.GathererLevel == 10 && config.CraftVisitDeadlineSeconds == 60,
           "Professions: a value in range kept, one below its bound clamped with a warning");
-    Check(ProfessionFamily.Rows.size() == 72, "Professions: four plain rows, eight shares and sixty biases");
+    Check(ProfessionFamily.Rows.size() == 71, "Professions: three plain rows, eight shares and sixty biases");
     Check(config.CraftShare[0] == 12.5f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 2.0f,
           "Professions: the shares are equal and the hunters' engineering bias 2 by default");
     probe.values = {{"Playerbots.Professions.Share.Blacksmithing", "50"},

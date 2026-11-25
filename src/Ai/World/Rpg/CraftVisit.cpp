@@ -244,9 +244,20 @@ uint32 CopperEach(SkillPath::Path const* path, uint32 item)
     return proto ? proto->SellPrice : 0;
 }
 
+// The first reagent of the recipe the bot holds too few of for one cast (WR19c), else 0 (a tool it lacks)
+uint32 LackedReagent(Player* bot, Recipes::Recipe const& recipe)
+{
+    for (Recipes::ItemCount const& reagent : recipe.reagents)
+        if (bot->GetItemCount(reagent.item, false) < reagent.count)
+            return reagent.item;
+    return 0;
+}
+
 // The visit's profession row (WR19b's amounts, WR14b): value the products' worth in copper (what a vendor pays for the
 // recipe's products made; 0 for a processing cast, whose random yields are the ItemIn craft rows), reagents the copper
-// the casts used up (CopperEach per unit, the processed items for a processing cast), made the casts made
+// the casts used up (CopperEach per unit, the processed items for a processing cast), made the casts made. The units
+// used up are one ItemOut craft row per reagent (WR19c); a visit stopped for its materials names in place of the
+// source the material it lacked (missing, 0: a tool)
 void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitData const& visit, VisitEnd end)
 {
     using Professions::Choice;
@@ -256,28 +267,43 @@ void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitData const& visit,
                           : end == VisitEnd::NoStation || end == VisitEnd::NoSpot || end == VisitEnd::Unreached
                               ? Reason::NoStation
                               : Reason::Locked;
-    std::shared_ptr<Recipes::RecipeIndex const> const index = visit.made ? Planner::CurrentRecipeIndex() : nullptr;
+    bool const lacked = !visit.made && end == VisitEnd::NoMaterials;
+    std::shared_ptr<Recipes::RecipeIndex const> const index =
+        visit.made || lacked ? Planner::CurrentRecipeIndex() : nullptr;
     Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
     uint64 products = 0;
     uint64 reagents = 0;
+    uint32 missing = 0;
     if (ProcessSpell const* process = index ? ProcessOfSpell(visit.spell) : nullptr)
-        reagents = uint64(visit.made) *
-                   ConsumedBy(bot, *index, process->kind, sObjectMgr->GetItemTemplate(visit.source)) *
-                   CopperEach(path, visit.source);
+    {
+        uint64 const units =
+            uint64(visit.made) * ConsumedBy(bot, *index, process->kind, sObjectMgr->GetItemTemplate(visit.source));
+        reagents = units * CopperEach(path, visit.source);
+        if (units)
+            EventLog::Emit(bot, EventLog::EventType::ItemOut, "craft", visit.source, static_cast<int64>(units));
+        missing = visit.source;
+    }
     else if (Recipes::Recipe const* recipe = index ? RecipeOf(*index, visit.spell) : nullptr)
     {
         ItemTemplate const* product = recipe->product ? sObjectMgr->GetItemTemplate(recipe->product) : nullptr;
         products = product ? uint64(visit.made) * std::max<uint32>(recipe->productCount, 1) * product->SellPrice : 0;
         for (Recipes::ItemCount const& reagent : recipe->reagents)
-            reagents += uint64(visit.made) * reagent.count * CopperEach(path, reagent.item);
+        {
+            uint64 const units = uint64(visit.made) * reagent.count;
+            reagents += units * CopperEach(path, reagent.item);
+            if (units)
+                EventLog::Emit(bot, EventLog::EventType::ItemOut, "craft", reagent.item, static_cast<int64>(units));
+        }
+        if (lacked)
+            missing = LackedReagent(bot, *recipe);
     }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
                        Professions::ChoiceWord(visit.made ? Choice::Craft : Choice::Skip),
                        Professions::ReasonWord(reason), static_cast<float>(products),
                        {{"reagents", static_cast<float>(reagents)},
                         {"made", static_cast<float>(visit.made)},
-                        {"source", static_cast<float>(visit.source)}},
+                        {lacked ? "missing" : "source", static_cast<float>(lacked ? missing : visit.source)}},
                        visit.spell);
 }
 
