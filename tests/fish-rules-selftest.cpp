@@ -200,7 +200,38 @@ void HandCases()
           "its time at the water ends a trip after a long walk, before the deadline");
     due.minutes = 2.0f * Fish::TRIP_MINUTES + 0.1f;
     Check(Fish::PastDeadline(due), "a trip whose ends failed meets the deadline");
+    // Refused casts count in a row: a cast seen channelling resets them (WR27 follow-up). The control counts them in
+    // total, as the code did until WR25a, and loses a stand that fished 66 times
+    {
+        std::vector<bool> const casts = {true, false, true, false, false, true, false, true, false, false, true, true};
+        auto const lost = [&casts](bool inARow)
+        {
+            std::uint32_t refused = 0;
+            for (bool const channelled : casts)
+            {
+                refused = inARow ? Fish::RefusedAfter(refused, channelled) : refused + (channelled ? 0u : 1u);
+                if (Fish::StandLost(refused))
+                    return true;
+            }
+            return false;
+        };
+        Check(!lost(true), "a stand with refusals between good casts is kept");
+        Check(lost(false), "control: refusals counted in total lose that stand");
+        std::uint32_t refused = 0;
+        for (std::uint32_t i = 0; i < Fish::MAX_REFUSED_CASTS - 1; ++i)
+            refused = Fish::RefusedAfter(refused, false);
+        Check(!Fish::StandLost(refused) && Fish::StandLost(Fish::RefusedAfter(refused, false)) &&
+                  !Fish::StandLost(Fish::RefusedAfter(refused, true)),
+              "refused casts in a row lose the stand, a channel resets");
+    }
+    // The estimate on the trip's option (WR25a): the plan's catches, and the units those give
+    Water twoEach = easy;
+    twoEach.openYields = {{500, 2.0, 0, 5000, 0}};
+    Planner::Goals::GatherNode const trip = Fish::TripOption(twoEach, fair, quiet, false, Fish::Spot{}, 1.0f);
     Fish::TripPlan const plan = Fish::PlanTrip(easy, fair, false);
+    Check(trip.id && Near(trip.takes, plan.catches) && Near(trip.units, 2.0 * plan.catches) &&
+              Near(trip.gatherMinutes, plan.minutes) && trip.fightMinutes == 0.0f,
+          "estimate: the trip's option carries the plan's catches, minutes and units");
     Check(Near(plan.casts, Fish::TRIP_MINUTES / Fish::CAST_MINUTES) &&
               Near(plan.catches, plan.casts * Fish::ChanceAt(easy, fair, false)),
           "a trip's casts and expected catches");

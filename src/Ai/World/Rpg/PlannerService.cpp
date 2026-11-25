@@ -527,6 +527,18 @@ bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Que
     return true;
 }
 
+// The plan's estimate of a gather circuit or fishing trip, written beside its start row (professions WR25a): value the
+// minutes the plan gave it (a circuit: its laps' minutes; a trip: the walk and its time at the water), alternatives the
+// takes expected in them (a node harvested, a creature killed, a fish caught), the units those give and the fight
+// minutes of the kills; ref the goal's target as the start row's. A session then holds plan and outcome side by side
+void NoteEstimate(Player* bot, Professions::Reason way, GoalApply::Active const& goal)
+{
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Estimate),
+        Professions::ReasonWord(way), goal.minutes,
+        {{"takes", goal.takes}, {"units", goal.units}, {"fight_minutes", goal.fightMinutes}}, goal.target);
+}
+
 // Today's statuses are the executors (GoalApply::ExecutorFor). False when the goal cannot start here, having ended
 // nothing. `word` is the Status row's word; a running status ends as interrupted
 bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, GoalApply::Active const& goal,
@@ -570,6 +582,8 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
                      {"creatures", static_cast<float>(std::count_if(plan->gatherStops.begin(), plan->gatherStops.end(),
                                                                     Gather::IsCreatureStop))}},
                     goal.target);
+            if (circuit)
+                NoteEstimate(bot, Professions::Reason::Circuit, goal);
             return true;
         }
         case GoalApply::Executor::Fish:
@@ -587,6 +601,7 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
                                Professions::ChoiceWord(Professions::Choice::Fish), Professions::ReasonWord(reason),
                                goal.minutes, {}, goal.target);
+            NoteEstimate(bot, Professions::Reason::Trip, goal);
             return true;
         }
         case GoalApply::Executor::Travel:

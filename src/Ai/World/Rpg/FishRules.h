@@ -184,6 +184,14 @@ inline std::uint32_t BarrenCasts(double chance)
         std::clamp(casts, static_cast<double>(BARREN_MIN_CASTS), static_cast<double>(BARREN_MAX_CASTS)));
 }
 
+// Casts refused in a row at one stand after which it is lost (a cast seen channelling resets the count, WR27 follow-up:
+// the counting in total ended a trip of 66 catches at 3 refusals in 28)
+constexpr std::uint32_t MAX_REFUSED_CASTS = 3;
+
+inline std::uint32_t RefusedAfter(std::uint32_t refused, bool channelling) { return channelling ? 0u : refused + 1u; }
+
+inline bool StandLost(std::uint32_t refused) { return refused >= MAX_REFUSED_CASTS; }
+
 enum class TripEnd : std::uint8_t
 {
     None,  // fishing on
@@ -263,8 +271,10 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
     TripPlan const plan = PlanTrip(water, bot, atPool);
     double copper = 0.0;
     double item = 0.0;
+    double units = 0.0;
     for (Gather::Yield const& yield : atPool ? water.poolYields : water.openYields)
     {
+        units += std::max(yield.perNode, 0.0) * plan.catches;
         std::uint32_t const each =
             WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, bot.buyers);
         double const worth = std::max(yield.perNode, 0.0) * plan.catches * each;
@@ -279,6 +289,8 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
     option.place = {at.map, at.x, at.y, at.z};
     option.walkMinutes = std::max(walkMinutes, 0.0f);
     option.gatherMinutes = plan.minutes;
+    option.takes = static_cast<float>(plan.catches);
+    option.units = static_cast<float>(units);
     option.copperWorth = static_cast<float>(copper);
     option.itemWorth = static_cast<float>(item);
     option.skillPoints =

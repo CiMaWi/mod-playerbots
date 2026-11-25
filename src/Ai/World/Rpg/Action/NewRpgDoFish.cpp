@@ -74,7 +74,6 @@ constexpr uint32 MESH_TRIES = 4;           // stands judged by their path's end 
 constexpr float HERE_YARDS = 4.0f;         // a bot this near the place tries to fish where it stands
 constexpr float ON_FOOT_YARDS = 20.0f;     // a bot this near its stand walks on (KeepsOnFoot)
 constexpr uint32 MAX_PROBES = 3;
-constexpr uint32 MAX_REFUSED_CASTS = 3;
 constexpr uint32 CAST_START_MS = 2 * IN_MILLISECONDS;   // a cast that started no channel by then was refused
 constexpr uint32 CAST_STALL_MS = 30 * IN_MILLISECONDS;  // longer than the channel (21 s): the cast is over
 constexpr uint32 LOOT_WAIT_MS = 5 * IN_MILLISECONDS;    // the loot pipeline's time to store a catch
@@ -487,7 +486,8 @@ bool NewRpgDoFishAction::Execute(Event /*event*/)
     if (!botAI->CastSpell(data.spell, bot))
     {
         Trace(data, "cast refused");
-        if (++data.refusedCasts >= MAX_REFUSED_CASTS)
+        data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, false);
+        if (Fish::StandLost(data.refusedCasts))
             data.stand = WorldPosition();
         return true;
     }
@@ -654,7 +654,10 @@ bool NewRpgDoFishAction::Watch(NewRpgInfo::DoFish& data)
     Spell* const channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
     bool const fishing = channel && channel->m_spellInfo && IsFishingRank(channel->m_spellInfo->Id);
     if (fishing)
+    {
         data.channelSeen = true;
+        data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, true);
+    }
     if (GameObject* const bobber = Bite(bot, data))
     {
         Click(botAI, data, bobber);
@@ -673,7 +676,8 @@ bool NewRpgDoFishAction::Watch(NewRpgInfo::DoFish& data)
     else
     {
         TraceMiss(botAI, data, "no_channel", nullptr);
-        if (++data.refusedCasts >= MAX_REFUSED_CASTS)
+        data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, false);
+        if (Fish::StandLost(data.refusedCasts))
             data.stand = WorldPosition();
     }
     CastOver(data);

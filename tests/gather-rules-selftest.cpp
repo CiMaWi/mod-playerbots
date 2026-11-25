@@ -1019,6 +1019,26 @@ void CreatureCases()
               option.skillPoints > 0.0f && option.xpWorth > 0.0f && option.skill == SKINNING &&
               Gather::IsCreatureStop(option.id),
           "option: copper, item worth, skin points and XP, the skin its skill");
+    // The estimate the start row carries (WR25a), counted by hand: takes are the shares' sum over the laps, units the
+    // yields per take, the fight minutes the kills' fight estimates
+    double fightByHand = 0.0;
+    for (Node const& beast : beasts)
+        fightByHand +=
+            Materials::FightMinutes((beast.creature.minLevel + beast.creature.maxLevel) / 2.0, lw.level, 0.0);
+    Check(Near(option.takes, 4.0) && Near(option.fightMinutes, fightByHand) && option.fightMinutes > 0.0f,
+          "estimate: four kills, the fight minutes of each");
+    {
+        std::vector<Node> herbs = {NodeAt(90, HERBALISM, 1, 40.0f, 0.0f, 300, 1.0f, 200),
+                                   NodeAt(91, HERBALISM, 1, 80.0f, 0.0f, 300, 0.5f, 200),
+                                   NodeAt(92, HERBALISM, 1, 120.0f, 0.0f, 300, 1.0f, 200)};
+        Gatherer const herbalist = FighterWith(20, 100, 0, false);
+        Circuit const herbCircuit = Gather::BuildCircuit(anchor, herbs, herbalist);
+        Planner::Goals::GatherNode const herbOption = Gather::CircuitOption(herbCircuit, herbs, herbalist, 0);
+        double const laps = std::max(herbCircuit.laps, 1u);
+        Check(herbCircuit.stops.size() == 3 && Near(herbOption.takes, 2.5 * laps) &&
+                  Near(herbOption.units, 5.0 * laps) && herbOption.fightMinutes == 0.0f,
+              "estimate: herbs of share 1, 0.5 and 1 give 2.5 takes and 2 units a take, over the laps, no fight");
+    }
     Check(beastCircuit.once && beastCircuit.laps == 1, "respawn: a short lap of 10-minute spawns is walked once");
     for (Node& node : beasts)
         node.respawnSecs = 10;

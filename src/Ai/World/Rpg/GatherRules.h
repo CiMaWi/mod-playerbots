@@ -291,12 +291,18 @@ inline KillWorth WorthOfKill(Node const& node, Gatherer const& bot, bool buyers 
     return worth;
 }
 
-// A kill's minutes once at the spawn: the fight estimate at the middle of its levels, the loot, the skin when taken
-inline double KillMinutes(Node const& node, Gatherer const& bot, bool skin)
+// A kill's fight minutes: the estimate at the middle of the creature's levels (PLAN 3.18)
+inline double FightMinutesOf(Node const& node, Gatherer const& bot)
 {
     Creature const& creature = node.creature;
     double const level = (creature.minLevel + std::max(creature.minLevel, creature.maxLevel)) / 2.0;
-    return Materials::FightMinutes(level, bot.level, creature.eliteShare) + LOOT_MINUTES + (skin ? SKIN_MINUTES : 0.0f);
+    return Materials::FightMinutes(level, bot.level, creature.eliteShare);
+}
+
+// A kill's minutes once at the spawn: the fight estimate, the loot, the skin when taken
+inline double KillMinutes(Node const& node, Gatherer const& bot, bool skin)
+{
+    return FightMinutesOf(node, bot) + LOOT_MINUTES + (skin ? SKIN_MINUTES : 0.0f);
 }
 
 // The minutes a stop takes once reached: a node's gathering, a creature's kill
@@ -680,6 +686,9 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     double xp = 0.0;
     double levels = 0.0;
     double elite = 0.0;
+    double takes = 0.0;  // the estimate the rows carry (WR25a): takes, units and fight minutes per lap
+    double units = 0.0;
+    double fight = 0.0;
     std::vector<std::pair<std::uint16_t, double>> points;  // skill -> points expected
     std::size_t counted = 0;
     auto const addYields = [&](std::vector<Yield> const& yields, double share)
@@ -689,6 +698,7 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
             std::uint32_t const each =
                 WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, buyers);
             double const worth = std::max(yield.perNode, 0.0) * share * each;
+            units += std::max(yield.perNode, 0.0) * share;
             if (yield.pathCopper > yield.vendorCopper && each == yield.pathCopper)
                 item += worth;
             else
@@ -725,9 +735,11 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
         }
         ++counted;
         double const share = std::clamp(node.share, 0.0f, 1.0f);
+        takes += share;
         addYields(node.yields, share);
         if (node.kind == StopKind::Creature)
         {
+            fight += FightMinutesOf(node, bot) * share;
             copper += std::max(node.creature.coinCopper, 0.0) * share;
             xp += KillXp(node, bot) * share;
             if (Skins(node, bot, buyers))
@@ -760,6 +772,9 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     option.eliteShare = static_cast<float>(elite / static_cast<double>(counted));
     option.stops = circuit.stops;
     option.laps = std::max(circuit.laps, 1u);
+    option.takes = static_cast<float>(takes * laps);
+    option.units = static_cast<float>(units * laps);
+    option.fightMinutes = static_cast<float>(fight * laps);
     return option;
 }
 

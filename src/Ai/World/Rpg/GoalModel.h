@@ -374,6 +374,11 @@ struct GatherNode
     std::uint32_t laps{1};
     float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
     float xpWorth{0.0f};          // a circuit of creature stops (WR20b): its kills' XP, none for grey
+    // The plan's estimate of the trip or circuit (professions WR25a): expected takes (a node harvested, a creature
+    // killed, a fish caught), the units those takes give and the fight minutes of the kills, all over the laps
+    float takes{0.0f};
+    float units{0.0f};
+    float fightMinutes{0.0f};
 };
 
 struct Vendor
@@ -494,6 +499,9 @@ struct Goal
     float minutes{0.0f};  // travel and action
     float valuePerMinute{0.0f};
     std::string reason;
+    float takes{0.0f};  // a gather circuit's or fishing trip's estimate (GatherNode): the row WR25a writes at its start
+    float units{0.0f};
+    float fightMinutes{0.0f};
 };
 
 // A goal with the numbers that rank it
@@ -1044,6 +1052,9 @@ private:
             option.copper = node.copperWorth;
             option.itemWorth = node.itemWorth;
             option.xp = node.xpWorth;
+            option.takes = node.takes;
+            option.units = node.units;
+            option.fightMinutes = node.fightMinutes;
             // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
             bool const skillUp = skill && skill->value < skill->max && node.skillPoints > 0.0f &&
                                  (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);
@@ -1075,6 +1086,8 @@ private:
             option.target = water.id;
             option.place = water.place;
             option.minutes = water.walkMinutes + water.gatherMinutes;
+            option.takes = water.takes;
+            option.units = water.units;
             option.copper = water.copperWorth;
             option.itemWorth = water.itemWorth;
             option.expected = BandRate() * (SKILLUP_MINUTES * water.skillPoints + water.pleasureMinutes);

@@ -360,7 +360,9 @@ void FillGatherSight(Player* bot, Snapshot& snapshot)
     bool gatherer = false;
     for (Skill const& skill : snapshot.skills)
         gatherer = gatherer || skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING;
-    PlayerbotAI* botAI = gatherer ? GET_PLAYERBOT_AI(bot) : nullptr;
+    // The respawn memory is read for every bot (a farmer must not plan the creature spawns it just cleared); the zone's
+    // sight only for a herbalist or miner (WR25a, checkpoint 5 review)
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
         return;
     uint32 const now = getMSTime();
@@ -368,7 +370,8 @@ void FillGatherSight(Player* bot, Snapshot& snapshot)
         if (botAI->rpgInfo.gatherMemory.Away(entry.spawn, now))
             snapshot.gatherDown.push_back(entry.spawn);
     // A player sees a node on the minimap while it is within the client's sight: the map's visibility range
-    if (std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone))
+    if (std::vector<GatherNodeSpawn> const* spawns =
+            gatherer ? ZoneSpawns(snapshot.position.map, snapshot.zone) : nullptr)
     {
         Map* map = bot->GetMap();
         WorldPosition at(bot);

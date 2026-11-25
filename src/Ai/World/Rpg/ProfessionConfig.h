@@ -72,11 +72,12 @@ enum class Choice : std::uint8_t
     Fish,
     Keep,
     Skip,
-    Disenchant
+    Disenchant,
+    Estimate  // WR25a: a circuit's or fishing trip's plan, written beside its start row
 };
-constexpr std::size_t CHOICE_COUNT = 10;
-constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"learn",  "rank", "recipe", "tool", "craft",
-                                                                     "gather", "fish", "keep",   "skip", "disenchant"};
+constexpr std::size_t CHOICE_COUNT = 11;
+constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {
+    "learn", "rank", "recipe", "tool", "craft", "gather", "fish", "keep", "skip", "disenchant", "estimate"};
 
 enum class Reason : std::uint8_t
 {
@@ -95,13 +96,15 @@ enum class Reason : std::uint8_t
     NoStation,
     GoldShort,
     Locked,
-    Interest  // WR16b: a fishing trip for the fishing interest's pleasure
+    Interest,  // WR16b: a fishing trip for the fishing interest's pleasure
+    Trip       // WR25a: the estimate row of a fishing trip
 };
-constexpr std::size_t REASON_COUNT = 16;
+constexpr std::size_t REASON_COUNT = 17;
 constexpr std::array<std::string_view, REASON_COUNT> REASON_WORDS = {
-    "use_soon",   "held_recipe", "access",       "income",          "cheapest_point", "supply",
-    "on_the_way", "circuit",     "not_worth_it", "detour_too_long", "too_dangerous",  "no_source",
-    "no_station", "gold_short",  "locked",       "interest"};
+    "use_soon",      "held_recipe", "access",     "income",       "cheapest_point",
+    "supply",        "on_the_way",  "circuit",    "not_worth_it", "detour_too_long",
+    "too_dangerous", "no_source",   "no_station", "gold_short",   "locked",
+    "interest",      "trip"};
 
 constexpr std::string_view ChoiceWord(Choice choice)
 {
