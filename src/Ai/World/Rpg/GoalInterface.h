@@ -158,6 +158,12 @@ public:
 
     Active const& Query() const { return _current; }
 
+    // A goal of this kind holds the slot or waits behind the interlude that holds it
+    bool Holds(Goals::GoalKind kind) const
+    {
+        return (_current.Is() && _current.kind == kind) || (_previous && _previous->kind == kind);
+    }
+
     // Minutes since the goal started, 0 without one
     float MinutesSince(std::uint32_t nowMs) const
     {
@@ -988,6 +994,17 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
         return;
     if (BlockKey(goals, goals.run.key, log, nowMs, blockMs))
         goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
+}
+
+// A test bot held from quests (TestConstraints noquest) keeps no planner quest goal: one taken before the hold, or one
+// an interlude interrupted, ends without a stall where the goal would go on (Planner OnIdle), and the plans offer it
+// none (Goals::Situation::questsHeld). True when one ended
+inline bool DropHeldQuest(BotGoals& goals, bool questsHeld)
+{
+    if (!questsHeld || !goals.slot.Holds(Goals::GoalKind::Quest) || !goals.slot.Cancel(Source::Planner))
+        return false;
+    goals.run = {};
+    return true;
 }
 
 // How a goal's start went (3.5); anything but Started changed nothing but a refused goal's block (StartActive)

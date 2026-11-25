@@ -1826,6 +1826,24 @@ inline void Targets(std::vector<Check>& checks)
             " field circuits" + bad);
 }
 
+// A test bot held from quests (TestConstraints noquest, Situation::questsHeld) is offered no quest goal: the circuit
+// and the hub in its zone are dropped, the rest stays
+inline void HeldFromQuests(std::vector<Check>& checks)
+{
+    Snapshot const bot = Bot(10, FLUSH);
+    Situation situation = Base();
+    CircuitPlan const circuit = Circuit(bot, situation, 400.0f, 0.0f, 20.0f);
+    situation.circuit = &circuit;
+    situation.hubs = {Hub(21, ELWYNN, 100.0f, 5.0f)};
+    Ranked const free = Rank(bot, situation);
+    situation.questsHeld = true;
+    Ranked const held = Rank(bot, situation);
+    bool const named = std::any_of(held.dropped.begin(), held.dropped.end(),
+                                   [](auto const& dropped) { return dropped.kind == GoalKind::Quest; });
+    Add(checks, "held from quests: a free bot is offered quest goals, a held one none (each named dropped)",
+        Has(free, GoalKind::Quest) && !Has(held, GoalKind::Quest) && named, Summary(held));
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -1849,6 +1867,7 @@ inline std::vector<Check> SyntheticChecks()
     RepairDuringQuest(checks);
     RepairFirst(checks);
     Targets(checks);
+    HeldFromQuests(checks);
     return checks;
 }
 

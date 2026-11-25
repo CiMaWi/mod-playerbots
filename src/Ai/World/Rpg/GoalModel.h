@@ -456,6 +456,7 @@ struct Situation
     std::vector<GatherNode> waters;      // fishing trips (professions WR16b, Fish::TripOption): id the water's area
     std::uint32_t gatherRefusedItem{0};  // a wanted material only creatures the bot may not fight give (WR20c)
     float gatherRefusedLevels{0.0f};     // the least levels those creatures are above the bot
+    bool questsHeld{false};              // a test's noquest (TestConstraints): no quest goal is offered
     Bags bags;
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
@@ -699,6 +700,11 @@ private:
     void Add(Option option, RiskInput const& risk)
     {
         ++_ranked.considered;
+        if (_situation.questsHeld && option.kind == GoalKind::Quest)
+        {
+            Drop(option, "noquest");
+            return;
+        }
         if (Sick())
         {
             Drop(option, SICK_REASON);

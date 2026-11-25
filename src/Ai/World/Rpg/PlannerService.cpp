@@ -1003,6 +1003,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
                                         : -1.0f;
     // Class quests (upkeep WU20a): a governed bot's (one that keeps its possessions) facts for the unlock bonus; the
     // job adds the trainer's spells
+    situation.questsHeld = !TestConstraints::QuestChoicesAllowed(botAI->testConstraints);  // a test's noquest
     situation.governed = botAI->KeepsPossessions();
     if (situation.governed)
     {
@@ -1511,6 +1512,10 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     // A plan the bridge paused: the bot stands idle until resumed (GoalApply::StillPaused)
     if (GoalApply::StillPaused(goals, now))
         return {false, true, nullptr};
+
+    // A test's noquest: a quest goal taken before the hold ends here (GoalApply::DropHeldQuest)
+    if (GoalApply::DropHeldQuest(goals, !TestConstraints::QuestChoicesAllowed(botAI->testConstraints)))
+        LOG_INFO("playerbots", "[Route] {} quest goal dropped: noquest", bot->GetName());
 
     // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
     // executor ended ends its run (GoalApply::EndRun): its key stalls for the block time (BlockMs) when the log is as

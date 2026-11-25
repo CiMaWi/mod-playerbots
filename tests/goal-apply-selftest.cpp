@@ -465,6 +465,45 @@ int main()
         Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
     }
 
+    // A test bot held from quests (noquest) keeps no planner quest goal, also one behind an interlude; others stay
+    {
+        BotGoals goals;
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 7, Source::Planner));
+        goals.run.running = true;
+        Check(!DropHeldQuest(goals, false) && goals.slot.Query().Is(), "without the hold a quest goal stays");
+        Check(DropHeldQuest(goals, true) && !goals.slot.Query().Is() && !goals.run.running && !goals.stalled,
+              "noquest ends a quest goal taken before it, without a stall");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 8, Source::Planner));
+        goals.slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
+        Check(DropHeldQuest(goals, true) && !goals.slot.End(0) && !goals.slot.Query().Is(),
+              "a quest goal behind an interlude does not come back (mutant: the current goal's kind only)");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Gather, 9, Source::Planner));
+        Check(!DropHeldQuest(goals, true) && goals.slot.Query().kind == Goals::GoalKind::Gather,
+              "a gather goal stays under noquest");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 10, Source::Bridge));
+        Check(!DropHeldQuest(goals, true) && goals.slot.HasExternal(), "the bridge's quest order stays");
+    }
+
+    // The gain rule (professions WR20c): a gather or money goal that took items or copper made progress without XP;
+    // the same gain is none for a grind or a quest goal, and no gain stalls a gather goal
+    {
+        auto const stalls = [](Goals::GoalKind kind, std::uint64_t gain)
+        {
+            BotGoals goals;
+            goals.run = {77, 5, 100, XpIsProgress(kind), true, false, kind};
+            goals.run.startGain = 10;
+            goals.run.gainCounts = GainIsProgress(kind);
+            GoalApply::EndRun(goals, 5, 100, 0, BLOCK, gain);
+            return goals.stalled.has_value();
+        };
+        Check(!stalls(Goals::GoalKind::Gather, 11) && !stalls(Goals::GoalKind::Money, 11),
+              "a gather or money goal that gained items or copper made progress");
+        Check(stalls(Goals::GoalKind::Gather, 10) && stalls(Goals::GoalKind::Money, 9),
+              "a gather or money goal without a gain stalls (mutant: any end is progress)");
+        Check(stalls(Goals::GoalKind::Grind, 11) && stalls(Goals::GoalKind::Quest, 11),
+              "a grind or quest goal's gain is no progress (mutant: gain counts for every kind)");
+    }
+
     // The idle step
     {
         IdleInput in;

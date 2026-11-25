@@ -34,6 +34,23 @@ constexpr float FARM_ENGAGE_YARDS = 30.0f;      // within this and in sight: the
 constexpr uint32 FARM_STOP_MS = 90 * IN_MILLISECONDS;      // from the first sight of a target: no kill, timed out
 constexpr uint32 FARM_LOOT_MS = 30 * IN_MILLISECONDS;      // after the kill: its loot and skin take at most this
 constexpr uint32 FARM_SKIN_WAIT_MS = 8 * IN_MILLISECONDS;  // a looted corpse still skinnable this long: not skinned
+
+// A corpse of the stop's kind the bot killed that the respawn memory does not hold yet: the grind and attacked
+// strategies often engage the stop's creature on the walk up, before the stop picks a target, so their kill is the
+// stop's (the corpse's spawn goes into the memory with the stop's row, so one kill counts once)
+Creature* OwnCorpse(Player* bot, PlayerbotAI* botAI, uint32 entry)
+{
+    uint32 const now = getMSTime();
+    std::size_t candidates = 0;
+    return SoughtTarget::Nearest(
+        bot, {entry}, FARM_SEEK_YARDS,
+        [bot, botAI, now](Creature* creature)
+        {
+            return !creature->IsAlive() && creature->isTappedBy(bot) &&
+                   !botAI->rpgInfo.gatherMemory.Away(creature->GetSpawnId() | Gather::CREATURE_STOP, now);
+        },
+        candidates);
+}
 }  // namespace
 
 bool NewRpgDoGatherAction::FarmTarget(NewRpgInfo::DoGather const& data, Creature* creature) const
@@ -60,7 +77,8 @@ bool NewRpgDoGatherAction::FarmStop(NewRpgInfo::DoGather& data, bool periodic)
         bool const left = !lootable && skinnable && GetMSTimeDiffToNow(data.skinSeenMs) > FARM_SKIN_WAIT_MS;
         if (target && (lootable || skinnable) && !left && GetMSTimeDiffToNow(data.killedMs) <= FARM_LOOT_MS)
             return false;
-        ResolveFarmStop(data, true, GatherStopWords::KILLED, data.skinSeenMs && !skinnable, false);
+        ResolveFarmStop(data, true, GatherStopWords::KILLED, data.harvestCast || (data.skinSeenMs && !skinnable),
+                        false);
         return true;
     }
     if (!data.targetGuid.IsEmpty() && (!target || !target->IsAlive()))
@@ -86,6 +104,13 @@ bool NewRpgDoGatherAction::FarmStop(NewRpgInfo::DoGather& data, bool periodic)
     if (!target)
     {
         float const yards = bot->GetExactDist(data.nodePos);
+        if (periodic && yards <= FARM_SEEK_START_YARDS + FARM_SEEK_YARDS)
+            if (Creature* corpse = OwnCorpse(bot, botAI, data.creatureEntry))
+            {
+                data.targetGuid = corpse->GetGUID();  // the stop's kill, made in the bot's own fighting
+                data.killedMs = now;
+                return false;
+            }
         if (periodic && yards <= FARM_SEEK_START_YARDS)
         {
             std::size_t candidates = 0;
@@ -141,6 +166,11 @@ void NewRpgDoGatherAction::ResolveFarmStop(NewRpgInfo::DoGather& data, bool kill
     // The respawn memory: killed, seen down or written off, the bot comes back after the respawn at the earliest
     CreatureData const* spawn = sObjectMgr->GetCreatureData(spawnId);
     botAI->rpgInfo.gatherMemory.Note(data.nodeSpawnId, getMSTime(), spawn ? spawn->spawntimesecs * IN_MILLISECONDS : 0);
+    // The kill of another spawn of the kind: that spawn too is down until its respawn
+    if (Creature* kill = killed && !data.targetGuid.IsEmpty() ? botAI->GetCreature(data.targetGuid) : nullptr)
+        if (uint32 const own = kill->GetSpawnId(); own && own != spawnId)
+            botAI->rpgInfo.gatherMemory.Note(own | Gather::CREATURE_STOP, getMSTime(),
+                                             kill->GetRespawnDelay() * IN_MILLISECONDS);
     if (planned)
         ++data.next;
     AbandonNode(data, writeOff || data.circuit.empty());

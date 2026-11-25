@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "Creature.h"
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
 #include "GatherRules.h"
@@ -403,6 +404,23 @@ bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
 
 void NewRpgDoGatherAction::NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node)
 {
+    // A skin cast on a corpse of the current creature stop's kind (WR20c): the stop's kill, skinned. The loot and skin
+    // actions hold the ticks the status's own watch would see the skin on
+    if (node.IsCreatureOrVehicle())
+    {
+        auto* data = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
+        Creature* creature = data && data->creatureEntry ? botAI->GetCreature(node) : nullptr;
+        if (!creature || creature->GetEntry() != data->creatureEntry)
+            return;
+        if (data->targetGuid.IsEmpty() && creature->isTappedBy(botAI->GetBot()))
+        {
+            data->targetGuid = node;
+            data->killedMs = std::max<uint32>(getMSTime(), 1);
+        }
+        if (data->targetGuid == node)
+            data->harvestCast = true;
+        return;
+    }
     GameObject* go = node.IsGameObject() ? botAI->GetGameObject(node) : nullptr;
     if (!go)
         return;
