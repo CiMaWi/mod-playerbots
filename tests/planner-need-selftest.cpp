@@ -525,7 +525,7 @@ std::string Serial(SkillPathBridge::Computed const& computed)
     for (SkillPath::Want const& want : path.wants)
         out << " w" << want.item << ':' << want.count;
     for (SkillPath::Craft const& craft : path.queue)
-        out << " q" << craft.spell << ':' << craft.casts;
+        out << " q" << craft.spell << ':' << craft.casts << (craft.forSale ? "s" : "");
     SkillPath::SecondChoice const& second = path.second;
     out << " c" << second.craft << ':' << second.gatherer << ':' << second.take << ':'
         << static_cast<int>(second.reason) << ':' << second.craftWorth << ':' << second.gathererWorth;
@@ -967,6 +967,22 @@ std::string PathWords(SkillPath::Path const& path)
     return out.str();
 }
 
+// The queue's crafts for sale (WA7b), in words
+std::string SaleWords(SkillPath::Path const& path)
+{
+    std::ostringstream out;
+    for (SkillPath::Craft const& craft : path.queue)
+        if (craft.forSale)
+            out << (out.tellp() ? ", " : "") << craft.spell << " x" << craft.casts;
+    return out.tellp() ? out.str() : "none";
+}
+
+std::size_t SaleCrafts(SkillPath::Path const& path)
+{
+    return static_cast<std::size_t>(std::count_if(path.queue.begin(), path.queue.end(),
+                                                  [](SkillPath::Craft const& craft) { return craft.forSale; }));
+}
+
 // WA7a (PLAN 3.7): sample bots' paths and second choices without and with a market, and the empty-market equality: a
 // view with an empty snapshot and one whose entries carry no sale give the vendor-only path and needs byte for byte
 // (Serial). Control: weighing a second gatherer for any view (Fault::AnyMarket) must break it
@@ -1016,6 +1032,8 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     std::size_t marketLines = 0;
     std::size_t lineViolations = 0;
     std::size_t controlCaught = 0;
+    std::size_t plainSales = 0;  // crafts for sale (WA7b): none without a market
+    std::size_t marketSales = 0;
     auto const linesOf = [&](SkillPath::Path const& path)
     {
         std::vector<AuctionRules::BuyLine> const lines = AuctionRules::BuyList(
@@ -1050,6 +1068,7 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
             ++compared;
             differ += same ? 0 : 1;
             plainLines += linesOf(plain.path);
+            plainSales += SaleCrafts(plain.path);
             std::string const control =
                 Serial(PathOf(bot, index, sample, recipes, true, unsold, SkillPath::Fault::AnyMarket));
             controlDiffer += serial != control ? 1 : 0;
@@ -1061,13 +1080,16 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
             SkillPathBridge::Computed const bargain = PathOf(bot, index, sample, recipes, true, cheap);
             std::size_t const bargainLines = linesOf(bargain.path);
             marketLines += linesOf(sold.path) + linesOf(all.path) + bargainLines;
+            marketSales += SaleCrafts(sold.path) + SaleCrafts(all.path) + SaleCrafts(bargain.path);
             std::cout << "  " << sample.name << ", " << Money(money) << "\n"
                       << "    no market:                  " << PathWords(plain.path) << "\n"
                       << "    market for gathered yields: " << PathWords(sold.path) << "\n"
                       << "    market for every item:      " << PathWords(all.path) << "\n"
                       << "    an empty market gives the no-market path and needs: " << (same ? "yes" : "NO") << "\n"
                       << "    a market at a sixth of the price: " << PathWords(bargain.path) << "; " << bargainLines
-                      << " path buy lines\n";
+                      << " path buy lines\n"
+                      << "    crafts for sale: gathered yields " << SaleWords(sold.path) << "; every item "
+                      << SaleWords(all.path) << "; a sixth of the price " << SaleWords(bargain.path) << "\n";
         }
     std::cout << "  empty-market equality: " << compared << " bots compared, " << differ
               << " differ; control any_market: " << controlDiffer << " differ; " << changed
@@ -1080,6 +1102,9 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     Check(plainLines == 0 && marketLines > 0 && lineViolations == 0,
           "a path line exactly where the auction sells a wanted material cheapest, at the other way's cost");
     Check(controlCaught == marketLines, "control: a ceiling at the auction's own cost bounds nothing (caught)");
+    std::cout << "  crafts for sale (WA7b): " << plainSales << " without a market, " << marketSales
+              << " in the printed bots' markets\n";
+    Check(plainSales == 0, "no craft for sale without a market");
 }
 
 void PathLive(UpkeepIndex const& index, std::string const& root)

@@ -142,13 +142,14 @@ struct Material
     std::uint32_t otherCopperEach{0};
 };
 
-// A craft for the next stop, in the order of claims: uses, their intermediates, then skill
+// A craft for the next stop, in the order of claims: uses, their intermediates, skill, then sale
 struct Craft
 {
     std::uint32_t spell{0};
     std::uint32_t casts{0};
     bool forSkill{false};
     std::uint32_t source{0};  // a prospect or mill cast's item (spell: the processing spell); 0 = a recipe
+    bool forSale{false};      // auction house WA7b: products the bot sells, from what nothing else claims
 };
 
 // The second main profession when it is due (WR11, PLAN 3.2, 3.3): the person's craft once a stretch of it from its
@@ -192,10 +193,11 @@ inline Material const* MaterialOf(Path const& path, std::uint32_t item)
 
 // The queue's net worth (WR14), value units: what its crafts for the bot's own use bring (WR15) plus the chosen
 // stretch's net worth by the share of its craft casts the queue's skill crafts make now (at most all of it; a
-// processing cast is no craft cast); 0 without a queue
+// processing cast is no craft cast); 0 without a queue. A craft for sale adds nothing: it rides on a stop made for the
+// others (WA7b, the last claim)
 inline double QueueWorth(Path const& path)
 {
-    if (path.queue.empty())
+    if (std::all_of(path.queue.begin(), path.queue.end(), [](Craft const& craft) { return craft.forSale; }))
         return 0.0;
     double const uses = path.useWorth > 0.0 ? path.useWorth : 0.0;
     if (path.chosen < 0 || path.chosen >= static_cast<int>(path.weighed.size()))
@@ -212,6 +214,16 @@ inline double QueueWorth(Path const& path)
     if (!(taken.netWorth > 0.0) || !(planned > 0.0))
         return uses;
     return uses + taken.netWorth * std::min(1.0, queued / planned);
+}
+
+// The queue's craft of a recipe's spell is a craft for sale (WA7b: the craft row's reason); a sale craft's spell is
+// never queued for another claim too
+inline bool ForSale(Path const& path, std::uint32_t spell)
+{
+    for (Craft const& craft : path.queue)
+        if (craft.spell == spell && !craft.source)
+            return craft.forSale;
+    return false;
 }
 
 // A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread; its makes

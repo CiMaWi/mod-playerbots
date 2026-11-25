@@ -13,6 +13,8 @@
 // WR29: the economy reference's skill stretch as fixed values (economy-cases.h), the search at stock rates and at ours
 // with the fourteenth invariant (higher rates never make a stretch dearer); argv[3] "ours" prints the fixture's
 // decisions and paths at our rates (the skill-gain step and chances; the yields stay those the fixture was dumped at).
+// Auction house WA7b: the crafts for sale, the last claim (a hand case, and invariants 15-17 of the search under a
+// market for each random world's items).
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,6 +25,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <random>
 #include <set>
 #include <sstream>
@@ -77,7 +80,7 @@ constexpr std::uint16_t MINER = static_cast<std::uint16_t>(Skill::Mining);
 constexpr std::uint32_t SEED = 20261120;
 constexpr int SEARCH_WORLDS = 1200;
 constexpr int FAULT_WORLDS = 400;
-constexpr int INVARIANTS = 14;
+constexpr int INVARIANTS = 17;
 
 // ---- a world: the records of an index and the facts the path asks for ----
 struct World
@@ -112,6 +115,26 @@ PathWorld WorldOf(RecipeIndex const& index, World const& world, Fault fault = Fa
         return found == world.sell.end() ? 0.0 : found->second;
     };
     return PathWorld{index, mayLearn, sellCopper, world.skinnables, world.waters, fault, world.tools, {}};
+}
+
+// A market for a world (WA7b): three of four items priced from a hash of the item (nothing drawn from the search's
+// generator), at one to five times its sell price plus up to 40 copper, sold steadily
+Market::View SaleMarket(World const& world)
+{
+    auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+    for (ItemFact const& fact : world.items)
+    {
+        std::uint32_t const hash = fact.id * 2654435761u;
+        if ((hash >> 28) % 4 == 0)
+            continue;
+        auto const sell = world.sell.find(fact.id);
+        double const copper = sell == world.sell.end() ? 0.0 : sell->second;
+        AuctionIndex::TypicalPrice& typical = snapshot->items[fact.id].typical;
+        typical.unitPrice = static_cast<std::uint32_t>(copper) * (1 + (hash >> 24) % 5) + (hash >> 16) % 40 + 1;
+        typical.sample = 10;
+        typical.weight = 10.0;
+    }
+    return {snapshot, {}, {}, {}};
 }
 
 Recipe MakeRecipe(std::uint16_t skill, std::uint32_t spell, std::uint32_t product, std::vector<ItemCount> reagents,
@@ -1016,6 +1039,79 @@ void CheckDisenchantOutlet()
 
 // Processing in the claims (WR14e, PLAN 3.10): an intermediate no known recipe makes is milled (or prospected) from
 // a held source the bot's skill takes, queued before the craft that takes it; a disenchant is never queued
+std::string QueueText(std::vector<Craft> const& queue)
+{
+    std::ostringstream out;
+    for (Craft const& craft : queue)
+        out << (out.tellp() ? ", " : "") << craft.spell << " x" << craft.casts
+            << (craft.forSkill  ? " (skill)"
+                : craft.forSale ? " (sale)"
+                                : "");
+    return out.tellp() ? out.str() : "none";
+}
+
+// WA7b (PLAN 3.7, professions WR.6): a craft for sale is the last claim. Five bars held; the bracers are a use (two
+// bars), the chain sells at the auction: the chain takes the three bars the use leaves. None where the bars fetch more
+// than the chains, none without a market. Controls: the sale claiming first takes the use's bars; the sale at a loss
+// is cast
+void CheckSaleClaim()
+{
+    constexpr std::uint32_t CHAIN = 9302;
+    constexpr std::uint32_t R_CHAIN = 9301;
+    World world = HandWorld();
+    world.recipes.push_back(MakeRecipe(SMITH, R_CHAIN, CHAIN, {{BAR, 1}}, 15, 50, 1000));
+    world.items.push_back(Fact(CHAIN));
+    world.sell[CHAIN] = 5;
+    world.sell[BAR] = 2;
+    RecipeIndex const index = world.Index();
+    PathBot bot = HandBot();
+    bot.knownRecipes = {R_BRACERS, R_CHAIN};
+    bot.held = {{BAR, 5}};
+    bot.consumables = {{BRACERS, 1, 0, 100.0f}};
+    auto const marketOf = [=](std::uint32_t chain, std::uint32_t bar)
+    {
+        auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+        for (auto const& [item, price] : {std::pair{CHAIN, chain}, std::pair{BAR, bar}})
+            if (price)
+            {
+                AuctionIndex::TypicalPrice& typical = snapshot->items[item].typical;
+                typical.unitPrice = price;
+                typical.sample = 10;
+                typical.weight = 10.0;
+            }
+        return Market::View{snapshot, {}, {}, {}};
+    };
+    auto const queueOf = [&](Market::View const& market, Fault fault)
+    {
+        PathWorld paths = WorldOf(index, world, fault);
+        paths.market = market;
+        Weigher const weigher(bot, paths);
+        Path path;
+        weigher.TakeClaims(path, weigher.Claim(path));
+        return path.queue;
+    };
+    Market::View const sells = marketOf(20000, 0);
+    Market::View const dearBars = marketOf(20000, 100000);
+    std::vector<Craft> const sold = queueOf(sells, Fault::None);
+    std::vector<Craft> const kept = queueOf(dearBars, Fault::None);
+    std::vector<Craft> const plain = queueOf({}, Fault::None);
+    std::vector<Craft> const first = queueOf(sells, Fault::SaleFirst);
+    std::vector<Craft> const loss = queueOf(dearBars, Fault::SaleAtLoss);
+    std::cout << "sale claim (WA7b): market " << QueueText(sold) << "; bars dearer than chains " << QueueText(kept)
+              << "; no market " << QueueText(plain) << "; control sale_first " << QueueText(first)
+              << "; control sale_at_loss " << QueueText(loss) << "\n";
+    Check(sold.size() == 2 && sold[0].spell == R_BRACERS && sold[0].casts == 1 && !sold[0].forSale &&
+              sold[1].spell == R_CHAIN && sold[1].casts == 3 && sold[1].forSale && !sold[1].forSkill,
+          "sale: the use's bracers first, then three chains for sale from the bars the use leaves");
+    Check(kept.size() == 1 && !kept[0].forSale, "sale: no chain where the bars fetch more than the chains");
+    Check(plain.size() == 1 && !plain[0].forSale, "sale: no craft for sale without a market");
+    bool const starved = std::none_of(first.begin(), first.end(),
+                                      [](Craft const& craft) { return craft.spell == R_BRACERS && craft.casts == 1; });
+    Check(starved, "control sale_first: the sale takes the use's bars (caught)");
+    Check(std::any_of(loss.begin(), loss.end(), [](Craft const& craft) { return craft.forSale; }),
+          "control sale_at_loss: a chain for sale where the bars fetch more (caught)");
+}
+
 void CheckProcessingClaims()
 {
     constexpr std::uint16_t SCRIBE = static_cast<std::uint16_t>(Skill::Inscription);
@@ -1413,6 +1509,104 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
             tally.Add(8, claims.useCasts != weigher.Claim(Path{}).useCasts);
     }
 
+    if (want(15) || want(16) || want(17))
+    {
+        // the crafts for sale (WA7b) under a market for the world's items; the reference: the unfaulted claims of the
+        // same path, which hold no sale. 15: no sale without a market; a sale takes only units held beyond what the
+        // path uses and the other crafts take. 16: the other crafts, the uses' casts and worth equal the reference's.
+        // 17: a sale's proceeds beat its inputs at their cost; its product is no path material, its spell no other
+        // craft's, its tools held, at most a lot of products
+        if (want(15))
+            for (Craft const& craft : path.queue)
+                tally.Add(15, craft.forSale);
+        PathWorld marketWorld = WorldOf(index, one.world, fault);
+        marketWorld.market = SaleMarket(one.world);
+        Path const sold = Weigher(one.bot, marketWorld).Weigh();
+        PathWorld referenceWorld = WorldOf(index, one.world);
+        referenceWorld.market = marketWorld.market;
+        Weigher const reference(one.bot, referenceWorld);
+        Claims const claims = reference.Claim(sold);
+        std::vector<Material> materials;
+        static_cast<void>(reference.Wants(sold, claims, &materials));
+        std::map<std::uint32_t, std::uint32_t> held;
+        for (ItemCount const& item : one.bot.held)
+            held[item.item] += item.count;
+        std::map<std::uint32_t, std::uint64_t> taken;
+        std::vector<Craft> others;
+        std::map<std::uint32_t, std::uint32_t> useCasts;
+        Market::View const& market = marketWorld.market;
+        for (Craft const& craft : sold.queue)
+        {
+            if (!craft.forSale)
+            {
+                others.push_back(craft);
+                if (!craft.forSkill)
+                    useCasts[craft.spell] += craft.casts;
+                continue;
+            }
+            Recipe const* recipe = index.RecipeOf(craft.spell);
+            if (!recipe)
+            {
+                tally.Add(17, true);
+                continue;
+            }
+            for (ItemCount const& reagent : recipe->reagents)
+                taken[reagent.item] += static_cast<std::uint64_t>(reagent.count) * craft.casts;
+            if (!want(17))
+                continue;
+            std::uint32_t skill = 0;
+            for (SkillLevel const& level : one.bot.skills)
+                if (level.skill == recipe->skill)
+                    skill = level.value;
+            Materials::Bot const bot = reference.MaterialBot(recipe->skill, skill);
+            Materials::Pricer const pricer(index, bot);
+            double const vendor = marketWorld.sellCopper(recipe->product);
+            double const proceeds =
+                market.ProceedsOf(recipe->product, static_cast<std::uint32_t>(std::max(vendor, 0.0))) *
+                std::max<std::uint32_t>(recipe->productCount, 1);
+            double inputs = 0.0;
+            for (ItemCount const& reagent : recipe->reagents)
+            {
+                Materials::Cost const unit = pricer.UnitCost(reagent.item);
+                double const cost = unit.Blocked() ? 0.0 : unit.value / static_cast<double>(one.bot.rates.exchange);
+                inputs +=
+                    std::max(cost, market.SaleOf(reagent.item, marketWorld.sellCopper(reagent.item))) * reagent.count;
+            }
+            bool wrong = !(proceeds > inputs) || craft.casts * std::max<std::uint32_t>(recipe->productCount, 1) >
+                                                     std::max<std::uint32_t>(Market::MAX_LOT, recipe->productCount);
+            for (Material const& material : materials)
+                wrong = wrong || material.item == recipe->product;
+            for (Craft const& other : claims.queue)
+                wrong = wrong || other.spell == craft.spell;
+            for (std::uint32_t const tool : recipe->tools)
+                wrong = wrong ||
+                        std::find(one.bot.toolsHeld.begin(), one.bot.toolsHeld.end(), tool) == one.bot.toolsHeld.end();
+            for (std::uint32_t const category : recipe->toolCategories)
+                wrong = wrong || std::find(one.bot.categoriesHeld.begin(), one.bot.categoriesHeld.end(), category) ==
+                                     one.bot.categoriesHeld.end();
+            tally.Add(17, wrong);
+        }
+        if (want(15))
+            for (auto const& [item, units] : taken)
+            {
+                auto const reserved = claims.reserved.find(item);
+                std::uint64_t kept = reserved == claims.reserved.end() ? 0 : reserved->second;
+                for (Material const& material : materials)
+                    if (material.item == item)
+                        kept = std::max<std::uint64_t>(kept, material.used);
+                tally.Add(15, units + kept > held[item]);
+            }
+        if (want(16))
+        {
+            bool same = others.size() == claims.queue.size() && useCasts == claims.useCasts &&
+                        sold.useWorth == claims.useWorth && sold.foodUnits == claims.foodUnits;
+            for (std::size_t i = 0; same && i < others.size(); ++i)
+                same = others[i].spell == claims.queue[i].spell && others[i].casts == claims.queue[i].casts &&
+                       others[i].forSkill == claims.queue[i].forSkill && others[i].source == claims.queue[i].source;
+            tally.Add(16, !same);
+        }
+    }
+
     auto pick = [&rng](int low, int high) { return std::uniform_int_distribution<int>(low, high)(rng); };
     if (want(2))
     {
@@ -1499,12 +1693,16 @@ char const* const INVARIANT_NAMES[INVARIANTS + 1] = {
     "12 a craft is planned only with its tools held or got by an earlier step",
     "13 every want and every held reagent of a planned craft is a material the path keeps",
     "14 higher skill-gain or loot rates never make a stretch dearer (WR.28)",
+    "15 a craft for sale takes only units held beyond the path's use and the other crafts (WA7b)",
+    "16 a use or skill craft is never starved by a craft for sale (WA7b)",
+    "17 a craft for sale's proceeds beat its inputs at their cost (WA7b)",
 };
 
 Fault const FAULTS[INVARIANTS + 1] = {
     Fault::None,        Fault::TakeNonPositive, Fault::DearerCheaper,   Fault::PoorInverted, Fault::AllowGrey,
     Fault::BlockedFree, Fault::FirstFound,      Fault::ReserveUncapped, Fault::SkillFirst,   Fault::IgnoreLock,
-    Fault::OrderTie,    Fault::NoExpand,        Fault::ToolFree,        Fault::WantsOnly,    Fault::RatesInverted};
+    Fault::OrderTie,    Fault::NoExpand,        Fault::ToolFree,        Fault::WantsOnly,    Fault::RatesInverted,
+    Fault::SaleFirst,   Fault::SaleFirst,       Fault::SaleAtLoss};
 
 void Search(std::ostream& file)
 {
@@ -2024,6 +2222,7 @@ int main(int argc, char** argv)
     CheckDependencies();
     CheckDisenchantOutlet();
     CheckProcessingClaims();
+    CheckSaleClaim();
     std::ostringstream search;
     Search(search);
     std::ostringstream fixture;

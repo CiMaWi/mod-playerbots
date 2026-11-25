@@ -480,7 +480,9 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
     for (SkillPath::Craft const& craft : path->queue)
         queue += Acore::StringFormat("{}{}{} x{}{}", queue.empty() ? "" : ", ", craft.spell,
                                      craft.source ? Acore::StringFormat(" on {}", craft.source) : "", craft.casts,
-                                     craft.forSkill ? " (skill)" : "");
+                                     craft.forSkill  ? " (skill)"
+                                     : craft.forSale ? " (sale)"
+                                                     : "");
     handler->PSendSysMessage("  buys: {}; wants: {}; queue: {}", buys.empty() ? "none" : buys,
                              wants.empty() ? "none" : wants, queue.empty() ? "none" : queue);
     // every material the path uses with its cheapest source (WR20a): kind and the item, zone or recipe it comes by

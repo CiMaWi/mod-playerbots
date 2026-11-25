@@ -262,7 +262,10 @@ void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitData const& visit,
 {
     using Professions::Choice;
     using Professions::Reason;
-    Reason const reason = visit.made                     ? Reason::UseSoon
+    Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
+    // a craft for sale (WA7b) is told by its spell in the queue
+    Reason const reason = visit.made ? (path && SkillPath::ForSale(*path, visit.spell) ? Reason::Sale : Reason::UseSoon)
                           : end == VisitEnd::NoMaterials ? Reason::NoSource
                           : end == VisitEnd::NoStation || end == VisitEnd::NoSpot || end == VisitEnd::Unreached
                               ? Reason::NoStation
@@ -270,8 +273,6 @@ void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitData const& visit,
     bool const lacked = !visit.made && end == VisitEnd::NoMaterials;
     std::shared_ptr<Recipes::RecipeIndex const> const index =
         visit.made || lacked ? Planner::CurrentRecipeIndex() : nullptr;
-    Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
     uint64 products = 0;
     uint64 reagents = 0;
     uint32 missing = 0;
