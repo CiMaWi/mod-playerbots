@@ -106,6 +106,7 @@ struct AcquaintanceConfig;
 struct ArenaOnlyConfig;
 struct ArenaRecruitConfig;
 struct ArenaTeamConfig;
+struct AuctionConfig;
 struct BankMailConfig;
 struct BotAttributeParams;
 struct CadenceParams;
@@ -485,6 +486,8 @@ public:
     BankMailConfig& BankMail;
     // Playerbots.Professions.*: persistent bots' professions (learning, crafting, gathering, fishing)
     ProfessionConfig& Professions;
+    // Playerbots.Auction.*: persistent bots' auction house trade (prices, posting, bidding)
+    AuctionConfig& Auction;
     // Playerbots.Questing.*: the quest executor's tuning (the give-up limit)
     QuestingConfig& Questing;
     // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)

@@ -148,6 +148,7 @@ struct KeptEntry
     uint32_t laterWorth = 0;
     uint8_t dueLevel = 0;
     char const* provider = "";
+    uint32_t itemGuid = 0;  // the bag stack's low guid (CarriedKeeps; the auction visit lists by it, ListsStack)
 };
 
 // The bag items the rule keeps for a later level, as the bot remembers them for its item usage (ITEM_USAGE_BANK):
@@ -157,13 +158,15 @@ struct CarriedKeeps
 {
     std::vector<KeptEntry> items;  // by later worth
     uint8_t level = 0;             // the bot's level when they were decided; 0 = never
+    uint32_t auctionGain = 0;      // the auction stock among them: listing's worth above the vendor's payout (WA3b)
 };
 
 enum class VisitKind : uint8_t
 {
     Mail,
     Bank,
-    Craft  // the professions plan's craft visit (WR7 drives it)
+    Craft,   // the professions plan's craft visit (WR7 drives it)
+    Auction  // the auction plan's visit to an auctioneer (WA3b drives it)
 };
 
 // How a visit ended: the row's source word (VisitEndWord) and the counter it moves
@@ -171,7 +174,7 @@ enum class VisitEnd : uint8_t
 {
     Done,       // the plan's every step answered or move made
     Timeout,    // the deadline passed out of combat
-    NoSpot,     // no mailbox or banker where the index put it, or it went
+    NoSpot,     // no mailbox, banker or auctioneer where the index put it, or it went
     Unreached,  // the last walk to the box, banker or station failed: the NPC or box is there
     // The craft visit's own ends (professions plan), reached by the visit itself, so before the interruptions
     NoMaterials,  // the materials were not in the bags

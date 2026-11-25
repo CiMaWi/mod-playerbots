@@ -20,6 +20,7 @@
 #include <functional>
 #include <random>
 
+#include "NeedGoalBridge.h"
 #include "upkeep-fixture.h"
 
 namespace
@@ -2188,6 +2189,211 @@ void UseNeeds()
           "below the reserve the use need gets nothing");
 }
 
+constexpr std::uint32_t ITEM_MARKET_CLOTH = 4306;
+constexpr std::uint32_t ITEM_MARKET_BAG = 4500;
+
+// Fund with a fault, the controls of MarketNeeds: the market's lines before the use items, or paid from all the gold
+enum class FundFault
+{
+    MarketFirst,
+    MarketFromAll
+};
+
+void FundVariant(NeedList& list, FundFault fault)
+{
+    auto const rank = [fault](NeedOrder order)
+    { return fault == FundFault::MarketFirst && order == NeedOrder::Market ? -1 : static_cast<int>(order); };
+    std::stable_sort(list.needs.begin(), list.needs.end(),
+                     [&rank](Need const& a, Need const& b) { return rank(a.order) < rank(b.order); });
+    std::uint64_t left = list.money;
+    std::uint64_t above = list.money > list.reserve ? list.money - list.reserve : 0;
+    for (Need& need : list.needs)
+    {
+        bool const aboveOnly =
+            need.order == NeedOrder::Use || (need.order == NeedOrder::Market && fault != FundFault::MarketFromAll);
+        need.funded = std::min(need.copper, aboveOnly ? std::min(left, above) : left);
+        left -= need.funded;
+        if (aboveOnly)
+            above -= need.funded;
+    }
+}
+
+std::uint64_t FundedOf(NeedList const& list, NeedOrder order)
+{
+    std::uint64_t funded = 0;
+    for (Need const& need : list.needs)
+        funded += need.order == order ? need.funded : 0;
+    return funded;
+}
+
+// The reserve's parts as PartsOf counted them before the market (its control): every need with copper but repair,
+// training, riding and professions, and the four reserve sums
+std::size_t PartsBeforeMarket(NeedList const& list)
+{
+    std::size_t parts = (list.reserveRepair ? 1 : 0) + (list.reserveTraining ? 1 : 0) + (list.reserveRiding ? 1 : 0) +
+                        (list.reserveProfession ? 1 : 0);
+    for (Need const& need : list.needs)
+        parts += need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
+                         need.order != NeedOrder::Riding && need.order != NeedOrder::Profession
+                     ? 1
+                     : 0;
+    return parts;
+}
+
+void MarketNeeds()
+{
+    std::cout << "Scenario: the market's lines (auction house WA4a): after the professions, never due, only from the "
+                 "gold above the reserve the use items leave\n";
+    UpkeepIndex const index = UseFixture();
+    NeedRates uses = Rates(60);
+    uses.useWants.push_back({{ITEM_SUPER_HEALING, ITEM_SUPERIOR_HEALING}, 6, 6, 0});
+    NeedRates markets = uses;
+    markets.marketWants.push_back({ITEM_MARKET_CLOTH, 20, 3000});
+    markets.marketWants.push_back({ITEM_MARKET_BAG, 1, 40000});
+    markets.marketWants.push_back({ITEM_MARKET_CLOTH, 0, 100});  // no units: no need
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 60, 100 * GOLD, 60);
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedList const shown =
+        Show("warrior 60, no food, wants potions, 20 cloth and a bag at the market", bot, index, markets);
+    std::size_t const n = shown.needs.size();
+    std::size_t marketCount = 0;
+    for (Need const& need : shown.needs)
+        marketCount += need.order == NeedOrder::Market ? 1 : 0;
+    bool last = marketCount == 2 && n >= 3 && shown.needs[n - 3].order != NeedOrder::Market;
+    for (std::size_t i = n >= 2 ? n - 2 : 0; last && i < n; ++i)
+        last = shown.needs[i].order == NeedOrder::Market && !shown.needs[i].due &&
+               shown.needs[i].kind == UpkeepKind::Gold && std::string(OrderWord(shown.needs[i].order)) == "market";
+    Check(last, "two market needs (a want without units adds none), last in the order, never due");
+
+    // Money from nothing to well above the reserve, the same bot with and without the market's lines
+    NeedList const base = ComputeNeeds(bot, index, uses);
+    std::uint64_t const top = base.reserve + 120000;
+    int steps = 0;
+    int partly = 0;
+    int useLoses = 0;
+    int overAbove = 0;
+    int reserveMoves = 0;
+    int partsMove = 0;
+    int controlUse = 0;
+    int controlAbove = 0;
+    int controlParts = 0;
+    for (std::uint64_t money = 0; money <= top; money += 997)
+    {
+        Snapshot rich = bot;
+        rich.money = static_cast<std::uint32_t>(money);
+        NeedList const without = ComputeNeeds(rich, index, uses);
+        NeedList const with = ComputeNeeds(rich, index, markets);
+        std::uint64_t const above = with.money > with.reserve ? with.money - with.reserve : 0;
+        ++steps;
+        std::uint64_t marketCopper = 0;
+        for (Need const& need : with.needs)
+            marketCopper += need.order == NeedOrder::Market ? need.copper : 0;
+        std::uint64_t const marketFunded = FundedOf(with, NeedOrder::Market);
+        partly += marketFunded && marketFunded < marketCopper ? 1 : 0;
+        useLoses += FundedOf(with, NeedOrder::Use) != FundedOf(without, NeedOrder::Use) ? 1 : 0;
+        overAbove += FundedOf(with, NeedOrder::Use) + marketFunded > above ? 1 : 0;
+        bool sameOthers = without.needs.size() + 2 == with.needs.size();
+        for (std::size_t i = 0; sameOthers && i < without.needs.size(); ++i)
+            sameOthers = with.needs[i].order == without.needs[i].order &&
+                         with.needs[i].funded == without.needs[i].funded &&
+                         with.needs[i].copper == without.needs[i].copper && with.needs[i].due == without.needs[i].due;
+        reserveMoves += with.reserve != without.reserve || with.shortfall != without.shortfall || !sameOthers ? 1 : 0;
+        Planner::NeedBridge::NeedInputs const in = Planner::NeedBridge::InputsOf(with);
+        Planner::NeedBridge::NeedInputs const out = Planner::NeedBridge::InputsOf(without);
+        std::size_t const partsWithout = Planner::NeedBridge::PartsOf(without).size();
+        partsMove += Planner::NeedBridge::PartsOf(with).size() != partsWithout ||
+                             in.reserveCopper != out.reserveCopper || in.shortfallCopper != out.shortfallCopper ||
+                             in.shortKind != out.shortKind || in.shortText != out.shortText
+                         ? 1
+                         : 0;
+
+        NeedList first = with;
+        FundVariant(first, FundFault::MarketFirst);
+        controlUse += FundedOf(first, NeedOrder::Use) != FundedOf(without, NeedOrder::Use) ? 1 : 0;
+        NeedList all = with;
+        FundVariant(all, FundFault::MarketFromAll);
+        controlAbove += FundedOf(all, NeedOrder::Use) + FundedOf(all, NeedOrder::Market) > above ? 1 : 0;
+        controlParts += PartsBeforeMarket(with) != partsWithout ? 1 : 0;
+    }
+    std::cout << "   " << steps << " purses from 0 to the reserve + 12g (reserve " << Money(base.reserve) << "), "
+              << partly << " with the market partly funded; counterexamples (rule / control): use " << useLoses << "/"
+              << controlUse << ", above the reserve " << overAbove << "/" << controlAbove << ", reserve parts "
+              << partsMove << "/" << controlParts << ", reserve and earlier needs " << reserveMoves << "\n";
+    Check(partly > 0, "the sweep passes purses that fund the market's lines only in part");
+    Check(useLoses == 0, "a use item's need never loses funding to the market's later lines");
+    Check(controlUse > 0, "control: the market funded before the use items takes from them (caught)");
+    Check(overAbove == 0, "the use items and the market's lines together stay within the gold above the reserve");
+    Check(controlAbove > 0, "control: the market paid from all the gold reaches into the reserve (caught)");
+    Check(reserveMoves == 0, "the market's lines change no reserve, shortfall or earlier need");
+    Check(partsMove == 0, "the market's lines are no reserve part: the planner's reserve and short text unchanged");
+    Check(controlParts > 0, "control: PartsOf without the market's exclusion adds them as parts (caught)");
+}
+
+// The market's kept copper (UpkeepNeeds::MarketKept, WA3-4 review N1): what the purse keeps from the auction visit and
+// the stop's worth. Over a sweep of purses, the spendable gold (the purse above it) never reaches into what Fund paid a
+// need before the market, and buys exactly the market's share. Its control, the reserve and the funded use items alone
+// (WA4b), lets a spendthrift's small reserve and a riding purchase beyond the reserve be spent at the market
+std::uint64_t MarketKeptOfWA4b(NeedList const& list) { return list.reserve + FundedOf(list, NeedOrder::Use); }
+
+void MarketKeptNeeds(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the market keeps what Fund pays before it (WA3-4 review N1)\n";
+    auto const withMarket = [](NeedRates rates)
+    {
+        rates.marketWants.push_back({ITEM_MARKET_CLOTH, 20, 3000});
+        rates.marketWants.push_back({ITEM_MARKET_BAG, 1, 400000});
+        return rates;
+    };
+    Snapshot spendthrift = Bot(index, CLASS_WARRIOR, 20, 0, 14);
+    spendthrift.repairCost = 450;
+    spendthrift.traits = Traits(TraitRules::MIN_VALUE, 0, false);
+    // Riding bought for the want, its worth alone too small for the reserve: the purchase lies beyond the reserve
+    Snapshot rider = Bot(index, CLASS_WARRIOR, 20, 0, 20);
+    rider.traits = Traits(0, 0, true);
+    struct Case
+    {
+        char const* name;
+        Snapshot bot;
+        NeedRates rates;
+        int rule = 0;
+        int control = 0;
+        int funded = 0;
+    };
+    std::vector<Case> cases = {
+        {"spendthrift warrior at 20, six levels untrained, repair due", spendthrift, withMarket(Rates(20))},
+        {"collector warrior at 20 walking 3 min/h, riding bought beyond the reserve", rider,
+         withMarket(Rates(20, 3.0f))}};
+    for (Case& c : cases)
+    {
+        for (std::uint64_t money = 0; money <= 300 * GOLD; money += 4999)
+        {
+            Snapshot bot = c.bot;
+            bot.money = static_cast<std::uint32_t>(money);
+            NeedList const list = ComputeNeeds(bot, index, c.rates);
+            std::uint64_t before = 0;
+            std::uint64_t marketCopper = 0;
+            for (Need const& need : list.needs)
+            {
+                before += need.order != NeedOrder::Market ? need.funded : 0;
+                marketCopper += need.order == NeedOrder::Market ? need.copper : 0;
+            }
+            std::uint64_t const marketFunded = FundedOf(list, NeedOrder::Market);
+            auto const wrong = [&](std::uint64_t kept)
+            {
+                std::uint64_t const spendable = money > kept ? money - kept : 0;
+                return spendable + before > money || std::min(spendable, marketCopper) != marketFunded;
+            };
+            c.rule += wrong(MarketKept(list)) ? 1 : 0;
+            c.control += wrong(MarketKeptOfWA4b(list)) ? 1 : 0;
+            c.funded += before > list.reserve + FundedOf(list, NeedOrder::Use) ? 1 : 0;
+        }
+        std::cout << "   " << c.name << ": " << c.funded << " purses where earlier needs take more than the reserve "
+                  << "and the use items; counterexamples (rule / control) " << c.rule << "/" << c.control << "\n";
+        Check(c.rule == 0, std::string(c.name) + ": the market spends only its share, never an earlier need's");
+        Check(c.control > 0, std::string(c.name) + ": control: the reserve and the use items alone (caught)");
+    }
+}
+
 int main(int argc, char** argv)
 {
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
@@ -2238,6 +2444,8 @@ int main(int argc, char** argv)
     StockRuleInvariant(index, seed, shared, "the stock rule (KeepOf)", true);
     DemandKinds(index);
     UseNeeds();
+    MarketNeeds();
+    MarketKeptNeeds(index);
     DemandStockNeeds();
 
     std::cout << passed << " passed, " << failed << " failed\n";

@@ -437,7 +437,7 @@ inline void CheckDecisions(Checker& checker)
         "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank "
         "quest_use fight_leave item_spend item_buff profession quest_exec combat_action combat_reject combat_known "
         "combat_table combat_rows combat_sample combat_effect combat_cast combat_heal combat_dealt stand "
-        "combat_offengine target other ",
+        "combat_offengine target auction other ",
         "a word per decision kind");
 
     uint32_t const visit = PackVisitCounts(3, 12, VISIT_COUNT_MAX + 5);

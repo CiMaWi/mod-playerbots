@@ -751,14 +751,18 @@ inline int RankOf(ErrandKind kind)
             return 0;
         case ErrandKind::Sell:
             return 1;
-        case ErrandKind::Mail:
+        case ErrandKind::Auction:
             return 2;
+        case ErrandKind::BankDeposit:
+            return 3;
+        case ErrandKind::Mail:
+            return 4;
         default:
             return -1;
     }
 }
 
-// The order at a stop that has them all: banker withdrawal, sale, mailbox
+// The order at a stop that has them all: banker withdrawal, sale, auction listing, deposit, mailbox
 inline bool OrderHolds(TripPlan const& plan)
 {
     for (TripStop const& stop : plan.Stops)
@@ -794,6 +798,95 @@ inline void OrderScenario(std::vector<Check>& checks)
     all = all && order.find("bank_withdraw") < order.find("sell") && order.find("sell") < order.find("mail");
     Add(checks, "order: at one stop the banker's withdrawal comes before the sale, the sale before the mailbox",
         all && OrderHolds(plan), order);
+}
+
+// ---- Auction stock as a provider (auction house WA3b) ----
+
+constexpr uint32_t AUCTIONEER_ID = 603;
+
+// Stock worth more listed than sold earns a trip to an auctioneer when the gain beats the detour; little stock far
+// away is refused and the plan goes on; no stock or an ungoverned bot makes no auction offer
+inline void AuctionScenarios(std::vector<Check>& checks)
+{
+    ErrandSnapshot stock = GovernedBot(10, 0);
+    stock.AuctionStockWorth = 5000;
+    WithServices(stock, {}, {{AUCTIONEER_ID, At(300.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const stockPlan = Plan(stock, Request(stock), TripProviders());
+    Add(checks, "auction: stock 5000 c above the vendor's payout earns a trip to the auctioneer",
+        stockPlan.Stops.size() == 1 && !stockPlan.Stops[0].OnRoute &&
+            HasErrand(stockPlan.Stops[0], ErrandKind::Auction) && stockPlan.Refused.empty(),
+        Describe(stockPlan));
+
+    ErrandSnapshot little = stock;
+    little.AuctionStockWorth = 400;
+    TripPlan const littlePlan = Plan(little, Request(little), TripProviders());
+    Add(checks, "auction: little stock (400 c) far from an auctioneer is refused as detour_not_worth",
+        littlePlan.Stops.empty() && littlePlan.Refused.size() == 1 &&
+            littlePlan.Refused[0].Offer.Kind == ErrandKind::Auction &&
+            std::string(littlePlan.Refused[0].Reason) == "detour_not_worth",
+        Describe(littlePlan));
+
+    ErrandSnapshot none = stock;
+    none.AuctionStockWorth = 0;
+    ErrandSnapshot ungoverned = stock;
+    ungoverned.Governed = false;
+    bool offered = false;
+    for (ErrandSnapshot const* bot : {&none, &ungoverned})
+        for (ErrandOffer const& offer : CollectOffers(*bot, TripProviders()))
+            offered = offered || offer.Kind == ErrandKind::Auction;
+    Add(checks, "auction: no stock, or a bot the bank rule does not govern, makes no auction offer", !offered,
+        offered ? "an auction offer" : "none");
+
+    // Buying (WA4b): wanted lines alone earn the trip, and a stop's worth is what it sells and buys together
+    ErrandSnapshot wanted = stock;
+    wanted.AuctionStockWorth = 0;
+    wanted.AuctionWantedWorth = 5000;
+    TripPlan const wantedPlan = Plan(wanted, Request(wanted), TripProviders());
+    Add(checks, "auction: wanted lines worth 5000 c and no stock earn a trip to the auctioneer",
+        wantedPlan.Stops.size() == 1 && HasErrand(wantedPlan.Stops[0], ErrandKind::Auction) &&
+            wantedPlan.Refused.empty(),
+        Describe(wantedPlan));
+
+    ErrandSnapshot both = stock;
+    both.AuctionStockWorth = 400;
+    both.AuctionWantedWorth = 4600;
+    float sumWorth = 0.0f;
+    for (ErrandOffer const& offer : CollectOffers(both, TripProviders()))
+        if (offer.Kind == ErrandKind::Auction)
+            sumWorth += offer.WorthCopper;
+    TripPlan const bothPlan = Plan(both, Request(both), TripProviders());
+    Add(checks, "auction: stock 400 c and wanted lines 4600 c make one offer worth 5000 c, a trip",
+        sumWorth == 5000.0f && bothPlan.Stops.size() == 1 && HasErrand(bothPlan.Stops[0], ErrandKind::Auction),
+        std::to_string(sumWorth) + "; " + Describe(bothPlan));
+
+    ErrandSnapshot wantedUngoverned = wanted;
+    wantedUngoverned.Governed = false;
+    bool wantedOffered = false;
+    for (ErrandOffer const& offer : CollectOffers(wantedUngoverned, TripProviders()))
+        wantedOffered = wantedOffered || offer.Kind == ErrandKind::Auction;
+    Add(checks, "auction: wanted lines of a bot the bank rule does not govern make no auction offer", !wantedOffered,
+        wantedOffered ? "an auction offer" : "none");
+
+    // A vendor stop with an auctioneer, a banker and a mailbox within the join distance: listing comes after the sale
+    // and before the deposit (which would bank the stock) and the mailbox
+    ErrandSnapshot town = GovernedBot(0, 12);
+    town.AuctionStockWorth = 400;
+    town.BankDepositSlots = 2;
+    town.MailWaiting = 2;
+    WithServices(town, {{HUB_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR}},
+                 {{AUCTIONEER_ID, At(310.0f, 10.0f), SERVICE_AUCTIONEER},
+                  {BANKER_ID, At(290.0f, -10.0f), SERVICE_BANKER},
+                  {MAILBOX_ID, At(320.0f, 0.0f), SERVICE_MAILBOX}});
+    TripPlan const townPlan = Plan(town, Request(town), TripProviders());
+    std::string order;
+    for (TripStop const& stop : townPlan.Stops)
+        for (ErrandOffer const& errand : stop.Errands)
+            order += std::string(order.empty() ? "" : ", ") + ErrandKindName(errand.Kind);
+    bool const ordered = townPlan.Stops.size() == 1 && order.find("sell") < order.find("auction") &&
+                         order.find("auction") < order.find("bank_deposit") &&
+                         order.find("bank_deposit") < order.find("mail") && order.find("mail") != std::string::npos;
+    Add(checks, "auction: little stock joins the town stop; sale, listing, deposit, mailbox in that order",
+        ordered && OrderHolds(townPlan), order);
 }
 
 // ---- The invariant search (WB8) ----
@@ -1373,9 +1466,14 @@ inline void StableTrip(std::vector<Check>& checks)
     // The professions plan's kinds and services (WR1): appended, named, the profession trainer a trainer of its own
     Add(checks, "professions: the errand kinds are named profession and craft, the bits distinct",
         std::string(ErrandKindName(ErrandKind::Profession)) == "profession" &&
-            std::string(ErrandKindName(ErrandKind::Craft)) == "craft" && ERRAND_KIND_COUNT == 17 &&
-            ServiceBitsDistinct() && (TRAINER_SERVICES & SERVICE_PROFESSION_TRAINER) &&
-            !(TRAINER_SERVICES & SERVICE_STATION),
+            std::string(ErrandKindName(ErrandKind::Craft)) == "craft" && ServiceBitsDistinct() &&
+            (TRAINER_SERVICES & SERVICE_PROFESSION_TRAINER) && !(TRAINER_SERVICES & SERVICE_STATION),
+        "");
+    // The auction plan's kind and service (WA1a): appended last, named, the auctioneer a bit of its own, no trainer
+    Add(checks, "auction: the errand kind is named auction and appended last, the auctioneer's bit distinct",
+        std::string(ErrandKindName(ErrandKind::Auction)) == "auction" && ERRAND_KIND_COUNT == 18 &&
+            static_cast<uint8_t>(ErrandKind::Auction) + 1 == ERRAND_KIND_COUNT && ServiceBitsDistinct() &&
+            !(TRAINER_SERVICES & SERVICE_AUCTIONEER),
         "");
 }
 
@@ -1531,6 +1629,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     OrderlinessScenarios(checks);
     BankScenarios(checks);
     OrderScenario(checks);
+    AuctionScenarios(checks);
     InvariantSearch(checks, seed, SEARCH_ITERATIONS);
     OneHub(checks);
     BagOnTheWay(checks);

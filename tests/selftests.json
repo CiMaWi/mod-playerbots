@@ -1,6 +1,29 @@
 {
     "tests": [
         {
+            "file": "auction-index-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "auction-index: \\d+ passed, 0 failed"
+        },
+        {
+            "file": "auction-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt",
+                "{repo}/tests/fixtures/auction-reference-inputs.txt"
+            ],
+            "success": "auction-rules: \\d+ passed, 0 failed"
+        },
+        {
             "file": "awareness-rules-selftest.cpp",
             "includes": [
                 "src/Ai/Awareness",
@@ -156,6 +179,7 @@
             ],
             "sources": [
                 "src/Ai/World/Pvp/WorldPvpConfig.cpp",
+                "src/Ai/World/Rpg/AuctionConfig.cpp",
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
                 "src/Ai/World/Rpg/ProfessionConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",

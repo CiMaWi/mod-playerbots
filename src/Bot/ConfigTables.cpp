@@ -21,6 +21,7 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
+#include "AuctionConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "Chat.h"
@@ -320,6 +321,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
     std::vector<ConfigTableEntry> entries = {
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
         MakeEntry(ProfessionFamily, sPlayerbotAIConfig.Professions),
+        MakeEntry(AuctionFamily, sPlayerbotAIConfig.Auction),
         MakeEntry(QuestingFamily, sPlayerbotAIConfig.Questing),
         MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus),
         MakeEntry(FocusFamily, sPlayerbotAIConfig.TacticFocus),

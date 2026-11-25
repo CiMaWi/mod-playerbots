@@ -23,9 +23,11 @@
 #include "Containers.h"
 #include "DatabaseEnv.h"
 #include "Define.h"
+#include "EventLog.h"
 #include "Group.h"
 #include "GuildMgr.h"
 #include "LabCopies.h"
+#include "Mail.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -51,6 +53,7 @@
 #include <cstring>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <openssl/sha.h>
 #include <string>
 #include <vector>
@@ -330,6 +333,34 @@ void PlayerbotHolder::UpdateSessions()
     }
 }
 
+namespace
+{
+// The cause of what a queued packet's handler moves, for the money and item rows (the drain runs inside no action's
+// scope): the auction handlers' and an auction house mail's are the auction's (auction WA3b), other mail's the mail's
+char const* QueuedPacketSource(WorldSession* session, WorldPacket const& packet)
+{
+    switch (packet.GetOpcode())
+    {
+        case CMSG_AUCTION_SELL_ITEM:
+        case CMSG_AUCTION_PLACE_BID:
+        case CMSG_AUCTION_REMOVE_ITEM:
+            return "auction";
+        case CMSG_MAIL_TAKE_MONEY:
+        case CMSG_MAIL_TAKE_ITEM:
+        {
+            // The mailbox guid, then the mail id
+            Player* player = session->GetPlayer();
+            Mail const* mail = player && packet.size() >= sizeof(uint64) + sizeof(uint32)
+                                   ? player->GetMail(packet.read<uint32>(sizeof(uint64)))
+                                   : nullptr;
+            return mail && mail->messageType == MAIL_AUCTION ? "auction" : "mail";
+        }
+        default:
+            return nullptr;
+    }
+}
+}  // namespace
+
 void PlayerbotHolder::HandleBotPackets(WorldSession* session)
 {
     while (std::unique_ptr<WorldPacket> packet = session->NextQueuedPacket())
@@ -344,6 +375,9 @@ void PlayerbotHolder::HandleBotPackets(WorldSession* session)
             LOG_ERROR("playerbots", "Unhandled opcode {} queued for bot session {}. Packet dropped.", static_cast<uint32>(opcode), session->GetAccountId());
             continue;
         }
+        std::optional<EventLog::SourceScope> source;
+        if (char const* word = QueuedPacketSource(session, *packet))
+            source.emplace(word);
         opHandle->Call(session, *packet);
     }
 }

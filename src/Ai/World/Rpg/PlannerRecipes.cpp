@@ -35,6 +35,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "AuctionReference.h"
 #include "Chat.h"
 #include "Config.h"
 #include "DBCStores.h"
@@ -721,6 +722,7 @@ void StartRecipeIndex()
                          index->Items().size());
                 recipeBook.Publish(std::move(index));
                 recipeState.store(RecipeIndexState::Ready, std::memory_order_release);
+                AuctionReference::OnRecipeIndexReady(recipeBook.Current());  // auction WA2a: the reference table
                 StartDropRows();
             }
             catch (std::exception const& e)

@@ -34,7 +34,10 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
         case VisitEnd::Timeout:
             return "timeout";
         case VisitEnd::NoSpot:
-            return kind == VisitKind::Mail ? "no_mailbox" : kind == VisitKind::Bank ? "no_banker" : "no_spot";
+            return kind == VisitKind::Mail      ? "no_mailbox"
+                   : kind == VisitKind::Bank    ? "no_banker"
+                   : kind == VisitKind::Auction ? "no_auctioneer"
+                                                : "no_spot";
         case VisitEnd::Unreached:
             return "unreached";
         case VisitEnd::NoMaterials:
@@ -82,9 +85,10 @@ inline char const* VisitStartRefusal(VisitKind kind, std::optional<VisitKind> ru
         return nullptr;
     if (*running == kind)
         return "a visit runs already";
-    return *running == VisitKind::Mail   ? "a mailbox visit runs"
-           : *running == VisitKind::Bank ? "a bank visit runs"
-                                         : "a craft visit runs";
+    return *running == VisitKind::Mail      ? "a mailbox visit runs"
+           : *running == VisitKind::Bank    ? "a bank visit runs"
+           : *running == VisitKind::Auction ? "an auction visit runs"
+                                            : "a craft visit runs";
 }
 
 inline bool WithinVisitReach(float distance) { return distance <= VISIT_COMMAND_REACH_YARDS; }

@@ -101,6 +101,7 @@ struct VisitKindRow
 VisitKindRow const& BankVisitRow();
 VisitKindRow const& MailVisitRow();
 VisitKindRow const& CraftVisitRow();
+VisitKindRow const& AuctionVisitRow();
 
 // World thread or the bot's map thread: starts a visit of the kind to the spot (null: in place, where the bot stands,
 // with no object to find or reach); false while a visit of any kind runs
