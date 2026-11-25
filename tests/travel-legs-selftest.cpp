@@ -250,6 +250,24 @@ void CheckFullRoute()
     Check(trip.legIdx == trip.legs.size() && trip.replans == 0, "full route: all legs passed without a replan");
 }
 
+// A test's freewalk (TestConstraints::FREEWALK): the walk leg's rest is one move to its last waypoint, the next step
+// ends the leg wherever the bot stands (a fight after the landing may have moved it), and a portal leg has none
+void CheckFreeWalk()
+{
+    Trip trip = StartedTrip(FullRoute());
+    std::uint32_t const leg = trip.legIdx;
+    Check(trip.legs[leg].type == LegType::Walk && trip.next + 1 < trip.waypoints.size(),
+          "freewalk: a walk leg with waypoints ahead");
+    std::optional<Point> const end = TravelLegs::FreeWalkEnd(trip);
+    Check(end && end->x == trip.waypoints.back().at.x && end->y == trip.waypoints.back().at.y &&
+              trip.next == trip.waypoints.size(),
+          "freewalk: the last waypoint, every waypoint passed");
+    Decision const next = Go(trip, At(START, 2000), NodeAt);
+    Check(trip.legIdx > leg && next.act != Act::Fail, "freewalk: the next step ends the walk leg, the bot elsewhere");
+    Check(trip.legs[trip.legIdx].type != LegType::Walk && !TravelLegs::FreeWalkEnd(trip),
+          "freewalk: none on the portal leg after it");
+}
+
 void CheckTimeouts()
 {
     // Walk: estimate x 3 + 60 s; completion by position wins over the timeout
@@ -4016,6 +4034,7 @@ void CheckNoPlaceWithinLead()
 int main()
 {
     CheckFullRoute();
+    CheckFreeWalk();
     CheckTimeouts();
     CheckProbedLimit();
     CheckStuckAndReplans();
