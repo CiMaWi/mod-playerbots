@@ -55,8 +55,10 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "StarterMgr.h"
+#include "StringConvert.h"
 #include "TestConstraints.h"
 #include "ThreadCheck.h"
+#include "Tokenize.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
 #include "Transport.h"
@@ -3172,7 +3174,7 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
     if (!args || !*args)
     {
         LOG_ERROR("playerbots",
-                  "Usage: rndbot stats/queststats/questdump/update/reset/init/refresh/add/remove/history");
+                  "Usage: rndbot stats/queststats/questdump/update/reset/init/refresh/add/remove/history/login");
         return false;
     }
 
@@ -3263,6 +3265,49 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
 
         LOG_INFO("playerbots", "[History] rndbot history: {} bots changed, {} unchanged, {} skipped", changed,
                  unchanged, skipped);
+        return true;
+    }
+
+    // "login <guid> [<guid> ..]": a test run logs in exactly the random bots it uses (the hub's scenario.js starts the
+    // server with MinRandomBots = MaxRandomBots = 0, so none logs in by itself, and Init drops every earlier "add"
+    // mark). The bot count follows the bots marked to log in (Min = Max = their number), so neither the login loop's
+    // cap nor the trim turns one away, and each logs in now, not at a later login tick. Reply "RNDBOT login: <n>
+    // logging in, <n> already in, <n> refused, <n> marked"
+    if (cmd.rfind("login ", 0) == 0)
+    {
+        RandomPlayerbotMgr& mgr = sRandomPlayerbotMgr;
+        std::vector<uint32> added;
+        uint32 known = 0;
+        uint32 refused = 0;
+        for (std::string_view const word : Acore::Tokenize(std::string_view(cmd).substr(6), ' ', false))
+        {
+            uint32 const bot = Acore::StringTo<uint32>(word).value_or(0);
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(bot);
+            if (!bot || !sPlayerbotAIConfig.IsInRandomAccountList(sCharacterCache->GetCharacterAccountIdByGuid(guid)))
+            {
+                ++refused;
+                continue;
+            }
+
+            if (mgr.currentBots.contains(bot))
+            {
+                ++known;
+                continue;
+            }
+
+            mgr.SetEventValue(bot, "add", 1, YEAR);
+            mgr.currentBots.insert(bot);
+            added.push_back(bot);
+        }
+
+        uint32 const marked = mgr.currentBots.size();
+        sPlayerbotAIConfig.MinRandomBots = std::max(sPlayerbotAIConfig.MinRandomBots, marked);
+        sPlayerbotAIConfig.MaxRandomBots = std::max(sPlayerbotAIConfig.MaxRandomBots, marked);
+        for (uint32 const bot : added)
+            mgr.ProcessBot(bot);
+
+        LOG_INFO("playerbots", "RNDBOT login: {} logging in, {} already in, {} refused, {} marked", added.size(), known,
+                 refused, marked);
         return true;
     }
 
