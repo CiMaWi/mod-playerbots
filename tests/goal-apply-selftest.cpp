@@ -383,8 +383,358 @@ void EveryBlockEnds()
 }
 }  // namespace
 
+// Questing WQ18a: an order of a route in a cell of map 0
+QuestOrder OrderAt(std::int32_t cellX, std::int32_t cellY, QuestOrderWord word, std::vector<QuestOrderNeed> expected,
+                   std::uint32_t mapId = 0)
+{
+    QuestOrder order;
+    order.word = word;
+    order.mapId = mapId;
+    order.cell = FieldCellKey(mapId, cellX, cellY);
+    order.x = (static_cast<float>(cellX) + 0.5f) * FIELD_CELL_YARDS;
+    order.y = (static_cast<float>(cellY) + 0.5f) * FIELD_CELL_YARDS;
+    order.expected = std::move(expected);
+    order.minutes = 5.0f;
+    return order;
+}
+
+std::shared_ptr<Goals::GoalPlan const> RouteOf(std::vector<QuestOrder> orders)
+{
+    auto plan = std::make_shared<Goals::GoalPlan>();
+    plan->route.orders = std::move(orders);
+    plan->route.worth = 100.0f;
+    plan->route.minutes = 10.0f;
+    return plan;
+}
+
+// Questing WQ18a: the rules that walk a bot through its route (AdvanceRoute, EndOrder, the block of a dry cell,
+// TakePlan's keep rule)
+void RouteRules()
+{
+    constexpr std::uint32_t BLOCK_MS = 10 * 60 * 1000;
+    constexpr std::uint64_t LOG0 = 11;
+    constexpr std::uint64_t LOG1 = 12;
+    constexpr std::uint64_t LOG2 = 13;
+    constexpr std::uint64_t HUB_KEY = 40;
+    using Word = QuestOrderWord;
+    Active const routeGoal = Typed(Goals::GoalKind::Quest, Goals::TargetType::Route, Goals::ROUTE_REASON, 0);
+    std::uint64_t const routeKey = GoalKey(routeGoal, Executor::Route, HUB_KEY);
+    auto const anyOpen = [](QuestOrderNeed const&) { return true; };
+    auto const sameAs = [](RouteNext const& next, QuestOrder const& order)
+    { return next.step == RouteStep::Order && next.order && SameOrder(*next.order, order); };
+
+    {
+        Reach const nowhere;
+        Reach everywhere;
+        everywhere.deliverable = everywhere.sameMap = everywhere.there = everywhere.workable = true;
+        Check(
+            ExecutorFor(routeGoal, nowhere) == Executor::Route &&
+                ExecutorFor(routeGoal, everywhere) == Executor::Route && RunsRoute(routeGoal) &&
+                !RunsCircuit(routeGoal) &&
+                !RunsRoute(Typed(Goals::GoalKind::Quest, Goals::TargetType::Default, Goals::CIRCUIT_REASON)) &&
+                !RunsRoute(Typed(Goals::GoalKind::Quest, Goals::TargetType::Field, Goals::CIRCUIT_REASON, 0)),
+            "route: its option runs the route executor wherever the bot is; a circuit, also one named field, does not "
+            "(mutant: RoleOf by the reason word)");
+        std::size_t cells = 0;
+        std::size_t meet = 0;
+        for (std::uint32_t const map : {0u, 1u, 530u, 571u, 724u})
+            for (std::int32_t x = -400; x <= 400; x += 37)
+                for (std::int32_t y = -400; y <= 400; y += 41)
+                {
+                    std::uint64_t const cell = FieldCellKey(map, x, y);
+                    std::uint64_t const key = CellBlockKey(cell);
+                    ++cells;
+                    meet += !IsCellBlock(key) || IsRouteKey(key) || CellOfBlock(key) != cell || IsCellBlock(cell);
+                }
+        for (std::uint32_t executor = 0; executor <= static_cast<std::uint32_t>(Executor::Route); ++executor)
+            for (std::uint32_t kind = 0; kind < static_cast<std::uint32_t>(Goals::GoalKind::Count); ++kind)
+                for (std::uint32_t type = 0; type < static_cast<std::uint32_t>(Goals::TargetType::Count); ++type)
+                    for (std::uint32_t const target : {0u, 1u, 0xFFFFFFFFu})
+                    {
+                        Active goal = GoalOf(static_cast<Goals::GoalKind>(kind), target, Source::Planner);
+                        goal.targetType = static_cast<Goals::TargetType>(type);
+                        std::uint64_t const key = GoalKey(goal, static_cast<Executor>(executor), HUB_KEY);
+                        meet += IsCellBlock(key);
+                        meet += IsRouteKey(key) != (static_cast<Executor>(executor) == Executor::Route);
+                    }
+        for (std::uint64_t const circuitKey :
+             {std::uint64_t{0}, std::uint64_t{40}, std::uint64_t{0xFFFFFFFFu}, CAMP_KEY | 7, CAMP_KEY | NO_CAMP})
+            meet += IsCellBlock(circuitKey) || IsRouteKey(circuitKey);
+        Check(cells > 1000 && meet == 0,
+              "route: the block keys of cells, of goals, of routes and of circuits never meet, and a cell's key gives "
+              "its cell back (mutant: the tag at bit 40)");
+    }
+
+    // AdvanceRoute over every set of open needs
+    {
+        QuestOrder const a = OrderAt(0, 0, Word::Field, {{1, 0, 3}, {1, 1, 2}});
+        QuestOrder const b = OrderAt(5, 0, Word::HandIn, {{2, ORDER_HAND_IN, 1}, {3, ORDER_TAKE, 1}});
+        QuestOrder const c = OrderAt(9, 9, Word::Field, {{4, 0, 5}});
+        std::vector<QuestOrder> const orders = {a, b, c};
+        std::vector<QuestOrderNeed> needs;
+        for (QuestOrder const& order : orders)
+            needs.insert(needs.end(), order.expected.begin(), order.expected.end());
+        std::size_t wrong = 0;
+        std::size_t notDue = 0;
+        std::size_t started = 0;
+        for (std::uint32_t mask = 0; mask < (1u << needs.size()); ++mask)
+        {
+            auto const open = [&needs, mask](QuestOrderNeed const& need)
+            {
+                for (std::size_t i = 0; i < needs.size(); ++i)
+                    if (needs[i] == need)
+                        return ((mask >> i) & 1) != 0;
+                return false;
+            };
+            std::vector<std::uint64_t> expected;
+            for (QuestOrder const& order : orders)
+                if (std::any_of(order.expected.begin(), order.expected.end(), open))
+                    expected.push_back(order.cell);
+            BotGoals goals;
+            TakePlan(goals, RouteOf(orders), 1000);
+            BeginRun(goals, routeKey, LOG0);
+            std::vector<std::uint64_t> walked;
+            bool freshBefore = goals.plan && !goals.planUsed;
+            for (std::size_t step = 0; step <= orders.size(); ++step)
+            {
+                RouteNext const next = AdvanceRoute(goals, open, {});
+                if (next.step == RouteStep::Done)
+                    break;
+                wrong += !next.order || !goals.route.running || !SameOrder(*goals.route.running, *next.order) ||
+                         std::none_of(next.order->expected.begin(), next.order->expected.end(), open);
+                walked.push_back(next.order->cell);
+                ++started;
+                freshBefore = freshBefore && !goals.planUsed;
+                EndOrder(goals, QuestOrderEnd::Done, LOG0, 2000, BLOCK_MS);
+            }
+            wrong += walked != expected || goals.route.running.has_value() ||
+                     AdvanceRoute(goals, open, {}).step != RouteStep::Done;
+            IdleInput idle;
+            idle.ready = true;
+            idle.freshPlan = goals.plan && !goals.planUsed;  // PlannerService's IdleInput
+            idle.jobComing = true;
+            notDue += !freshBefore || DecideIdle(idle).action == IdleAction::Apply || goals.stalled.has_value();
+        }
+        Check(
+            wrong == 0 && started > 0,
+            "route: the next order is the next one with an expected need still open; an order with none open is never "
+            "started; after the last the answer is done (mutant: the next order whatever is open)");
+        Check(notDue == 0,
+              "route: a done route leaves its plan used, so the idle step waits for a new plan instead of starting the "
+              "old one again, and blocks nothing (mutant: planUsed untouched)");
+    }
+
+    // A dry end closes the cell and its neighbours for the block time, and nothing else
+    for (std::uint32_t const start : {1000000u, 0xFFFFFFFFu - 1000u})
+    {
+        QuestOrder const x = OrderAt(0, 0, Word::Field, {{1, 0, 3}});
+        QuestOrder const beside = OrderAt(1, -1, Word::Field, {{2, 0, 3}});
+        QuestOrder const far = OrderAt(2, 0, Word::Field, {{3, 0, 3}});
+        QuestOrder const otherMap = OrderAt(0, 0, Word::Field, {{4, 0, 3}}, 1);
+        BotGoals goals;
+        TakePlan(goals, RouteOf({x, beside, far, otherMap}), 1000);
+        BeginRun(goals, routeKey, LOG0);
+        bool const first = sameAs(AdvanceRoute(goals, anyOpen, {}), x);
+        BlockKey(goals, HUB_KEY, LOG1, start - 1000, BLOCK_MS);  // a goal's stall at the log the order ends at
+        bool const fresh = EndOrder(goals, QuestOrderEnd::Dry, LOG1, start, BLOCK_MS);
+        std::vector<std::uint64_t> const closed = ClosedCells(goals, LOG1, start, BLOCK_MS);
+        std::size_t wrongCells = 0;
+        for (std::int32_t dx = -3; dx <= 3; ++dx)
+            for (std::int32_t dy = -3; dy <= 3; ++dy)
+                wrongCells += CellClosed(closed, FieldCellKey(0, dx, dy)) != (std::abs(dx) <= 1 && std::abs(dy) <= 1);
+        wrongCells += CellClosed(closed, FieldCellKey(1, 0, 0));
+        Check(first && fresh && closed == std::vector<std::uint64_t>{x.cell} && wrongCells == 0,
+              "route: an order that ended dry closes its cell and the eight around it, on its map (mutant: EndOrder "
+              "blocks nothing, or the route's key)");
+        Check(goals.stalled && goals.stalled->blocks.size() == 2 && MayStart(goals, routeKey, LOG1, start, BLOCK_MS) &&
+                  MayStart(goals, HUB_KEY + 1, LOG1, start, BLOCK_MS) &&
+                  !MayStart(goals, HUB_KEY, LOG1, start, BLOCK_MS) &&
+                  MayStart(goals, CellBlockKey(far.cell), LOG1, start, BLOCK_MS),
+              "route: the dry end blocks nothing else: not the route, no other goal, no other cell");
+        Check(ClosedCells(goals, LOG1, start + BLOCK_MS - 1, BLOCK_MS) == closed &&
+                  ClosedCells(goals, LOG1, start + BLOCK_MS, BLOCK_MS).empty() &&
+                  ClosedCells(goals, LOG1, start, 0).empty(),
+              "route: the cell stays closed for the block time and no longer, across the clock's wrap");
+        RouteNext const second = AdvanceRoute(goals, anyOpen, closed);
+        bool const skipsBeside = sameAs(second, far);
+        EndOrder(goals, QuestOrderEnd::Time, LOG1, start + 1, BLOCK_MS);
+        bool const mapApart = sameAs(AdvanceRoute(goals, anyOpen, closed), otherMap);
+        EndOrder(goals, QuestOrderEnd::Done, LOG1, start + 2, BLOCK_MS);
+        Check(skipsBeside && mapApart && AdvanceRoute(goals, anyOpen, closed).step == RouteStep::Done &&
+                  ClosedCells(goals, LOG1, start + 2, BLOCK_MS) == closed,
+              "route: a closed cell or one beside it is never the next order's; the same cell of another map is "
+              "(mutant: AdvanceRoute without the closed cells)");
+        // The route's goal ends with the log changed since its start: every goal's stall is lifted, the cell closed
+        // at this log stays closed
+        EndRun(goals, LOG1, 0, start + 5000, BLOCK_MS);
+        Check(
+            ClosedCells(goals, LOG1, start + 5000, BLOCK_MS) == closed &&
+                MayStart(goals, HUB_KEY, LOG1, start + 5000, BLOCK_MS) && !goals.stallRow,
+            "route: the end of the route's goal after a changed log lifts the goals' stalls and keeps the cell closed "
+            "(mutant: EndRun resets the list)");
+        Check(ClosedCells(goals, LOG2, start + 5000, BLOCK_MS).empty() &&
+                  MayStart(goals, CellBlockKey(x.cell), LOG2, start + 5000, BLOCK_MS),
+              "route: a changed log opens the cell again, as it lifts every stall");
+    }
+    {
+        std::size_t blocked = 0;
+        for (QuestOrderEnd const end : {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time,
+                                        QuestOrderEnd::Replaced, QuestOrderEnd::NoEnder})
+        {
+            BotGoals goals;
+            TakePlan(goals, RouteOf({OrderAt(0, 0, Word::Field, {{1, 0, 3}})}), 1000);
+            BeginRun(goals, routeKey, LOG0);
+            AdvanceRoute(goals, anyOpen, {});
+            blocked += EndOrder(goals, end, LOG0, 5000, BLOCK_MS) || goals.stalled.has_value() ||
+                       goals.route.running.has_value();
+            EndRun(goals, LOG0, 0, 6000, BLOCK_MS);
+            blocked += goals.stalled.has_value() || goals.stallRow.has_value();
+        }
+        BotGoals circuit;
+        BeginRun(circuit, HUB_KEY, LOG0);
+        EndRun(circuit, LOG0, 0, 6000, BLOCK_MS);
+        Check(blocked == 0 && circuit.stalled && circuit.stallRow,
+              "route: no other end of an order blocks anything, and a route's goal that ends without progress is not "
+              "stalled as a circuit's is (mutant: EndRun blocks the route's key)");
+        BotGoals refused;
+        StartFacts facts;
+        facts.key = routeKey;
+        facts.log = LOG0;
+        facts.nowMs = 7000;
+        facts.blockMs = BLOCK_MS;
+        StartResult const result =
+            StartActive(refused, Goals::GoalKind::Quest, Executor::Route, facts, []() { return false; });
+        StartFacts hub = facts;
+        hub.key = HUB_KEY;
+        BotGoals refusedHub;
+        StartActive(refusedHub, Goals::GoalKind::Quest, Executor::Circuit, hub, []() { return false; });
+        Check(result == StartResult::Refused && !refused.stalled && !refused.stallRow && refusedHub.stalled,
+              "route: a refused start of the route blocks nothing either; a circuit's still blocks its key");
+    }
+
+    // TakePlan: the order that is running goes on when the new route begins with it
+    {
+        QuestOrder const x = OrderAt(0, 0, Word::Field, {{1, 0, 3}});
+        QuestOrder const y = OrderAt(4, 0, Word::Field, {{2, 0, 3}});
+        QuestOrder const z = OrderAt(8, 0, Word::Field, {{3, 0, 3}});
+        QuestOrder refreshed = x;
+        refreshed.expected = {{1, 0, 1}, {5, 0, 4}};
+        refreshed.minutes = 3.0f;
+        BotGoals goals;
+        TakePlan(goals, RouteOf({x, y}), 1000);
+        BeginRun(goals, routeKey, LOG0);
+        bool const runs = sameAs(AdvanceRoute(goals, anyOpen, {}), x);
+        TakePlan(goals, RouteOf({refreshed, z}), 2000);
+        bool const kept = !goals.route.replaced && goals.route.running && SameOrder(*goals.route.running, x) &&
+                          goals.route.running->minutes == x.minutes;
+        EndOrder(goals, QuestOrderEnd::Time, LOG0, 3000, BLOCK_MS);
+        bool const walksOn = sameAs(AdvanceRoute(goals, anyOpen, {}), z);
+        Check(runs && kept && walksOn,
+              "route: a refreshed route that begins with the running order leaves it running and never starts it "
+              "again; the walk goes on behind it (mutant: every plan starts the route from its first order)");
+
+        BotGoals moved;
+        TakePlan(moved, RouteOf({x, y}), 1000);
+        BeginRun(moved, routeKey, LOG0);
+        AdvanceRoute(moved, anyOpen, {});
+        TakePlan(moved, RouteOf({y, x}), 2000);
+        bool const replaced = moved.route.replaced;
+        bool const givesFirst = sameAs(AdvanceRoute(moved, anyOpen, {}), y) && !moved.route.replaced;
+        QuestOrder handIn = x;
+        handIn.word = Word::HandIn;
+        BotGoals worded;
+        TakePlan(worded, RouteOf({x, y}), 1000);
+        BeginRun(worded, routeKey, LOG0);
+        AdvanceRoute(worded, anyOpen, {});
+        TakePlan(worded, RouteOf({handIn, y}), 2000);
+        BotGoals emptied;
+        TakePlan(emptied, RouteOf({x, y}), 1000);
+        BeginRun(emptied, routeKey, LOG0);
+        AdvanceRoute(emptied, anyOpen, {});
+        TakePlan(emptied, RouteOf({}), 2000);
+        BotGoals idle;
+        TakePlan(idle, RouteOf({x, y}), 1000);
+        TakePlan(idle, RouteOf({y, x}), 2000);
+        Check(replaced && givesFirst && worded.route.replaced && emptied.route.replaced &&
+                  AdvanceRoute(emptied, anyOpen, {}).step == RouteStep::Done && !idle.route.replaced &&
+                  sameAs(AdvanceRoute(idle, anyOpen, {}), y),
+              "route: a new route that begins with another order, the same cell under another word or no order "
+              "replaces the running one, and the next order is the new route's first; no order running, nothing is "
+              "replaced (mutant: the running order always kept)");
+
+        // Every pair of a held and a refreshed route over three cells
+        std::vector<QuestOrder> const all = {x, y, z};
+        std::size_t pairs = 0;
+        std::size_t wrong = 0;
+        for (std::uint32_t held = 1; held < 27; ++held)
+            for (std::uint32_t fresh = 0; fresh < 27; ++fresh)
+            {
+                auto const routeFrom = [&all](std::uint32_t code)
+                {
+                    std::vector<QuestOrder> orders;
+                    for (; code; code /= 3)
+                        if (std::none_of(orders.begin(), orders.end(),
+                                         [&](QuestOrder const& order) { return SameOrder(order, all[code % 3]); }))
+                            orders.push_back(all[code % 3]);
+                    return orders;
+                };
+                std::vector<QuestOrder> const before = routeFrom(held);
+                std::vector<QuestOrder> const after = routeFrom(fresh);
+                BotGoals pair;
+                TakePlan(pair, RouteOf(before), 1000);
+                BeginRun(pair, routeKey, LOG0);
+                AdvanceRoute(pair, anyOpen, {});
+                TakePlan(pair, RouteOf(after), 2000);
+                bool const same = !after.empty() && SameOrder(after.front(), before.front());
+                ++pairs;
+                wrong += pair.route.replaced == same;
+                if (!same)
+                    continue;
+                EndOrder(pair, QuestOrderEnd::Time, LOG0, 3000, BLOCK_MS);
+                for (RouteNext next = AdvanceRoute(pair, anyOpen, {}); next.step == RouteStep::Order;
+                     next = AdvanceRoute(pair, anyOpen, {}))
+                    wrong += SameOrder(*next.order, before.front());
+            }
+        Check(pairs > 600 && wrong == 0,
+              "route: over every pair of a held and a refreshed route the running order is replaced exactly when the "
+              "new route begins with another, and a kept one is never given again");
+    }
+
+    // A new goal starts the route's progress anew; a refused start and an interlude keep it
+    {
+        QuestOrder const x = OrderAt(0, 0, Word::Field, {{1, 0, 3}});
+        QuestOrder const y = OrderAt(4, 0, Word::Field, {{2, 0, 3}});
+        BotGoals goals;
+        TakePlan(goals, RouteOf({x, y}), 1000);
+        BeginRun(goals, routeKey, LOG0);
+        AdvanceRoute(goals, anyOpen, {});
+        StartFacts facts;
+        facts.key = HUB_KEY;
+        facts.log = LOG0;
+        facts.nowMs = 2000;
+        facts.blockMs = BLOCK_MS;
+        StartActive(goals, Goals::GoalKind::Grind, Executor::Grind, facts, []() { return false; });
+        bool const keptOnRefusal = goals.route.running && goals.route.next == 1;
+        StartActive(goals, Goals::GoalKind::Errand, Executor::Errand, facts, []() { return true; });
+        bool const keptOnInterlude = goals.route.running && goals.route.next == 1;
+        ResumeRoute(goals.route);
+        bool const again = sameAs(AdvanceRoute(goals, anyOpen, {}), x);
+        TakePlan(goals, RouteOf({y, x}), 3000);
+        ResumeRoute(goals.route);
+        bool const replacedFirst = sameAs(AdvanceRoute(goals, anyOpen, {}), y);
+        facts.key = HUB_KEY + 2;
+        StartActive(goals, Goals::GoalKind::Grind, Executor::Grind, facts, []() { return true; });
+        Check(
+            keptOnRefusal && keptOnInterlude && again && replacedFirst && !goals.route.running && goals.route.next == 0,
+            "route: a refused start and an interlude keep the route's progress, the goal resumed after the interlude "
+            "gets its interrupted order again (the new first one after a replacing plan), and a new goal starts the "
+            "progress anew (mutant: StartActive leaves the route's progress)");
+    }
+}
+
 int main()
 {
+    RouteRules();
     // The pinned table of who the planner leads (questing WQ6e, WQ.39): every bot that keeps its possessions and
     // whose planner no test holds, whatever its guid. A bot that keeps none or whose planner a test holds keeps
     // upstream's pick; a bot the planner leads never gets upstream's pick from the idle step

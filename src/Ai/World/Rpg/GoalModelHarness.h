@@ -79,6 +79,143 @@ struct Check
     std::string text;
 };
 
+// Questing WQ18a: every Rank and PlanGoals call of this harness runs again with the route's inputs, and Routes() reads
+// the tally. With the circuit flag set (over a route worth taking), or the flag clear and no route (none, or one
+// without an order), the result is the plain one; with a route its option never stands beside the circuit's option
+// or a delivery on the bot's map. The two objects below hide Goals::Rank and Goals::PlanGoals from the cases
+struct RouteTally
+{
+    std::uint32_t cases{0};
+    std::uint32_t differs{0};   // a result that must equal the plain one does not
+    std::uint32_t offered{0};   // cases whose route option was kept
+    std::uint32_t beside{0};    // of them with the circuit's option or a same-map delivery beside it
+    std::uint32_t replaced{0};  // of them whose plain result had the circuit's option or such a delivery
+    std::uint32_t added{0};     // of them with a quest or move option the plain result lacks
+    std::string first;          // the first fault
+};
+
+inline thread_local RouteTally routeTally;
+
+// A route worth taking: one field order 150 yd from the bot
+inline RoutePlan SampleRoute(Snapshot const& bot, float worth = 50000.0f)
+{
+    QuestOrder order;
+    order.mapId = bot.position.map;
+    order.x = bot.position.x + 150.0f;
+    order.y = bot.position.y;
+    order.cell = 1;
+    order.expected = {{PLAIN_QUEST, 0, 5}};
+    order.minutes = 5.0f;
+    RoutePlan route;
+    route.orders = {order};
+    route.worth = worth;
+    route.minutes = 6.0f;
+    return route;
+}
+
+inline bool IsRoute(Option const& option)
+{
+    return option.kind == GoalKind::Quest && option.targetType == TargetType::Route;
+}
+
+// The circuit's option or a delivery on the bot's map: what a route replaces
+inline bool OwnMapQuesting(Option const& option)
+{
+    return option.kind == GoalKind::Quest &&
+           (option.reason == CIRCUIT_REASON || (option.targetType == TargetType::Quest && option.reason == "delivery"));
+}
+
+inline bool SameOptions(Ranked const& a, Ranked const& b)
+{
+    return a.ok == b.ok && a.failure == b.failure &&
+           std::equal(a.options.begin(), a.options.end(), b.options.begin(), b.options.end(),
+                      [](Option const& x, Option const& y)
+                      {
+                          return SameTarget(x, y) && x.reason == y.reason && x.value == y.value &&
+                                 x.valuePerMinute == y.valuePerMinute && x.minutes == y.minutes;
+                      });
+}
+
+inline bool SameRanked(Ranked const& a, Ranked const& b)
+{
+    return SameOptions(a, b) && a.considered == b.considered && a.referenceRate == b.referenceRate &&
+           std::equal(a.dropped.begin(), a.dropped.end(), b.dropped.begin(), b.dropped.end(),
+                      [](Dropped const& x, Dropped const& y)
+                      { return x.kind == y.kind && x.target == y.target && std::string(x.reason) == y.reason; });
+}
+
+template <typename Ranker>
+void NoteRouteWays(Snapshot const& bot, Situation const& situation, Ranked const& plain, Ranker const& rank)
+{
+    if (!situation.onCircuit)
+        return;  // a route case of its own
+    RouteTally& tally = routeTally;
+    ++tally.cases;
+    RoutePlan const none;
+    RoutePlan const sample = SampleRoute(bot);
+    auto const with = [&situation, &rank](bool onCircuit, RoutePlan const* route)
+    {
+        Situation other = situation;
+        other.onCircuit = onCircuit;
+        other.route = route;
+        return rank(other);
+    };
+    auto const fault = [&tally](std::uint32_t& count, char const* what)
+    {
+        if (!count++ && tally.first.empty())
+            tally.first = std::string(what) + " in case " + std::to_string(tally.cases);
+    };
+    if (!SameRanked(plain, with(true, &sample)))
+        fault(tally.differs, "the flag set over a route");
+    if (!SameRanked(plain, with(false, nullptr)))
+        fault(tally.differs, "the flag clear and no route");
+    if (!SameRanked(plain, with(false, &none)))
+        fault(tally.differs, "a route without an order");
+    Ranked const routed = with(false, &sample);
+    if (std::none_of(routed.options.begin(), routed.options.end(), IsRoute))
+    {
+        if (!SameOptions(plain, routed))
+            fault(tally.differs, "a dropped route");
+        return;
+    }
+    ++tally.offered;
+    if (std::any_of(routed.options.begin(), routed.options.end(), OwnMapQuesting))
+        fault(tally.beside, "the circuit or a same-map delivery beside the route");
+    if (std::any_of(plain.options.begin(), plain.options.end(), OwnMapQuesting))
+        ++tally.replaced;
+    if (plain.options.size() >= RANK_KEEP)
+        return;  // the list was cut: an option the cut left out may come back
+    for (Option const& option : routed.options)
+        if (!IsRoute(option) && (option.kind == GoalKind::Quest || option.kind == GoalKind::MoveZone) &&
+            std::none_of(plain.options.begin(), plain.options.end(), [&option](Option const& old)
+                         { return SameTarget(old, option) && old.reason == option.reason; }))
+            fault(tally.added, "a new quest or move option beside the route");
+}
+
+struct RankBothWays
+{
+    Ranked operator()(Snapshot const& bot, Situation const& situation) const
+    {
+        Ranked plain = Goals::Rank(bot, situation);
+        NoteRouteWays(bot, situation, plain, [&bot](Situation const& other) { return Goals::Rank(bot, other); });
+        return plain;
+    }
+};
+
+struct PlanBothWays
+{
+    GoalPlan operator()(Snapshot const& bot, CircuitContext const& context, Situation const& situation) const
+    {
+        GoalPlan plain = Goals::PlanGoals(bot, context, situation);
+        NoteRouteWays(bot, situation, plain.ranked, [&bot, &context](Situation const& other)
+                      { return Goals::PlanGoals(bot, context, other).ranked; });
+        return plain;
+    }
+};
+
+inline constexpr RankBothWays Rank{};
+inline constexpr PlanBothWays PlanGoals{};
+
 inline TraitRules::BotTraits Traits(std::initializer_list<std::pair<TraitRules::Trait, int>> values)
 {
     TraitRules::BotTraits traits;
@@ -1756,9 +1893,147 @@ inline void Targets(std::vector<Check>& checks)
             " field circuits" + bad);
 }
 
+// Questing WQ18a: the route beside the circuit, one owner per decision (WQ.43 point 4)
+inline void Routes(std::vector<Check>& checks)
+{
+    auto const has = [](Ranked const& ranked, auto const& test)
+    { return std::any_of(ranked.options.begin(), ranked.options.end(), test); };
+    auto const routeOf = [](Ranked const& ranked) -> Option const*
+    {
+        auto const it = std::find_if(ranked.options.begin(), ranked.options.end(), IsRoute);
+        return it == ranked.options.end() ? nullptr : &*it;
+    };
+    Snapshot const bot = Bot(10, FLUSH);
+    Situation questing = Base();
+    CircuitPlan const circuit = Circuit(bot, questing, 1500.0f, 200.0f, 20.0f);
+    questing.circuit = &circuit;
+    questing.deliveries = {Carried(RICH_DELIVERY, 3000.0f, 4.0f, false), Carried(FAR_DELIVERY, 300.0f, 30.0f, true)};
+    questing.hubs = {Hub(2, ELWYNN, 40.0f, 6.0f)};
+    Ranked const plain = Goals::Rank(bot, questing);
+    RoutePlan const route = SampleRoute(bot);
+    questing.route = &route;
+    questing.onCircuit = false;
+    Ranked const routed = Goals::Rank(bot, questing);
+    Option const* option = routeOf(routed);
+    Add(checks, "route: one option of its own, named route_0, with the route's worth and minutes and no crowd factor",
+        option && ChoiceWord(*option) == "quest:route_0" && option->reason == ROUTE_REASON &&
+            option->expected == route.worth && option->minutes == route.minutes && option->crowd == 1.0f &&
+            option->risk == 1.0f && option->place.x == route.orders.front().x,
+        Summary(routed));
+    Add(checks,
+        "route: with an order neither the circuit's option nor a delivery on the bot's map is offered (mutant: "
+        "AddCircuit or AddDeliveries without the test)",
+        option && has(plain, OwnMapQuesting) && !has(routed, OwnMapQuesting), Summary(routed));
+    auto const farDelivery = [](Option const& one)
+    { return one.target == FAR_DELIVERY && one.reason == "delivery_other_map"; };
+    auto const otherHub = [](Option const& one)
+    { return one.target == 2 && one.targetType == TargetType::Default && one.kind != GoalKind::Grind; };
+    Add(checks, "route: a delivery on another map and another hub stay offered beside it",
+        has(plain, farDelivery) && has(plain, otherHub) && has(routed, farDelivery) && has(routed, otherHub),
+        Summary(routed));
+
+    Situation held = questing;
+    held.onCircuit = true;
+    RoutePlan const none;
+    Situation empty = questing;
+    empty.route = &none;
+    Add(checks,
+        "route: a bot held on the circuit and a route without an order get the options of before (mutant: the flag "
+        "unread)",
+        SameRanked(plain, Goals::Rank(bot, held)) && SameRanked(plain, Goals::Rank(bot, empty)) && !routeOf(plain) &&
+            has(plain, OwnMapQuesting),
+        Summary(Goals::Rank(bot, held)));
+
+    Situation drySituation = Base();
+    CircuitPlan dry;
+    dry.ok = true;
+    dry.start = bot.position;
+    dry.returnTo = bot.position;
+    dry.moveOn.reason = MoveReason::Bracket;
+    dry.moveOn.camp = DRY_CAMP;
+    dry.moveOn.zone = WESTFALL;
+    dry.moveOn.seconds = 300.0f;
+    dry.moveOn.place = {EASTERN, -10500.0f, 1000.0f, 40.0f};
+    drySituation.circuit = &dry;
+    drySituation.route = &route;
+    drySituation.onCircuit = false;
+    Ranked const dryRanked = Goals::Rank(bot, drySituation);
+    Add(checks, "route: a dry hub's move stays offered beside the route",
+        routeOf(dryRanked) && Find(dryRanked, GoalKind::MoveZone, DRY_CAMP), Summary(dryRanked));
+
+    RoutePlan wary = route;
+    wary.risk.levelsAbove = 2.0f;
+    questing.route = &wary;
+    Ranked const cautious = Goals::Rank(bot, questing);
+    Option const* waryOption = routeOf(cautious);
+    RoutePlan deadly = route;
+    deadly.risk.levelsAbove = 40.0f;
+    deadly.risk.eliteShare = 1.0f;
+    deadly.risk.deaths = 50.0f;
+    questing.route = &deadly;
+    Ranked const refused = Goals::Rank(bot, questing);
+    Add(checks, "route: the risk of its first stop lowers its value, as any option's",
+        option && waryOption && waryOption->risk < 1.0f && waryOption->value < option->value, Summary(cautious));
+    Add(checks,
+        "route: a route the risk rule drops leaves the circuit's option and the deliveries as they were (mutant: the "
+        "route owns the map before it is kept)",
+        !routeOf(refused) && SameOptions(plain, refused), Summary(refused));
+    questing.route = &route;
+
+    // PlanGoals: the build function for a bot not held on the circuit; a route handed in is taken as it is
+    std::uint32_t builds = 0;
+    float pricedCopper = 0.0f;
+    RouteBuild const build =
+        [&](Snapshot const&, CircuitContext const& context, Model const&, Situation const& situation)
+    {
+        ++builds;
+        pricedCopper = context.weights.copper;
+        RoutePlan made = SampleRoute(bot, 777.0f);
+        made.capped = static_cast<std::uint32_t>(situation.closedCells.size());
+        return made;
+    };
+    Situation job = Base();
+    job.onCircuit = false;
+    job.closedCells = {7, 9};
+    GoalPlan const made = Goals::PlanGoals(bot, CircuitContext{}, job, build);
+    GoalPlan const again = Goals::PlanGoals(bot, CircuitContext{}, job, build);
+    std::uint32_t const builtTwice = builds;
+    Option const* madeOption = routeOf(made.ranked);
+    job.route = &route;
+    GoalPlan const handed = Goals::PlanGoals(bot, CircuitContext{}, job, build);
+    std::uint32_t const builtHanded = builds;
+    job.onCircuit = true;
+    GoalPlan const heldPlan = Goals::PlanGoals(bot, CircuitContext{}, job, build);
+    Add(checks,
+        "route: PlanGoals builds the route of a bot that is not held on the circuit, once, at the circuit's prices and "
+        "with the situation's closed cells, and the plan carries it",
+        builtTwice == 2 && pricedCopper == CircuitWeightsFor(Prepare(bot, job)).copper && made.route.capped == 2 &&
+            made.route.worth == 777.0f && made.route.orders.size() == 1 && madeOption && madeOption->expected == 777.0f,
+        Summary(made.ranked));
+    Add(checks, "route: a route handed in is taken as it is; a bot held on the circuit gets none and no build",
+        builtHanded == 2 && handed.route.worth == route.worth && routeOf(handed.ranked) && builds == 2 &&
+            heldPlan.route.orders.empty() && !routeOf(heldPlan.ranked),
+        Summary(heldPlan.ranked));
+    Add(checks, "route: the same input gives the same plan",
+        SameRanked(made.ranked, again.ranked) && made.route.orders.size() == again.route.orders.size() &&
+            made.route.worth == again.route.worth && SameRanked(routed, Goals::Rank(bot, questing)),
+        Summary(again.ranked));
+
+    RouteTally const& tally = routeTally;
+    Add(checks,
+        "route: every case of this harness run again with the route's inputs: flag set or no order, the same result; "
+        "with an order never the circuit's option or a same-map delivery beside it, and no other option new",
+        tally.cases >= 40 && !tally.differs && tally.offered > 0 && !tally.beside && tally.replaced > 0 && !tally.added,
+        std::to_string(tally.cases) + " cases, " + std::to_string(tally.offered) + " with the route kept, " +
+            std::to_string(tally.replaced) + " replacing the circuit or a delivery; differs " +
+            std::to_string(tally.differs) + ", beside " + std::to_string(tally.beside) + ", added " +
+            std::to_string(tally.added) + (tally.first.empty() ? "" : "; first: " + tally.first));
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
+    routeTally = {};
     Broke(checks);
     Errands(checks);
     Careful(checks);
@@ -1779,6 +2054,7 @@ inline std::vector<Check> SyntheticChecks()
     RepairDuringQuest(checks);
     RepairFirst(checks);
     Targets(checks);
+    Routes(checks);
     return checks;
 }
 
@@ -1795,7 +2071,7 @@ inline double RankMicroseconds()
     auto const start = std::chrono::steady_clock::now();
     std::size_t kept = 0;
     for (std::uint32_t run = 0; run < TIMING_RUNS; ++run)
-        kept += Rank(bot, situation).options.size();
+        kept += Goals::Rank(bot, situation).options.size();
     auto const elapsed = std::chrono::steady_clock::now() - start;
     double const total = std::chrono::duration<double, std::micro>(elapsed).count();
     return kept ? total / TIMING_RUNS : total;
