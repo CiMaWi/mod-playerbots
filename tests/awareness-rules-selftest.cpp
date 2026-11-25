@@ -2558,6 +2558,14 @@ void TestDeadFixed()
     Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: no corpse here: the grave's wait as before");
     facts.atGrave = false;
     Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway), "dead 3: no corpse here: the healer's way as before");
+    facts.healerChosen = true;
+    facts.playerHold = PlayerHold::Healer;
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway),
+          "dead 3: no corpse here: the healer once chosen, a hold and a failed walk close nothing");
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer),
+          "dead 3: no corpse here: the healer once chosen still waits at the grave");
     facts = QuietGhost();
     facts.graveWithoutHealer = true;
     facts.healerChosen = true;
@@ -2908,6 +2916,17 @@ void TestDeadGenerated()
         open.healerChosen = false;
         open.deathsInRow = 1;
         counterexamples += closedWait != HealerWay(NextOfDead(open).act);
+    }
+    // Without a corpse on this map the fact changes no step, whatever the other facts (the healer's way stays the
+    // ghost's only one): drawn after the cases above, so their readings stay
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        facts.corpseHere = false;
+        DeadFacts open = facts;
+        facts.graveWithoutHealer = true;
+        open.graveWithoutHealer = false;
+        counterexamples += !(NextOfDead(facts) == NextOfDead(open));
     }
     std::printf("AW30b reading: P10 waited (no_healer) in %d cases\n", closedWaits);
     Check(closedWaits > INVARIANT_CASES / 100, "P10: the generated facts give waits of a closed way to judge");
@@ -3379,6 +3398,17 @@ void TestDeathEdgeFixed()
     Check(DeathEdge::RowsAtKillHook(true, false) && !DeathEdge::RowsAtKillHook(true, true) &&
               !DeathEdge::RowsAtKillHook(false, false) && !DeathEdge::RowsAtKillHook(false, true),
           "AW31 a kill hook writes the rows only for a victim revived out of the redemption form");
+
+    // The rows carry the first killer's ids (the Death row's ref, the DeathScene's entry, the unit found again at the
+    // edge), and the name ends whole
+    DeathEdge::Killer named;
+    Check(DeathEdge::Name(named, {Kind::Creature, 11, 22, 33}) && !DeathEdge::Name(named, {Kind::Player, 44, 55, 66}) &&
+              named.kind == Kind::Creature && named.id == 11 && named.entry == 22 && named.unit == 33,
+          "AW31 the first killer's ids stay through a second kill hook");
+    DeathEdge::Killer const taken = DeathEdge::Take(named);
+    Check(taken.kind == Kind::Creature && taken.id == 11 && taken.entry == 22 && taken.unit == 33 &&
+              named.kind == Kind::None && named.id == 0 && named.entry == 0 && named.unit == 0,
+          "AW31 the rows take the first killer's ids and leave no name");
 
     // Spirit of Redemption: two Unit::Kill in one life, one edge at the form's end: the first killer, once
     EdgePlayer priest;
