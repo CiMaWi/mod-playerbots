@@ -516,10 +516,9 @@ void CheckProfessionMaterials()
               WorldTravel::ItemWorth(SpaceClass::Sell, 500, 0, 1, 1.0f, 0, 0, worth) == 500 &&
               WorldTravel::ItemWorth(SpaceClass::Use, 200, 0, 1, 1.0f, 0, 300, worth) == 300,
           "the outlet raises only a sold item's worth, and only when it beats the vendor");
-    Check(WorldTravel::YieldWorthEach(0, 30, 500, false) == 30 &&
-              WorldTravel::YieldWorthEach(90, 30, 500, false) == 90 &&
-              WorldTravel::YieldWorthEach(0, 30, 500, true) == 500,
-          "a yield is worth the bot's use or the vendor's price; another buyer only with buyers beyond the vendors");
+    Check(WorldTravel::YieldWorthEach(0, 30, 0) == 30 && WorldTravel::YieldWorthEach(90, 30, 0) == 90 &&
+              WorldTravel::YieldWorthEach(0, 30, 500) == 500 && WorldTravel::YieldWorthEach(900, 30, 500) == 900,
+          "a yield is worth the bot's use, the vendor's price or a listing's proceeds (WA7a), the most of them");
 
     // seeded search: the decision is exactly "materials worth more", and the outlet never lowers a worth
     uint32_t state = 20261120;
@@ -554,6 +553,44 @@ void CheckProfessionMaterials()
     std::cout << "disenchant search (seed 20261120, " << ROUNDS << " items): " << paid << " disenchanted, "
               << violations << " violations\n";
     Check(violations == 0 && paid > 0 && paid < ROUNDS, "search: disenchant exactly when the materials are worth more");
+
+    // WA7a (PLAN 3.7): the auction's proceeds as the outlet's other buyer. Without a market price (0) a yield's worth
+    // is the vendor-only one (the larger of the use and the vendor); a market price never lowers the outlet's worth.
+    // Control: the proceeds replacing the other prices instead of competing with them
+    auto const replacing = [](uint32_t use, uint32_t vendor, uint32_t other)
+    { return other ? other : std::max(use, vendor); };
+    uint32_t changed = 0;
+    uint32_t lowered = 0;
+    uint32_t raised = 0;
+    uint32_t caught = 0;
+    for (uint32_t round = 0; round < ROUNDS; ++round)
+    {
+        std::vector<OutletYield> plain;
+        std::vector<OutletYield> priced;
+        std::vector<OutletYield> control;
+        uint32_t const count = 1 + next(3);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            double const expected = static_cast<double>(next(400)) / 100.0;
+            uint32_t const use = next(2) ? next(800) : 0;
+            uint32_t const vendor = next(300);
+            uint32_t const other = next(3) ? 0 : next(1500);
+            changed += WorldTravel::YieldWorthEach(use, vendor, 0) != std::max(use, vendor) ? 1 : 0;
+            plain.push_back({expected, WorldTravel::YieldWorthEach(use, vendor, 0)});
+            priced.push_back({expected, WorldTravel::YieldWorthEach(use, vendor, other)});
+            control.push_back({expected, replacing(use, vendor, other)});
+        }
+        uint32_t const before = WorldTravel::DisenchantWorth(plain);
+        uint32_t const after = WorldTravel::DisenchantWorth(priced);
+        lowered += after < before ? 1 : 0;
+        raised += after > before ? 1 : 0;
+        caught += WorldTravel::DisenchantWorth(control) < before ? 1 : 0;
+    }
+    std::cout << "outlet market search (" << ROUNDS << " items): " << raised << " raised by a market price, " << changed
+              << " changed without one, " << lowered << " lowered; control replacing: " << caught << " lowered\n";
+    Check(changed == 0 && lowered == 0 && raised > 0,
+          "search: a market price never lowers the disenchant outlet, and without one it is the vendor-only worth");
+    Check(caught > 0, "control replacing: proceeds that replace the other prices lower an outlet");
 }
 }  // namespace
 

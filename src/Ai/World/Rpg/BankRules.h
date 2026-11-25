@@ -242,14 +242,20 @@ inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& b
     return item.recipeSkill ? RecipeForLater(item, bot) : PathMaterial(item, bot);
 }
 
-// The units of a stack auction stock may take: the whole stack, none when the bot's skill path uses the entry. The
-// visit lists whole stacks, so a stack with units the path needs is never stock (WA3-4 review B1)
-inline uint32_t StockUnits(KeepItemIn const& item) { return item.materialUsed ? 0 : std::max<uint32_t>(item.count, 1); }
+// The units of a stack auction stock may take: those beyond the units the bot's skill path uses of its entry, none
+// when the stack holds no more (auction house WA7b, PLAN 3.7; the visit lists those units, not the stack). Every stack
+// of an entry keeps the path's units, so after a listing the bags hold at least what the path uses (WA3-4 review B1)
+inline uint32_t StockUnits(KeepItemIn const& item)
+{
+    uint32_t const count = std::max<uint32_t>(item.count, 1);
+    return count > item.materialUsed ? count - item.materialUsed : 0;
+}
 
 // Auction stock (auction house WA3a, PLAN 3.5, WA.17): an item the item usage sells at the auction house whose listing
 // is worth more than a vendor pays for it now. Never gear the gear rule keeps to wear, a recipe the bot will learn or
-// an entry its skill path uses. Unsold (its worth already beats the vendor's payout) and due at no level: banked, and
-// never fetched by a trip of its own
+// the units its skill path uses. Unsold (its worth already beats the vendor's payout) and due at no level: banked, and
+// never fetched by a trip of its own. A stack of a path's material beyond its use (WA7b) keeps the path's due and
+// worth for the path's units and adds the listing's worth of the units beyond: it stays where the path wants it
 inline constexpr char const* AUCTION_STOCK_PROVIDER = "auction_stock";
 
 inline KeepAnswer AuctionStock(KeepItemIn const& item, KeepBotIn const& bot)
@@ -259,7 +265,13 @@ inline KeepAnswer AuctionStock(KeepItemIn const& item, KeepBotIn const& bot)
     if (GearForLaterLevel(item, bot).keeps || (item.recipeSkill && RecipeForLater(item, bot).keeps))
         return {};
 
-    return {true, item.auctionWorth, STOCK_LATER_LEVEL, AUCTION_STOCK_PROVIDER, true};
+    if (!item.materialUsed)
+        return {true, item.auctionWorth, STOCK_LATER_LEVEL, AUCTION_STOCK_PROVIDER, true};
+    KeepAnswer answer = PathMaterial(item, bot);
+    answer.laterWorth = static_cast<uint32_t>(std::min<uint64_t>(
+        static_cast<uint64_t>(answer.laterWorth) + item.auctionWorth, std::numeric_limits<uint32_t>::max()));
+    answer.provider = AUCTION_STOCK_PROVIDER;
+    return answer;
 }
 
 // Every provider, asked in this order
@@ -745,7 +757,9 @@ inline std::vector<KeptEntry> KeptInBank(BankIn const& in)
     return entries;
 }
 
-// Kept and not due yet: a due item is gear the bot may wear now, which the item usage labels as an upgrade first
+// Kept and not due yet: a due item is gear the bot may wear now, which the item usage labels as an upgrade first.
+// Auction stock due or not: a stack beyond its path's use whose path units are due stays in the bags, and the auction
+// visit lists its units beyond use (WA7b; NewRpgErrandStart counts only the entries not due as deposits)
 inline CarriedKeeps KeptInBags(BankIn const& in, std::span<KeepProvider const> providers = KEEP_PROVIDERS)
 {
     using namespace BankRulesDetail;
@@ -753,7 +767,7 @@ inline CarriedKeeps KeptInBags(BankIn const& in, std::span<KeepProvider const> p
     for (BankItemIn const& item : in.bags)
     {
         KeepAnswer const answer = DecideKeep(item.item, in.bot, providers);
-        if (answer.keeps && !IsDue(answer, in.bot))
+        if (answer.keeps && (!IsDue(answer, in.bot) || std::string_view(answer.provider) == AUCTION_STOCK_PROVIDER))
             kept.push_back({&item, answer});
     }
     SortByLaterWorth(kept);
@@ -785,9 +799,9 @@ inline uint32_t KeptWorthEach(CarriedKeeps const& carried, uint32_t entry, uint8
     return 0;
 }
 
-// The auction visit lists a bag stack only when its own keep is auction stock: it lists whole stacks, so a stack
-// another provider keeps (a path's materials, use stock, gear) is never listed, whatever the keeps of its entry's other
-// stacks
+// The auction visit lists a bag stack only when its own keep is auction stock (its StockUnits, WA7b), so a stack
+// another provider keeps (a path's materials within its use, use stock, gear) is never listed, whatever the keeps of
+// its entry's other stacks
 inline bool ListsStack(CarriedKeeps const& carried, uint32_t itemGuid)
 {
     for (KeptEntry const& item : carried.items)

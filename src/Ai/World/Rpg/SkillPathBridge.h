@@ -223,14 +223,35 @@ inline bool HoldsSkill(Snapshot const& snapshot, ProfessionRules::Skill skill)
                        { return held.id == static_cast<std::uint16_t>(skill) && held.value > 0; });
 }
 
+// A gatherer's yields fetch more at the auction than at a vendor (auction house WA7a, PLAN 3.7): some node of its
+// skill, or for skinning some skin, gives an item the world's market prices above the vendor's (Market::View::
+// ProceedsOf). False without a market: only vendors buy, and the second gatherer's hold of WR11 stands
+inline bool MarketPays(SkillPath::PathWorld const& world, ProfessionRules::Skill gatherer)
+{
+    if (world.market.Empty())
+        return false;
+    if (world.fault == SkillPath::Fault::AnyMarket)
+        return true;
+    auto const pays = [&world](std::uint32_t item)
+    {
+        double const vendor = world.sellCopper ? world.sellCopper(item) : 0.0;
+        return world.market.ProceedsOf(item, static_cast<std::uint32_t>(std::max(vendor, 0.0))) > 0.0;
+    };
+    std::uint16_t const skill = static_cast<std::uint16_t>(gatherer);
+    if (gatherer == ProfessionRules::Skill::Skinning)
+        return std::any_of(world.index.Drops().begin(), world.index.Drops().end(), [&](Recipes::DropRow const& row)
+                           { return row.kind == Recipes::DropKind::Skin && row.skill == skill && pays(row.item); });
+    return std::any_of(world.index.Nodes().begin(), world.index.Nodes().end(),
+                       [&](Recipes::NodeRow const& row) { return row.skill == skill && pays(row.item); });
+}
+
 // The second main (PLAN 3.2, 3.3; WR.7: only a bot whose second slot is unlearned). Due once the bot holds its first
 // main and has the gatherer's level, with the person's craft in the second slot and no second main held. The craft is
-// taken when a stretch of it from its first point is worth it and paid for; else its learn waits. buyers: once a buyer
-// other than the vendors pays for materials (SkillPath::BUYERS_BEYOND_VENDORS), a bot short of gold takes the second
-// gatherer that brings the most instead when that is worth more than the craft
+// taken when a stretch of it from its first point is worth it and paid for; else its learn waits. A bot short of gold
+// weighs the gatherers whose yields the market buys above the vendors (MarketPays) and takes the one that brings the
+// most instead when that is worth more than the craft
 inline SkillPath::SecondChoice SecondOf(Snapshot const& snapshot, SkillPath::PathBot const& bot, bool shortOfGold,
-                                        std::uint32_t gathererLevel, SkillPath::PathWorld const& world,
-                                        bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+                                        std::uint32_t gathererLevel, SkillPath::PathWorld const& world)
 {
     using ProfessionRules::Skill;
     SkillPath::SecondChoice choice;
@@ -247,13 +268,14 @@ inline SkillPath::SecondChoice SecondOf(Snapshot const& snapshot, SkillPath::Pat
     choice.craft = static_cast<std::uint16_t>(craft);
     choice.money = bot.money;
     // One weigh of the craft and, for a bot short of gold, the gatherers it could take instead, at their first point
-    auto const insteadOf = [&](Skill gatherer)
-    { return buyers && shortOfGold && gatherer != first && !HoldsSkill(snapshot, gatherer); };
+    std::vector<Skill> insteadOf;
+    for (Skill const gatherer : ProfessionRules::GATHERERS)
+        if (shortOfGold && gatherer != first && !HoldsSkill(snapshot, gatherer) && MarketPays(world, gatherer))
+            insteadOf.push_back(gatherer);
     SkillPath::PathBot fresh = bot;
     fresh.skills.push_back({choice.craft, 1, FIRST_CAP});
-    for (Skill const gatherer : ProfessionRules::GATHERERS)
-        if (insteadOf(gatherer))
-            fresh.skills.push_back({static_cast<std::uint16_t>(gatherer), 1, FIRST_CAP});
+    for (Skill const gatherer : insteadOf)
+        fresh.skills.push_back({static_cast<std::uint16_t>(gatherer), 1, FIRST_CAP});
     SkillPath::Path const weighed = SkillPath::Weigh(fresh, world);
     Fresh const crafted = FreshOf(weighed, choice.craft);
     choice.craftWorth = crafted.worth;
@@ -265,10 +287,8 @@ inline SkillPath::SecondChoice SecondOf(Snapshot const& snapshot, SkillPath::Pat
         return choice;
     }
     Fresh gathered;
-    for (Skill const gatherer : ProfessionRules::GATHERERS)
+    for (Skill const gatherer : insteadOf)
     {
-        if (!insteadOf(gatherer))
-            continue;
         Fresh const candidate = FreshOf(weighed, static_cast<std::uint16_t>(gatherer));
         if (candidate.weighed && (!choice.gatherer || candidate.worth > gathered.worth))
         {
@@ -307,15 +327,14 @@ struct Computed
 inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep,
                         UpkeepNeeds::NeedRates const& rates, SkillPath::PathInputs const& inputs,
                         SkillPath::PathWorld const& world, std::vector<ZoneBracket> const& zones,
-                        std::vector<std::uint32_t> const& categories, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+                        std::vector<std::uint32_t> const& categories)
 {
     UpkeepNeeds::NeedRates const base = WithoutPath(rates);
     Computed computed;
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, base);
     SkillPath::PathBot const bot = BotOf(snapshot, inputs, computed.needs, zones, categories);
     computed.path = SkillPath::Weigh(bot, world);
-    computed.path.second =
-        SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world, buyers);
+    computed.path.second = SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world);
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithPath(base, computed.path));
     return computed;
 }

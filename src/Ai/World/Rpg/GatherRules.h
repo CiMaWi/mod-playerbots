@@ -23,10 +23,10 @@
 
 // The gather rules (professions plan WR13a, PLAN 3.9, DECISIONS WR.14, WR.15): what a node or a hide is worth to a
 // bot, when a detour to a node pays, when a corpse is skinned, and the circuit a gatherer walks. One worth rule: a
-// node's loot at the bot's price for it (what its skill path pays, else what a vendor pays; another buyer only behind
-// SkillPath::BUYERS_BEYOND_VENDORS) weighed by its need for copper, plus the chance of a skill point at a minute of
-// play, against the minutes it takes at the minute cost of its place (MaterialRules.h MinuteCost). Std only: include
-// it in .cpp files and the planner, never in a central header. The circuit's order is the questing circuit's
+// node's loot at the bot's price for it (what its skill path pays, a vendor pays or a listing at the auction is
+// expected to bring: Yield::otherCopper, WA7a) weighed by its need for copper, plus the chance of a skill point at a
+// minute of play, against the minutes it takes at the minute cost of its place (MaterialRules.h MinuteCost). Std only:
+// include it in .cpp files and the planner, never in a central header. The circuit's order is the questing circuit's
 // (QuestCircuit.h OrderStops, reached through MaterialRules.h and GoalModel.h).
 // A stop is a node or a creature's spawn point (WR20b, DECISIONS WR.24): a kill is worth its loot, coins, hide and XP
 // against the walk, the fight (Materials::FightMinutes, the drop rows' estimate) and the loot at the place's cost. A
@@ -91,7 +91,7 @@ struct Yield
     double perNode{0.0};
     std::uint32_t pathCopper{0};    // what the skill path pays for it (SkillPath::Material copperEach), 0: none
     std::uint32_t vendorCopper{0};  // a vendor's price
-    std::uint32_t otherCopper{0};   // another buyer's price (the auction house, WR23), 0: none
+    std::uint32_t otherCopper{0};   // a listing's expected proceeds (Market::View::ProceedsOf, WA7a), 0: none
 };
 
 struct SkillValue
@@ -201,16 +201,34 @@ inline bool Usable(Node const& node, Gatherer const& bot)
 // The yields' worth in value units: each unit at the best of the bot's prices for it; a unit the skill path pays most
 // for by the bot's exchange (the path's price is what getting it otherwise costs, in neutral copper: the planner's
 // item worth), one it sells by its need for copper (WR20b, PLAN 3.9; CircuitOption splits the same way)
-inline double YieldsWorth(std::vector<Yield> const& yields, Materials::Rates const& rates,
-                          bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+// One unit of a yield at the bot's best outlet: the vendor-only choice (the path's price by the exchange when the path
+// pays more than a vendor, else the vendor's by the need), or a listing's proceeds by the need when that is worth more
+// (auction house WA7a, PLAN 3.7). Comparing weighed values keeps the worth from falling as a market price rises: a
+// flush bot's own use (exchange) can outweigh a dearer sale (its need factor is below its exchange). Without a market
+// price (otherCopper 0) it is the vendor-only choice
+struct UnitWorth
+{
+    std::uint32_t each{0};  // the outlet's copper
+    bool used{false};       // the path's price: an item worth (by the exchange), not copper (by the need)
+};
+
+inline UnitWorth UnitOf(Yield const& yield, Materials::Rates const& rates)
+{
+    bool const used = yield.pathCopper > yield.vendorCopper;
+    std::uint32_t const each = used ? yield.pathCopper : yield.vendorCopper;
+    double const kept = static_cast<double>(each) * std::max(used ? rates.exchange : rates.factor, 0.0f);
+    if (static_cast<double>(yield.otherCopper) * std::max(rates.factor, 0.0f) > kept)
+        return {yield.otherCopper, false};
+    return {each, used};
+}
+
+inline double YieldsWorth(std::vector<Yield> const& yields, Materials::Rates const& rates)
 {
     double worth = 0.0;
     for (Yield const& yield : yields)
     {
-        std::uint32_t const each =
-            WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, buyers);
-        bool const used = yield.pathCopper > yield.vendorCopper && each == yield.pathCopper;
-        worth += std::max(yield.perNode, 0.0) * each * std::max(used ? rates.exchange : rates.factor, 0.0f);
+        UnitWorth const unit = UnitOf(yield, rates);
+        worth += std::max(yield.perNode, 0.0) * unit.each * std::max(unit.used ? rates.exchange : rates.factor, 0.0f);
     }
     return worth;
 }
@@ -243,8 +261,7 @@ inline double CoinsPerKill(std::uint32_t minGold, std::uint32_t maxGold, float m
 
 // A corpse is skinned (WR.14) after the fight, with room, at the skill, when the hide (its sale or the path's price,
 // a skill point) is worth more than the skinning's minutes at the place
-inline bool SkinPays(Hide const& hide, Gatherer const& bot, bool inCombat, std::uint32_t freeSlots,
-                     bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline bool SkinPays(Hide const& hide, Gatherer const& bot, bool inCombat, std::uint32_t freeSlots)
 {
     if (inCombat || !freeSlots)
         return false;
@@ -253,7 +270,7 @@ inline bool SkinPays(Hide const& hide, Gatherer const& bot, bool inCombat, std::
     double const minuteCost = Materials::MinuteCost(hide.risk, bot.rates);
     if (!skill || skill->value < required || minuteCost < 0.0)
         return false;
-    double const worth = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot);
+    double const worth = YieldsWorth(hide.yields, bot.rates) + SkillPointWorth(*skill, required, bot);
     return worth > SKIN_MINUTES * minuteCost;
 }
 
@@ -265,10 +282,9 @@ inline Hide HideOf(Node const& node)
 
 // A creature stop's corpse is skinned on the circuit when its hide pays (SkinPays, room assumed): never without the
 // skill its level asks
-inline bool Skins(Node const& node, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline bool Skins(Node const& node, Gatherer const& bot)
 {
-    return node.kind == StopKind::Creature && !node.creature.hide.empty() &&
-           SkinPays(HideOf(node), bot, false, 1, buyers);
+    return node.kind == StopKind::Creature && !node.creature.hide.empty() && SkinPays(HideOf(node), bot, false, 1);
 }
 
 // A kill's XP in value units (the planner's value is XP): none at or below the bot's grey level
@@ -292,17 +308,17 @@ struct KillWorth
     [[nodiscard]] double Total() const { return loot + hide + xp; }
 };
 
-inline KillWorth WorthOfKill(Node const& node, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline KillWorth WorthOfKill(Node const& node, Gatherer const& bot)
 {
     KillWorth worth;
     if (!MayFight(node, bot))
         return worth;
-    worth.loot = YieldsWorth(node.yields, bot.rates, buyers) +
+    worth.loot = YieldsWorth(node.yields, bot.rates) +
                  std::max(node.creature.coinCopper, 0.0) * std::max(bot.rates.factor, 0.0f);
-    if (Skins(node, bot, buyers))
+    if (Skins(node, bot))
     {
         Hide const hide = HideOf(node);
-        worth.hide = YieldsWorth(hide.yields, bot.rates, buyers) +
+        worth.hide = YieldsWorth(hide.yields, bot.rates) +
                      SkillPointWorth(*bot.Find(SKINNING), SkillPath::SkinRequirement(hide.creatureLevel), bot);
     }
     worth.xp = KillXp(node, bot);
@@ -324,34 +340,34 @@ inline double KillMinutes(Node const& node, Gatherer const& bot, bool skin)
 }
 
 // The minutes a stop takes once reached: a node's gathering, a creature's kill
-inline double StopMinutes(Node const& node, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline double StopMinutes(Node const& node, Gatherer const& bot)
 {
     if (node.kind != StopKind::Creature)
         return Planner::Goals::GATHER_MINUTES;
-    return KillMinutes(node, bot, Skins(node, bot, buyers));
+    return KillMinutes(node, bot, Skins(node, bot));
 }
 
 // A creature stop gives a material the bot wants (WR.24): a unit its skill path pays for, in the loot or in a hide it
 // skins
-inline bool GivesWanted(Node const& node, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline bool GivesWanted(Node const& node, Gatherer const& bot)
 {
     auto const wanted = [](std::vector<Yield> const& yields)
     {
         return std::any_of(yields.begin(), yields.end(),
                            [](Yield const& yield) { return yield.perNode > 0.0 && yield.pathCopper > 0; });
     };
-    return MayFight(node, bot) && (wanted(node.yields) || (Skins(node, bot, buyers) && wanted(node.creature.hide)));
+    return MayFight(node, bot) && (wanted(node.yields) || (Skins(node, bot) && wanted(node.creature.hide)));
 }
 
 // One gathering of the node while it stands there, or one kill of the creature; nothing above the bot's skill or
 // from a creature it may not fight
-inline double NodeWorth(Node const& node, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline double NodeWorth(Node const& node, Gatherer const& bot)
 {
     if (!Usable(node, bot))
         return 0.0;
     if (node.kind == StopKind::Creature)
-        return WorthOfKill(node, bot, buyers).Total();
-    return YieldsWorth(node.yields, bot.rates, buyers) + SkillPointWorth(*bot.Find(node.skill), node.required, bot);
+        return WorthOfKill(node, bot).Total();
+    return YieldsWorth(node.yields, bot.rates) + SkillPointWorth(*bot.Find(node.skill), node.required, bot);
 }
 
 inline double WalkMinutes(float yards, Materials::Rates const& rates)
@@ -362,26 +378,25 @@ inline double WalkMinutes(float yards, Materials::Rates const& rates)
 
 // A node in sight: its worth less its detour and gathering at its place's minute cost; REFUSED above the skill or at
 // a refused place
-inline double Net(Seen const& seen, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline double Net(Seen const& seen, Gatherer const& bot)
 {
     double const minuteCost = Materials::MinuteCost(seen.node.risk, bot.rates);
     if (!Usable(seen.node, bot) || minuteCost < 0.0)
         return REFUSED;
-    return NodeWorth(seen.node, bot, buyers) -
-           (WalkMinutes(seen.detourYards, bot.rates) + StopMinutes(seen.node, bot, buyers)) * minuteCost;
+    return NodeWorth(seen.node, bot) -
+           (WalkMinutes(seen.detourYards, bot.rates) + StopMinutes(seen.node, bot)) * minuteCost;
 }
 
 // The node worth its detour (WR.14): the best net above 0; ties to the shorter detour, the safer place, the lower id.
 // NO_PICK when none pays
-inline std::size_t PassBy(std::vector<Seen> const& seen, Gatherer const& bot,
-                          bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline std::size_t PassBy(std::vector<Seen> const& seen, Gatherer const& bot)
 {
     std::size_t best = NO_PICK;
     double bestNet = 0.0;
     double bestCost = 0.0;
     for (std::size_t at = 0; at < seen.size(); ++at)
     {
-        double const net = Net(seen[at], bot, buyers);
+        double const net = Net(seen[at], bot);
         if (!(net > 0.0))
             continue;
         double const cost = Materials::MinuteCost(seen[at].node.risk, bot.rates);
@@ -424,24 +439,23 @@ struct Verdict
 
 // A node in sight (WR.14): taken when its net pays (Net); else passed as too dangerous (a refused place), not worth it
 // (it does not pay even at the bot's feet) or a detour too long; a node the bot cannot gather is no pass
-inline Verdict JudgeNode(Seen const& seen, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline Verdict JudgeNode(Seen const& seen, Gatherer const& bot)
 {
     if (!Usable(seen.node, bot))
         return {};
     double const minuteCost = Materials::MinuteCost(seen.node.risk, bot.rates);
     if (minuteCost < 0.0)
         return {false, PassCause::TooDangerous, REFUSED};
-    double const net = Net(seen, bot, buyers);
+    double const net = Net(seen, bot);
     if (net > 0.0)
         return {true, PassCause::None, net};
-    bool const atFeet = NodeWorth(seen.node, bot, buyers) - StopMinutes(seen.node, bot, buyers) * minuteCost > 0.0;
+    bool const atFeet = NodeWorth(seen.node, bot) - StopMinutes(seen.node, bot) * minuteCost > 0.0;
     return {false, atFeet ? PassCause::DetourTooLong : PassCause::NotWorthIt, net};
 }
 
 // A skinnable corpse (WR.14): skinned when the hide pays (SkinPays); in a fight, without room or above the skill it is
 // no pass (judged again after the fight); at a refused place it is too dangerous, else the hide is not worth it
-inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, std::uint32_t freeSlots,
-                         bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, std::uint32_t freeSlots)
 {
     SkillValue const* skill = bot.Find(SKINNING);
     std::uint32_t const required = SkillPath::SkinRequirement(hide.creatureLevel);
@@ -450,9 +464,9 @@ inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, s
     double const minuteCost = Materials::MinuteCost(hide.risk, bot.rates);
     if (minuteCost < 0.0)
         return {false, PassCause::TooDangerous, REFUSED};
-    double const net = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot) -
-                       SKIN_MINUTES * minuteCost;
-    bool const take = SkinPays(hide, bot, inCombat, freeSlots, buyers);
+    double const net =
+        YieldsWorth(hide.yields, bot.rates) + SkillPointWorth(*skill, required, bot) - SKIN_MINUTES * minuteCost;
+    bool const take = SkinPays(hide, bot, inCombat, freeSlots);
     return {take, take ? PassCause::None : PassCause::NotWorthIt, net};
 }
 
@@ -579,7 +593,7 @@ struct Passes
 namespace Detail
 {
 inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> const& nodes, Gatherer const& bot,
-                    float radius, float sessionMinutes, bool buyers, bool creatures, bool& wanted)
+                    float radius, float sessionMinutes, bool creatures, bool& wanted)
 {
     struct Candidate
     {
@@ -598,9 +612,9 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
         float const yards = Planner::Circuit::Yards(anchor, node.at);
         double const minuteCost = Materials::MinuteCost(node.risk, bot.rates);
         double const share = std::clamp(node.share, 0.0f, 1.0f);
-        double const expected = NodeWorth(node, bot, buyers) * share;
+        double const expected = NodeWorth(node, bot) * share;
         if (yards <= radius && minuteCost >= 0.0 && expected > 0.0)
-            candidates.push_back({at, yards, expected, minuteCost, StopMinutes(node, bot, buyers) * share});
+            candidates.push_back({at, yards, expected, minuteCost, StopMinutes(node, bot) * share});
     }
     auto const nearer = [&nodes](Candidate const& a, Candidate const& b)
     { return a.yards != b.yards ? a.yards < b.yards : Key(nodes[a.at]) < Key(nodes[b.at]); };
@@ -663,7 +677,7 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
         circuit.longestRespawnSecs = std::max(circuit.longestRespawnSecs, node.respawnSecs);
         circuit.worthPerLap += candidate.expected;
         stopping += candidate.stopMinutes;
-        wanted = wanted || (node.kind == StopKind::Creature && GivesWanted(node, bot, buyers));
+        wanted = wanted || (node.kind == StopKind::Creature && GivesWanted(node, bot));
     }
     circuit.lapYards = Planner::Circuit::PathYards(anchor, points, order, anchor);
     circuit.lapMinutes = static_cast<float>(WalkMinutes(circuit.lapYards, bot.rates) + stopping);
@@ -676,14 +690,13 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
 }  // namespace Detail
 
 inline Circuit BuildCircuit(Planner::Circuit::Point const& anchor, std::vector<Node> const& nodes, Gatherer const& bot,
-                            float radius = CIRCUIT_YARDS, float sessionMinutes = SESSION_MINUTES,
-                            bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+                            float radius = CIRCUIT_YARDS, float sessionMinutes = SESSION_MINUTES)
 {
     bool wanted = false;
-    Circuit circuit = Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, buyers, true, wanted);
+    Circuit circuit = Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, true, wanted);
     if (wanted || bot.shortOfGold || std::none_of(circuit.stops.begin(), circuit.stops.end(), IsCreatureStop))
         return circuit;
-    return Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, buyers, false, wanted);
+    return Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, false, wanted);
 }
 
 // The planner's gather option of a circuit (WR13b, WR20b): the first stop its target, the laps' minutes, the stops'
@@ -693,8 +706,7 @@ inline Circuit BuildCircuit(Planner::Circuit::Point const& anchor, std::vector<N
 // XP (none for grey) and the stops' mean risk. An empty circuit is no option (id 0); one of kills without a skin asks
 // no skill (skill 0)
 inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vector<Node> const& nodes,
-                                                Gatherer const& bot, std::uint32_t map,
-                                                bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+                                                Gatherer const& bot, std::uint32_t map)
 {
     Planner::Goals::GatherNode option;
     float const laps = static_cast<float>(std::max(circuit.laps, 1u));
@@ -712,11 +724,10 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     {
         for (Yield const& yield : yields)
         {
-            std::uint32_t const each =
-                WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, buyers);
-            double const worth = std::max(yield.perNode, 0.0) * share * each;
+            UnitWorth const unit = UnitOf(yield, bot.rates);
+            double const worth = std::max(yield.perNode, 0.0) * share * unit.each;
             units += std::max(yield.perNode, 0.0) * share;
-            if (yield.pathCopper > yield.vendorCopper && each == yield.pathCopper)
+            if (unit.used)
                 item += worth;
             else
                 copper += worth;
@@ -759,7 +770,7 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
             fight += FightMinutesOf(node, bot) * share;
             copper += std::max(node.creature.coinCopper, 0.0) * share;
             xp += KillXp(node, bot) * share;
-            if (Skins(node, bot, buyers))
+            if (Skins(node, bot))
             {
                 addYields(node.creature.hide, share);
                 addPoints(SKINNING, SkillPath::SkinRequirement(HideOf(node).creatureLevel), share);
@@ -822,7 +833,7 @@ struct CampWeight
     std::string_view refusal;  // empty when weighed
 };
 
-inline CampWeight WeighCamp(Camp const& camp, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline CampWeight WeighCamp(Camp const& camp, Gatherer const& bot)
 {
     CampWeight weight;
     Node const& node = camp.creature;
@@ -831,7 +842,7 @@ inline CampWeight WeighCamp(Camp const& camp, Gatherer const& bot, bool buyers =
         weight.refusal = CAMP_NO_FIGHT;
         return weight;
     }
-    if (!bot.shortOfGold && !GivesWanted(node, bot, buyers))
+    if (!bot.shortOfGold && !GivesWanted(node, bot))
     {
         weight.refusal = CAMP_WANTS_NOTHING;
         return weight;
@@ -842,13 +853,13 @@ inline CampWeight WeighCamp(Camp const& camp, Gatherer const& bot, bool buyers =
         weight.refusal = CAMP_PLACE;
         return weight;
     }
-    KillWorth const worth = WorthOfKill(node, bot, buyers);
+    KillWorth const worth = WorthOfKill(node, bot);
     double const walk = WalkMinutes(camp.spacingYards, bot.rates);
     weight.worth = worth;
     weight.worth.hide = 0.0;
     weight.minutes = walk + KillMinutes(node, bot, false);
     double rate = weight.worth.Total() / weight.minutes;
-    if (Skins(node, bot, buyers))
+    if (Skins(node, bot))
     {
         double const skinMinutes = walk + KillMinutes(node, bot, true);
         double const skinRate = worth.Total() / skinMinutes;
@@ -866,14 +877,13 @@ inline CampWeight WeighCamp(Camp const& camp, Gatherer const& bot, bool buyers =
 
 // The best camp: the highest rate; ties to the safer place, the shorter kill, the lower key. NO_PICK when every camp
 // is refused. Whether its circuit beats the bot's other goals is the planner's choice
-inline std::size_t PickCamp(std::vector<Camp> const& camps, Gatherer const& bot,
-                            bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+inline std::size_t PickCamp(std::vector<Camp> const& camps, Gatherer const& bot)
 {
     std::size_t best = NO_PICK;
     CampWeight bestWeight;
     for (std::size_t at = 0; at < camps.size(); ++at)
     {
-        CampWeight const weight = WeighCamp(camps[at], bot, buyers);
+        CampWeight const weight = WeighCamp(camps[at], bot);
         if (weight.rate == REFUSED)
             continue;
         bool const better =

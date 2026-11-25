@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ProfessionConfig.h"
+#include "SkillPathLive.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 
@@ -57,19 +58,20 @@ Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
     return gatherer;
 }
 
-// The yields at the bot's prices: what its skill path pays, else a vendor's price
+// The yields at the bot's prices: what its skill path pays, a vendor's price and a listing's proceeds (WA7a)
 std::vector<Gather::Yield> YieldsOf(std::vector<GatherYield> const* yields, SkillPath::Path const* path)
 {
     std::vector<Gather::Yield> priced;
     if (!yields)
         return priced;
+    Market::View const market = Planner::MarketView();
     priced.reserve(yields->size());
     for (GatherYield const& yield : *yields)
     {
         SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(yield.item);
-        priced.push_back(
-            {yield.item, yield.perCast, material ? material->copperEach : 0u, proto ? proto->SellPrice : 0u, 0u});
+        priced.push_back({yield.item, yield.perCast, material ? material->copperEach : 0u,
+                          proto ? proto->SellPrice : 0u, Planner::MarketProceeds(market, yield.item)});
     }
     return priced;
 }

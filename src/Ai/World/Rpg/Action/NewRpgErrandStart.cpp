@@ -122,7 +122,7 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     uint32 carried = 0;
     for (BankMail::KeptEntry const& item : known.bank.carried.items)
-        carried += item.count;
+        carried += item.dueLevel > bot->GetLevel() ? item.count : 0;  // a due stack stays (auction stock, WA7b)
     snapshot.Orderliness = BotTraitMgr::instance().Trait(bot->GetGUID().GetCounter(), TraitRules::Trait::Orderliness);
     snapshot.MailWaiting = known.mail.waiting;
     snapshot.MailDefaultWorth = sPlayerbotAIConfig.BankMail.MailDefaultWorthCopper;

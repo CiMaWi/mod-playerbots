@@ -77,7 +77,6 @@ struct Fisher
     Recipes::ServerRates server;  // the server's gathering step (WR29: a catch's skill-up); default: stock
     double interest{0.0};         // the weight of Interest::Fishing, 0 when it lacks it
     bool poleHeld{false};
-    bool buyers{SkillPath::BUYERS_BEYOND_VENDORS};
 };
 
 // The core's catch chance (0 to 1) at a skill: the sure catch at a pool, whole percent otherwise; 0 at skill 0
@@ -122,7 +121,7 @@ inline double CastWorth(Water const& water, Fisher const& bot, bool atPool)
 {
     double const chance = ChanceAt(water, bot, atPool);
     std::vector<Gather::Yield> const& yields = atPool ? water.poolYields : water.openYields;
-    double worth = chance * Gather::YieldsWorth(yields, bot.rates, bot.buyers);
+    double worth = chance * Gather::YieldsWorth(yields, bot.rates);
     if (bot.skill < bot.maxSkill)
         worth += SkillPath::FishChancePerMille(bot.skill) / PER_MILLE *
                  std::min(bot.server.Step(false), bot.maxSkill - bot.skill) * bot.rates.minuteValue *
@@ -277,10 +276,9 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
     for (Gather::Yield const& yield : atPool ? water.poolYields : water.openYields)
     {
         units += std::max(yield.perNode, 0.0) * plan.catches;
-        std::uint32_t const each =
-            WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, bot.buyers);
-        double const worth = std::max(yield.perNode, 0.0) * plan.catches * each;
-        if (yield.pathCopper > yield.vendorCopper && each == yield.pathCopper)
+        Gather::UnitWorth const unit = Gather::UnitOf(yield, bot.rates);
+        double const worth = std::max(yield.perNode, 0.0) * plan.catches * unit.each;
+        if (unit.used)
             item += worth;
         else
             copper += worth;

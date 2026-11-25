@@ -75,6 +75,39 @@ inline BuyLine BagLine(std::uint32_t item, std::uint32_t worthCopper, std::uint3
     return LineOf(LineOwner::Bag, item, 1, worthCopper, vendorCopper ? vendorCopper : -1.0, 1.0f, 0);
 }
 
+// A skill path's material (auction house WA7b, PLAN 3.7): worth and getting are both what getting a unit the
+// cheapest other way costs (the path's saving bounds the price), copper, so the factor stays 1; otherCopperEach 0: no
+// other way, no worth known, no line
+inline BuyLine PathLine(std::uint32_t item, std::uint32_t units, std::uint32_t otherCopperEach,
+                        std::uint32_t payoutCopperEach)
+{
+    return LineOf(LineOwner::Path, item, units, otherCopperEach, otherCopperEach ? otherCopperEach : -1.0, 1.0f,
+                  payoutCopperEach);
+}
+
+// The skill path's lines: each material whose cheapest source is the auction (source == auctionKind, the pricer's
+// Materials::Kind::Auction), for the units the bot lacks now: its want when the path was computed, at most what the
+// path uses beyond the units the bot holds at this moment (heldNow(item): bags and bank, as the path counts them). The
+// kept path is older than the bags, so a bot that gathered or was sent the material since buys no unit it already
+// holds, and one whose bags emptied never asks for more than the path's want. Recipes and ranks stay with the trainers
+// and vendors. payout(item): one unit's vendor payout in copper
+template <typename MaterialList, typename Held, typename Payout>
+std::vector<BuyLine> PathLines(MaterialList const& materials, std::uint8_t auctionKind, Held const& heldNow,
+                               Payout const& payout)
+{
+    std::vector<BuyLine> lines;
+    for (auto const& material : materials)
+    {
+        if (!material.wanted || material.source != auctionKind)
+            continue;
+        std::uint32_t const held = heldNow(material.item);
+        std::uint32_t const lacking = material.used > held ? material.used - held : 0;
+        if (std::uint32_t const units = std::min<std::uint32_t>(material.wanted, lacking))
+            lines.push_back(PathLine(material.item, units, material.otherCopperEach, payout(material.item)));
+    }
+    return lines;
+}
+
 // The buy list: the lines with an item, units and a ceiling, in owner order (each owner's own order kept)
 inline std::vector<BuyLine> BuyList(std::vector<BuyLine> lines)
 {

@@ -1730,6 +1730,56 @@ void CheckBuyListHand()
     Check(CeilingOf(UseLine(807, 1, 80, 100, 0)) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0)) == 120,
           "a use line's ceiling is its worth under a dearer vendor or with none");
 
+    // The skill path's lines (WA7b): only a material the auction sells cheapest, for its wanted units, its ceiling the
+    // cheapest other way's cost; none for a material another source sells cheapest, none wanted, or no other way
+    struct PathMaterialRow
+    {
+        std::uint32_t item;
+        std::uint32_t used;
+        std::uint32_t wanted;
+        std::uint8_t source;
+        std::uint32_t otherCopperEach;
+    };
+    constexpr std::uint8_t AUCTION_KIND = 7;  // Materials::Kind::Auction
+    std::vector<PathMaterialRow> const materials = {
+        {820, 5, 5, AUCTION_KIND, 90}, {821, 5, 5, 3, 0}, {822, 9, 0, AUCTION_KIND, 90}, {823, 2, 2, AUCTION_KIND, 0}};
+    auto const payoutOf = [](std::uint32_t) { return 4u; };
+    std::vector<BuyLine> const pathLines =
+        BuyList(PathLines(materials, AUCTION_KIND, [](std::uint32_t) { return 0u; }, payoutOf));
+    for (BuyLine const& line : pathLines)
+        std::cout << "  path line " << line.item << " x" << line.units << " ceiling " << CeilingOf(line) << '\n';
+    Check(pathLines.size() == 1 && pathLines[0].item == 820 && pathLines[0].units == 5 &&
+              pathLines[0].owner == LineOwner::Path && CeilingOf(pathLines[0]) == 90 &&
+              pathLines[0].excessUnitWorth == 4,
+          "a path line only for a wanted material the auction sells cheapest, at most its other way's cost");
+    // The kept path is older than the bags (WA7 review): 824's path uses 12 and wanted 7 with 5 held. A line asks for
+    // what the bot lacks now, never for more than the path's want. Control: a rule that does not read the bags
+    std::vector<PathMaterialRow> const kept = {{824, 12, 7, AUCTION_KIND, 90}};
+    auto const unitsHolding = [&](std::uint32_t heldNow, bool readsBags = true)
+    {
+        std::vector<BuyLine> const now =
+            BuyList(PathLines(kept, AUCTION_KIND, [=](std::uint32_t) { return readsBags ? heldNow : 0u; }, payoutOf));
+        return now.empty() ? 0u : now[0].units;
+    };
+    std::cout << "  path line 824 (uses 12, wanted 7) holding 5: x" << unitsHolding(5) << ", 9: x" << unitsHolding(9)
+              << ", 12: x" << unitsHolding(12) << ", 40: x" << unitsHolding(40) << ", 0: x" << unitsHolding(0)
+              << "; control holding 40 unread: x" << unitsHolding(40, false) << '\n';
+    Check(unitsHolding(5) == 7 && unitsHolding(9) == 3 && unitsHolding(12) == 0 && unitsHolding(40) == 0,
+          "a path line asks for the units the bot lacks now: none it has come to hold since the path was computed");
+    Check(unitsHolding(0) == 7, "a path line never asks for more than the path's want, emptied bags or not");
+    Check(unitsHolding(40, false) == 7,
+          "control: a path line that does not read the bags buys 7 units of what the bot holds (caught)");
+    BuyLine const atAuctionCost = PathLine(820, 5, 60, 4);  // control: the ceiling from the auction's own cost
+    Check(
+        TypicalCopper(pathLines.empty() ? BuyLine{} : pathLines[0], 60) == 300 && TypicalCopper(atAuctionCost, 60) == 0,
+        "typical 60 under the other way's 90: the path claims 300 for 5; control: a ceiling at the auction's own "
+        "cost claims nothing (caught)");
+    std::vector<BuyLine> const mixed =
+        BuyList({PathLine(820, 5, 90, 4), BagLine(803, 5000, 0), UseLine(804, 4, 120, 100, 5)});
+    Check(mixed.size() == 3 && mixed[0].owner == LineOwner::Use && mixed[1].owner == LineOwner::Bag &&
+              mixed[2].owner == LineOwner::Path,
+          "a path line sorts after the use and bag lines");
+
     BuyLine const use = lines.empty() ? BuyLine{} : lines[0];
     Check(TypicalCopper(use, 60) == 240 && WantedWorth(use, 60, 1000) == 160 && WantedWorth(use, 60, 130) == 80,
           "typical 60 under the ceiling 100: claims 240 for 4, worth 40 each, as many as the gold buys");
@@ -2236,9 +2286,10 @@ void Tables(std::string const& root)
                  "388, 450), at its gold reserve, no danger, every zone in reach; a minute is worth the band's "
                  "earning rate (30, 100, 250, 500, 1000 copper). An item's band: the lowest band from its required "
                  "level's on whose typical bot can get it.\n";
-    std::cout << "- Missing until professions' WRL5: drop rows (WR20a: no loot-source index yet), so kill loot and "
-                 "skinning are no source; the cost rule counts the game's default skill-gain and loot rates (WR29). "
-                 "WA7a prints this table again after adopting WRL5.\n";
+    std::cout << "- With professions' WRL5 (printed again by WA7a): the fixture holds the drop rows (WR20a) and the "
+                 "server rates of its dump header, which the cost rule counts (WR29: skill gain and loot x2). The "
+                 "typical bots carry no level and no skinning skill, so kill loot and skinning still price no item "
+                 "here. No market price enters this table.\n";
     std::cout << "- Goods with no way of getting them on purpose: buy price per unit (or 4 x the sell price) x "
                  "cmangos's level multiplier x a rarity multiplier by quality (0.92 common, 1.12 uncommon, 1.58 rare, "
                  "2.59 epic); poor items at their sell price. Never below the sell price.\n\n";

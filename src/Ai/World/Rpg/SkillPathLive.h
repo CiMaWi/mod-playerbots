@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include "MarketRules.h"
 #include "SkillPathTypes.h"
 
 class ChatHandler;
@@ -52,6 +53,15 @@ SkillPath::PathInputs PathInputsOf(PlayerbotAI* botAI);
 
 // The bot's thread: the path the bot keeps (BotGoals::path), or null before its first plan; valid during the call
 SkillPath::Path const* KeptPath(PlayerbotAI* botAI);
+
+// Any thread: the market a decision away from the auctioneer sees (auction house WA7a, WA.4): the auction index's
+// published snapshot (typical prices only, through its lock-free pointer), the shared house's fee row (7, WA.9), the
+// poster's numbers and the item templates' stacks as the lot. Take one per computation, not one per item
+Market::View MarketView();
+
+// Any thread: what one unit of an item is expected to fetch listed (Market::View::ProceedsOf at the item template's
+// sell price), in copper; 0 without a market or a typical price, or when the vendor pays as much
+std::uint32_t MarketProceeds(Market::View const& market, std::uint32_t item);
 
 // Any thread, a pure function of its inputs: the needs list with the path's recipes and ranks (SkillPathBridge
 // Compute), its own PerfMonitor row "profession path computed". Without a recipe index or a person: the needs without

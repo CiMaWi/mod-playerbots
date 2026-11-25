@@ -102,13 +102,12 @@ struct OutletYield
     uint32_t worthEach = 0;
 };
 
-// One yield unit's worth to the bot: what its own use of it saves (the skill path's material cost), or what a vendor
-// pays; another buyer's price (the auction house) counts only once buyers beyond the vendors are in the game
-// (SkillPath::BUYERS_BEYOND_VENDORS, the user's ruling)
-inline uint32_t YieldWorthEach(uint32_t useCopper, uint32_t vendorCopper, uint32_t otherBuyerCopper,
-                               bool buyersBeyondVendors)
+// One yield unit's worth to the bot: what its own use of it saves (the skill path's material cost), what a vendor
+// pays, or what a listing at the auction is expected to bring (Market::View::ProceedsOf, auction house WA7a: 0
+// without a typical price, so a bot without a market values as before)
+inline uint32_t YieldWorthEach(uint32_t useCopper, uint32_t vendorCopper, uint32_t otherBuyerCopper)
 {
-    return std::max({useCopper, vendorCopper, buyersBeyondVendors ? otherBuyerCopper : 0u});
+    return std::max({useCopper, vendorCopper, otherBuyerCopper});
 }
 
 // What disenchanting one item is worth: its expected yields at their worth to the bot

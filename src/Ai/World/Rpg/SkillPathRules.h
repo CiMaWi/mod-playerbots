@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "CraftRules.h"
+#include "MarketRules.h"
 #include "MaterialRules.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
@@ -64,8 +66,6 @@ constexpr std::uint32_t MAX_POINTS = 450;              // points of one climb
 constexpr double MIN_MINUTES = Materials::CAST_FLOOR_MS / Planner::Goals::MINUTE_MS;
 constexpr std::uint32_t TOOL_DEPTH = 1;  // a made tool's own tools may be bought, not made in turn
 
-// BUYERS_BEYOND_VENDORS (the second gatherer's hold) is in SkillPathTypes.h
-
 // Deliberate errors the selftest's negative controls switch on (each must find a counterexample to its invariant);
 // always None in the game
 enum class Fault : std::uint8_t
@@ -85,7 +85,10 @@ enum class Fault : std::uint8_t
     ToolFree,         // 12: crafts without the tools the recipe asks for
     WantsOnly,        // 13: lists as the path's materials only what it wants, not what it holds
     IgnoreAbility,    // 14: lets a trainer teach a recipe without the abilities its row asks for (WR.27)
-    RatesInverted     // 15: a skill-up of the server's step gives one point at the step's cost (WR.28)
+    RatesInverted,    // 15: a skill-up of the server's step gives one point at the step's cost (WR.28)
+    AnyMarket,        // 16: weighs a second gatherer for any market view, whether it prices the gatherer's yields
+    SaleFirst,        // 17: lets the crafts for sale claim the bags before the uses and the skill crafts (WA7b)
+    SaleAtLoss        // 18: crafts for sale whatever the inputs cost, when the market buys the products at all
 };
 
 inline char const* FaultWord(Fault fault)
@@ -122,6 +125,12 @@ inline char const* FaultWord(Fault fault)
             return "ignore_ability";
         case Fault::RatesInverted:
             return "rates_inverted";
+        case Fault::AnyMarket:
+            return "any_market";
+        case Fault::SaleFirst:
+            return "sale_first";
+        case Fault::SaleAtLoss:
+            return "sale_at_loss";
         default:
             return "none";
     }
@@ -337,6 +346,7 @@ struct PathWorld
     std::vector<Water> waters;
     Fault fault{Fault::None};
     std::vector<ToolSource> tools;  // empty: a missing tool has no source
+    Market::View market;            // the typical prices (auction house WA7a); empty: only vendors buy and sell
 };
 
 // A missing tool an option gets before its cast, in full: bought (maker 0) or made by a recipe of the profession,
@@ -487,6 +497,7 @@ public:
         materials.reach.assign(_zones.begin(), _zones.end());  // a std::set: sorted
         materials.level = _bot.level;
         materials.side = _bot.side;
+        materials.auctionCopper = _world.market.BuyCopperOf();
         return materials;
     }
 
@@ -850,7 +861,9 @@ public:
         return path;
     }
 
-    // The claims' queue, wants and materials into the path, and what its uses bring
+    // The claims' queue, wants and materials into the path, and what its uses bring; then the crafts for sale, the
+    // last claim (WA7b, professions WR.6): on the units held beyond what the path uses over its whole stretch and
+    // beyond what the queue's crafts take
     void TakeClaims(Path& path, Claims const& claims) const
     {
         path.queue = claims.queue;
@@ -859,6 +872,20 @@ public:
         path.materials = std::move(materials);
         path.useWorth = claims.useWorth;
         path.foodUnits = claims.foodUnits;
+        if (_world.fault == Fault::SaleFirst || _world.market.Empty())
+            return;
+        std::map<std::uint32_t, std::uint32_t> spare;
+        for (auto const& [item, held] : _held)
+        {
+            Material const* material = MaterialOf(path, item);
+            auto const reserved = claims.reserved.find(item);
+            std::uint32_t const kept =
+                std::max(material ? material->used : 0u, reserved == claims.reserved.end() ? 0u : reserved->second);
+            if (held > kept)
+                spare[item] = held - kept;
+        }
+        for (Craft const& craft : SaleCrafts(path, spare))
+            path.queue.push_back(craft);
     }
 
     // The chosen stretch's wants: what its casts and made tools use beyond what the uses leave, expanded through the
@@ -918,12 +945,26 @@ public:
             for (auto const& [item, count] : wanted)
                 wants.push_back({item, static_cast<std::uint32_t>(std::min<std::uint64_t>(count, UINT32_MAX)),
                                  pricer.UnitCost(item).value});
+            // A material the auction sells cheapest is priced again without the auction (WA7b: its buy line's
+            // ceiling); without a market none is, and no second pricer is made
+            Materials::Bot alone;
+            std::optional<Materials::Pricer> other;
             for (auto& [item, material] : used)
             {
                 Materials::Cost const unit = pricer.UnitCost(item);
                 material.copperEach = CopperOf(unit.value);
                 material.source = static_cast<std::uint8_t>(unit.kind);
                 material.via = unit.via;
+                if (unit.kind != Materials::Kind::Auction)
+                    continue;
+                if (!other)
+                {
+                    alone = bot;
+                    alone.auctionCopper = {};
+                    other.emplace(_world.index, alone);
+                }
+                Materials::Cost const otherUnit = other->UnitCost(item);
+                material.otherCopperEach = otherUnit.Blocked() ? 0 : CopperOf(otherUnit.value);
             }
         }
         if (materials)
@@ -1181,6 +1222,9 @@ public:
                     cast(*recipe, static_cast<std::uint32_t>(std::ceil(step.casts)), true);
             }
         };
+        if (_world.fault == Fault::SaleFirst)
+            for (Craft const& craft : SaleCrafts(path, left))
+                claims.queue.push_back(craft);
         if (_world.fault == Fault::SkillFirst)
         {
             skill();
@@ -1194,6 +1238,98 @@ public:
             skill();
         }
         return claims;
+    }
+
+    // Crafts for sale (auction house WA7b, PLAN 3.7): casts from spare, the units nothing else claims (taken from it).
+    // A recipe the bot knows is cast when the market's proceeds of its products beat its inputs at their cost: a
+    // unit's cost by its cheapest source, or what the unit fetches itself when more (selling it is the other way to
+    // use it). One recipe per product, the best net per cast first (then the lower spell), at most a lot of products
+    // each; never a product the path uses or the bot's uses want, nor a spell the queue casts already (a craft row
+    // tells a sale cast by its spell). None without a market
+    [[nodiscard]] std::vector<Craft> SaleCrafts(Path const& path, std::map<std::uint32_t, std::uint32_t>& spare) const
+    {
+        std::vector<Craft> crafts;
+        if (_world.market.Empty())
+            return crafts;
+        std::set<std::uint32_t> kept;  // products the bot keeps
+        for (Material const& material : path.materials)
+            kept.insert(material.item);
+        for (ConsumableWant const& want : _consumables)
+            kept.insert(want.item);
+        for (UseWant const& want : _uses)
+            kept.insert(want.item);
+        std::set<std::uint32_t> queued;
+        for (Craft const& craft : path.queue)
+            queued.insert(craft.spell);
+        auto const castable = [&spare](Recipes::Recipe const& recipe)
+        {
+            std::uint32_t casts =
+                std::max<std::uint32_t>(Market::MAX_LOT / std::max<std::uint32_t>(recipe.productCount, 1), 1);
+            for (Recipes::ItemCount const& reagent : recipe.reagents)
+                if (reagent.count)
+                {
+                    auto const found = spare.find(reagent.item);
+                    casts = std::min(casts, found == spare.end() ? 0u : found->second / reagent.count);
+                }
+            return casts;
+        };
+        struct Sale
+        {
+            double net{0.0};
+            Recipes::Recipe const* recipe{nullptr};
+        };
+        std::map<std::uint32_t, Sale> best;  // by product
+        std::vector<Recipes::Recipe> const& recipes = _world.index.Recipes();
+        for (auto const& [skill, positions] : _recipesOf)
+        {
+            std::optional<Materials::Bot> bot;
+            std::optional<Materials::Pricer> pricer;
+            for (std::size_t const position : positions)
+            {
+                Recipes::Recipe const& recipe = recipes[position];
+                if (recipe.effect != Recipes::Effect::Make || !recipe.product || kept.count(recipe.product) ||
+                    !_known.count(recipe.spell) || queued.count(recipe.spell) || !ToolsHeld(recipe) ||
+                    !castable(recipe))
+                    continue;
+                double const vendor = _world.sellCopper ? _world.sellCopper(recipe.product) : 0.0;
+                double const proceeds =
+                    _world.market.ProceedsOf(recipe.product, static_cast<std::uint32_t>(std::max(vendor, 0.0))) *
+                    std::max<std::uint32_t>(recipe.productCount, 1);
+                if (!(proceeds > 0.0))
+                    continue;
+                if (!pricer)
+                {
+                    bot.emplace(MaterialBot(skill, SkillValue(skill)));
+                    pricer.emplace(_world.index, *bot);
+                }
+                double inputs = 0.0;
+                for (Recipes::ItemCount const& reagent : recipe.reagents)
+                    inputs += InputCopper(*pricer, reagent.item) * reagent.count;
+                double const net = proceeds - inputs;
+                if (!(net > 0.0) && _world.fault != Fault::SaleAtLoss)
+                    continue;
+                auto const [at, added] = best.try_emplace(recipe.product, Sale{net, &recipe});
+                if (!added &&
+                    std::make_pair(-net, recipe.spell) < std::make_pair(-at->second.net, at->second.recipe->spell))
+                    at->second = Sale{net, &recipe};
+            }
+        }
+        std::vector<Sale> sales;
+        for (auto const& [product, sale] : best)
+            sales.push_back(sale);
+        std::sort(sales.begin(), sales.end(), [](Sale const& a, Sale const& b)
+                  { return std::make_pair(-a.net, a.recipe->spell) < std::make_pair(-b.net, b.recipe->spell); });
+        for (Sale const& sale : sales)
+        {
+            std::uint32_t const casts = castable(*sale.recipe);
+            if (!casts)
+                continue;
+            for (Recipes::ItemCount const& reagent : sale.recipe->reagents)
+                if (reagent.count)
+                    spare[reagent.item] -= reagent.count * casts;
+            crafts.push_back({sale.recipe->spell, casts, false, 0, true});
+        }
+        return crafts;
     }
 
 private:
@@ -1215,12 +1351,42 @@ private:
                 Recipes::TrainerTeaches(recipe, [this](std::uint32_t spell) { return _known.count(spell) > 0; }));
     }
 
+    // The bags hold every tool and tool category the recipe asks for (a craft for sale gets none first)
+    [[nodiscard]] bool ToolsHeld(Recipes::Recipe const& recipe) const
+    {
+        return std::all_of(recipe.tools.begin(), recipe.tools.end(),
+                           [this](std::uint32_t tool) { return _tools.count(tool) > 0; }) &&
+               std::all_of(recipe.toolCategories.begin(), recipe.toolCategories.end(),
+                           [this](std::uint32_t category) { return _categories.count(category) > 0; });
+    }
+
+    // A held input's cost to a craft for sale, copper at the neutral exchange: its cost by its cheapest source, or
+    // what it fetches itself when more (WA7b)
+    [[nodiscard]] double InputCopper(Materials::Pricer const& pricer, std::uint32_t item) const
+    {
+        Materials::Cost const unit = pricer.UnitCost(item);
+        double const cost =
+            unit.Blocked() || !(_rates.exchange > 0.0f) ? 0.0 : unit.value / static_cast<double>(_rates.exchange);
+        return std::max(cost, Sell(item));
+    }
+
     [[nodiscard]] bool MayLearn(std::uint32_t spell) const
     {
         return _world.fault == Fault::IgnoreLock || !_world.mayLearn || _world.mayLearn(spell);
     }
 
-    [[nodiscard]] double Sell(std::uint32_t item) const { return _world.sellCopper ? _world.sellCopper(item) : 0.0; }
+    // What one unit fetches: a vendor's price, or a listing's proceeds where the market pays more (auction house
+    // WA7a, PLAN 3.7: the path's income term); the vendor's alone without a market. Kept per item for the weigh
+    [[nodiscard]] double Sell(std::uint32_t item) const
+    {
+        double const vendor = _world.sellCopper ? _world.sellCopper(item) : 0.0;
+        if (_world.market.Empty())
+            return vendor;
+        auto const [at, added] = _sold.try_emplace(item, vendor);
+        if (added)
+            at->second = _world.market.SaleOf(item, vendor);
+        return at->second;
+    }
 
     [[nodiscard]] bool Plays(std::uint32_t zone) const { return _zones.empty() || _zones.count(zone); }
 
@@ -1572,6 +1738,7 @@ private:
     std::vector<SkillLevel> _skills;
     std::map<std::uint16_t, std::vector<std::size_t>> _recipesOf;  // positions in the index's recipes
     std::map<std::uint16_t, std::vector<NodeKind>> _nodesOf;       // by zone and entry
+    mutable std::unordered_map<std::uint32_t, double> _sold;       // Sell's answers with a market
 };
 
 // The skill path of a bot: every stretch weighed, the one taken, its needs, wants and crafts

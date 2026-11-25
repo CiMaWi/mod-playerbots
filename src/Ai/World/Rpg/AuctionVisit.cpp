@@ -49,6 +49,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "SkillPathLive.h"
 #include "Timer.h"
 #include "UpkeepNeedRules.h"
 #include "VisitLifecycle.h"
@@ -239,8 +240,8 @@ bool Tried(std::vector<uint32> const& tried, Item const* item)
 }
 
 // The next bag stack of the bot's auction stock not looked at on this visit: a stack whose own carried keep is auction
-// stock (AuctionStock, refreshed at the visit's first step; ListsStack). The visit lists whole stacks, so a stack
-// another provider keeps is never listed, whatever its entry's other stacks are
+// stock (AuctionStock, refreshed at the visit's first step; ListsStack). A stack another provider keeps is never
+// listed, whatever its entry's other stacks are
 Item* NextStock(PlayerbotAI* botAI, Player* bot, std::vector<uint32> const& tried)
 {
     CarriedKeeps const& carried = botAI->bankMail.bank.carried;
@@ -257,13 +258,26 @@ void MarkEntryTried(Player* bot, uint32 entry, std::vector<uint32>& tried)
         tried.push_back(same->GetGUID().GetCounter());
 }
 
-// The ask for the whole stack at this house (PLAN 3.4): its fees, the cheapest competing buyout the index saw, the
-// seller's expiry memory
-AuctionRules::AskResult AskFor(Player* bot, Item const* item, uint8 houseId)
+// The units of a bag stack the visit lists (StockUnits): those beyond the units the kept skill path uses of its entry,
+// the whole stack of an entry it does not use (auction house WA7b). Read now, so a stack a craft used since the keeps'
+// refresh never gives up the path's units
+uint32 ListUnits(PlayerbotAI* botAI, Item const* item)
+{
+    KeepItemIn keep;
+    keep.count = item->GetCount();
+    SkillPath::Path const* const path = Planner::KeptPath(botAI);
+    if (SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, item->GetEntry()) : nullptr)
+        keep.materialUsed = material->used;
+    return StockUnits(keep);
+}
+
+// The ask for the stack's listed units at this house (PLAN 3.4): its fees, the cheapest competing buyout the index
+// saw, the seller's expiry memory
+AuctionRules::AskResult AskFor(Player* bot, Item const* item, uint32 units, uint8 houseId)
 {
     ItemTemplate const* proto = item->GetTemplate();
     AuctionRules::AskInput in;
-    in.count = std::max<uint32>(item->GetCount(), 1);
+    in.count = std::max<uint32>(units, 1);
     in.sellPrice = proto->SellPrice;
     in.vendorPayout = AuctionVendorPayout(item, in.count);
     if (std::shared_ptr<AuctionRules::Table const> const reference = AuctionReference::Current())
@@ -354,7 +368,9 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
         return VisitTurn{VisitNext::Pending};
     if (visit.awaitAuction)
         return AwaitPurchase(botAI, bot);
-    if (!bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(visit.awaiting)))
+    // Taken: the stack is gone, or holds no units beyond the path's use any more (a part of it was listed, WA7b)
+    Item const* const left = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(visit.awaiting));
+    if (!left || !ListUnits(botAI, left))
     {
         ++visit.posted;
         uint32 const deposit = visit.moneyBefore > bot->GetMoney() ? visit.moneyBefore - bot->GetMoney() : 0;
@@ -487,11 +503,11 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
     while (Item* item = NextStock(botAI, bot, visit.tried))
     {
         visit.tried.push_back(item->GetGUID().GetCounter());
-        AuctionRules::AskResult const ask = AskFor(bot, item, static_cast<uint8>(house->houseId));
-        bool const lists = ask.kind == AuctionRules::AskResult::Kind::List;
+        uint32 const units = ListUnits(botAI, item);
+        AuctionRules::AskResult const ask = AskFor(bot, item, units, static_cast<uint8>(house->houseId));
+        bool const lists = units && ask.kind == AuctionRules::AskResult::Kind::List;
         uint32 const minutes = ask.hours * MINUTES_PER_HOUR;
-        uint32 const deposit =
-            lists ? AuctionHouseMgr::GetAuctionDeposit(house, minutes * MINUTE, item, item->GetCount()) : 0;
+        uint32 const deposit = lists ? AuctionHouseMgr::GetAuctionDeposit(house, minutes * MINUTE, item, units) : 0;
         if (!lists || !bot->HasEnoughMoney(deposit))
         {
             ++visit.held;
@@ -504,8 +520,9 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
 
         // QueuePacket takes ownership; the world thread runs the handler when it drains the bot's session
         WorldPacket* packet = new WorldPacket(CMSG_AUCTION_SELL_ITEM, SELL_PACKET_BYTES);
-        // Clamped as the buy side: an ask above the core's money cap is refused, never sold at a truncated price
-        *packet << auctioneer->GetGUID() << uint32(1) << item->GetGUID() << item->GetCount() << Clamped(ask.startBid)
+        // Clamped as the buy side: an ask above the core's money cap is refused, never sold at a truncated price. The
+        // count lists those units: the core lists a clone of them and keeps the rest of the stack (WA7b)
+        *packet << auctioneer->GetGUID() << uint32(1) << item->GetGUID() << units << Clamped(ask.startBid)
                 << Clamped(ask.ask) << minutes;
         bot->GetSession()->QueuePacket(packet);
         visit.awaiting = item->GetGUID().GetCounter();

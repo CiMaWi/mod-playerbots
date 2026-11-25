@@ -10,6 +10,8 @@
 #include <chrono>
 #include <vector>
 
+#include "AuctionIndex.h"
+#include "AuctionReference.h"
 #include "BotProfessionMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -170,6 +172,24 @@ std::string SecondText(SkillPath::SecondChoice const& second)
 constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps the command prints
 }  // namespace
 
+Market::View MarketView()
+{
+    return {AuctionIndex::Current(), AuctionReference::HouseFees(AuctionRules::HOUSE_NEUTRAL),
+            sPlayerbotAIConfig.Auction, [](std::uint32_t item)
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+                return proto ? proto->GetMaxStackSize() : 1u;
+            }};
+}
+
+std::uint32_t MarketProceeds(Market::View const& market, std::uint32_t item)
+{
+    if (market.Empty())
+        return 0;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    return static_cast<std::uint32_t>(market.ProceedsOf(item, proto ? proto->SellPrice : 0u));
+}
+
 PathData PathDataNow()
 {
     PathData data;
@@ -276,10 +296,11 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
     }
     auto const started = std::chrono::steady_clock::now();
     // The creatures a skinner meets (WR20a), from the drop rows; read only for skinning: a skinner's stretches, or the
-    // second gatherer a bot short of gold may take once other buyers pay
+    // second gatherer a bot short of gold may take where the market buys skins (SkillPathBridge::MarketPays)
+    Market::View market = MarketView();
     std::vector<SkillPath::Skinnable> skinnables;
     bool const skins =
-        SkillPath::BUYERS_BEYOND_VENDORS ||
+        !market.Empty() ||
         std::any_of(
             snapshot.skills.begin(), snapshot.skills.end(), [](Planner::Skill const& skill)
             { return skill.value > 0 && skill.id == static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning); });
@@ -288,7 +309,8 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         Materials::Bot killer;
         killer.level = snapshot.level;
         killer.side = Materials::SideBit(snapshot.team);
-        skinnables = SkillPath::SkinnablesOf(*data.recipes, killer, SellCopper);
+        skinnables = SkillPath::SkinnablesOf(
+            *data.recipes, killer, [&market](std::uint32_t item) { return market.SaleOf(item, SellCopper(item)); });
     }
     SkillPath::PathWorld const world{*data.recipes,
                                      [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
@@ -296,7 +318,8 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
                                      std::move(skinnables),
                                      {},
                                      SkillPath::Fault::None,
-                                     ToolSources()};
+                                     ToolSources(),
+                                     std::move(market)};
     SkillPathBridge::Computed computed =
         SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
                                  CategoriesOf(snapshot.toolsHeld));
@@ -457,7 +480,9 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
     for (SkillPath::Craft const& craft : path->queue)
         queue += Acore::StringFormat("{}{}{} x{}{}", queue.empty() ? "" : ", ", craft.spell,
                                      craft.source ? Acore::StringFormat(" on {}", craft.source) : "", craft.casts,
-                                     craft.forSkill ? " (skill)" : "");
+                                     craft.forSkill  ? " (skill)"
+                                     : craft.forSale ? " (sale)"
+                                                     : "");
     handler->PSendSysMessage("  buys: {}; wants: {}; queue: {}", buys.empty() ? "none" : buys,
                              wants.empty() ? "none" : wants, queue.empty() ? "none" : queue);
     // every material the path uses with its cheapest source (WR20a): kind and the item, zone or recipe it comes by

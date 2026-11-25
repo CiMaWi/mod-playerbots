@@ -130,6 +130,17 @@ void HandCases()
     Fisher poor = plain;
     poor.rates.factor = 3.0f;
     Check(Fish::CastWorth(sold, poor, false) > Fish::CastWorth(sold, plain, false), "a poor bot values copper more");
+    // A listing's proceeds (WA7a) count by the need when they beat the vendor; a flush cook keeps its own use
+    Water listed = sold;
+    listed.openYields[0].otherCopper = 900;
+    Check(Fish::CastWorth(listed, plain, false) > Fish::CastWorth(sold, plain, false),
+          "a market price above the vendor's raises a catch's worth");
+    Water cookListed = cooked;
+    cookListed.openYields[0].otherCopper = 4100;
+    Fisher flushCook = plain;
+    flushCook.rates.factor = 0.1f;
+    Check(Fish::CastWorth(cookListed, flushCook, false) == Fish::CastWorth(cooked, flushCook, false),
+          "a dearer sale never lowers a flush cook's catch: its use outweighs the copper");
 
     // The interest raises spare-time fishing: a water that pays nothing else is fished with it only
     Fisher keen = plain;
