@@ -937,6 +937,16 @@ void CheckPricingHand()
     Check(relisted.kind == AskResult::Kind::List && relisted.reason == Reason::Expired && relisted.hours == 48 &&
               relisted.ask <= offered.ask,
           "after an expiry: listed again for 48 h, not higher");
+    AskInput ore = Lot(10, 5);
+    ore.reference = 5;
+    AskResult const atFloor = Ask(ore, config);
+    ore.expiredSteps = 1;
+    ore.typical.expiries = 1;
+    AskResult const afterExpiry = Ask(ore, config);
+    Check(atFloor.kind == AskResult::Kind::List && atFloor.ask == atFloor.floor &&
+              afterExpiry.kind == AskResult::Kind::Hold && afterExpiry.reason == Reason::BelowFloor &&
+              afterExpiry.floor > atFloor.floor,
+          "a lot listed at the floor expired: the index's expiry lifts the floor, so it is held, not listed higher");
     linen.expiredSteps = config.RelistLimit + 1;
     AskResult const spent = Ask(linen, config);
     Check(spent.kind == AskResult::Kind::Hold && spent.reason == Reason::Expired,
@@ -1086,6 +1096,8 @@ AskResult AskVariant(AskInput const& in, AuctionConfig const& config, AskFault f
         below = undercut < lowest;
         ask = fault == AskFault::RaiseToUndercut ? undercut : std::min(ask, undercut);
     }
+    if (in.expiredSteps && ask < lowest)
+        below = true;
     if (fault == AskFault::PerItem)
         ask += item % 97 + 1;
     if (fault != AskFault::NoClamp)
@@ -1364,16 +1376,22 @@ void SearchAsk(Dice& dice, PriceTally& rule, PriceTally& control, PriceCoverage&
     AskResult const vendorFloor = AskVariant(in, config, AskFault::VendorFloor);
     control.notWorth += vendorFloor.kind == AskResult::Kind::List && !ListsWorth(vendorFloor, in) ? 1 : 0;
 
+    // 6: after an expiry a lot is never listed higher, nor listed when it was held; the index counts the bot's own
+    // expiry too (the sale chance falls and the floor rises), or it lies outside the window
+    auto raised = [](AskResult const& before, AskResult const& after)
+    { return after.kind == AskResult::Kind::List && (before.kind != AskResult::Kind::List || after.ask > before.ask); };
     for (std::uint32_t n = 0; n < 4; ++n)
-    {
-        AskInput now = in;
-        now.expiredSteps = n;
-        AskInput after = in;
-        after.expiredSteps = n + 1;
-        rule.expiryRaises += Ask(after, config).ask > Ask(now, config).ask ? 1 : 0;
-        control.expiryRaises +=
-            AskVariant(after, config, AskFault::StepUp).ask > AskVariant(now, config, AskFault::StepUp).ask ? 1 : 0;
-    }
+        for (bool const counted : {false, true})
+        {
+            AskInput now = in;
+            now.expiredSteps = n;
+            AskInput after = now;
+            after.expiredSteps = n + 1;
+            after.typical.expiries += counted ? 1 : 0;
+            rule.expiryRaises += raised(Ask(now, config), Ask(after, config)) ? 1 : 0;
+            control.expiryRaises +=
+                raised(AskVariant(now, config, AskFault::StepUp), AskVariant(after, config, AskFault::StepUp)) ? 1 : 0;
+        }
 
     AskInput none = in;
     none.cheapestUnitBuyout = 0;

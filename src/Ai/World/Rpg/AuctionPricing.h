@@ -319,7 +319,9 @@ inline AskResult ListingTerms(AskInput const& in, AuctionConfig const& config, d
 }
 
 // What a bot asks for a lot (PLAN 3.4): the evidence, lowered to undercut the cheapest competing buyout seen, never
-// below the floor (worth listing, the keep worth, the vendor sell price); offers below the floor make it hold
+// below the floor (worth listing, the keep worth, the vendor sell price); offers below the floor make it hold. After
+// an expiry the lot goes lower by a step down to the floor and is held below it, never lifted to it: the index counts
+// the expiry, which lowers p and lifts the floor, so lifting would raise the next ask (WA2 review)
 inline AskResult Ask(AskInput const& in, AuctionConfig const& config)
 {
     double const p = SaleChance(in.typical);
@@ -333,6 +335,8 @@ inline AskResult Ask(AskInput const& in, AuctionConfig const& config)
         belowFloor = undercut < lowest;
         ask = std::min(ask, undercut);
     }
+    if (in.expiredSteps && ask < lowest)
+        belowFloor = true;
     return ListingTerms(in, config, p, floor, std::max(ask, lowest), belowFloor);
 }
 
