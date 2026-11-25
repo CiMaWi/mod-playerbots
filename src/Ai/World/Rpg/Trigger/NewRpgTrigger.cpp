@@ -4,6 +4,8 @@
  * or (at your option) any later version.
  */
 
+#include "Awareness.h"
+#include "AwarenessRules.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTravel.h"
@@ -40,8 +42,9 @@ bool VisitActiveTrigger::IsActive() { return BankMail::VisitRuns(botAI->bankMail
 
 namespace
 {
-// The first reason an errand may not start (its word for the test probe), nullptr when it may
-char const* ErrandRefusal(PlayerbotAI* botAI)
+// The first reason an errand may not start (its word for the test probe), nullptr when it may. A sick bot's errand
+// starts only with the due repair recover handed over (`sickErrandOpen`: the errand check's look, NE11)
+char const* ErrandRefusal(PlayerbotAI* botAI, bool sickErrandOpen)
 {
     // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
     if (!TestConstraints::ErrandAllowed(botAI->testConstraints))
@@ -50,8 +53,8 @@ char const* ErrandRefusal(PlayerbotAI* botAI)
         return "visit";
     Player* bot = botAI->GetBot();
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
-    if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), sick))
-        return sick && Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), false) ? "sick" : "status";
+    if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), sick, sickErrandOpen))
+        return sick && Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), false, false) ? "sick" : "status";
     if (!botAI->KeepsPossessions())
         return "keeps";
     if (bot->IsInCombat())
@@ -73,7 +76,21 @@ void ProbeCheck(PlayerbotAI* botAI, std::string const& word)
 }
 }  // namespace
 
-bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI) { return !ErrandRefusal(botAI); }
+bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI) { return !ErrandRefusal(botAI, false); }
+
+bool WorldTravel::SickErrandOpen(PlayerbotAI* botAI)
+{
+    // The cheap facts first: recover's in constant time, the wear before its price, the point's judgement last (as
+    // RecoverAction::Execute judges it)
+    Player* bot = botAI->GetBot();
+    bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    AwarenessRules::RecoverFacts facts;
+    bool const restored = sick && Awareness::RecoverFactsOf(botAI, facts) && AwarenessRules::Restored(facts);
+    bool const repairDue = restored && RepairErrandWanted(bot);
+    bool const clear =
+        repairDue && AwarenessRules::JudgePoint(Awareness::Look(botAI), bot->GetPositionX(), bot->GetPositionY()).clear;
+    return Upkeep::SickErrandOpen(sick, repairDue, restored, clear);
+}
 
 bool WorldTravel::RepairErrandWanted(Player* bot)
 {
@@ -114,6 +131,17 @@ bool InventoryPressureTrigger::IsActive()
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     uint32 const nowMs = getMSTime();
     bool const bagsDue = WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs);
+    // NE11: a sick bot in a status an errand may end looks at recover's hand-over of a due repair every SICK_LOOK_MS
+    // (WorldTravel::SickErrandOpen; its point judgement is no cost per tick). Handed over, the planner is told (its
+    // plan rested until then), or the errand check starts the errand
+    constexpr uint32 SICK_LOOK_MS = 10 * IN_MILLISECONDS;
+    bool sickErrandOpen = false;
+    if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) &&
+        Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), false, false) && nowMs - measure.SickLookMs >= SICK_LOOK_MS)
+    {
+        measure.SickLookMs = nowMs;
+        sickErrandOpen = WorldTravel::SickErrandOpen(botAI);
+    }
     // A planner bot's errands are the planner's (planning 3.19): full bags or gear due for repair only tell it that
     // the situation changed, once per retry time each, in any status; no needs list here. The gear is looked at every
     // PLANNER_WEAR_LOOK_MS while no repair is due (wear comes in fights; a death is the state key's edge), so a due
@@ -133,22 +161,22 @@ bool InventoryPressureTrigger::IsActive()
         }
         if (bagsDue)
             WorldTravel::StampErrandCheck(measure, nowMs);
-        if (bagsDue || repairDue)
+        if (bagsDue || repairDue || sickErrandOpen)
             Planner::SituationChanged(botAI);
         return false;
     }
 
     bool const probe = TestProbe::On(botAI->testConstraints);
-    if (char const* const refusal = ErrandRefusal(botAI))
+    if (char const* const refusal = ErrandRefusal(botAI, sickErrandOpen))
     {
         if (probe)
             ProbeCheck(botAI, std::string("may_start:") + refusal);
         return false;
     }
-    if (bagsDue)
+    if (bagsDue || sickErrandOpen)
     {
         if (probe)
-            ProbeCheck(botAI, "fired bags");
+            ProbeCheck(botAI, sickErrandOpen ? "fired sick_repair" : "fired bags");
         return true;
     }
 

@@ -950,6 +950,7 @@
         {
             "file": "upkeep-selftest.cpp",
             "includes": [
+                "src/Ai/Awareness",
                 "src/Ai/World",
                 "src/Ai/World/Rpg",
                 "src/Bot"

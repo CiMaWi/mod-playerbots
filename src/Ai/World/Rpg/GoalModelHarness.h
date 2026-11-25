@@ -1634,12 +1634,37 @@ inline void RepairFirst(std::vector<Check>& checks)
     Add(checks, "repair: lowest 40 %, none broken, is not due", !due(worn(0, 40, 90, FLUSH)), "");
     Add(checks, "repair: gold below the cheapest worn item is not due", !due(worn(1, 0, 90, 10)), "");
 
+    // NE11 (NE.3): a sick bot's due repair opens once recover has handed it over (Snapshot::sickErrandOpen); until
+    // then, and without a due repair, the bot rests (forced) as before
     Snapshot sick = worn(1, 0, 90, FLUSH);
     sick.sickMs = 60000;
     Ranked const rests = Rank(sick, situation);
     Option const* restTop = Top(rests);
-    Add(checks, "repair: a sick bot rests and gets no repair option",
-        restTop && restTop->kind == GoalKind::Rest && !Has(rests, GoalKind::Errand), Summary(rests));
+    Add(checks, "repair: a sick bot whose recover is not done (not clear or not restored) rests, no repair option",
+        restTop && restTop->kind == GoalKind::Rest && restTop->forced && !Has(rests, GoalKind::Errand) &&
+            !rests.sickErrandOpen,
+        Summary(rests));
+    Snapshot handed = sick;
+    handed.sickErrandOpen = true;
+    Ranked const goes = Rank(handed, situation);
+    Option const* goTop = Top(goes);
+    Add(checks, "repair: a sick bot with a due repair recover handed over gets the errand, not rest",
+        goTop && goTop->kind == GoalKind::Errand && goTop->reason == "repair" && goTop->due && !goTop->forced &&
+            goes.sickErrandOpen,
+        Summary(goes));
+    bool const onlyErrandAndRest =
+        std::all_of(goes.options.begin(), goes.options.end(), [](Option const& option)
+                    { return option.kind == GoalKind::Errand || option.kind == GoalKind::Rest; });
+    bool const questDropped = std::any_of(goes.dropped.begin(), goes.dropped.end(), [](Dropped const& dropped)
+                                          { return dropped.kind == GoalKind::Quest && dropped.reason == SICK_REASON; });
+    Add(checks, "repair: the sick bot is offered only the errand and the rest: the quest hub is dropped (sick)",
+        onlyErrandAndRest && questDropped && Has(goes, GoalKind::Rest) && Has(first, GoalKind::Quest), Summary(goes));
+    Snapshot whole = worn(0, 90, 95, FLUSH);
+    whole.sickMs = 60000;
+    Ranked const idle = Rank(whole, situation);
+    Option const* idleTop = Top(idle);
+    Add(checks, "repair: a sick bot with nothing due rests (forced) and gets no errand",
+        idleTop && idleTop->kind == GoalKind::Rest && idleTop->forced && !Has(idle, GoalKind::Errand), Summary(idle));
 
     ReplanInput running;
     running.current = {GoalKind::Quest, HOME_HUB, 0.0f, false, false};

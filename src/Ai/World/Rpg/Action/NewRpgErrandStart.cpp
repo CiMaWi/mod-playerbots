@@ -189,11 +189,12 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     Player* bot = botAI->GetBot();
     AiObjectContext* context = botAI->GetAiObjectContext();
     // A held errand row refuses the trigger's trip, also one fired before the hold was taken (WU15a); an order passes
-    // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart)
-    if (order.order
-            ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
-               bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())
-            : !TestConstraints::ErrandAllowed(botAI->testConstraints))
+    // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart); a sick
+    // bot's order passes only with the due repair recover handed over (NE11)
+    if (order.order ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+                       (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) && !WorldTravel::SickErrandOpen(botAI)) ||
+                       bot->GetGroup() || bot->GetMap()->Instanceable())
+                    : !TestConstraints::ErrandAllowed(botAI->testConstraints))
         return false;
 
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
