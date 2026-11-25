@@ -3853,6 +3853,47 @@ void TestStrengthFixed()
               Answered(atPet, true, TargetReason::None, 2500, 0) && !atPet.joins.size,
           "target: asked about a player or a pet, nobody joins (nothing learned is read)");
 
+    // Named by the call alone (no reach), a unit joins; a dead one named does not
+    Picture const called = Linked({Foe(101), Foe(102), WithBusy(Foe(103), Busy::Dead)});
+    TargetAnswer const byCall = TargetAt(called, 101, {102, 103});
+    Check(Answered(byCall, true, TargetReason::None, 2500, 2000) && byCall.joins.size == 1 &&
+              byCall.joins.refs[0] == SlotOf(called, 102) && !TargetAt(called, 101).joins.size,
+          "target: a unit named by the call joins without a reach; a dead one named does not");
+    // By reach at the target's place and at the bot's own; through the disc of an estimate; an evading creature from
+    // its home, at its home's height
+    Seen aimed = Foe(101);
+    aimed.x = 60.0f;
+    Seen byTarget = Foe(102);
+    byTarget.x = 75.0f;
+    byTarget.reachYards = 14.0f;
+    Seen byBot = Foe(103);
+    byBot.x = -10.0f;
+    byBot.reachYards = 8.0f;
+    Seen vague = Foe(104);
+    vague.x = 60.0f;
+    vague.y = 30.0f;
+    vague.reachYards = 10.0f;
+    vague.known = Known::Remembered;
+    vague.estimateRadius = 18.0f;
+    Seen evading = WithBusy(Foe(105), Busy::Evading);
+    evading.x = 62.0f;
+    evading.z = 20.0f;
+    evading.homeX = 62.0f;
+    evading.reachYards = 5.0f;
+    TargetAnswer const byReach = TargetAt(Linked({aimed, byTarget, byBot}), 101);
+    TargetAnswer const byDisc = TargetAt(Linked({aimed, vague}), 101);
+    TargetAnswer const byHome = TargetAt(Linked({aimed, evading}), 101);
+    Check(Answered(byReach, false, TargetReason::Many, 2500, 3000) && byReach.joins.size == 2 &&
+              byDisc.joins.size == 1 && byDisc.weight == 2000 && byHome.joins.size == 1 && byHome.weight == 2000,
+          "target: by reach at the target's place or the bot's, through an estimate's disc, an evading creature from "
+          "its home");
+    // Step 1 on the picture as it would be: the bot fights the target, an idle target the bot
+    UnitList noneJoined;
+    Picture const asTaken = AsTaken(Linked({Foe(101)}), THE_BOT, 0, UnitList{}, noneJoined);
+    Check(asTaken.self.fightsGuid == 101 && Fights(asTaken.units[0]) && asTaken.units[0].fightsGuid == BOT &&
+              !noneJoined.size,
+          "target: the bot is given the target, an idle target the bot");
+
     // sides: a unit in no fight holds with theirs 0; an owner is not in a fight through its pet
     Seen owner = Foe(201);
     owner.type = UnitType::Player;
@@ -3882,6 +3923,11 @@ void TestStrengthFixed()
               !Takeable(pointWith({Foe(301, 0, 0, Rank::Elite)})) && !Takeable(pointWith({})),
           "point: two creatures or an elite five levels below are takeable, one of the bot's level too, an elite of "
           "its level or nobody not");
+    PointAnswer heavier;
+    heavier.weight = 1;
+    PointAnswer supported;
+    supported.support = 1;
+    Check(!(heavier == PointAnswer{}) && !(supported == PointAnswer{}), "point: answers differ by weight and support");
 
     Check(AllWordsDistinct<TargetReason>() && !std::strcmp(Word(TargetReason::None), "none") &&
               !std::strcmp(Word(TargetReason::Strong), "strong") && !std::strcmp(Word(TargetReason::Many), "many") &&
@@ -3894,6 +3940,13 @@ void TestStrengthFixed()
     Check(!std::strcmp(Word(SidesAnswer{}), "holds") && !std::strcmp(Word(outweighed), "outweighed") &&
               !std::strcmp(Word(taken), "take") && !std::strcmp(Word(TargetAnswer{}), "leave"),
           "sides and target: the answer words are the plan's");
+}
+
+// A named case prints its name and result, so the output names each (PLAN AW12's exit)
+void CheckNamed(bool ok, char const* what)
+{
+    std::printf("AW12 %s: %s\n", what, ok ? "passed" : "FAILED");
+    Check(ok, what);
 }
 
 // PLAN AW12's four named cases, each answered from a hand-written picture alone
@@ -3920,27 +3973,27 @@ void TestAw12Named()
     SidesAnswer const follows = JudgeSides(Linked(way, 40.0f, 101), THE_BOT);
     PointAnswer const byMembers = JudgePoint(Linked(way, 40.0f, 101), 38.0f, 0.0f);
     PointAnswer const cameFrom = JudgePoint(Linked(way, 40.0f, 101), -30.0f, 0.0f);
-    Check(follows.theirs == 2000 && byMembers.support == 5000 && byMembers.support > follows.theirs &&
-              byMembers.clear && cameFrom.clear && cameFrom.weight == 0,
-          "named, towards allies: the point by the members has a support above what follows the bot, the way back "
-          "is clear");
+    CheckNamed(follows.theirs == 2000 && byMembers.support == 5000 && byMembers.support > follows.theirs &&
+                   byMembers.clear && cameFrom.clear && cameFrom.weight == 0,
+               "named, towards allies: the point by the members has a support above what follows the bot, the way back "
+               "is clear");
     auto same = [](PointAnswer const& a, PointAnswer const& b)
     {
         return a.clear == b.clear && a.reaching == b.reaching && a.weight == b.weight && a.support == b.support &&
                a.inView == b.inView;
     };
-    Check(same(JudgePoint(Linked(camp, 40.0f, 101), 38.0f, 0.0f), byMembers) &&
-              same(JudgePoint(Linked(camp, 40.0f, 101), -30.0f, 0.0f), cameFrom) &&
-              JudgeSides(Linked(camp, 40.0f, 101), THE_BOT).theirs == follows.theirs,
-          "named, towards allies: the camp beside the way changes neither answer");
+    CheckNamed(same(JudgePoint(Linked(camp, 40.0f, 101), 38.0f, 0.0f), byMembers) &&
+                   same(JudgePoint(Linked(camp, 40.0f, 101), -30.0f, 0.0f), cameFrom) &&
+                   JudgeSides(Linked(camp, 40.0f, 101), THE_BOT).theirs == follows.theirs,
+               "named, towards allies: the camp beside the way changes neither answer");
     std::vector<Seen> guards = way;
     for (std::size_t i : {std::size_t(2), std::size_t(3)})
     {
         guards[i].kind = Kind::Guard;
         guards[i].type = UnitType::Creature;
     }
-    Check(JudgePoint(Linked(guards, 40.0f, 101), 38.0f, 0.0f).support == 0,
-          "named, towards allies: a guard standing in the members' place gives no support");
+    CheckNamed(JudgePoint(Linked(guards, 40.0f, 101), 38.0f, 0.0f).support == 0,
+               "named, towards allies: a guard standing in the members' place gives no support");
 
     // An ally outnumbered: one member of a group of three with four creatures on it, the other with one
     std::vector<Seen> group{Friend(201, Kind::Group, 10.0f, 0.0f, 301), Friend(202, Kind::Group, -10.0f, 0.0f, 305)};
@@ -3950,9 +4003,9 @@ void TestAw12Named()
     Picture const members = Linked(group);
     SidesAnswer const four = JudgeSides(members, SlotOf(members, 201));
     SidesAnswer const lone = JudgeSides(members, SlotOf(members, 202));
-    Check(!four.holds && four.ours == 2500 && four.theirs == 4000 && lone.holds && lone.ours == 2500 &&
-              lone.theirs == 1000 && !std::strcmp(Word(four), "outweighed") && !std::strcmp(Word(lone), "holds"),
-          "named, an ally outnumbered: four creatures on a member outweigh it, one does not");
+    CheckNamed(!four.holds && four.ours == 2500 && four.theirs == 4000 && lone.holds && lone.ours == 2500 &&
+                   lone.theirs == 1000 && !std::strcmp(Word(four), "outweighed") && !std::strcmp(Word(lone), "holds"),
+               "named, an ally outnumbered: four creatures on a member outweigh it, one does not");
 
     // Players on both sides: three players against two, with a creature among them
     Seen enemyOne = Foe(301, 0, 201);
@@ -3966,10 +4019,10 @@ void TestAw12Named()
     SidesAnswer const enemy = JudgeSides(players, SlotOf(players, 301));
     SidesAnswer const allyThree = JudgeSides(players, SlotOf(players, 203));
     SidesAnswer const enemyTwoSides = JudgeSides(players, SlotOf(players, 302));
-    Check(ally.ours == 7500 && ally.theirs == 6000 && enemy.ours == ally.theirs && enemy.theirs == ally.ours &&
-              allyThree.ours == ally.ours && allyThree.theirs == ally.theirs && enemyTwoSides.ours == enemy.ours &&
-              enemyTwoSides.theirs == enemy.theirs && ally.holds && !enemy.holds,
-          "named, players on both sides: the same two strengths asked from either side");
+    CheckNamed(ally.ours == 7500 && ally.theirs == 6000 && enemy.ours == ally.theirs && enemy.theirs == ally.ours &&
+                   allyThree.ours == ally.ours && allyThree.theirs == ally.theirs && enemyTwoSides.ours == enemy.ours &&
+                   enemyTwoSides.theirs == enemy.theirs && ally.holds && !enemy.holds,
+               "named, players on both sides: the same two strengths asked from either side");
 
     // An enemy known and not seen: remembered within 15 yd of its last place
     Seen remembered = Foe(401);
@@ -3982,8 +4035,9 @@ void TestAw12Named()
     lastSeen.estimateRadius = 0.0f;
     PointAnswer const known = JudgePoint(Linked({remembered}), 20.0f, 0.0f);
     PointAnswer const atLastPlace = JudgePoint(Linked({lastSeen}), 20.0f, 0.0f);
-    Check(!known.clear && known.weight == 1000 && atLastPlace.clear && atLastPlace.weight == 0,
-          "named, an enemy known and not seen: its disc of 15 yd reaches a point its last place alone leaves clear");
+    CheckNamed(
+        !known.clear && known.weight == 1000 && atLastPlace.clear && atLastPlace.weight == 0,
+        "named, an enemy known and not seen: its disc of 15 yd reaches a point its last place alone leaves clear");
 
     // The join in three dimensions: a neighbour 6 yd from the target and 12 yd above, its reach 8
     Seen aim = Foe(1);
@@ -3998,9 +4052,10 @@ void TestAw12Named()
     Picture const flat = Linked({aim, level});
     TargetAnswer const fromSlope = JudgeTarget(slope, THE_BOT, 0, CallOf(slope, 0));
     TargetAnswer const fromFlat = JudgeTarget(flat, THE_BOT, 0, CallOf(flat, 0));
-    Check(!fromSlope.joins.size && fromSlope.weight == 1000 && fromFlat.joins.size == 1 && fromFlat.weight == 2000,
-          "named, a slope: a neighbour above the target out of the radius and its reach in three dimensions does not "
-          "join");
+    CheckNamed(
+        !fromSlope.joins.size && fromSlope.weight == 1000 && fromFlat.joins.size == 1 && fromFlat.weight == 2000,
+        "named, a slope: a neighbour above the target out of the radius and its reach in three dimensions does not "
+        "join");
 }
 
 // A generated fight (AW12): the bot at 0 0 0 at 10 to 100 % health; one to three fights, the first the bot's, each
