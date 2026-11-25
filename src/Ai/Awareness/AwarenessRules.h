@@ -1052,6 +1052,15 @@ struct TargetAnswer
 
 constexpr char const* Word(TargetAnswer const& answer) { return answer.take ? "take" : "leave"; }
 
+// AW14: a caller's row about a candidate it leaves comes at most once per candidate and this many seconds
+constexpr std::int64_t TARGET_ROW_SECONDS = 60;
+
+// Whether that row is due: never written (last 0) or written at least TARGET_ROW_SECONDS before now (seconds)
+constexpr bool RowDue(std::int64_t lastWrite, std::int64_t now)
+{
+    return lastWrite == 0 || now - lastWrite >= TARGET_ROW_SECONDS;
+}
+
 // `target` step 2 by reach: a unit that counts for a point (§3.2) whose reach plus POINT_MARGIN_YARDS covers this
 // place, from its ground (an evading creature from its home, a creature on a path along its next stretch), measured
 // as the engine measures a reach: straight in three dimensions, the planar part against the disc of its estimate

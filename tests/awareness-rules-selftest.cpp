@@ -4756,6 +4756,14 @@ void TestReplay(char const* file)
 
 }  // namespace
 
+// AW14: a caller's row about a candidate it leaves, at most once per candidate and minute
+void TestRowDue()
+{
+    Check(RowDue(0, 1000), "row due: never written, due");
+    Check(!RowDue(1000, 1000) && !RowDue(1000, 1000 + TARGET_ROW_SECONDS - 1), "row due: not within the minute");
+    Check(RowDue(1000, 1000 + TARGET_ROW_SECONDS) && RowDue(1000, 5000), "row due: due from the minute on");
+}
+
 int main(int argc, char** argv)
 {
     TestValues();
@@ -4790,6 +4798,7 @@ int main(int argc, char** argv)
     TestAw12Named();
     TestAw12Generated();
     TestReplay(argc > 2 ? argv[2] : "tests/data/aw-fights.tsv");
+    TestRowDue();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
