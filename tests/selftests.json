@@ -1,6 +1,13 @@
 {
     "tests": [
         {
+            "file": "auction-index-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "auction-index: \\d+ passed, 0 failed"
+        },
+        {
             "file": "awareness-rules-selftest.cpp",
             "includes": [
                 "src/Ai/Awareness",

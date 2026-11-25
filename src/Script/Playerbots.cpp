@@ -7,6 +7,7 @@
 #include "Playerbots.h"
 #include "AcquaintanceMgr.h"
 #include "ArenaTeamFormation.h"
+#include "AuctionIndex.h"
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
@@ -749,6 +750,8 @@ public:
             TimeHookCall("WorldHook WorldLog", [diff] { WorldLogWriter::Instance().Update(diff); });
             // Bots and players per area for the planner; a timer add between refreshes
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
+            // The auction price index: a timer add; every PublishSeconds a refresh of the listed auctions
+            TimeHookCall("WorldHook AuctionIndex", [diff] { AuctionIndex::Update(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
             TimeHookCall("WorldHook PlannerQuestStats", [diff] { Planner::UpdateQuestStats(diff); });
             // The quest failure record: a timer add; every 300 s an asynchronous write of the changed rows
@@ -903,6 +906,7 @@ void AddSC_matchmaker();
 void AddSC_natural_trace();
 void AddSC_population();
 void AddSC_config_tables();
+void AddSC_auction_index();
 
 void AddPlayerbotsScripts()
 {
@@ -949,4 +953,5 @@ void AddPlayerbotsScripts()
     AddSC_natural_trace();
     AddSC_population();
     AddSC_config_tables();
+    AddSC_auction_index();
 }

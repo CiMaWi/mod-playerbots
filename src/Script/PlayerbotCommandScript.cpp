@@ -18,6 +18,7 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
+#include "AuctionIndex.h"
 #include "Awareness.h"
 #include "BankCommands.h"
 #include "BattleGroundTactics.h"
@@ -363,6 +364,11 @@ public:
             {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
+        // Auction WA1b: an item's entry in the price index (read only)
+        static ChatCommandTable playerbotsAuctionCommandTable = {
+            {"index", AuctionIndex::HandleIndexCommand, SEC_PLAYER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -404,6 +410,7 @@ public:
             {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
+            {"auction", playerbotsAuctionCommandTable},
         };
 
         static ChatCommandTable wlogCommandTable = {
