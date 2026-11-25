@@ -368,8 +368,10 @@ void FailureRows(Rules const& rules)
               !rules.writes(true, Outcome::Abandoned, "no_target"),
           "and only when the use's word gives the quest up");
     Check(!rules.writes(true, Outcome::Abandoned, "no_path") && !rules.writes(true, Outcome::TimedOut, TIMEOUT) &&
-              !rules.writes(true, Outcome::TimedOut, "dry") && !rules.writes(true, Outcome::Finished, "done"),
-          "an order writes no row for anything else");
+              !rules.writes(true, Outcome::TimedOut, "dry") && !rules.writes(true, Outcome::TimedOut, "time") &&
+              !rules.writes(true, Outcome::Finished, "done"),
+          "an order writes no row for anything else: a dry or time end's refused takes are written by the order's "
+          "end (QuestFieldExec::RefusedTakes, WQ18c), never a row of the end's word");
     Check(IsGiveUpWord("refused:level") && IsGiveUpWord("locked") && !IsGiveUpWord("refuse") &&
               !IsGiveUpWord(nullptr) && !IsGiveUpWord("deadline"),
           "the give-up words are the check's");
@@ -495,6 +497,11 @@ int main()
     orderHandInOnly.writes = [](bool order, StatusEnd::Outcome outcome, char const* word)
     { return order ? word && std::string_view(word) == NO_ENDER : WritesFailure(false, outcome, word); };
     Mutant("an order's failed use writes no row", orderHandInOnly);
+
+    Rules dryRow;
+    dryRow.writes = [](bool order, StatusEnd::Outcome outcome, char const* word)
+    { return WritesFailure(order, outcome, word) || (order && word && std::string_view(word) == "dry"); };
+    Mutant("an order's dry end writes a row of its own word (WQ18c)", dryRow);
 
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;

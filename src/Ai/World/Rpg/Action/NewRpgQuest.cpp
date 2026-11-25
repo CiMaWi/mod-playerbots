@@ -148,7 +148,7 @@ std::vector<Planner::QuestFields::Need> LogNeeds(Player* bot, Planner::QuestInde
 }
 
 // Whether the bot can still take a quest an order expects it to take (questing WQ18b): not in its log, not handed
-// in, and not given up (a take the game refused: QuestLogRules' Read)
+// in, and not given up (QuestLogRules' Read)
 bool Takeable(Player* bot, Planner::QuestLog::Record const& record, uint32 questId)
 {
     return bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && !bot->GetQuestRewardStatus(questId) &&
@@ -412,16 +412,6 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
 
 namespace
 {
-// A take the take test allows and the game refuses at the giver (questing WQ31): one failure row, and the record that
-// the take test reads as given up, so the giver is not sought for it again
-void NoteRefusedTake(Player* bot, uint32 questId)
-{
-    char const* const cause = Planner::QuestLog::CANNOT_TAKE.data();
-    EventLog::Emit(bot, EventLog::EventType::QuestFail, cause, questId, 0);
-    QuestFailRecord::Note(bot, questId, cause, 0);
-    LOG_DEBUG("playerbots", "[Quest] {} cannot take quest {}", bot->GetName(), questId);
-}
-
 QuestDropReason DropReasonOf(Planner::QuestLog::Drop drop, QuestStatus status)
 {
     switch (drop)
@@ -503,7 +493,8 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
     if (menu.Empty())
         return true;
 
-    // A bot on an order takes what the take test allows (questing WQ31); the game's refusal is put on record once
+    // A bot on an order takes what the take test allows (questing WQ31). A planned take the game refuses stays open,
+    // and the order's end at this giver gives it up (QuestGiveUp::OrderEnded, WQ18c)
     bool const onOrder = NewRpgHelpers::OnOrder(botAI);
     NewRpgHelpers::OrderTake take(bot);
     for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
@@ -520,12 +511,7 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
             if (!onOrder)
                 accept = NewRpgHelpers::FreeBotTakes(botAI, bot, quest);
             else if (take.MayAccept(quest))
-            {
-                if (bot->CanTakeQuest(quest, false))
-                    accept = bot->CanAddQuest(quest, false);
-                else
-                    NoteRefusedTake(bot, quest->GetQuestId());
-            }
+                accept = bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false);
         }
         if (accept)
         {
@@ -1092,6 +1078,30 @@ std::optional<Planner::QuestOrderEnd> QuestGiveUp::OrderEnded(PlayerbotAI* botAI
     // counts as replaced
     std::optional<Planner::QuestOrderEnd> const own = Planner::QuestFieldExec::OwnEnd(word, outcome);
     Planner::QuestOrderEnd const end = own.value_or(Planner::QuestOrderEnd::Replaced);
+    // WQ18c (WQ.44 item 2): the one writer of a refused take. A planned take the order's own end leaves open at its
+    // giver is one give-up of the quest (cannot_take), whether the giver did not offer it or the game refused the
+    // accept; the second puts it out for the bot as any cause does. A bot the test keeps from choosing quests refused
+    // nothing
+    bool const givesUp = own && Planner::QuestFieldExec::GivesUpTakes(*own) &&
+                         TestConstraints::QuestChoicesAllowed(botAI->testConstraints);
+    if (std::shared_ptr<Planner::QuestIndex const> const index = givesUp ? Planner::Quests() : nullptr)
+    {
+        std::vector<Planner::QuestFieldExec::NpcSpot> const spots = OrderSpots(bot, run.order, *index);
+        NewRpgHelpers::OrderTake take(bot);
+        auto const atGiver = [bot, &spots](uint32 questId)
+        { return Planner::QuestFieldExec::AtGiver(spots, questId, bot->GetPositionX(), bot->GetPositionY()); };
+        auto const mayTake = [&take](uint32 questId)
+        {
+            Quest const* const quest = sObjectMgr->GetQuestTemplate(questId);
+            return quest && take.MayAccept(quest);
+        };
+        for (uint32 const questId : Planner::QuestFieldExec::RefusedTakes(run, *own, atGiver, mayTake))
+        {
+            NewRpgInfo::DoQuest one;
+            one.questId = questId;
+            Noted(botAI, one, Planner::QuestLog::CANNOT_TAKE.data());
+        }
+    }
     // The credits since the last tick count too
     std::vector<Planner::QuestOrderMark> marks = run.marks;
     bool added = false;

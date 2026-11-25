@@ -1342,7 +1342,8 @@ void SwitchRules()
         dry.arrivedAt = X::Stamp(2000);
         counted(dry);
         Check(!X::End(dry, 2000 + X::LOOK_MS - 1, false) && X::End(dry, 2000 + X::LOOK_MS, false) == QuestOrderEnd::Dry,
-              "take-only: a take that never comes ends dry after the look time at the place (no failure row)");
+              "take-only: a take that never comes ends dry after the look time at the place (its give-up: "
+              "RefusedTakes)");
     }
     {
         std::vector<QuestOrderOpen> const counts = {{7, 0, 2}, {8, HAND_IN, 1}, {9, 1, 0}};
@@ -1747,6 +1748,159 @@ void FieldEnder()
           "(mutant: NameEnd without the ender's place)");
 }
 
+// WQ18c (WQ.44 item 2): a planned take that ends without the accept is one give-up of its quest (cannot_take),
+// written by one rule at the order's own end where the bot stands at the giver
+void RefusedTakeCases()
+{
+    constexpr std::uint32_t QUEST_A = 80;
+    constexpr std::uint32_t QUEST_B = 81;
+    constexpr std::uint32_t QUEST_C = 82;  // a hand-in on the same order, its ender beside the givers
+    constexpr float GIVER_X = -8903.0f;
+    constexpr float GIVER_Y = -163.0f;
+    constexpr std::uint32_t HORIZON_MS = 20 * 60 * 1000;  // past every bound of the orders below
+    std::vector<X::NpcSpot> const spots = {{QUEST_A, TAKE, GIVER_X, GIVER_Y, 0.0f},
+                                           {QUEST_B, TAKE, GIVER_X + 4.0f, GIVER_Y, 0.0f},
+                                           {QUEST_C, HAND_IN, GIVER_X, GIVER_Y + 4.0f, 0.0f}};
+    std::set<std::uint32_t> taken;   // in the log
+    std::set<std::uint32_t> denied;  // the take test denies it now (a full log, grey, given up)
+    float botX = GIVER_X + 2.0f;     // beside the givers
+    float const botY = GIVER_Y;
+    auto const takeable = [&taken](std::uint32_t quest) { return taken.count(quest) == 0; };
+    auto const atGiver = [&spots, &botX, botY](std::uint32_t quest) { return X::AtGiver(spots, quest, botX, botY); };
+    auto const mayTake = [&taken, &denied](std::uint32_t quest)
+    { return taken.count(quest) == 0 && denied.count(quest) == 0; };
+    auto const orderOf = [](QuestOrderWord word, std::vector<QuestOrderNeed> expected)
+    {
+        QuestOrder order;
+        order.word = word;
+        order.end = QuestOrderEnd::Done;
+        order.mapId = MAP_A;
+        order.x = GIVER_X;
+        order.y = GIVER_Y;
+        order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+        order.expected = std::move(expected);
+        order.walkMinutes = 1.0f;
+        order.minutes = 5.0f;
+        return order;
+    };
+    // The order's run at its place, counted as the executor counts it: the log's needs (open), then the takes
+    auto const runOf = [&takeable](QuestOrder const& order, std::vector<QuestOrderOpen> open)
+    {
+        QuestOrderRun run;
+        run.order = order;
+        run.startedAt = run.lastCount = X::Stamp(1000);
+        run.arrivedAt = X::Stamp(2000);
+        run.open = std::move(open);
+        X::OpenTakes(run.open, run.order, takeable);
+        return run;
+    };
+    // Ticks every TICK_MS with nothing found, as the executor's, until the order's end
+    auto const endOf = [](QuestOrderRun const& run)
+    {
+        for (std::uint32_t now = 2000; now <= 2000 + HORIZON_MS; now += TICK_MS)
+            if (std::optional<QuestOrderEnd> const end = X::End(run, now, false))
+                return *end;
+        return QuestOrderEnd::Replaced;
+    };
+    using Quests = std::vector<std::uint32_t>;
+    auto const rows = [&atGiver, &mayTake](QuestOrderRun const& run, QuestOrderEnd end)
+    { return X::RefusedTakes(run, end, atGiver, mayTake); };
+
+    // C1: the giver reached, the quest not offered: the order ends dry after the look time, one row for the quest
+    std::size_t c1 = 0;
+    for (QuestOrderWord const word : {QuestOrderWord::HandIn, QuestOrderWord::Field})
+    {
+        QuestOrderRun const one = runOf(orderOf(word, {{QUEST_A, TAKE, 1}}), {});
+        QuestOrderRun const two = runOf(orderOf(word, {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}}), {});
+        QuestOrderRun twice = runOf(orderOf(word, {{QUEST_A, TAKE, 1}, {QUEST_A, TAKE, 1}}), {});
+        twice.open.push_back({QUEST_A, TAKE, 1});  // a count that listed it twice
+        c1 += endOf(one) == QuestOrderEnd::Dry && rows(one, QuestOrderEnd::Dry) == Quests{QUEST_A} &&
+              X::OutcomeOf(QuestOrderEnd::Dry) == StatusEnd::Outcome::TimedOut && endOf(two) == QuestOrderEnd::Dry &&
+              rows(two, QuestOrderEnd::Dry) == (Quests{QUEST_A, QUEST_B}) && endOf(twice) == QuestOrderEnd::Dry &&
+              rows(twice, QuestOrderEnd::Dry) == Quests{QUEST_A};
+    }
+    Check(c1 == 2,
+          "refused take: a planned take whose giver is reached and does not offer the quest ends dry (an order at "
+          "NPCs and a field order) with one cannot_take give-up per quest, two quests two, a quest listed twice one "
+          "(mutants: no de-duplication; dry gives up no take)");
+
+    // C2: a refused accept (the menu lists the quest, the game refuses it) leaves the take open, as a giver that does
+    // not offer it: the same run, the same end, the same row. No second writer exists (NoteRefusedTake is gone)
+    {
+        QuestOrderRun const refused = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}}), {});
+        Check(endOf(refused) == QuestOrderEnd::Dry && rows(refused, QuestOrderEnd::Dry) == Quests{QUEST_A},
+              "refused take: a refused accept and a giver that offers nothing end alike, one give-up at the order's "
+              "end");
+    }
+
+    // C3: no other end, and no other need, writes the row
+    {
+        QuestOrderRun const open = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}}), {});
+        std::size_t none = 0;
+        for (QuestOrderEnd const end :
+             {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Replaced, QuestOrderEnd::Bags})
+            none += rows(open, end).empty() && !X::GivesUpTakes(end);
+        QuestOrderRun walking = open;
+        walking.arrivedAt = 0;
+        bool const beforeArrival = rows(walking, QuestOrderEnd::Time).empty();
+        bool const timeAtGiver = rows(open, QuestOrderEnd::Time) == Quests{QUEST_A};
+        Check(none == 4 && beforeArrival && timeAtGiver,
+              "refused take: done, arrived, replaced and bags write no row; time writes one at the giver after the "
+              "arrival and none on the way (mutant: every end gives up its takes)");
+
+        botX = GIVER_X + 200.0f;  // the field's place, away from the giver
+        QuestOrderRun const field = runOf(orderOf(QuestOrderWord::Field, {{QUEST_A, TAKE, 1}}), {});
+        bool const away = endOf(field) == QuestOrderEnd::Dry && rows(field, QuestOrderEnd::Dry).empty() &&
+                          rows(field, QuestOrderEnd::Time).empty();
+        botX = GIVER_X + 2.0f;
+        taken = {QUEST_A};
+        QuestOrderRun const tookA =
+            runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}}), {});
+        bool const tookOne = rows(tookA, QuestOrderEnd::Dry) == Quests{QUEST_B};
+        QuestOrderRun stale = open;  // the take came in this tick, after the last count
+        bool const staleTaken = rows(stale, QuestOrderEnd::Dry).empty();
+        taken.clear();
+        stale.open.front().left = 0;
+        bool const closed = rows(stale, QuestOrderEnd::Dry).empty();
+        denied = {QUEST_A};
+        bool const deniedNow = rows(open, QuestOrderEnd::Dry).empty();
+        denied.clear();
+        Check(away && tookOne && staleTaken && closed && deniedNow,
+              "refused take: a field order that ends away from the giver writes none; a take that came, a need closed "
+              "and a take the take test now denies (a full log, grey, given up: no refusal of the giver) write none "
+              "(mutants: RefusedTakes takes closed needs; mayTake not asked)");
+
+        QuestOrderRun hub = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_C, HAND_IN, 1}, {QUEST_A, TAKE, 1}}),
+                                  {{QUEST_C, HAND_IN, 1}});
+        bool const noEnder =
+            X::NameEnd(hub, QuestOrderEnd::NoEnder, [](std::uint32_t) { return false; }) == QuestOrderEnd::NoEnder &&
+            X::NoEnderQuests(hub) == Quests{QUEST_C} && rows(hub, QuestOrderEnd::NoEnder) == Quests{QUEST_A};
+        QuestOrderRun const handIn =
+            runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_C, HAND_IN, 1}}), {{QUEST_C, HAND_IN, 1}});
+        bool const handInNone =
+            rows(handIn, QuestOrderEnd::NoEnder).empty() && rows(handIn, QuestOrderEnd::Dry).empty() &&
+            !X::AtGiver(spots, QUEST_C, GIVER_X, GIVER_Y + 4.0f) && X::AtGiver(spots, QUEST_A, GIVER_X, GIVER_Y);
+        Check(noEnder && handInNone,
+              "refused take: a no_ender end at the giver writes the take's row beside its hand-in's; a hand-in is "
+              "never a take row, and its ender is no giver (mutant: RefusedTakes takes hand-ins)");
+    }
+
+    // C4: the door writes once per end: the ticks before the end write nothing, the end its rows once
+    {
+        QuestOrderRun const run = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}}), {});
+        std::size_t written = 0;
+        std::size_t ends = 0;
+        for (std::uint32_t now = 2000; now <= 2000 + HORIZON_MS && !ends; now += TICK_MS)
+            if (std::optional<QuestOrderEnd> const end = X::End(run, now, false))
+            {
+                ++ends;
+                written += rows(run, *end).size();
+            }
+        Check(ends == 1 && written == 2 && rows(run, QuestOrderEnd::Dry) == rows(run, QuestOrderEnd::Dry),
+              "refused take: one end, one row per open take, the same rows however often the rule is asked");
+    }
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
@@ -1767,6 +1921,7 @@ int main(int argc, char** argv)
     NpcOrders();
     EnderWalks(seed);
     FieldEnder();
+    RefusedTakeCases();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

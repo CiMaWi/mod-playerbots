@@ -215,7 +215,8 @@ inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t 
 
 // The status end of an order's end: done finishes; time and dry end by the clock; a way arrives; a newer order ends
 // it as an order does. Only no_ender (WQ19b, WQ.43 point 6: the failed hand-in) is Abandoned, which writes the
-// failure row at the status door (NewRpgStatusEnd.cpp); no other end writes one
+// failure row at the status door (NewRpgStatusEnd.cpp). The planned takes an end leaves open at their giver get
+// theirs from the order's end, whatever its outcome (RefusedTakes, WQ18c)
 constexpr StatusEnd::Outcome OutcomeOf(QuestOrderEnd end)
 {
     switch (end)
@@ -497,6 +498,51 @@ inline bool EnderElsewhere(QuestOrder const& order, std::span<NpcSpot const> spo
         inField = true;
     }
     return inField;
+}
+
+// WQ18c (WQ.44 item 2): the ends that give up the planned takes they leave open at the giver: the look found nothing
+// to take (dry), the stay ran out (time) or a hand-in failed there (no_ender). A take-over (replaced) did not finish
+// the order; done leaves none open; bags ends for the bot to make room and come back, its takes with it
+constexpr bool GivesUpTakes(QuestOrderEnd end)
+{
+    return end == QuestOrderEnd::Dry || end == QuestOrderEnd::Time || end == QuestOrderEnd::NoEnder;
+}
+
+// WQ18c: whether the bot stands at a giver of a quest (a spot of its take within the yards of an NPC the order looked
+// at)
+inline bool AtGiver(std::span<NpcSpot const> spots, std::uint32_t quest, float x, float y)
+{
+    return std::any_of(spots.begin(), spots.end(),
+                       [quest, x, y](NpcSpot const& spot)
+                       {
+                           return spot.quest == quest && spot.objective == QuestFields::TAKE &&
+                                  std::hypot(spot.x - x, spot.y - y) <= ENDER_YARDS;
+                       });
+}
+
+// WQ18c (WQ.44 item 2): the planned takes an order's end gives up, one cannot_take give-up each, written in one place
+// (QuestGiveUp::OrderEnded): the expected takes still open when an end that gives them up (GivesUpTakes) comes after
+// the arrival, while the bot stands at the quest's giver (atGiver) and the take test still allows the quest
+// (mayTake: a full log, a grey quest or one given up is no refusal of the giver). A giver that does not offer the
+// quest and a game that refuses its accept end alike: the take stays open and the order ends there. Once per quest
+template <typename AtGiverOf, typename MayTake>
+std::vector<std::uint32_t> RefusedTakes(QuestOrderRun const& run, QuestOrderEnd end, AtGiverOf const& atGiver,
+                                        MayTake const& mayTake)
+{
+    std::vector<std::uint32_t> quests;
+    if (!GivesUpTakes(end) || !run.arrivedAt)
+        return quests;
+    for (QuestOrderNeed const& expected : run.order.expected)
+    {
+        if (expected.objective != QuestFields::TAKE ||
+            std::find(quests.begin(), quests.end(), expected.quest) != quests.end() ||
+            std::none_of(run.open.begin(), run.open.end(), [&expected](QuestOrderOpen const& need)
+                         { return need.left && need.quest == expected.quest && need.objective == QuestFields::TAKE; }))
+            continue;
+        if (atGiver(expected.quest) && mayTake(expected.quest))
+            quests.push_back(expected.quest);
+    }
+    return quests;
 }
 
 // A field order at a point (the test order `route field`): the point is the place, its cell the field, the expected

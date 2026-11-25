@@ -191,8 +191,9 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         NewRpgDoFishAction::EndTrip(botAI, *fish, outcome,
                                     note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome)));
     // A quest given up, by its executor or by whatever ended it: its failure row and record (questing WT35c). A free
-    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order only for
-    // its failed hand-ins (WQ19b, Pursuit::WritesFailure)
+    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order for its
+    // failed hand-ins (WQ19b, Pursuit::WritesFailure) and, at its own end below, for the planned takes it leaves open
+    // at their giver (WQ18c, QuestGiveUp::OrderEnded)
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
         quest && Pursuit::WritesFailure(quest->order.has_value(), outcome, word))
         QuestGiveUp::Noted(botAI, *quest, word);

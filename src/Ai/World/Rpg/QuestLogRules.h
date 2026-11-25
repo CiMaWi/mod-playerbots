@@ -28,10 +28,10 @@ namespace Planner
 {
 namespace QuestLog
 {
-constexpr std::size_t LOG_SLOTS = 25;                    // MAX_QUEST_LOG_SIZE (WQ.28)
-constexpr std::uint32_t PLAN_DUE_MS = 30 * 1000;         // from the round's first accept
-constexpr std::string_view CANNOT_TAKE = "cannot_take";  // the failure row of a take the game refused at the giver
-constexpr std::uint32_t REFUSED_LIMIT = 1;               // a refused take is given up at once
+constexpr std::size_t LOG_SLOTS = 25;             // MAX_QUEST_LOG_SIZE (WQ.28)
+constexpr std::uint32_t PLAN_DUE_MS = 30 * 1000;  // from the round's first accept
+// The failure row of a planned take that ended without the accept (WQ18c, WQ.44 item 2): one give-up, as any cause
+constexpr std::string_view CANNOT_TAKE = "cannot_take";
 
 // A quest a giver offers is accepted when the take test allows it and a slot is free
 inline bool MayAccept(QuestRecord const& quest, Take::Facts const& bot, QuestIndex const& quests, std::size_t freeSlots)
@@ -46,16 +46,15 @@ struct Record
     std::vector<std::uint32_t> handInFailed;  // sorted; last given up for no ender
 };
 
-// Given up: GIVE_UP_LIMIT give-ups of any cause, or one whose last cause is a refused take or a failed hand-in (a
-// quest that cannot be handed in is not taken again). A later give-up overwrites the last cause
+// Given up: GIVE_UP_LIMIT give-ups of any cause (a refused take too, WQ.44 item 2), or one whose last cause is a
+// failed hand-in (a quest that cannot be handed in is not taken again). A later give-up overwrites the last cause
 inline Record Read(std::vector<std::pair<std::uint32_t, QuestFail::Row>> const& rows)
 {
     Record record;
     for (auto const& [quest, row] : rows)
     {
         bool const noEnder = row.giveUps > 0 && row.lastCause == Pursuit::NO_ENDER;
-        bool const refused = row.giveUps >= REFUSED_LIMIT && row.lastCause == CANNOT_TAKE;
-        if (row.giveUps >= ClassQuests::GIVE_UP_LIMIT || refused || noEnder)
+        if (row.giveUps >= ClassQuests::GIVE_UP_LIMIT || noEnder)
             record.givenUp.push_back(quest);
         if (noEnder)
             record.handInFailed.push_back(quest);
