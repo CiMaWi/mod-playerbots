@@ -1,0 +1,3 @@
+# Graphify snapshots use ordinary Git compression and deltas. Resolve conflicts by
+# taking one complete snapshot or refreshing it, rather than merging JSON lines.
+* -filter text eol=lf -merge
