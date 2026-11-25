@@ -386,7 +386,7 @@ bool EquipFishingPoleAction::isUseful()
         }
     }
 
-    // A pole is a handout of the kind Profession: a persistent bot outside the share buys one (professions WR5)
+    // A pole is a handout of the kind Profession: a persistent bot buys one (professions WR5)
     if (sRandomPlayerbotMgr.IsRandomBot(bot))
         return Upkeep::HandOut(bot, UpkeepKind::Profession, BotKind::KeepsPossessions(bot), "fishing_pole",
                                [this] { bot->StoreNewItemInBestSlots(FISHING_POLE, 1); });

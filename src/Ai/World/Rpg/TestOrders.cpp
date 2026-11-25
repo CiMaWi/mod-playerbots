@@ -86,6 +86,13 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
         return applied;
     }
+    // A way (questing WQ20) rides on the field order's fields: place "way", minutes the allowance in yards
+    if (order.field && order.place == "way")
+        return StartWayOrder(botAI, bot, order.dest.GetPositionX(), order.dest.GetPositionY(), order.minutes) ||
+               applied;
+    if (order.field)
+        return StartFieldOrder(botAI, bot, order.dest.GetPositionX(), order.dest.GetPositionY(), order.minutes) ||
+               applied;
     if (order.quest)
         return StartOrderedQuest(botAI, bot, order.quest) || applied;
     if (!order.status.empty())

@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "Awareness.h"
 #include "BotTravel.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -101,9 +102,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     NewRpgStatus status = info.GetStatus();
     // Resurrection sickness (upkeep §3.5): a sick bot rests until the sickness ends. Any other status ends, an errand
     // and a trip as given up (errand_sick, abort:sick); a flight in the air lands first. The status pick, the errand
-    // start and the travel orders keep it resting
+    // start and the travel orders keep it resting. An errand that started after the last rise goes on (NE11: only the
+    // due repair recover handed over starts one, Upkeep::SickErrandOpen); one from before the death ends
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
-    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight()))
+    Awareness::Store const* aware = botAI->awareness.get();
+    bool const errandSinceRise = sick && status == RPG_ERRANDS && aware && aware->rose &&
+                                 GetMSTimeDiffToNow(info.startT) <= GetMSTimeDiffToNow(aware->roseMs);
+    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight(), errandSinceRise))
     {
         RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "sick", StatusEnd::Outcome::Sick);  // one Status row
         bot->SetStandState(UNIT_STAND_STATE_SIT);
@@ -180,8 +185,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         case RPG_DO_QUEST:
         {
             // DO_QUEST -> IDLE: a backstop beside the order's give-up clock (PursuitRules.h), a give-up like it
-            // (questing WT35c: its failure row and record)
-            if (info.HasStatusPersisted(statusDoQuestDuration))
+            // (questing WT35c: its failure row and record). An order is bounded by its own minutes (questing WQ19a)
+            if (!std::get<NewRpgInfo::DoQuest>(info.data).order && info.HasStatusPersisted(statusDoQuestDuration))
             {
                 RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = Pursuit::TIMEOUT});
                 return true;

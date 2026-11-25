@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <utility>
@@ -23,19 +24,37 @@
 #include "QuestCircuit.h"
 #include "QuestExecRules.h"
 #include "QuestIndex.h"
+#include "QuestTakeRules.h"
 
 // What the quest log needs and what a field is worth (questing plan WQ14, PLAN 3.10 parts 2 and 3): one list of needs
 // from the log and the two indexes, and per field (a cell of the field map with its eight neighbours) the credits a
-// bot can expect in a stay, their worth per minute and the risk of the creatures there. Pure: the quest index, the
-// field map and the log's slots; no game object, no config. tests/quest-fields-selftest.cpp checks it over generated
-// logs; `playerbots fields census` reads it over every quest the feed offers
+// bot can expect in a stay, their worth per minute and the risk of the creatures there. WQ17b: the quests the bot may
+// take are needs too (TakeNeeds), a quest's worth is split by step, a need no spawn places takes the index's places.
+// Pure: the quest index, the field map and the log's slots; no game object, no config.
+// tests/quest-fields-selftest.cpp checks it over generated logs; `playerbots fields census` reads it over every quest
+// the feed offers
 namespace Planner
 {
 namespace QuestFields
 {
 constexpr float FIELD_WALK_YARDS = 600.0f;      // WQ.37 (2): straight yards at run speed this far; a route beyond
 constexpr std::uint32_t HAND_IN = 0xFFFFFFFFu;  // Need::objective of a ready quest's hand-in
+constexpr std::uint32_t TAKE = 0xFFFFFFFEu;     // Need::objective of a quest the bot may take, at its givers
 constexpr float SECONDS_PER_MINUTE = 60.0f;
+
+// WQ17b (WQ.37 points 2 and 3): a quest's worth by step, tuning values. The reward comes at the hand-in, so it holds
+// the largest share, more than the credits' whole share and so more than any one credit; the take, which only opens
+// the rest, the smallest. A quest without a worked objective gives all but the take's share at its hand-in
+constexpr float TAKE_SHARE = 0.1f;
+constexpr float HAND_IN_SHARE = 0.5f;
+constexpr float CREDITS_SHARE = 1.0f - TAKE_SHARE - HAND_IN_SHARE;
+static_assert(HAND_IN_SHARE > CREDITS_SHARE && TAKE_SHARE < HAND_IN_SHARE && CREDITS_SHARE > 0.0f);
+constexpr float TAKE_SECONDS = Circuit::TURNIN_SECONDS;  // at a giver, as a hand-in at an ender
+
+// WQ17b (PLAN 3.10 part 3): a cell of a field whose lowest hostile lies beyond the bot's reach, that holds no needed
+// creature beyond reach and at most this share of the field's hostiles (a lone rare), counts its hostiles to the elite
+// share instead of setting the level the field is judged by. A tuning value
+constexpr float FEW_HOSTILES_SHARE = 0.1f;
 
 enum class NeedKind : std::uint8_t
 {
@@ -48,16 +67,18 @@ enum class NeedKind : std::uint8_t
     Explore,
     Talk,
     HandIn,
+    Take,   // WQ17b: a quest the bot may take, at its givers
     Other,  // a work the executor refuses; only in a quest the capability table did not mark
     Count
 };
 constexpr std::size_t NEED_KINDS = static_cast<std::size_t>(NeedKind::Count);
-constexpr std::array<char const*, NEED_KINDS> NEED_KIND_NAMES = {"kill", "loot",    "chest", "object", "use",
-                                                                 "cast", "explore", "talk",  "handin", "other"};
+constexpr std::array<char const*, NEED_KINDS> NEED_KIND_NAMES = {"kill",    "loot", "chest",  "object", "use",  "cast",
+                                                                 "explore", "talk", "handin", "take",   "other"};
 
 inline char const* NeedKindName(NeedKind kind) { return NEED_KIND_NAMES[static_cast<std::size_t>(kind)]; }
 
-// Explore is done at an area trigger and talk at a friendly creature: neither is worked over a field of spawns
+// Explore is done at an area trigger and talk at a friendly creature: neither is worked over a field of spawns. WQ17b:
+// they are worked at the index's places for the objective (UsesPlaces)
 inline bool Fieldless(NeedKind kind)
 {
     return kind == NeedKind::Explore || kind == NeedKind::Talk || kind == NeedKind::Other;
@@ -66,7 +87,7 @@ inline bool Fieldless(NeedKind kind)
 // Why a need has no field, in the order they are told apart
 enum class NoField : std::uint8_t
 {
-    Fieldless,    // explore, talk: needs none
+    Fieldless,    // explore, talk: needs no field, and the index has no place for it
     NoSource,     // no entry gives it: an item without a source above SOURCE_CHANCE_FLOOR, a quest without an ender
     NoCredit,     // its count left is 0, or its spawns stand no share of the time
     NoSpawn,      // its entries spawn nowhere on the field map
@@ -88,15 +109,26 @@ struct NeedSource
     float chance{1.0f};  // credits per target: an item's chance per loot, 1 otherwise
 };
 
+// WQ17b: where the index places an objective (an AreaPoint: a group of spawns or a POI's points)
+struct NeedPlace
+{
+    std::uint32_t mapId{0};
+    float x{0.0f};
+    float y{0.0f};
+    float radius{0.0f};
+};
+
 struct Need
 {
     std::uint32_t quest{0};
-    std::uint32_t objective{HAND_IN};  // QuestExec::ObjectiveAt's index (the event's use after the objectives)
+    std::uint32_t objective{HAND_IN};  // QuestExec::ObjectiveAt's index (the event's use after the objectives), or
+                                       // HAND_IN, TAKE
     NeedKind kind{NeedKind::Kill};
     std::vector<NeedSource> sources;  // the spawns that give its credits
     std::uint32_t left{0};
-    float worthPerCredit{0.0f};  // the quest's worth over its credits
-    float seconds{0.0f};         // per credit: the circuit's fixed seconds
+    float worthPerCredit{0.0f};     // the credits' share of the quest's worth over them; a hand-in's or take's share
+    float seconds{0.0f};            // per credit: the circuit's fixed seconds
+    std::vector<NeedPlace> places;  // WQ17b: the objective's places, used when no spawn places it (UsesPlaces)
 };
 
 // A bot's prices: the circuit's weights (CircuitWeights; its defaults are neutral) and the class quests' unlock bonus
@@ -130,10 +162,10 @@ inline bool Worked(QuestRecord const& quest, std::uint32_t at)
     return !(at < quest.objectives.size() && objective.kind == ObjectiveKind::Turnin) && !objective.given;
 }
 
-// The quest's credits: each worked objective's count (at least 1) and the hand-in
-inline std::uint32_t QuestCredits(QuestRecord const& quest)
+// The quest's credits before the hand-in: each worked objective's count (at least 1)
+inline std::uint32_t ObjectiveCredits(QuestRecord const& quest)
 {
-    std::uint32_t credits = 1;
+    std::uint32_t credits = 0;
     for (std::uint32_t at = 0; at < QuestExec::ObjectiveCount(quest); ++at)
         if (Worked(quest, at))
             credits += std::max<std::uint32_t>(QuestExec::ObjectiveAt(quest, at).count, 1);
@@ -273,7 +305,55 @@ inline std::vector<NeedSource> SourcesOf(QuestIndex const& index, QuestRecord co
     }
     return sources;
 }
+
+// The objective's places a bot of the side may use (AreaPoint::notTeams); the skill an area asks is not checked here
+inline std::vector<NeedPlace> PlacesOf(QuestObjective const& objective, std::uint8_t team)
+{
+    std::vector<NeedPlace> places;
+    for (AreaPoint const& area : objective.areas)
+        if (team >= SIDES || !(area.notTeams & (1u << team)))
+            places.push_back({area.mapId, area.x, area.y, area.radius});
+    return places;
+}
 }  // namespace Detail
+
+// WQ17b: a quest's worth by step: the take's, each credit's (the credits' share spread evenly over them) and the
+// hand-in's; they sum to QuestWorth
+struct QuestShares
+{
+    float take{0.0f};
+    float perCredit{0.0f};
+    float handIn{0.0f};
+    std::uint32_t credits{0};  // Detail::ObjectiveCredits
+};
+
+inline QuestShares SharesOf(QuestRecord const& quest, Pricing const& pricing)
+{
+    float const worth = QuestWorth(quest, pricing);
+    QuestShares shares;
+    shares.credits = Detail::ObjectiveCredits(quest);
+    shares.take = worth * TAKE_SHARE;
+    if (shares.credits)
+    {
+        shares.perCredit = worth * CREDITS_SHARE / static_cast<float>(shares.credits);
+        shares.handIn = worth * HAND_IN_SHARE;
+    }
+    else
+        shares.handIn = worth * (1.0f - TAKE_SHARE);
+    return shares;
+}
+
+// Whether the need is worked at its places, not at a field of spawns: its kind needs no spawns, or none of its
+// entries spawns on the field map. Places it has none of leave it a named gap
+inline bool UsesPlaces(FieldMap const& map, Need const& need)
+{
+    if (need.places.empty())
+        return false;
+    if (Fieldless(need.kind))
+        return true;
+    return std::none_of(need.sources.begin(), need.sources.end(),
+                        [&map](NeedSource const& source) { return !map.CellsOf(source.kind, source.entry).empty(); });
+}
 
 // Every open objective of the log as a need, and a ready quest as its hand-in. A quest the capability table refuses for
 // the bot's side gives none; a slot of a quest the index lacks is passed over
@@ -286,10 +366,10 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
         QuestRecord const* quest = slot.quest ? index.Find(slot.quest) : nullptr;
         if (!quest || RefusedFor(*quest, team))
             continue;
-        float const perCredit = QuestWorth(*quest, pricing) / static_cast<float>(Detail::QuestCredits(*quest));
+        QuestShares const shares = SharesOf(*quest, pricing);
         if (slot.state & Circuit::SLOT_COMPLETE)
         {
-            Need need{quest->id, HAND_IN, NeedKind::HandIn, {}, 1, perCredit, Circuit::TURNIN_SECONDS};
+            Need need{quest->id, HAND_IN, NeedKind::HandIn, {}, 1, shares.handIn, Circuit::TURNIN_SECONDS, {}};
             for (std::uint32_t const at : quest->enders)
                 if (at < index.places.size())
                     Detail::AddSource(need.sources, index.places[at].isObject ? FieldKind::Object : FieldKind::Creature,
@@ -306,9 +386,82 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
             if (!left)
                 continue;
             NeedKind const kind = Detail::KindOf(QuestExec::WorkOf(objective, team));
-            needs.push_back({quest->id, at, kind, Detail::SourcesOf(index, *quest, at, kind), left, perCredit,
-                             Detail::SecondsOf(objective)});
+            needs.push_back({quest->id, at, kind, Detail::SourcesOf(index, *quest, at, kind), left, shares.perCredit,
+                             Detail::SecondsOf(objective), Detail::PlacesOf(objective, team)});
         }
+    }
+    return needs;
+}
+
+// WQ17b: the take of a quest as a need at its givers (on that map, any map when none): one credit worth the take's
+// share. None for a quest without a giver there (one only an item starts) or whose givers are hostile to the side or
+// spawned outside the default phase. Not asked whether the bot may take it (TakeNeeds is)
+inline std::optional<Need> TakeNeed(QuestIndex const& index, QuestRecord const& quest, std::uint8_t team,
+                                    Pricing const& pricing, std::optional<std::uint32_t> mapId = std::nullopt)
+{
+    Need need{quest.id, TAKE, NeedKind::Take, {}, 1, SharesOf(quest, pricing).take, TAKE_SECONDS, {}};
+    for (std::uint32_t const at : quest.givers)
+    {
+        if (at >= index.places.size())
+            continue;
+        QuestPlace const& place = index.places[at];
+        if ((mapId && place.mapId != *mapId) || place.otherPhase || (team < SIDES && (place.hostileTo & (1u << team))))
+            continue;
+        Detail::AddSource(need.sources, place.isObject ? FieldKind::Object : FieldKind::Creature, place.entry, 1.0f);
+    }
+    if (need.sources.empty())
+        return std::nullopt;
+    return need;
+}
+
+// WQ17b: the quests given on the map near a point (QuestIndex::GiversNear), ascending: the candidates for TakeNeeds,
+// bounded by the givers of the bot's map, not by the quest table
+inline std::vector<std::uint32_t> TakeCandidates(QuestIndex const& index, std::uint32_t mapId, float x, float y,
+                                                 float yards)
+{
+    std::vector<std::uint32_t> ids;
+    for (std::uint32_t const place : index.GiversNear(mapId, x, y, yards))
+        for (std::uint32_t const quest : index.QuestsGivenAt(place))
+            ids.push_back(quest);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
+}
+
+// WQ17b: the exclusive groups of the log's and the rewarded quests, ascending (Take::Facts::takenGroups; the circuit
+// builds its own the same way)
+inline std::vector<std::int32_t> TakenGroups(QuestIndex const& index, std::span<std::uint32_t const> inLog,
+                                             std::span<std::uint32_t const> rewarded)
+{
+    std::vector<std::int32_t> groups;
+    for (std::span<std::uint32_t const> const ids : {inLog, rewarded})
+        for (std::uint32_t const id : ids)
+            if (QuestRecord const* record = index.Find(id))
+                if (record->exclusiveGroup > 0)
+                    groups.push_back(record->exclusiveGroup);
+    std::sort(groups.begin(), groups.end());
+    return groups;
+}
+
+// WQ17b: every candidate quest the take rules allow the bot (Take::May, no elite or group quest: WQ.43 point 3) as a
+// need at its givers on the map. A separate list from the log's Needs; a caller ranking both concatenates them
+inline std::vector<Need> TakeNeeds(QuestIndex const& index, Take::Facts const& facts, std::uint32_t mapId,
+                                   std::span<std::uint32_t const> candidates, Pricing const& pricing)
+{
+    Take::Facts bot = facts;
+    bot.eliteGroup = false;
+    std::uint8_t const team = SideOfRace(facts.race);
+    std::vector<std::uint32_t> ids(candidates.begin(), candidates.end());
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    std::vector<Need> needs;
+    for (std::uint32_t const id : ids)
+    {
+        QuestRecord const* quest = index.Find(id);
+        if (!quest || Take::May(*quest, bot, index))
+            continue;
+        if (std::optional<Need> need = TakeNeed(index, *quest, team, pricing, mapId))
+            needs.push_back(std::move(*need));
     }
     return needs;
 }
@@ -373,12 +526,34 @@ inline FieldRow const* FindRow(FieldMap const& map, std::uint64_t cell, FieldKin
 }
 
 inline float CentreOf(std::int32_t cell) { return (static_cast<float>(cell) + 0.5f) * FIELD_CELL_YARDS; }
+
+// Whether the level alone keeps the weighted risk at or below the refusal (WithinReach's rule)
+inline bool LevelWithinReach(float above, FieldAsk const& ask)
+{
+    return std::max(above, 0.0f) * Goals::RISK_PER_LEVEL_ABOVE * ask.caution <= Goals::RISK_REFUSE;
+}
+
+// Whether one of the need's places lies in the field around the centre cell (its cell or a neighbour)
+inline bool PlaceInField(Need const& need, std::uint32_t mapId, std::int32_t cellX, std::int32_t cellY)
+{
+    for (NeedPlace const& place : need.places)
+    {
+        if (place.mapId != mapId)
+            continue;
+        std::uint64_t const key = FieldCellKeyAt(place.mapId, place.x, place.y);
+        if (std::abs(FieldCellXOf(key) - cellX) <= 1 && std::abs(FieldCellYOf(key) - cellY) <= 1)
+            return true;
+    }
+    return false;
+}
 }  // namespace Detail
 
 // The field around a centre cell for the needs and a stay: per need the targets of its entries there plus those that
-// respawn in the stay, times the chance, capped by the count left and by the stay over the need's seconds; the worth
-// per minute; and the risk inputs: how far the needed creatures (rows within reach) and the cells' other hostile
-// creatures (the lowest of each cell) lie above the bot, and the larger of the two elite shares
+// respawn in the stay, times the chance, capped by the count left and by the stay over the need's seconds (a need
+// worked at its places: its count left when a place lies in the field); the worth per minute; and the risk inputs: how
+// far the needed creatures (rows within reach) and the cells' other hostile creatures (the lowest of each cell) lie
+// above the bot, and the larger of the two elite shares. WQ17b: a cell beyond reach without a needed row beyond reach
+// and with a small share of the field's hostiles (a lone rare) adds them to the elite share and not to the level
 inline Offer FieldOffer(FieldMap const& map, std::span<Need const> needs, std::uint64_t centre, FieldAsk const& ask)
 {
     Offer offer;
@@ -401,13 +576,27 @@ inline Offer FieldOffer(FieldMap const& map, std::span<Need const> needs, std::u
     float neededAbove = 0.0f;
     float neededSpawns = 0.0f;
     float neededElites = 0.0f;
+    std::array<bool, 9> neededBeyond{};  // a cell holds a needed creature row beyond the bot's reach
     for (std::uint32_t i = 0; i < needs.size(); ++i)
     {
         Need const& need = needs[i];
+        float const byTime = need.seconds > 0.0f ? stay / need.seconds : static_cast<float>(need.left);
+        if (UsesPlaces(map, need))
+        {
+            if (!Detail::PlaceInField(need, mapId, cellX, cellY))
+                continue;
+            NeedOffer one{i};
+            one.targets = static_cast<float>(need.left);
+            one.credits = std::min(one.targets, byTime);
+            offer.worth += one.credits * need.worthPerCredit;
+            offer.needs.push_back(one);
+            continue;
+        }
         if (Fieldless(need.kind))
             continue;
         NeedOffer one{i};
         bool found = false;
+        bool const atNpc = need.kind == NeedKind::HandIn || need.kind == NeedKind::Take;  // a friendly giver, ender
         for (std::size_t c = 0; c < cellCount; ++c)
             for (NeedSource const& source : need.sources)
             {
@@ -415,14 +604,15 @@ inline Offer FieldOffer(FieldMap const& map, std::span<Need const> needs, std::u
                 if (!row)
                     continue;
                 found = true;
-                if (need.kind != NeedKind::HandIn && !Detail::WithinReach(*row, ask))
+                if (!atNpc && !Detail::WithinReach(*row, ask))
                 {
                     one.beyondReach = true;
+                    neededBeyond[c] = neededBeyond[c] || need.left > 0;
                     continue;
                 }
                 float const respawns = row->medianRespawn ? stay / static_cast<float>(row->medianRespawn) : 0.0f;
                 one.targets += row->weight * (1.0f + respawns) * source.chance;
-                if (row->kind == FieldKind::Creature && need.kind != NeedKind::HandIn && need.left)
+                if (row->kind == FieldKind::Creature && !atNpc && need.left)
                 {
                     neededAbove = std::max(neededAbove, Detail::MiddleLevel(*row) - level);
                     neededSpawns += static_cast<float>(row->spawns);
@@ -431,7 +621,6 @@ inline Offer FieldOffer(FieldMap const& map, std::span<Need const> needs, std::u
             }
         if (!found)
             continue;
-        float const byTime = need.seconds > 0.0f ? stay / need.seconds : static_cast<float>(need.left);
         one.credits = std::min({one.targets, static_cast<float>(need.left), byTime});
         offer.worth += one.credits * need.worthPerCredit;
         offer.needs.push_back(one);
@@ -440,10 +629,18 @@ inline Offer FieldOffer(FieldMap const& map, std::span<Need const> needs, std::u
     float hostiles = 0.0f;
     float hostileElites = 0.0f;
     for (std::size_t c = 0; c < cellCount; ++c)
+        hostiles += static_cast<float>(cells[c]->hostiles);
+    for (std::size_t c = 0; c < cellCount; ++c)
         if (cells[c]->hostiles)
         {
-            othersAbove = std::max(othersAbove, static_cast<float>(cells[c]->hostileMinLevel) - level);
-            hostiles += static_cast<float>(cells[c]->hostiles);
+            float const above = static_cast<float>(cells[c]->hostileMinLevel) - level;
+            float const count = static_cast<float>(cells[c]->hostiles);
+            if (!neededBeyond[c] && !Detail::LevelWithinReach(above, ask) && count <= FEW_HOSTILES_SHARE * hostiles)
+            {
+                hostileElites += count;
+                continue;
+            }
+            othersAbove = std::max(othersAbove, above);
             hostileElites += static_cast<float>(cells[c]->hostileElites);
         }
     offer.risk.levelsAbove = std::max({0.0f, neededAbove, othersAbove});
@@ -485,28 +682,42 @@ inline Ranking TopFields(FieldMap const& map, std::span<Need const> needs, Field
     std::vector<std::uint8_t> anyCell(needs.size(), 0);
     std::vector<std::uint8_t> onMap(needs.size(), 0);
     std::vector<std::uint8_t> inRadius(needs.size(), 0);
+    std::vector<std::uint8_t> placed(needs.size(), 0);
     Circuit::Point const bot{ask.x, ask.y, 0.0f};
+    auto const around = [&](std::uint32_t i, std::uint64_t key)
+    {
+        onMap[i] = 1;
+        for (std::int32_t dx = -1; dx <= 1; ++dx)
+            for (std::int32_t dy = -1; dy <= 1; ++dy)
+            {
+                std::int32_t const cellX = FieldCellXOf(key) + dx;
+                std::int32_t const cellY = FieldCellYOf(key) + dy;
+                if (Circuit::Yards(bot, {Detail::CentreOf(cellX), Detail::CentreOf(cellY), 0.0f}) > ask.radius)
+                    continue;
+                inRadius[i] = 1;
+                centres.push_back(FieldCellKey(ask.mapId, cellX, cellY));
+            }
+    };
     for (std::uint32_t i = 0; i < needs.size(); ++i)
     {
-        if (Fieldless(needs[i].kind) || !needs[i].left)
+        placed[i] = UsesPlaces(map, needs[i]) ? 1 : 0;
+        if (!needs[i].left)
+            continue;
+        if (placed[i])
+        {
+            for (NeedPlace const& place : needs[i].places)
+                if (place.mapId == ask.mapId)
+                    around(i, FieldCellKeyAt(place.mapId, place.x, place.y));
+            continue;
+        }
+        if (Fieldless(needs[i].kind))
             continue;
         for (NeedSource const& source : needs[i].sources)
             for (std::uint64_t const key : map.CellsOf(source.kind, source.entry))
             {
                 anyCell[i] = 1;
-                if (FieldMapOf(key) != ask.mapId)
-                    continue;
-                onMap[i] = 1;
-                for (std::int32_t dx = -1; dx <= 1; ++dx)
-                    for (std::int32_t dy = -1; dy <= 1; ++dy)
-                    {
-                        std::int32_t const cellX = FieldCellXOf(key) + dx;
-                        std::int32_t const cellY = FieldCellYOf(key) + dy;
-                        if (Circuit::Yards(bot, {Detail::CentreOf(cellX), Detail::CentreOf(cellY), 0.0f}) > ask.radius)
-                            continue;
-                        inRadius[i] = 1;
-                        centres.push_back(FieldCellKey(ask.mapId, cellX, cellY));
-                    }
+                if (FieldMapOf(key) == ask.mapId)
+                    around(i, key);
             }
     }
     std::sort(centres.begin(), centres.end());
@@ -548,7 +759,12 @@ inline Ranking TopFields(FieldMap const& map, std::span<Need const> needs, Field
         if (covered[i])
             continue;
         Need const& need = needs[i];
-        NoField const why = Fieldless(need.kind)   ? NoField::Fieldless
+        NoField const why = placed[i]              ? (!need.left     ? NoField::NoCredit
+                                                      : !onMap[i]    ? NoField::OtherMap
+                                                      : !inRadius[i] ? NoField::OutOfRadius
+                                                      : risky[i]     ? NoField::TooRisky
+                                                                     : NoField::NoCredit)
+                            : Fieldless(need.kind) ? NoField::Fieldless
                             : need.sources.empty() ? NoField::NoSource
                             : !need.left           ? NoField::NoCredit
                             : !anyCell[i]          ? NoField::NoSpawn
@@ -562,9 +778,17 @@ inline Ranking TopFields(FieldMap const& map, std::span<Need const> needs, Field
 }
 
 // The census's question: whether the need has a field of its entries on one of these maps (any map when empty), and
-// if not, why: none needed, no entry gives it, they spawn nowhere on the field map, or on other maps only
+// if not, why: none needed, no entry gives it, they spawn nowhere on the field map, or on other maps only. WQ17b: a
+// need worked at its places has one when a place lies on those maps, else they are on other maps
 inline std::optional<NoField> MapGap(FieldMap const& map, Need const& need, std::span<std::uint32_t const> maps)
 {
+    if (UsesPlaces(map, need))
+    {
+        for (NeedPlace const& place : need.places)
+            if (maps.empty() || std::find(maps.begin(), maps.end(), place.mapId) != maps.end())
+                return std::nullopt;
+        return NoField::OtherMap;
+    }
     if (Fieldless(need.kind))
         return NoField::Fieldless;
     if (need.sources.empty())

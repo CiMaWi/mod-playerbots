@@ -1622,7 +1622,8 @@ struct FieldCensus
 {
     std::array<uint32, SIDES> offered{};
     std::array<uint32, SIDES> withGap{};        // a need that needs a field and has none on the quest's maps
-    std::array<uint32, SIDES> withFieldless{};  // a need that needs none (explore, talk)
+    std::array<uint32, SIDES> withFieldless{};  // a need that needs none (explore, talk) and has no place
+    std::array<uint32, SIDES> atPlace{};        // WQ17b: needs worked at the index's places (QuestFields::UsesPlaces)
     std::array<std::array<uint32, QuestFields::NEED_KINDS>, SIDES> needs{};
     std::array<std::array<uint32, QuestFields::NEED_KINDS>, SIDES> without{};
     std::array<std::array<uint32, CENSUS_CAUSES>, SIDES> causeNeeds{};
@@ -1665,6 +1666,40 @@ std::string CensusEntries(QuestFields::Need const& need)
         text += Acore::StringFormat(",+{}", need.sources.size() - CENSUS_ENTRIES);
     return text.empty() ? std::string("-") : text;
 }
+
+std::string CensusObjective(QuestFields::Need const& need)
+{
+    return need.objective == QuestFields::HAND_IN ? std::string("handin")
+           : need.objective == QuestFields::TAKE  ? std::string("take")
+                                                  : std::to_string(need.objective);
+}
+
+// WQ17b: a quest's needs as the census counts them: every objective open, the hand-in when ready, the take at its
+// givers (none for a quest only an item starts)
+std::vector<QuestFields::Need> CensusNeeds(QuestIndex const& quests, QuestRecord const& quest, std::uint8_t side)
+{
+    QuestFields::Pricing const pricing{};  // neutral weights: the census counts needs and reads no worth
+    std::array<QuestSlot, 2> const log = {QuestSlot{quest.id, 0, {}}, QuestSlot{quest.id, Circuit::SLOT_COMPLETE, {}}};
+    std::vector<QuestFields::Need> needs = QuestFields::Needs(quests, log, side, pricing);
+    if (std::optional<QuestFields::Need> take = QuestFields::TakeNeed(quests, quest, side, pricing))
+        needs.push_back(std::move(*take));
+    return needs;
+}
+
+// The census's cause of a gap: the field map's, or `instance`
+std::size_t CensusCause(QuestIndex const& quests, QuestRecord const& quest, QuestFields::Need const& need,
+                        QuestFields::NoField gap, std::vector<uint32> const& fieldMaps)
+{
+    return gap == QuestFields::NoField::NoSpawn && OffFieldMaps(quests, quest, need, fieldMaps)
+               ? CENSUS_INSTANCE
+               : static_cast<std::size_t>(gap);
+}
+
+// WQ17b: the class quests of the questing plan's WQ29 list, WQ30's paladin quests and two warrior quests: what each
+// need has on the quest's maps (a field, a place or the gap by name), a first reading for WQ30
+constexpr std::array<uint32, 26> CENSUS_CLASS_QUESTS = {1527, 1678, 1683, 1689, 1739, 1785, 1788, 1795, 6081,
+                                                        6082, 6085, 6086, 6088, 6089, 6102, 6103, 6125, 6130,
+                                                        7603, 9485, 9582, 9593, 9600, 9619, 9673, 9675};
 }  // namespace
 
 // WQ14: `fields census`: every quest the capability table offers a side, its needs as taken (every objective open)
@@ -1696,7 +1731,6 @@ bool HandleFieldsCensusCommand(ChatHandler* handler, char const* /*args*/)
         return false;
     }
     file << "quest\tside\tminLevel\tobjective\tkind\tcause\tentries\n";
-    QuestFields::Pricing const pricing{};  // neutral weights: the census counts needs and reads no worth
     std::size_t const fieldless = static_cast<std::size_t>(QuestFields::NoField::Fieldless);
     FieldCensus c;
     uint32 lines = 0;
@@ -1707,26 +1741,22 @@ bool HandleFieldsCensusCommand(ChatHandler* handler, char const* /*args*/)
                 continue;
             ++c.offered[side];
             std::vector<uint32> const maps = CensusMaps(*quests, quest);
-            std::array<QuestSlot, 2> const log = {QuestSlot{quest.id, 0, {}},
-                                                  QuestSlot{quest.id, Circuit::SLOT_COMPLETE, {}}};
             std::array<bool, CENSUS_CAUSES> causes{};
-            for (QuestFields::Need const& need : QuestFields::Needs(*quests, log, side, pricing))
+            for (QuestFields::Need const& need : CensusNeeds(*quests, quest, side))
             {
                 std::size_t const kind = static_cast<std::size_t>(need.kind);
                 ++c.needs[side][kind];
                 std::optional<QuestFields::NoField> const gap = QuestFields::MapGap(*fields, need, maps);
                 if (!gap)
+                {
+                    c.atPlace[side] += QuestFields::UsesPlaces(*fields, need) ? 1 : 0;
                     continue;
-                std::size_t const cause =
-                    *gap == QuestFields::NoField::NoSpawn && OffFieldMaps(*quests, quest, need, fieldMaps)
-                        ? CENSUS_INSTANCE
-                        : static_cast<std::size_t>(*gap);
+                }
+                std::size_t const cause = CensusCause(*quests, quest, need, *gap, fieldMaps);
                 ++c.without[side][kind];
                 ++c.causeNeeds[side][cause];
                 causes[cause] = true;
-                file << quest.id << '\t' << SIDE_NAMES[side] << '\t' << quest.minLevel << '\t'
-                     << (need.objective == QuestFields::HAND_IN ? std::string("handin")
-                                                                : std::to_string(need.objective))
+                file << quest.id << '\t' << SIDE_NAMES[side] << '\t' << quest.minLevel << '\t' << CensusObjective(need)
                      << '\t' << QuestFields::NeedKindName(need.kind) << '\t' << CensusCauseName(cause) << '\t'
                      << CensusEntries(need) << '\n';
                 ++lines;
@@ -1743,9 +1773,9 @@ bool HandleFieldsCensusCommand(ChatHandler* handler, char const* /*args*/)
     for (std::uint8_t side = 0; side < SIDES; ++side)
     {
         handler->PSendSysMessage(
-            "FIELDS CENSUS {}: {} offered quests, {} with a need without a field on their maps, {} with a need that "
-            "needs none (explore, talk)",
-            SIDE_NAMES[side], c.offered[side], c.withGap[side], c.withFieldless[side]);
+            "FIELDS CENSUS {}: {} offered quests, {} with a need without a field or place on their maps, {} with a "
+            "need that needs no field (explore, talk) and has no place; {} needs worked at a place",
+            SIDE_NAMES[side], c.offered[side], c.withGap[side], c.withFieldless[side], c.atPlace[side]);
         std::string kinds;
         for (std::size_t k = 0; k < QuestFields::NEED_KINDS; ++k)
             if (c.needs[side][k])
@@ -1760,6 +1790,32 @@ bool HandleFieldsCensusCommand(ChatHandler* handler, char const* /*args*/)
                                  kinds.empty() ? "none" : kinds);
         handler->PSendSysMessage("FIELDS CENSUS {} without a field by cause: {}", SIDE_NAMES[side],
                                  causeText.empty() ? "none" : causeText);
+    }
+    for (uint32 const id : CENSUS_CLASS_QUESTS)
+    {
+        QuestRecord const* quest = quests->Find(id);
+        bool offered = false;
+        for (std::uint8_t side = 0; quest && side < SIDES; ++side)
+        {
+            if (!OfSide(*quest, side) || QuestExec::FirstRefusal(*quest, side).act == QuestExec::Act::Refused)
+                continue;
+            offered = true;
+            std::vector<uint32> const maps = CensusMaps(*quests, *quest);
+            std::string text;
+            for (QuestFields::Need const& need : CensusNeeds(*quests, *quest, side))
+            {
+                std::optional<QuestFields::NoField> const gap = QuestFields::MapGap(*fields, need, maps);
+                std::string const has = !gap ? (QuestFields::UsesPlaces(*fields, need) ? "place" : "field")
+                                             : CensusCauseName(CensusCause(*quests, *quest, need, *gap, fieldMaps));
+                text += Acore::StringFormat("{}{} {} {}", text.empty() ? "" : ", ", CensusObjective(need),
+                                            QuestFields::NeedKindName(need.kind), has);
+            }
+            handler->PSendSysMessage("FIELDS CENSUS class quest {} {} (minLevel {}): {}", id, SIDE_NAMES[side],
+                                     quest->minLevel, text.empty() ? "no need" : text);
+        }
+        if (!offered)
+            handler->PSendSysMessage("FIELDS CENSUS class quest {}: {}", id,
+                                     quest ? "not offered (the capability table refuses it)" : "not in the index");
     }
     handler->PSendSysMessage("FIELDS CENSUS list: {} needs without a field in {} ({} ms)", lines, path, MsSince(start));
     return true;

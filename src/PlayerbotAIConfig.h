@@ -474,7 +474,7 @@ public:
     PathConfig& NaturalPath;
     // Playerbots.WorldTravel.*: honest travel of persistent bots (sight rule, corpse runs, stuck spots)
     WorldTravelConfig& WorldTravel;
-    // Playerbots.Upkeep.*: honest upkeep of persistent bots (the handout share)
+    // Honest upkeep of persistent bots: the training reserve and the flight numbers (UpkeepConfig.h, no conf key)
     UpkeepConfig& Upkeep;
     // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h: enthusiasm, the scan,
     // the graveyard term and the ghost's wait)

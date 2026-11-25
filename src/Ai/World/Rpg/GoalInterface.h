@@ -21,6 +21,7 @@
 #include "BridgeGoals.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
+#include "QuestLogRules.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
 
@@ -53,7 +54,7 @@ constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start
 // and its planner is not held by a test (TestConstraints' planner row). Only the planner starts what such a bot does;
 // a bot that keeps no possessions (not persistent, a master at a client) or whose planner a test holds keeps
 // upstream's behaviour. A bot that keeps its possessions is governed (upkeep 3.11): its class quests get the unlock
-// bonus (ClassQuestRules.h), whatever the handout share
+// bonus (ClassQuestRules.h)
 inline bool Owns(bool keepsPossessions, bool plannerFree) { return keepsPossessions && plannerFree; }
 
 enum class Source : std::uint8_t
@@ -690,6 +691,7 @@ struct BotGoals
     Fallback lastFallback{Fallback::None};
     std::uint32_t lastFallbackMs{0};
     bool situationChanged{false};  // level, zone, life or group changed since the last plan
+    QuestLog::Round pickups;       // a bot on an order: the accepts since its last plan (NotePickup)
     SeenQuests seen;
     bool paused{false};  // the bridge paused the bot's plan (BridgePause)
     std::uint32_t pausedMs{0};
@@ -1054,7 +1056,8 @@ inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
 
 // What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
 // during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
-// sickness rest, a command, a test's order) and an external goal stay
+// sickness rest, a command, a test's order) and an external goal stay; a sickness rest yields to a plan whose best
+// option is the due repair recover handed over (NE11, Ranked::sickErrandOpen)
 enum class FreshPlan : std::uint8_t
 {
     Keep,
@@ -1069,7 +1072,12 @@ inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
         return FreshPlan::Keep;
     if (current.Is())
         return FreshPlan::Replan;
-    return goals.inFallback && goals.plan && goals.plan->ranked.ok ? FreshPlan::Take : FreshPlan::Keep;
+    if (!goals.plan || !goals.plan->ranked.ok)
+        return FreshPlan::Keep;
+    Goals::Ranked const& ranked = goals.plan->ranked;
+    bool const sickErrand = ranked.sickErrandOpen && !ranked.options.empty() &&
+                            ranked.options.front().kind == Goals::GoalKind::Errand && ranked.options.front().due;
+    return goals.inFallback || sickErrand ? FreshPlan::Take : FreshPlan::Keep;
 }
 
 // The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way

@@ -24,6 +24,7 @@
 #include "PlannerPool.h"
 #include "QuestIndex.h"
 #include "QuestStats.h"
+#include "QuestTakeRules.h"
 
 // The questing circuit (travel plan WT13b, PLAN 3.9, WT.21): at its hub a bot takes most fitting quests while its log
 // has room, chooses this trip's set from its log, does the objectives that lie together in one loop, turns the quests
@@ -41,9 +42,8 @@ namespace Planner
 namespace Circuit
 {
 // All values are estimates [E] that WT14/WT17 tune
-constexpr std::uint32_t GREY_DIFF = 4;          // a quest this many levels below the bot is grey: the core's
-                                                // Quests.LowLevelHideDiff default; the server passes its own value
-constexpr std::int32_t MAX_LEVELS_ABOVE = 3;    // QUEST_MAX_LEVELS_ABOVE_BOT (QuestLevelRules.h), as today
+constexpr std::uint32_t GREY_DIFF = Take::GREY_DIFF;  // the take rules' (QuestTakeRules.h)
+constexpr std::int32_t MAX_LEVELS_ABOVE = Take::MAX_LEVELS_ABOVE;
 constexpr std::size_t LOG_RESERVE = 2;          // free log slots kept, as today's drop pass keeps them
 constexpr float HUB_GIVER_YARDS = 120.0f;       // the quest givers this near the bot make its hub
 constexpr float FAR_YARDS = 4000.0f;            // objectives farther from the hub (about a zone's width) belong
@@ -76,10 +76,9 @@ constexpr std::uint32_t BASELINE_SEEDS = 50;     // runs of today's random pick 
 constexpr std::uint32_t SLOT_COMPLETE = 0x01;    // QUEST_STATE_COMPLETE in the log slot's state
 constexpr std::int32_t KILL_SLOTS = 4;           // creature or object counters in a log slot
 constexpr std::uint32_t NONE = 0xFFFFFFFFu;
-constexpr std::uint16_t INSTANCE_FLAGS = QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP;
-constexpr std::uint16_t GROUP_FLAGS = QuestFlag::ELITE | QuestFlag::GROUP;
-constexpr std::uint16_t REPEAT_FLAGS =
-    QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE | QuestFlag::SEASONAL;
+constexpr std::uint16_t INSTANCE_FLAGS = Take::INSTANCE_FLAGS;
+constexpr std::uint16_t GROUP_FLAGS = Take::GROUP_FLAGS;
+constexpr std::uint16_t REPEAT_FLAGS = Take::REPEAT_FLAGS;
 }  // namespace Circuit
 
 // Weights from the bot's traits (WT14 fills them); the defaults are neutral
@@ -225,6 +224,43 @@ constexpr std::array<char const*, static_cast<std::size_t>(MoveReason::Count)> M
     "none", "chain", "delivery", "zone bracket", "nowhere"};
 
 inline char const* SkipName(SkipReason reason) { return SKIP_NAMES[static_cast<std::size_t>(reason)]; }
+
+// The circuit's skip for a take rule's reason (QuestTakeRules.h): its skip names and log rows stay as before WQ17a
+inline SkipReason SkipOf(Take::Reason reason)
+{
+    switch (reason)
+    {
+        case Take::Reason::Done:
+            return SkipReason::Rewarded;
+        case Take::Reason::InLog:
+            return SkipReason::InLog;
+        case Take::Reason::Repeatable:
+            return SkipReason::Repeatable;
+        case Take::Reason::Level:
+        case Take::Reason::TooHigh:
+            return SkipReason::TooHigh;
+        case Take::Reason::GivenUp:  // the circuit passes no given-up list
+        case Take::Reason::Limits:
+        case Take::Reason::Unsupported:
+            return SkipReason::Limits;
+        case Take::Reason::Grey:
+            return SkipReason::Grey;
+        case Take::Reason::Kind:
+            return SkipReason::Instance;
+        case Take::Reason::EliteGroup:
+            return SkipReason::Solo;
+        case Take::Reason::Prerequisite:
+            return SkipReason::Prerequisite;
+        case Take::Reason::Exclusive:
+            return SkipReason::Exclusive;
+        case Take::Reason::Breadcrumb:
+            return SkipReason::Breadcrumb;
+        case Take::Reason::Count:
+            break;
+    }
+    return SkipReason::Count;
+}
+
 inline char const* AbandonName(AbandonReason reason) { return ABANDON_NAMES[static_cast<std::size_t>(reason)]; }
 inline char const* MoveName(MoveReason reason) { return MOVE_NAMES[static_cast<std::size_t>(reason)]; }
 
@@ -492,10 +528,7 @@ inline bool Contains(std::vector<std::uint32_t> const& sorted, std::uint32_t id)
     return std::binary_search(sorted.begin(), sorted.end(), id);
 }
 
-inline std::int32_t QuestLevel(QuestRecord const& quest, std::uint8_t botLevel)
-{
-    return quest.level > 0 ? quest.level : static_cast<std::int32_t>(botLevel);
-}
+using Take::QuestLevel;
 
 inline float ObjectiveSeconds(ObjectiveKind kind)
 {
@@ -664,39 +697,20 @@ private:
 
     bool Rewarded(std::uint32_t id) const { return Contains(_rewarded, id); }
 
-    // Whether the bot may take the quest now; the first rule it fails
-    std::optional<SkipReason> Takeable(QuestRecord const& quest, bool breadcrumbRule = true) const
+    // Whether the bot may take the quest now (the take rules, QuestTakeRules.h); the first rule it fails
+    std::optional<SkipReason> Takeable(QuestRecord const& quest) const
     {
-        if (Rewarded(quest.id))
-            return SkipReason::Rewarded;
-        if (InLog(quest.id))
-            return SkipReason::InLog;
-        if (quest.flags & REPEAT_FLAGS)
-            return SkipReason::Repeatable;
-        if (_bot.level < quest.minLevel)
-            return SkipReason::TooHigh;
-        if (!Eligible(quest, _bot.race, _bot.cls, _bot.level))
-            return SkipReason::Limits;
-        std::int32_t const level = QuestLevel(quest, _bot.level);
-        if (level > static_cast<std::int32_t>(_bot.level) + MAX_LEVELS_ABOVE)
-            return SkipReason::TooHigh;
-        if (IsGrey(quest))
-            return SkipReason::Grey;
-        if (quest.flags & INSTANCE_FLAGS)
-            return SkipReason::Instance;
-        if ((quest.flags & GROUP_FLAGS) && _bot.groupSize <= 1)
-            return SkipReason::Solo;
-        if (!PrerequisiteMet(quest))
-            return SkipReason::Prerequisite;
-        if (quest.exclusiveGroup > 0 &&
-            std::binary_search(_takenGroups.begin(), _takenGroups.end(), quest.exclusiveGroup))
-            return SkipReason::Exclusive;
-        if (breadcrumbRule && quest.breadcrumbFor)
-        {
-            QuestRecord const* target = _quests.Find(quest.breadcrumbFor);
-            if (!target || !Takeable(*target, false).has_value() || Rewarded(target->id) || InLog(target->id))
-                return SkipReason::Breadcrumb;
-        }
+        Take::Facts const facts{.race = _bot.race,
+                                .cls = _bot.cls,
+                                .level = _bot.level,
+                                .greyDiff = _context.greyDiff,
+                                .eliteGroup = _bot.groupSize > 1,
+                                .rewarded = _rewarded,
+                                .inLog = _logIds,
+                                .givenUp = {},
+                                .takenGroups = _takenGroups};
+        if (std::optional<Take::Reason> const why = Take::May(quest, facts, _quests))
+            return SkipOf(*why);
         return std::nullopt;
     }
 
@@ -708,11 +722,7 @@ private:
         return false;
     }
 
-    bool IsGrey(QuestRecord const& quest) const
-    {
-        return static_cast<std::int32_t>(_bot.level) >
-               QuestLevel(quest, _bot.level) + static_cast<std::int32_t>(_context.greyDiff);
-    }
+    bool IsGrey(QuestRecord const& quest) const { return Take::IsGrey(quest, _bot.level, _context.greyDiff); }
 
     // The quest's remaining objectives at their area nearest the hub, its nearest ender and its action time
     Placement Locate(QuestRecord const& quest, QuestSlot const* slot) const
@@ -777,17 +787,6 @@ private:
         }
         placement.actionSeconds += TURNIN_SECONDS;
         return placement;
-    }
-
-    // The core's rule: one previous quest rewarded (positive) or active (negative). PrevQuestId alone misses the quests
-    // naming this one as their NextQuestId (1795 after 1804/1805, upkeep WU20a)
-    bool PrerequisiteMet(QuestRecord const& quest) const
-    {
-        auto const met = [this](std::int32_t prev)
-        { return prev > 0 ? Rewarded(static_cast<std::uint32_t>(prev)) : InLog(static_cast<std::uint32_t>(-prev)); };
-        if (quest.prevAny.empty())
-            return !quest.prev || met(quest.prev);
-        return std::any_of(quest.prevAny.begin(), quest.prevAny.end(), met);
     }
 
     // A class quest's unlock bonus in XP (ClassQuests::Bonuses), 0 for every other quest

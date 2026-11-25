@@ -7,6 +7,11 @@
 #ifndef PLAYERBOTS_NEWRPGHELPERS_H
 #define PLAYERBOTS_NEWRPGHELPERS_H
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
 #include "ObjectGuid.h"
 
 class Object;
@@ -15,6 +20,11 @@ class PlayerbotAI;
 class Quest;
 class WorldObject;
 
+namespace Planner
+{
+class QuestIndex;
+}
+
 // Quest checks shared by the new RPG actions and values. They encode new RPG questing policy
 // (solo, non-repeatable, level window), not general quest rules.
 namespace NewRpgHelpers
@@ -22,10 +32,45 @@ namespace NewRpgHelpers
 // Radius within which a quest giver with something to accept or reward pulls the bot over.
 constexpr float QUEST_GIVER_SEARCH_DISTANCE = 80.0f;
 
+// Questing WQ31: the bot's quest executor runs an order (NewRpgInfo::DoQuest::order). O(1)
+bool OnOrder(PlayerbotAI* botAI);
+
+// Questing WQ31 (WQ.40): whether a bot on an order takes a quest a giver offers, QuestLogRules' MayAccept (the one
+// take test and a free slot). The facts (the log, the rewarded quests, the failure record) are gathered at the first
+// quest that asks and kept for one search; an accept changes the log, so it calls Reset
+class OrderTake
+{
+public:
+    explicit OrderTake(Player* bot) : _bot(bot) {}
+    OrderTake(OrderTake const&) = delete;
+    OrderTake& operator=(OrderTake const&) = delete;
+
+    bool MayAccept(Quest const* quest);
+    void Reset() { _built = false; }
+
+private:
+    void Build();
+
+    Player* _bot;
+    bool _built{false};
+    std::shared_ptr<Planner::QuestIndex const> _quests;
+    std::vector<std::uint32_t> _log;
+    std::vector<std::uint32_t> _rewarded;
+    std::vector<std::uint32_t> _givenUp;
+    std::vector<std::int32_t> _takenGroups;
+    std::size_t _freeSlots{0};
+};
+
+// Whether a bot not on an order takes a quest a giver offers: upstream's filter (the game's checks, worth and capable
+// doing) and the planner's capability refusal for a bot it owns
+bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest);
+
 // Player::CanInteractWithQuestGiver without the distance check.
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
-// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0);
+// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test. A bot on an order asks
+// OrderTake (take: the search's, else one of its own), without the game's take check: a take the game refuses is
+// found at the giver and put on record there (QuestFail cannot_take)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0, OrderTake* take = nullptr);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 // Questing WT36a: a bot the planner owns takes no quest the executor refuses for its side (the quest index's capability
@@ -34,7 +79,8 @@ bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 bool IsQuestPlannerOffered(PlayerbotAI* botAI, Player* bot, Quest const* quest);
 
 // Nearest giver in the new RPG target caches with something to accept or reward, skipping givers
-// the bot gave up on. A distanceLimit of 0 searches the whole cache.
+// the bot gave up on. A distanceLimit of 0 searches the whole cache. A bot not on an order compares only each cache's
+// first match (upstream); a bot on an order the nearest of all.
 ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit = 0.0f);
 
 // A shapeshift a spell or an item use is refused in: any form but a stance (SpellInfo::CheckShapeshift; the same

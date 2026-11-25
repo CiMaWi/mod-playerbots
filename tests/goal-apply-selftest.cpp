@@ -1765,6 +1765,33 @@ int main()
         Check(OnFreshPlan(goals, true) == FreshPlan::Keep, "an external goal is never switched");
     }
 
+    // NE11: a goal-less sickness rest yields to a plan made with the due repair recover handed over, when the due
+    // errand is its best option; any other plan keeps it, as it keeps a command
+    {
+        BotGoals goals;
+        std::shared_ptr<Goals::GoalPlan> const plan = std::make_shared<Goals::GoalPlan>();
+        plan->ranked.ok = true;
+        Goals::Option errand;
+        errand.kind = Goals::GoalKind::Errand;
+        errand.due = true;
+        errand.reason = "repair";
+        plan->ranked.options.push_back(errand);
+        goals.plan = plan;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
+              "a due errand of a plan not made for a sick bot does not cut a goal-less status (a command)");
+        plan->ranked.sickErrandOpen = true;
+        Check(
+            OnFreshPlan(goals, true) == FreshPlan::Take,
+            "NE11: the sickness rest yields to the handed-over repair (mutant: kept, the bot rests out the sickness)");
+        Check(OnFreshPlan(goals, false) == FreshPlan::Keep, "a status a switch may not cut stays");
+        plan->ranked.options.front().due = false;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
+              "a sick plan whose best option is no due errand keeps the rest");
+        plan->ranked.options.front().due = true;
+        plan->ranked.options.front().kind = Goals::GoalKind::Rest;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep, "a sick plan whose best option is a rest keeps the rest");
+    }
+
     // WT63e: a planned status ends by its order's condition (3.19 (4)): the end table per kind and the overrun bound
     {
         using Goals::GoalKind;
