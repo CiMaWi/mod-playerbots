@@ -795,8 +795,13 @@ inline void CheckStock(Checker& checker)
     checker.Check(GuidIs(shared, 32, BankChoice::Deposit, BankReason::KeptStock) && !VerdictOfGuid(shared, 33),
                   "the share is the slot's: a surplus potion beyond it is not kept");
     BankPlan const alone = PlanBankVisit(StockIn(80, {Potion(31, 20), Potion(33, 10, POTION + 1)}, {}, twoPotions, 6));
-    checker.Check(GuidIs(alone, 33, BankChoice::Deposit, BankReason::KeptStock),
-                  "a surplus potion within the share is stock for later");
+    checker.Check(!VerdictOfGuid(alone, 33),
+                  "NE8b: a surplus potion (carry 0) is not stock for later, even within the share");
+    // The one later case that stays: a carried entry's units beyond its carried ones, while the slot's budget lasts
+    BankPlan const rest = PlanBankVisit(StockIn(80, {Potion(34, 6), Potion(35, 4)}, {}, keepSix, 6));
+    checker.Check(GuidIs(rest, 34, BankChoice::Keep, BankReason::Due) &&
+                      GuidIs(rest, 35, BankChoice::Deposit, BankReason::KeptStock),
+                  "a carried entry beyond its carried units is stock for later while the budget lasts");
 
     // Not demand's item: the gear provider decides as before, beside the stock
     BankIn mixed = StockIn(10, {Potion(41, 20), Potion(42, 20), Gear(901, 13)}, {}, keepSix, 6);
@@ -812,37 +817,37 @@ inline void CheckStock(Checker& checker)
 // NE7 (needs-and-errands), the night lab5-20261122-030123: all 28 deposit_withdrawn_again rows were stacks of an entry
 // demand carried no unit of (no due row of the entry at the deposit visit), banked as stock for later and released
 // at a later visit once other stacks took the slot's share before them. Replayed with one slot: A, which demand
-// carries (6 wanted), and B, a weaker entry demand keeps none of. NE7: today these checks hold; NE8 flips the B ones
-// (stock for later only for an entry demand carries units of)
+// carries (6 wanted), and B, a weaker entry demand keeps none of. NE8b flips the B ones: stock for later
+// only for an entry demand carries units of
 inline void CheckStockChurn(Checker& checker)
 {
     constexpr uint32_t WEAK = POTION + 1;
     constexpr uint32_t MIDDLE = POTION + 2;
     std::vector<StockEntry> const carriedAndWeak = {{POTION, POTION_WORTH, 6, 0}, {WEAK, 100, 0, 0}};
     BankPlan const deposit = PlanBankVisit(StockIn(12, {Potion(61, 6), Potion(62, 2, WEAK)}, {}, carriedAndWeak, 6));
-    checker.Show("NE7 churn: the deposit, A carried 6, B (demand keeps none) 2 in the bags, wanted 6", deposit);
-    checker.Check(GuidIs(deposit, 61, BankChoice::Keep, BankReason::Due) &&
-                      GuidIs(deposit, 62, BankChoice::Deposit, BankReason::KeptStock),
-                  "NE7: today B, which demand keeps none of, is banked as stock for later; NE8 flips this");
+    checker.Show("NE8b churn: the deposit, A carried 6, B (demand keeps none) 2 in the bags, wanted 6", deposit);
+    checker.Check(
+        GuidIs(deposit, 61, BankChoice::Keep, BankReason::Due) && !VerdictOfGuid(deposit, 62) && deposit.steps.empty(),
+        "NE8b: B, which demand keeps none of, gets no mark and no deposit step (sold as surplus)");
 
     // (1) The carried entry's overflow takes the share first: a top-up left 20 of A above its 6 (bot 857's water
     // beside its Enriched Lasher Root)
     BankPlan const overflow =
         PlanBankVisit(StockIn(12, {Potion(61, 6), Potion(63, 20)}, {Potion(62, 2, WEAK)}, carriedAndWeak, 6));
-    checker.Show("NE7 churn: A's overflow of 6 beside the banked B", overflow);
+    checker.Show("NE8b churn: A's overflow of 6 beside the banked B", overflow);
     checker.Check(GuidIs(overflow, 61, BankChoice::Deposit, BankReason::KeptStock) &&
                       GuidIs(overflow, 62, BankChoice::Withdraw, BankReason::Released),
-                  "NE7: today A's overflow takes the slot's share and B's bank stack is released; NE8 flips this");
+                  "NE8b: B's bank stack, never marked, is released once; A's overflow is A's own stock for later");
 
     // (2) A dearer entry demand keeps none of enters the share (bot 1147, one level: Scroll of Strength IV, worth
     // more, banked beside the Stamina IV it releases)
     std::vector<StockEntry> const dearer = {{POTION, POTION_WORTH, 6, 0}, {MIDDLE, 200, 0, 0}, {WEAK, 100, 0, 0}};
     BankPlan const ranked =
         PlanBankVisit(StockIn(12, {Potion(61, 6), Potion(64, 6, MIDDLE)}, {Potion(62, 2, WEAK)}, dearer, 6));
-    checker.Show("NE7 churn: a dearer entry kept by none, 6 in the bags, B banked", ranked);
-    checker.Check(GuidIs(ranked, 64, BankChoice::Deposit, BankReason::KeptStock) &&
-                      GuidIs(ranked, 62, BankChoice::Withdraw, BankReason::Released),
-                  "NE7: today a dearer entry demand keeps none of takes the share and releases B; NE8 flips this");
+    checker.Show("NE8b churn: a dearer entry kept by none, 6 in the bags, B banked", ranked);
+    checker.Check(
+        !VerdictOfGuid(ranked, 64) && GuidIs(ranked, 62, BankChoice::Withdraw, BankReason::Released),
+        "NE8b: a dearer entry demand keeps none of is never marked, so it takes no share from B (both released)");
     BankPlan const own = PlanBankVisit(
         StockIn(12, {Potion(61, 6), Potion(64, 6, MIDDLE)}, {Potion(62, 2, WEAK), Potion(65, 20)}, dearer, 6));
     checker.Check(GuidIs(own, 65, BankChoice::Leave, BankReason::KeptStock),
@@ -855,10 +860,10 @@ inline void CheckStockChurn(Checker& checker)
     std::vector<KeepItemIn> const banked = {Potion(66, 1, MIDDLE), Potion(62, 2, WEAK)};
     BankPlan const before = PlanBankVisit(StockIn(12, {Potion(61, 6)}, banked, sixWanted, 6));
     BankPlan const after = PlanBankVisit(StockIn(12, {Potion(67, 1)}, banked, oneWanted, 1));
-    checker.Show("NE7 churn: wanted 1, B banked behind another entry kept by none", after);
-    checker.Check(GuidIs(before, 62, BankChoice::Leave, BankReason::KeptStock) &&
+    checker.Show("NE8b churn: wanted 1, B banked behind another entry kept by none", after);
+    checker.Check(GuidIs(before, 62, BankChoice::Withdraw, BankReason::Released) &&
                       GuidIs(after, 62, BankChoice::Withdraw, BankReason::Released),
-                  "NE7: today a smaller wanted stock releases B, last in the slot's order; NE8 flips this");
+                  "NE8b: B was never marked: a smaller wanted stock moves it neither way (released once, both visits)");
 }
 
 // Professions WR12: a material the skill path uses, a recipe item, and the bot's skills. Smithing 164 at 100
