@@ -53,6 +53,7 @@ constexpr float CAST_MIN_YARDS = 10.0f;
 constexpr float STAND_MAX_YARDS = 17.5f;
 constexpr float SECTOR_YARDS[] = {11.0f, 15.0f, 19.0f};
 constexpr float SECTOR_RADIANS = 15.0f * static_cast<float>(M_PI) / 180.0f;
+constexpr float CAST_HALF_ARC_DEGREES = 17.5f;  // the core's spread either side of the facing
 constexpr uint32 SECTOR_WET = 7;
 constexpr float FISHABLE_DEPTH = 1.0f;  // the core's 0.75 yd and a margin
 constexpr float DRY_WADE_YARDS = 0.2f;  // a stand's ground lies at most this far under a liquid's surface
@@ -341,6 +342,33 @@ Fish::Trip Clocks(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data)
     return trip;
 }
 
+// The cast's channel seen (the watch or the hold): the stand holds, so its refused casts count in a row again
+// (FishRules.h RefusedAfter)
+void SeeChannel(NewRpgInfo::DoFish& data)
+{
+    data.channelSeen = true;
+    data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, true);
+}
+
+// The bot faces the water before its cast. The core aims the bobber at the facing the bot holds when the spell runs
+// (Spell.cpp TARGET_DEST_CASTER_FISHING), in the unit update before the movement update that would apply a
+// SetFacingTo turn (Unit::Update), so the facing is set at once; else the cast goes where the walk or another action
+// left the bot turned and starts no channel (WR25a-2: 8 of 30 first casts at a stand, 11 of 987 later ones)
+void FaceWater(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data, float facing)
+{
+    Player* const bot = botAI->GetBot();
+    if (botAI->testConstraints)
+    {
+        float const off = Position::NormalizeOrientation(bot->GetOrientation() - facing);
+        float const degrees = std::min(off, 2.0f * static_cast<float>(M_PI) - off) * 180.0f / static_cast<float>(M_PI);
+        if (degrees > CAST_HALF_ARC_DEGREES)
+            LOG_INFO("playerbots", "[Probe] {} fish turn {:.0f} degrees before cast {}", bot->GetName(), degrees,
+                     data.casts + 1);
+    }
+    bot->SetOrientation(facing);
+    bot->SendMovementFlagUpdate(true);
+}
+
 // The cast is over: the next tick casts again
 void CastOver(NewRpgInfo::DoFish& data)
 {
@@ -482,7 +510,7 @@ bool NewRpgDoFishAction::Execute(Event /*event*/)
         Finish(POLE_REFUSED);
         return true;
     }
-    bot->SetFacingTo(facing);
+    FaceWater(botAI, data, facing);
     if (!botAI->CastSpell(data.spell, bot))
     {
         Trace(data, "cast refused");
@@ -654,10 +682,7 @@ bool NewRpgDoFishAction::Watch(NewRpgInfo::DoFish& data)
     Spell* const channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
     bool const fishing = channel && channel->m_spellInfo && IsFishingRank(channel->m_spellInfo->Id);
     if (fishing)
-    {
-        data.channelSeen = true;
-        data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, true);
-    }
+        SeeChannel(data);
     if (GameObject* const bobber = Bite(bot, data))
     {
         Click(botAI, data, bobber);
@@ -695,7 +720,7 @@ bool NewRpgDoFishAction::HoldFishChannel(PlayerbotAI* botAI)
         return false;
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NewRpgDoFish::HoldChannel")
                                                     : nullptr);
-    data->channelSeen = true;
+    SeeChannel(*data);
     NoteWatchTick(botAI, *data);
     if (GameObject* const bobber = Bite(bot, *data))
         Click(botAI, *data, bobber);
