@@ -80,6 +80,10 @@ bool Owns(PlayerbotAI* botAI);
 // is weighed against the running goal as a changed situation (Goals::ReplanDecision); a job out from before the change
 // is not used (the state version moves on). O(1)
 void SituationChanged(PlayerbotAI* botAI);
+// Questing WQ31 (WQ.40): a bot on an order accepted a quest at a giver (accepted) or searched the givers in reach
+// (giverStillOffers: one still offers something). Once its round of pickups is due (QuestLog::PlanDue: no giver offers
+// more, or 30 s after the round's first accept) the situation changed. Nothing for a bot the planner does not own. O(1)
+void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);

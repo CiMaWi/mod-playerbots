@@ -1283,6 +1283,21 @@ void SituationChanged(PlayerbotAI* botAI)
         state.goals->situationChanged = true;
 }
 
+void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
+{
+    Planner::BotState& state = botAI->planner;
+    if (!state.goals || !Owns(botAI))
+        return;
+    QuestLog::Round& round = state.goals->pickups;
+    uint32 const now = getMSTime();
+    if (accepted)
+        QuestLog::NoteAccept(round, now);
+    if (!QuestLog::PlanDue(round, now, giverStillOffers))
+        return;
+    round = {};
+    SituationChanged(botAI);
+}
+
 void NoteBagSlots(PlayerbotAI* botAI)
 {
     Planner::BotState& state = botAI->planner;

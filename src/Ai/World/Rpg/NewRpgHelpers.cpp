@@ -5,24 +5,86 @@
  */
 
 #include "NewRpgHelpers.h"
-#include "QuestLevelRules.h"
+
+#include <algorithm>
+#include <optional>
+#include <variant>
+
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GameObject.h"
 #include "GossipDef.h"
+#include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
-#include "PlannerService.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "QuestFailRecord.h"
+#include "QuestFields.h"
 #include "QuestIndex.h"
+#include "QuestLevelRules.h"
+#include "QuestLogRules.h"
 #include "TestConstraints.h"
 #include "World.h"
 
 namespace NewRpgHelpers
 {
+bool OnOrder(PlayerbotAI* botAI)
+{
+    if (!botAI)
+        return false;
+    auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    return doing && doing->order;
+}
+
+void OrderTake::Build()
+{
+    _built = true;
+    _quests = Planner::Quests();
+    _log.clear();
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = _bot->GetQuestSlotQuestId(slot))
+            _log.push_back(questId);
+    std::sort(_log.begin(), _log.end());
+    _freeSlots = Planner::QuestLog::LOG_SLOTS - std::min(_log.size(), Planner::QuestLog::LOG_SLOTS);
+    RewardedQuestSet const& rewarded = _bot->getRewardedQuests();
+    _rewarded.assign(rewarded.begin(), rewarded.end());
+    std::sort(_rewarded.begin(), _rewarded.end());
+    _givenUp = Planner::QuestLog::Read(QuestFailRecord::RowsOf(_bot->GetGUID().GetCounter())).givenUp;
+    _takenGroups.clear();
+    if (_quests)
+        _takenGroups = Planner::QuestFields::TakenGroups(*_quests, _log, _rewarded);
+}
+
+bool OrderTake::MayAccept(Quest const* quest)
+{
+    if (!_built)
+        Build();
+    Planner::QuestRecord const* record = _quests ? _quests->Find(quest->GetQuestId()) : nullptr;
+    if (!record)
+        return false;
+    // Elite and group quests are refused (WQ.43): the take test's eliteGroup off
+    Planner::Take::Facts const facts{.race = _bot->getRace(true),
+                                     .cls = _bot->getClass(),
+                                     .level = static_cast<std::uint8_t>(_bot->GetLevel()),
+                                     .greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF),
+                                     .eliteGroup = false,
+                                     .rewarded = _rewarded,
+                                     .inLog = _log,
+                                     .givenUp = _givenUp,
+                                     .takenGroups = _takenGroups};
+    return Planner::QuestLog::MayAccept(*record, facts, *_quests, _freeSlots);
+}
+
+bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest)
+{
+    return bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) && IsQuestWorthDoing(bot, quest) &&
+           IsQuestCapableDoing(bot, quest) && IsQuestPlannerOffered(botAI, bot, quest);
+}
+
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
 {
     // This is a variant of Player::CanInteractWithQuestGiver
@@ -101,7 +163,7 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
     return false;
 }
 
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints, OrderTake* take)
 {
     ObjectGuid guid = object->GetGUID();
     bot->PrepareQuestMenu(guid);
@@ -121,20 +183,21 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constrain
             return true;
         }
     }
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
+    std::optional<OrderTake> own;
+    if (!take && OnOrder(botAI))
+        take = &own.emplace(bot);
     for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
     {
         QuestMenuItem const& item = menu.GetItem(idx);
         Quest const* quest = sObjectMgr->GetQuestTemplate(item.QuestId);
-        if (!quest)
+        if (!quest || bot->GetQuestStatus(item.QuestId) != QUEST_STATUS_NONE)
             continue;
 
-        QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
-        if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            IsQuestWorthDoing(bot, quest) && IsQuestCapableDoing(bot, quest) &&
-            IsQuestPlannerOffered(GET_PLAYERBOT_AI(bot), bot, quest))
-        {
+        bool const offered =
+            take ? take->MayAccept(quest) && bot->CanAddQuest(quest, false) : FreeBotTakes(botAI, bot, quest);
+        if (offered)
             return TestConstraints::GiverSought(false, true, constraints);
-        }
     }
     return false;
 }
@@ -187,6 +250,12 @@ ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
     Player* bot = botAI->GetBot();
     GuidSet const& ignored = botAI->rpgMemos.ignoredQuestGivers;
     WorldObject* nearestObject = nullptr;
+    float nearest = 0.0f;
+    // A bot on an order takes the nearest giver of both caches; one take's facts serve the whole search
+    bool const onOrder = OnOrder(botAI);
+    std::optional<OrderTake> take;
+    if (onOrder)
+        take.emplace(bot);
 
     for (char const* candidates : {"possible new rpg targets", "possible new rpg game objects"})
     {
@@ -204,11 +273,20 @@ ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
             if (distanceLimit && bot->GetDistance(object) > distanceLimit)
                 continue;
 
-            if (CanInteractWithQuestGiver(bot, object) && HasQuestToAcceptOrReward(bot, object, botAI->testConstraints))
+            float const distance = bot->GetExactDist(object);
+            if (onOrder && nearestObject && distance >= nearest)
+                continue;
+
+            if (CanInteractWithQuestGiver(bot, object) &&
+                HasQuestToAcceptOrReward(bot, object, botAI->testConstraints, take ? &*take : nullptr))
             {
-                if (!nearestObject || bot->GetExactDist(nearestObject) > bot->GetExactDist(object))
+                if (!nearestObject || nearest > distance)
+                {
                     nearestObject = object;
-                break;
+                    nearest = distance;
+                }
+                if (!onOrder)
+                    break;
             }
         }
     }

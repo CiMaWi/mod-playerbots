@@ -51,6 +51,7 @@
 #include "QuestFieldExec.h"
 #include "QuestFields.h"
 #include "QuestGiveUp.h"
+#include "QuestLogRules.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
 #include "QuestingConfig.h"
@@ -59,6 +60,7 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "World.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 #include "WorldLogStatus.h"
@@ -320,6 +322,29 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
 
 namespace
 {
+// A take the take test allows and the game refuses at the giver (questing WQ31): one failure row, and the record that
+// the take test reads as given up, so the giver is not sought for it again
+void NoteRefusedTake(Player* bot, uint32 questId)
+{
+    char const* const cause = Planner::QuestLog::CANNOT_TAKE.data();
+    EventLog::Emit(bot, EventLog::EventType::QuestFail, cause, questId, 0);
+    QuestFailRecord::Note(bot, questId, cause, 0);
+    LOG_DEBUG("playerbots", "[Quest] {} cannot take quest {}", bot->GetName(), questId);
+}
+
+QuestDropReason DropReasonOf(Planner::QuestLog::Drop drop, QuestStatus status)
+{
+    switch (drop)
+    {
+        case Planner::QuestLog::Drop::Outlevelled:
+            return QuestDropReason::Trivial;
+        case Planner::QuestLog::Drop::CannotDo:
+            return status == QUEST_STATUS_FAILED ? QuestDropReason::Failed : QuestDropReason::NotCapable;
+        default:
+            return QuestDropReason::Failed;
+    }
+}
+
 // The log's drop of a quest slot through the abandon packet, as a player would; its QuestAbandon row names the reason
 void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
 {
@@ -329,6 +354,40 @@ void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
     removeQuest.Read();
     WorldLog::QuestDropWord const word(QuestDropReasonName(reason));
     bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
+}
+
+// A bot on an order abandons only what QuestLogRules' Abandon says: a quest it outlevelled, gave up or cannot do (a
+// failed timed quest too), a ready one only when its hand-in failed; never for room (questing WQ31)
+bool OrganizeOrderQuestLog(PlayerbotAI* botAI, Player* bot)
+{
+    std::shared_ptr<Planner::QuestIndex const> const quests = Planner::Quests();
+    if (!quests)
+        return false;
+    Planner::QuestLog::Record const record =
+        Planner::QuestLog::Read(QuestFailRecord::RowsOf(bot->GetGUID().GetCounter()));
+    uint32 const greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF);
+    uint8 const side = static_cast<uint8>(bot->GetTeamId());
+    bool dropped = false;
+    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    {
+        uint32 const questId = bot->GetQuestSlotQuestId(i);
+        Planner::QuestRecord const* held = questId ? quests->Find(questId) : nullptr;
+        if (!held)
+            continue;
+        QuestStatus const status = bot->GetQuestStatus(questId);
+        Planner::QuestLog::Held quest = Planner::QuestLog::HeldOf(*held, record, side, status == QUEST_STATUS_COMPLETE);
+        quest.cannotDo = quest.cannotDo || status == QUEST_STATUS_FAILED;
+        Planner::QuestLog::Drop const drop = Planner::QuestLog::Abandon(quest, bot->GetLevel(), greyDiff);
+        if (drop == Planner::QuestLog::Drop::Keep)
+            continue;
+        QuestDropReason const reason = DropReasonOf(drop, status);
+        LOG_DEBUG("playerbots", "[New RPG] {} drops quest {}: {}", bot->GetName(), questId,
+                  Planner::QuestLog::Word(drop));
+        DropQuestSlot(bot, i, reason);
+        botAI->RecordQuestDropped(questId, reason);
+        dropped = true;
+    }
+    return dropped;
 }
 }  // namespace
 
@@ -353,6 +412,9 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
     if (menu.Empty())
         return true;
 
+    // A bot on an order takes what the take test allows (questing WQ31); the game's refusal is put on record once
+    bool const onOrder = NewRpgHelpers::OnOrder(botAI);
+    NewRpgHelpers::OrderTake take(bot);
     for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
     {
         QuestMenuItem const& item = menu.GetItem(idx);
@@ -361,12 +423,27 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
             continue;
 
         QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
-        if (status == QUEST_STATUS_NONE && TestConstraints::QuestChoicesAllowed(botAI->testConstraints) &&
-            bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            NewRpgHelpers::IsQuestWorthDoing(bot, quest) && NewRpgHelpers::IsQuestCapableDoing(bot, quest) &&
-            NewRpgHelpers::IsQuestPlannerOffered(botAI, bot, quest))
+        bool accept = false;
+        if (status == QUEST_STATUS_NONE && TestConstraints::QuestChoicesAllowed(botAI->testConstraints))
+        {
+            if (!onOrder)
+                accept = NewRpgHelpers::FreeBotTakes(botAI, bot, quest);
+            else if (take.MayAccept(quest))
+            {
+                if (bot->CanTakeQuest(quest, false))
+                    accept = bot->CanAddQuest(quest, false);
+                else
+                    NoteRefusedTake(bot, quest->GetQuestId());
+            }
+        }
+        if (accept)
         {
             AcceptQuest(quest, guid);
+            if (onOrder)
+            {
+                take.Reset();
+                Planner::NotePickup(botAI, true, true);
+            }
             if (botAI->GetMaster())
                 botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "new_rpg_quest_accepted",
@@ -536,6 +613,9 @@ bool NewRpgBaseAction::OrganizeQuestLog()
     if (!TestConstraints::QuestChoicesAllowed(botAI->testConstraints))
         return false;
 
+    if (NewRpgHelpers::OnOrder(botAI))
+        return OrganizeOrderQuestLog(botAI, bot);
+
     int32 freeSlotNum = 0;
 
     for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
@@ -641,6 +721,9 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
 {
     OrganizeQuestLog();
     ObjectGuid npcOrGo = AI_VALUE(ObjectGuid, "new rpg quest giver");
+    // A bot on an order: its pickups' plan is due once no giver in reach offers more (questing WQ31)
+    if (NewRpgHelpers::OnOrder(botAI))
+        Planner::NotePickup(botAI, false, !npcOrGo.IsEmpty());
     if (!npcOrGo)
         return false;
 
