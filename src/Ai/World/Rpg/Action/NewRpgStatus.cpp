@@ -362,7 +362,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
                 {
-                    botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+                    // At this vendor: the nearest npcs scan filters by line of sight (professions WR30)
+                    botAI->DoSpecificAction("sell", Event("sell", creature->GetGUID()), true);
 
                     // Buying sorts the vendor list through the weight calculator; skip it for
                     // bots without money for cheap consumables.
