@@ -1373,9 +1373,14 @@ inline void StableTrip(std::vector<Check>& checks)
     // The professions plan's kinds and services (WR1): appended, named, the profession trainer a trainer of its own
     Add(checks, "professions: the errand kinds are named profession and craft, the bits distinct",
         std::string(ErrandKindName(ErrandKind::Profession)) == "profession" &&
-            std::string(ErrandKindName(ErrandKind::Craft)) == "craft" && ERRAND_KIND_COUNT == 17 &&
-            ServiceBitsDistinct() && (TRAINER_SERVICES & SERVICE_PROFESSION_TRAINER) &&
-            !(TRAINER_SERVICES & SERVICE_STATION),
+            std::string(ErrandKindName(ErrandKind::Craft)) == "craft" && ServiceBitsDistinct() &&
+            (TRAINER_SERVICES & SERVICE_PROFESSION_TRAINER) && !(TRAINER_SERVICES & SERVICE_STATION),
+        "");
+    // The auction plan's kind and service (WA1a): appended last, named, the auctioneer a bit of its own, no trainer
+    Add(checks, "auction: the errand kind is named auction and appended last, the auctioneer's bit distinct",
+        std::string(ErrandKindName(ErrandKind::Auction)) == "auction" && ERRAND_KIND_COUNT == 18 &&
+            static_cast<uint8_t>(ErrandKind::Auction) + 1 == ERRAND_KIND_COUNT && ServiceBitsDistinct() &&
+            !(TRAINER_SERVICES & SERVICE_AUCTIONEER),
         "");
 }
 

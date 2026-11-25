@@ -23,7 +23,7 @@ namespace BankMail
 {
 namespace
 {
-constexpr size_t VISIT_KIND_COUNT = static_cast<size_t>(VisitKind::Craft) + 1;
+constexpr size_t VISIT_KIND_COUNT = static_cast<size_t>(VisitKind::Auction) + 1;
 
 std::array<std::atomic<uint32>, VISIT_KIND_COUNT> visitsStarted{};
 std::array<VisitEndCounters, VISIT_KIND_COUNT> visitsEnded{};

@@ -77,9 +77,10 @@ std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounte
             ? std::string()
             : Acore::StringFormat(", no materials {}, no station {}, bags full {}", count(VisitEnd::NoMaterials),
                                   count(VisitEnd::NoStation), count(VisitEnd::BagsFull));
-    char const* const noSpot = kind == VisitKind::Mail   ? "no mailbox"
-                               : kind == VisitKind::Bank ? "no banker"
-                                                         : "no spot";
+    char const* const noSpot = kind == VisitKind::Mail      ? "no mailbox"
+                               : kind == VisitKind::Bank    ? "no banker"
+                               : kind == VisitKind::Auction ? "no auctioneer"
+                                                            : "no spot";
     return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, unreached {}{}, interrupted {} ({})", started,
                                count(VisitEnd::Done), count(VisitEnd::Timeout), noSpot, count(VisitEnd::NoSpot),
                                count(VisitEnd::Unreached), own, interrupted, each);

@@ -111,9 +111,11 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
 
     bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
     bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
+    // The auction plan's worths are zero until WA3b and WA4b fill them: no auctioneer joins a trip before then
+    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth;
     std::shared_ptr<Planner::PlannerIndexes const> const indexes =
         Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!indexes || (!mail && !bank))
+    if (!indexes || (!mail && !bank && !auction))
         return;
 
     std::vector<WorldTravel::ServiceStop> extras;
@@ -126,14 +128,17 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
             Planner::Service const& spot = indexes->services[found.index];
             if (kind == Planner::ServiceKind::Banker && !BankMail::BankerServes(bot, spot.factionTemplate))
                 continue;
-            extras.push_back(
-                {kind == Planner::ServiceKind::Banker ? spot.entry : 0, {spot.mapId, spot.x, spot.y, spot.z}, service});
+            extras.push_back({kind == Planner::ServiceKind::Mailbox ? 0 : spot.entry,
+                              {spot.mapId, spot.x, spot.y, spot.z},
+                              service});
         }
     };
     if (mail)
         add(Planner::ServiceKind::Mailbox, WorldTravel::SERVICE_MAILBOX);
     if (bank)
         add(Planner::ServiceKind::Banker, WorldTravel::SERVICE_BANKER);
+    if (auction)
+        add(Planner::ServiceKind::Auctioneer, WorldTravel::SERVICE_AUCTIONEER);
     WorldTravel::MergeServiceStops(snapshot.Stops, extras);
 }
 

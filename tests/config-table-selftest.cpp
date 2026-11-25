@@ -30,6 +30,7 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
+#include "AuctionConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
@@ -302,6 +303,32 @@ void TestProfessionWalk()
           "Professions: the defaults reach every share and fit chances for the served crafts");
 }
 
+// WA1a: the auction family's walk; the defaults are the initializers, a value outside its bounds clamped
+void TestAuctionWalk()
+{
+    AuctionConfig config;
+    config.PublishSeconds = 5;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    Check(LoadConfigFamily(AuctionFamily, config, empty, warn) == 0 && warnings.empty(), "Auction: no key, no warning");
+    Check(config.PublishSeconds == 60 && config.HistoryDays == 7 && config.OpenBidsMax == 3 &&
+              config.UndercutPercent == 3 && config.RelistStepPercent == 10 && config.RelistLimit == 3 &&
+              config.FirstDurationHours == 24 && config.RelistDurationHours == 48,
+          "Auction: the walk resets to the initializers");
+
+    FakeReader probe;
+    probe.values = {{"Playerbots.Auction.Bid.OpenMax", "5"}, {"Playerbots.Auction.Post.FirstDurationHours", "72"}};
+    Check(LoadConfigFamily(AuctionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
+              config.OpenBidsMax == 5 && config.FirstDurationHours == 48,
+          "Auction: a value in range kept, one above its bound clamped with a warning");
+    Check(AuctionFamily.Rows.size() == 8, "Auction: eight rows");
+    Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
+              AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
+          "Auction: the decision words");
+}
+
 void TestTypesWalk()
 {
     TypesConfig config;
@@ -475,6 +502,12 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     for (std::string const& problem : professionProblems)
         std::cout << "  " << problem << "\n";
     Check(professionProblems.empty(), "Professions: rows unique, defaults in bounds, conf.dist agrees with the rows");
+    std::vector<std::string> auctionProblems = RowProblems(AuctionFamily, seen);
+    std::vector<std::string> const auctionDist = DistProblems(AuctionFamily, dist);
+    auctionProblems.insert(auctionProblems.end(), auctionDist.begin(), auctionDist.end());
+    for (std::string const& problem : auctionProblems)
+        std::cout << "  " << problem << "\n";
+    Check(auctionProblems.empty(), "Auction: rows unique, defaults in bounds, conf.dist agrees with the rows");
 
     // CS22c-f: the tactic and skill families; rows unique, defaults in bounds, conf.dist agrees with the rows. Several
     // families share a prefix (the per-tactic table and a tactic's numbers), so a dist key is "without a row" only when
@@ -1277,6 +1310,7 @@ int main(int argc, char** argv)
 
     TestBankMailWalk();
     TestProfessionWalk();
+    TestAuctionWalk();
     TestTypesWalk();
     TestLastFamilies();
     TestUnknownRetiredPrint();

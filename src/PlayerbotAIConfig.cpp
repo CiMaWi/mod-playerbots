@@ -15,6 +15,7 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
+#include "AuctionConfig.h"
 #include "BankMailConfig.h"
 #include "BisListMgr.h"
 #include "BotAttributes.h"
@@ -150,6 +151,7 @@ PlayerbotAIConfig::PlayerbotAIConfig()
       Flee(FleeConfigStorage()),
       BankMail(BankMailConfigStorage()),
       Professions(ProfessionConfigStorage()),
+      Auction(AuctionConfigStorage()),
       Questing(QuestingConfigStorage()),
       ItemUse(ItemUseConfigStorage()),
       TacticLos(LosConfigStorage()),

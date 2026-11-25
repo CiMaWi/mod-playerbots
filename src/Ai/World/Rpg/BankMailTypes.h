@@ -163,7 +163,8 @@ enum class VisitKind : uint8_t
 {
     Mail,
     Bank,
-    Craft  // the professions plan's craft visit (WR7 drives it)
+    Craft,   // the professions plan's craft visit (WR7 drives it)
+    Auction  // the auction plan's visit to an auctioneer (WA3b drives it)
 };
 
 // How a visit ended: the row's source word (VisitEndWord) and the counter it moves
@@ -171,7 +172,7 @@ enum class VisitEnd : uint8_t
 {
     Done,       // the plan's every step answered or move made
     Timeout,    // the deadline passed out of combat
-    NoSpot,     // no mailbox or banker where the index put it, or it went
+    NoSpot,     // no mailbox, banker or auctioneer where the index put it, or it went
     Unreached,  // the last walk to the box, banker or station failed: the NPC or box is there
     // The craft visit's own ends (professions plan), reached by the visit itself, so before the interruptions
     NoMaterials,  // the materials were not in the bags
