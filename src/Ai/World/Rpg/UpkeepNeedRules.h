@@ -122,7 +122,8 @@ enum class NeedOrder : std::uint8_t
     Riding,
     Pet,  // a hunter's pet (WU21b) and its stable (WU21c)
     Use,  // item use WI9b: the potions, elixirs, scrolls and bandages demand wants, from the gold above the reserve
-    Profession  // professions WR4a: learn, rank and tools, funded last
+    Profession,  // professions WR4a: learn, rank and tools
+    Market       // auction house WA4a: the buy list's lines, last, from the gold above the reserve the use items leave
 };
 
 // What a profession need asks for
@@ -212,6 +213,14 @@ struct UseWant
     std::uint8_t slot{0};
 };
 
+// A buy list line the market prices under its ceiling (auction house WA4a, AuctionBuyList.h TypicalCopper)
+struct MarketWant
+{
+    std::uint32_t item{0};
+    std::uint32_t units{0};
+    std::uint64_t copper{0};  // at the typical unit price
+};
+
 // Demand's food, water or poison (WU37a, WU.27, ItemUse::StockWantOf): the items a persistent bot buys of the kind,
 // the strongest first, each with the units it may buy (a rogue's poison: its hand's share of the one stock), and the
 // usable units demand counts held. The need keeps the urgency, the reserve and the funding. Not answered: the kind's
@@ -247,6 +256,7 @@ struct NeedRates
     std::vector<PathPurchase> pathPurchases;
     std::uint16_t secondWaits{0};  // the path's second choice holds this craft's learn back; 0: none
     std::uint32_t pathFood{0};     // units of food the path's queue cooks from what the bot holds (WR15): food stock
+    std::vector<MarketWant> marketWants;  // the buy list's priced lines, in owner order (AddMarketNeeds)
 };
 
 struct NeedList
@@ -1717,8 +1727,28 @@ inline TrainingBuy TrainingPurchase(TrainerList const& list, std::vector<std::si
     return buy;
 }
 
+// The buy list's lines (auction house WA4a, NeedRates::marketWants), one need each. Like the use items: never due,
+// never in the reserve or the shortfall; Fund pays them after every other need and only from the gold above the
+// reserve the use items leave, so a purchase never takes what upkeep or a use item needs
+inline void AddMarketNeeds(NeedList& list, NeedRates const& rates)
+{
+    for (MarketWant const& want : rates.marketWants)
+    {
+        if (!want.item || !want.units || !want.copper)
+            continue;
+        Need need;
+        need.order = NeedOrder::Market;
+        need.kind = UpkeepKind::Gold;
+        need.units = want.units;
+        need.copper = want.copper;
+        need.item = want.item;
+        need.without = "goes without it";
+        list.needs.push_back(need);
+    }
+}
+
 // Short gold is spent in the fixed order: each need takes what is left (a bot repairs what it can, learns what it
-// can); the use items, last, take only the gold above the reserve
+// can); the use items and the market's lines take only the gold above the reserve
 inline void Fund(NeedList& list)
 {
     std::stable_sort(list.needs.begin(), list.needs.end(),
@@ -1727,10 +1757,10 @@ inline void Fund(NeedList& list)
     std::uint64_t above = list.money > list.reserve ? list.money - list.reserve : 0;
     for (Need& need : list.needs)
     {
-        bool const use = need.order == NeedOrder::Use;
-        need.funded = std::min(need.copper, use ? std::min(left, above) : left);
+        bool const aboveOnly = need.order == NeedOrder::Use || need.order == NeedOrder::Market;
+        need.funded = std::min(need.copper, aboveOnly ? std::min(left, above) : left);
         left -= need.funded;
-        if (use)
+        if (aboveOnly)
             above -= need.funded;
     }
 }
@@ -1778,6 +1808,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
         if (need.kind == UpkeepKind::Pet && need.swap)
             need.due = need.due && PetSwapPayable(list.money, list.reserve, need.copper);
     AddUseNeeds(list, index, snapshot, rates);
+    AddMarketNeeds(list, rates);
     Fund(list);
     return list;
 }
@@ -1794,8 +1825,8 @@ inline std::string Money(std::uint64_t copper)
 
 inline char const* OrderWord(NeedOrder order)
 {
-    constexpr std::array<char const*, 9> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
-                                                  "pet",    "use",  "profession"};
+    constexpr std::array<char const*, 10> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
+                                                   "pet",    "use",  "profession",     "market"};
     return WORDS[static_cast<std::size_t>(order)];
 }
 

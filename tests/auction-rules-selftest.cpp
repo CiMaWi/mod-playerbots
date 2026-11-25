@@ -14,6 +14,7 @@
 // WA2b (AuctionPricing.h): the economy reference's auction cases as fixed values, planted asks and purchases, a
 // seeded search over markets and bots for ten invariants with their controls, and the printed decisions.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <ctime>
@@ -26,8 +27,10 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "AuctionMemory.h"
 #include "AuctionPricing.h"
 #include "AuctionRules.h"
@@ -1566,6 +1569,443 @@ void SearchPricing()
     Check(control.overPurse > 0, "P10. control: the leader's own bid counted as in hand (caught)");
 }
 
+// ---- what a bot buys (WA4a): the index's short list, the buy list and a buying visit ----
+using AuctionIndex::AuctionFacts;
+std::string ChoiceText(BuyChoice const& choice, std::vector<OfferInput> const& offers);
+constexpr std::uint64_t BUYER_GUID = 9;
+constexpr std::int64_t MARKET_NOW = 1000000;
+constexpr std::uint8_t BUYER_HOUSE = 7;
+
+// One item's lots: varied lot sizes, often crowded by 20-stacks cheaper per unit than the rest
+std::vector<AuctionFacts> RandomLots(Dice& dice, std::uint32_t item, std::uint32_t& nextId, std::uint32_t unit)
+{
+    constexpr std::uint32_t SIZES[] = {1, 2, 4, 5, 10, 12, 20};
+    std::vector<AuctionFacts> lots;
+    bool const crowded = dice.Pick(40);
+    std::uint32_t const n = crowded ? dice.Range(6, 12) : dice.Range(0, 10);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        AuctionFacts lot;
+        lot.id = nextId++;
+        lot.item = item;
+        bool const big = crowded && i < 6;
+        lot.count = big ? 20 : dice.Pick(70) ? SIZES[dice.Range(0, 6)] : dice.Range(1, 40);
+        double const perUnit = unit * (big ? dice.Real(0.4, 0.8) : dice.Real(0.5, 2.0));
+        double const price = std::max(1.0, perUnit * lot.count);
+        lot.buyout = dice.Pick(15) ? 0 : static_cast<std::uint32_t>(price);
+        lot.startBid = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(price * dice.Real(0.3, 1.0)));
+        if (dice.Pick(40))
+        {
+            lot.bid = lot.startBid + dice.Range(0, lot.startBid / 2);
+            if (lot.buyout && lot.bid >= lot.buyout)
+                lot.bid = lot.startBid;
+            lot.bidder = dice.Pick(25) ? BUYER_GUID : dice.Range(10, 1000);
+        }
+        lot.endTime = MARKET_NOW + (dice.Pick(50) ? dice.Range(60, 7200) : dice.Range(60, 172800));
+        lot.houseId = dice.Pick(90) ? BUYER_HOUSE : 2;
+        lots.push_back(lot);
+    }
+    return lots;
+}
+
+AuctionIndex::Snapshot Publish(std::vector<AuctionFacts> const& lots)
+{
+    AuctionIndex::Book book;
+    for (AuctionFacts const& lot : lots)
+        book.Add(lot);
+    AuctionIndex::Snapshot snapshot;
+    book.Fill(snapshot, MARKET_NOW, 7 * AuctionIndex::SECONDS_PER_DAY);
+    return snapshot;
+}
+
+// The least line cost per unit of the need covered among the buyouts a bot takes (within the ceiling, in hand);
+// covered 0: none
+struct LineBest
+{
+    std::uint64_t cost{0};
+    std::uint64_t covered{0};
+};
+
+LineBest BestBuyout(std::vector<AuctionFacts> const& lots, std::uint32_t need, std::uint64_t excess,
+                    std::uint64_t ceiling, std::uint64_t spendable)
+{
+    LineBest best;
+    for (AuctionFacts const& lot : lots)
+    {
+        OfferInput const offer{lot, need, excess};
+        if (!lot.buyout || lot.buyout > spendable || !WithinCeiling(offer, ceiling, lot.buyout))
+            continue;
+        LineBest const here{LineCost(offer, lot.buyout), Covered(offer)};
+        if (!best.covered || here.cost * best.covered < best.cost * here.covered)
+            best = here;
+    }
+    return best;
+}
+
+bool SameBest(LineBest const& a, LineBest const& b)
+{
+    return !a.covered || !b.covered ? a.covered == b.covered : a.cost * b.covered == b.cost * a.covered;
+}
+
+// The controls: the old short list (the cheapest OFFER_LINES_MAX by unit), and that list with the lot of the least
+// total buyout added
+std::vector<AuctionFacts> UnitFive(std::vector<AuctionFacts> lots, bool withLeastTotal)
+{
+    auto key = [](AuctionFacts const& lot)
+    {
+        return lot.buyout ? std::make_tuple(false, AuctionIndex::UnitPrice(lot.buyout, lot.count), lot.id)
+                          : std::make_tuple(true, AuctionIndex::UnitPrice(lot.bid ? lot.bid : lot.startBid, lot.count),
+                                            lot.id);
+    };
+    std::sort(lots.begin(), lots.end(),
+              [&key](AuctionFacts const& a, AuctionFacts const& b) { return key(a) < key(b); });
+    std::size_t const keep = std::min(lots.size(), AuctionIndex::OFFER_LINES_MAX);
+    std::vector<AuctionFacts> list(lots.begin(), lots.begin() + static_cast<std::ptrdiff_t>(keep));
+    AuctionFacts const* least = nullptr;
+    for (AuctionFacts const& lot : lots)
+        if (lot.buyout && (!least || lot.buyout < least->buyout))
+            least = &lot;
+    if (withLeastTotal && least &&
+        std::none_of(list.begin(), list.end(), [least](AuctionFacts const& lot) { return lot.id == least->id; }))
+        list.push_back(*least);
+    return list;
+}
+
+struct WidthTally
+{
+    int books{0};
+    int needs{0};
+    int wider{0};
+    std::size_t longest{0};
+    int rule{0};
+    int unitFive{0};
+    int leastTotal{0};
+};
+
+// The short list holds, for every need size, excess worth, ceiling and purse, a buyout as good as the whole book's
+void SearchWidth(Dice& dice, WidthTally& tally)
+{
+    std::uint32_t nextId = 1;
+    std::uint32_t const unit = dice.Range(1, 5000);
+    std::vector<AuctionFacts> const lots = RandomLots(dice, 500, nextId, unit);
+    AuctionIndex::Snapshot const snapshot = Publish(lots);
+    AuctionIndex::ItemEntry const* entry = snapshot.Find(500);
+    std::vector<AuctionFacts> const listed = entry ? entry->offers.cheapest : std::vector<AuctionFacts>{};
+    std::vector<AuctionFacts> const five = UnitFive(lots, false);
+    std::vector<AuctionFacts> const total = UnitFive(lots, true);
+    ++tally.books;
+    tally.wider += listed.size() > AuctionIndex::OFFER_LINES_MAX ? 1 : 0;
+    tally.longest = std::max(tally.longest, listed.size());
+    for (std::uint32_t const need : {1u, 4u, dice.Range(1, 40)})
+    {
+        std::uint64_t const excess = dice.Pick(50) ? 0 : dice.Range(0, unit);
+        std::uint64_t const ceiling = dice.Pick(50) ? MAX_LOT_PRICE : dice.Range(1, 3 * unit);
+        std::uint64_t const spendable = dice.Pick(50) ? MAX_LOT_PRICE : dice.Range(0, 30 * unit);
+        LineBest const book = BestBuyout(lots, need, excess, ceiling, spendable);
+        ++tally.needs;
+        tally.rule += SameBest(BestBuyout(listed, need, excess, ceiling, spendable), book) ? 0 : 1;
+        tally.unitFive += SameBest(BestBuyout(five, need, excess, ceiling, spendable), book) ? 0 : 1;
+        tally.leastTotal += SameBest(BestBuyout(total, need, excess, ceiling, spendable), book) ? 0 : 1;
+    }
+}
+
+// The buy list's pieces by hand, with the decisions printed
+void CheckBuyListHand()
+{
+    std::cout << "buy list by hand:\n";
+    std::vector<BuyLine> const lines =
+        BuyList({LineOf(LineOwner::Gear, 801, 1, 90.0, 60.0, 0.5f, 0),
+                 LineOf(LineOwner::Path, 802, 3, 600.0, -1.0, 3.0f, 0), BagLine(803, 5000, 0),
+                 UseLine(804, 4, 120, 100, 5), UseLine(805, 0, 120, 100, 5), UseLine(806, 4, 0, 100, 5)});
+    for (BuyLine const& line : lines)
+        std::cout << "  " << OwnerWord(line.owner) << " " << line.item << " x" << line.units << " ceiling "
+                  << CeilingOf(line) << '\n';
+    bool const ordered = lines.size() == 4 && lines[0].item == 804 && lines[1].item == 803 && lines[2].item == 802 &&
+                         lines[3].item == 801;
+    Check(ordered, "the buy list: use, bag, path, gear; a line without units or worth is dropped");
+    Check(ordered && CeilingOf(lines[0]) == 100 && CeilingOf(lines[1]) == 5000 && CeilingOf(lines[2]) == 200 &&
+              CeilingOf(lines[3]) == 120,
+          "ceilings: use at the vendor's price under its worth, a bag at its worth, the path and gear stubs in value "
+          "units over the factor");
+    Check(CeilingOf(UseLine(807, 1, 80, 100, 0)) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0)) == 120,
+          "a use line's ceiling is its worth under a dearer vendor or with none");
+
+    BuyLine const use = lines.empty() ? BuyLine{} : lines[0];
+    Check(TypicalCopper(use, 60) == 240 && WantedWorth(use, 60, 1000) == 160 && WantedWorth(use, 60, 130) == 80,
+          "typical 60 under the ceiling 100: claims 240 for 4, worth 40 each, as many as the gold buys");
+    Check(TypicalCopper(use, 100) == 0 && WantedWorth(use, 100, 1000) == 0 && TypicalCopper(use, 0) == 0 &&
+              WantedWorth(use, 0, 1000) == 0,
+          "typical at the ceiling or unknown: no claim, no worth");
+
+    // The bot leads auction 1 (item 700, bid 300: the core took it from the purse) and auction 2 in another house
+    std::vector<AuctionFacts> lots;
+    auto lot = [&lots](std::uint32_t id, std::uint32_t item, std::uint32_t count, std::uint32_t bid,
+                       std::uint32_t buyout, std::uint64_t bidder, std::uint8_t house)
+    {
+        AuctionFacts facts;
+        facts.id = id;
+        facts.item = item;
+        facts.count = count;
+        facts.startBid = bid ? bid : 1;
+        facts.bid = bid;
+        facts.buyout = buyout;
+        facts.bidder = bidder;
+        facts.endTime = MARKET_NOW + 3600;
+        facts.houseId = house;
+        lots.push_back(facts);
+    };
+    lot(1, 700, 1, 300, 900, BUYER_GUID, BUYER_HOUSE);
+    lot(2, 701, 1, 50, 0, BUYER_GUID, 2);
+    lot(3, 804, 4, 0, 380, 0, BUYER_HOUSE);  // the bot's own listing
+    lot(4, 804, 4, 0, 390, 0, 2);            // another house
+    lot(5, 804, 4, 0, 400, 0, BUYER_HOUSE);
+    lot(6, 804, 4, 200, 600, BUYER_GUID, BUYER_HOUSE);
+    AuctionIndex::Snapshot const snapshot = Publish(lots);
+    AuctionIndex::ItemEntry const* entry = snapshot.Find(804);
+    std::vector<std::uint32_t> const own = {3};
+    std::vector<OfferInput> const offers =
+        entry ? OffersFor(entry->offers, use, BUYER_HOUSE, own) : std::vector<OfferInput>{};
+    Check(OpenBids(snapshot, BUYER_GUID) == 3, "open bids: the index's lines the bot leads, in any house");
+    Check(offers.size() == 2 && offers[0].line.id == 5 && offers[1].line.id == 6 && offers[0].unitsNeeded == 4 &&
+              offers[0].excessUnitWorth == 5,
+          "the line's offers: this house only, without the bot's own auction");
+
+    BuyInput buyer;
+    buyer.spendable = Spendable(1500, 1000, 0);
+    buyer.openBids = OpenBids(snapshot, BUYER_GUID);
+    buyer.now = MARKET_NOW;
+    buyer.ownGuid = BUYER_GUID;
+    BuyChoice const bought = entry ? ChooseLine(entry->offers, use, BUYER_HOUSE, own, buyer) : BuyChoice{};
+    std::cout << "  purse 1500 (the open bids already out of it), reserve 1000: " << ChoiceText(bought, offers) << '\n';
+    Check(buyer.spendable == 500 && bought.kind == BuyKind::Buyout && bought.auctionId == 5 && bought.price == 400,
+          "the open bids are not taken off the purse twice: 500 above the reserve buys auction 5 out for 400");
+    BuyInput twice = buyer;
+    twice.spendable = Spendable(1500, 1000, 550);
+    Check(entry && ChooseLine(entry->offers, use, BUYER_HOUSE, own, twice).kind == BuyKind::Skip,
+          "control: the open bids' 550 taken off again leaves nothing for it (caught)");
+    Check(Spendable(1200, 1000, 300) == 0 && Spendable(900, 1000, 0) == 0,
+          "the use items' held copper and a purse below the reserve leave nothing");
+
+    // Auction 6: the bot leads with 200, buyout 600; the core takes only 400 but checks the full 600 in hand
+    BuyLine dear = use;
+    dear.ceiling = {200.0, -1.0, 1.0f};
+    std::vector<OfferInput> const led = {{lots[5], 4, 0}};
+    BuyInput short5 = buyer;
+    short5.spendable = 500;
+    short5.ceilingPerUnit = CeilingOf(dear);
+    BuyInput full = short5;
+    full.spendable = 600;
+    BuyChoice const no = ChooseBuy(led, short5);
+    BuyChoice const yes = ChooseBuy(led, full);
+    Check(no.kind == BuyKind::Skip && no.reason == AuctionWords::Reason::Budget && yes.kind == BuyKind::Buyout &&
+              yes.price == 600,
+          "the leader's buyout needs its whole 600 above the reserve, not the 400 the core takes");
+}
+
+// A buying visit's world: the buy list, the house's lots of its items (some the bot's own, some it leads), lots of
+// another item it leads, and its purse
+struct VisitWorld
+{
+    AuctionIndex::Snapshot snapshot;
+    std::vector<BuyLine> lines;
+    std::vector<std::uint32_t> own;
+    std::uint64_t money{0};
+    std::uint64_t reserve{0};
+    std::uint64_t held{0};
+    std::uint32_t openBidsMax{3};
+};
+
+VisitWorld RandomVisit(Dice& dice)
+{
+    VisitWorld world;
+    std::uint32_t nextId = 1;
+    std::vector<AuctionFacts> all;
+    std::vector<BuyLine> lines;
+    std::uint32_t const n = dice.Range(1, 4);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        std::uint32_t const item = 600 + i;
+        std::uint32_t const unit = dice.Range(1, 5000);
+        std::uint32_t const units = dice.Pick(30) ? 1 : dice.Range(2, 20);
+        auto copper = [&dice, unit](double low, double high)
+        { return std::max<std::uint32_t>(1, static_cast<std::uint32_t>(unit * dice.Real(low, high))); };
+        std::uint32_t const owner = dice.Range(0, 3);
+        std::uint32_t const payout = dice.Pick(50) ? 0 : dice.Range(0, unit / 2);
+        if (owner == 0)
+            lines.push_back(UseLine(item, units, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, payout));
+        else if (owner == 1)
+            lines.push_back(BagLine(item, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0));
+        else
+        {
+            float const factor = static_cast<float>(dice.Real(0.05, 20.0));
+            double const getting = dice.Pick(50) ? copper(0.5, 2.0) * static_cast<double>(factor) : -1.0;
+            lines.push_back(LineOf(static_cast<LineOwner>(owner), item, units,
+                                   copper(0.3, 3.0) * static_cast<double>(factor), getting, factor, payout));
+        }
+        for (AuctionFacts lot : RandomLots(dice, item, nextId, unit))
+        {
+            if (dice.Pick(15))
+            {
+                world.own.push_back(lot.id);
+                if (lot.bidder == BUYER_GUID)
+                    lot.bidder = 11;
+            }
+            all.push_back(lot);
+        }
+    }
+    for (AuctionFacts const& lot : RandomLots(dice, 700, nextId, 100))
+        all.push_back(lot);
+    world.snapshot = Publish(all);
+    world.lines = BuyList(lines);
+    world.money = dice.Range(0, 200000);
+    world.reserve = dice.Pick(20) ? 0 : dice.Range(0, 150000);
+    world.held = dice.Pick(50) ? 0 : dice.Range(0, 20000);
+    world.openBidsMax = dice.Pick(80) ? 3 : dice.Range(0, 4);
+    return world;
+}
+
+enum class VisitFault
+{
+    None,
+    NoReserve,     // B2: the spendable gold counts the reserve
+    BidsInHand,    // B3: the copper in the bot's open bids counted as in hand
+    BidsFromZero,  // B4: open bids counted from the visit, not the index
+    OwnOffers      // B5: the bot's own auctions left among the offers
+};
+
+struct VisitTally
+{
+    int belowReserve{0};
+    int overPurse{0};
+    int overCap{0};
+    int ownAuction{0};
+};
+
+struct VisitSeen
+{
+    int visits{0};
+    int lines{0};
+    int buyouts{0};
+    int bids{0};
+    int leaderBuyouts{0};
+    int capped{0};
+};
+
+// The visit as WA4b runs it: each line in order, the purse read again after each purchase (the core takes the copper)
+void PlayVisit(VisitWorld const& world, VisitFault fault, VisitTally& tally, VisitSeen* seen)
+{
+    std::uint64_t money = world.money;
+    std::uint32_t open = OpenBids(world.snapshot, BUYER_GUID);
+    std::uint32_t counted = fault == VisitFault::BidsFromZero ? 0 : open;
+    std::uint64_t inBids = 0;
+    for (auto const& [item, entry] : world.snapshot.items)
+        for (AuctionFacts const& line : entry.offers.cheapest)
+            inBids += line.bidder == BUYER_GUID ? line.bid : 0;
+    std::vector<std::uint32_t> const none;
+    for (BuyLine const& line : world.lines)
+    {
+        AuctionIndex::ItemEntry const* entry = world.snapshot.Find(line.item);
+        if (!entry)
+            continue;
+        std::uint64_t const spendable = Spendable(money, world.reserve, world.held);
+        BuyInput buyer;
+        buyer.spendable = fault == VisitFault::NoReserve    ? Spendable(money, 0, world.held)
+                          : fault == VisitFault::BidsInHand ? spendable + inBids
+                                                            : spendable;
+        buyer.openBids = counted;
+        buyer.openBidsMax = world.openBidsMax;
+        buyer.now = MARKET_NOW;
+        buyer.ownGuid = BUYER_GUID;
+        BuyChoice const choice =
+            ChooseLine(entry->offers, line, BUYER_HOUSE, fault == VisitFault::OwnOffers ? none : world.own, buyer);
+        if (seen)
+        {
+            ++seen->lines;
+            seen->capped += choice.kind == BuyKind::Skip && choice.reason == AuctionWords::Reason::BidCap ? 1 : 0;
+        }
+        if (choice.kind == BuyKind::Skip)
+            continue;
+        AuctionFacts const* lot = nullptr;
+        for (AuctionFacts const& each : entry->offers.cheapest)
+            lot = each.id == choice.auctionId ? &each : lot;
+        if (!lot)
+            continue;
+        tally.overPurse += choice.price > spendable ? 1 : 0;
+        tally.ownAuction += std::find(world.own.begin(), world.own.end(), choice.auctionId) != world.own.end() ? 1 : 0;
+        tally.overCap += choice.kind == BuyKind::Bid && open >= world.openBidsMax ? 1 : 0;
+        bool const leads = lot->bidder == BUYER_GUID;
+        std::uint64_t taken = choice.price;
+        if (choice.kind == BuyKind::Buyout && leads)
+        {
+            taken -= lot->bid;  // the core takes the difference from the leader
+            --open;
+            counted -= counted ? 1 : 0;
+            inBids -= lot->bid;
+        }
+        else if (choice.kind == BuyKind::Bid)
+        {
+            ++open;
+            ++counted;
+            inBids += choice.price;
+        }
+        money = money > taken ? money - taken : 0;
+        tally.belowReserve += money < world.reserve + world.held ? 1 : 0;
+        if (seen)
+        {
+            seen->buyouts += choice.kind == BuyKind::Buyout ? 1 : 0;
+            seen->bids += choice.kind == BuyKind::Bid ? 1 : 0;
+            seen->leaderBuyouts += choice.kind == BuyKind::Buyout && leads ? 1 : 0;
+        }
+    }
+}
+
+void SearchBuying()
+{
+    CheckBuyListHand();
+    WidthTally width;
+    VisitTally rule;
+    VisitSeen seen;
+    std::array<VisitTally, 5> control{};
+    for (std::uint32_t const seed : SEEDS)
+    {
+        std::mt19937 rng(seed + 3);
+        Dice dice{rng};
+        for (int w = 0; w < WORLDS_PER_SEED; ++w)
+        {
+            SearchWidth(dice, width);
+            VisitWorld const world = RandomVisit(dice);
+            ++seen.visits;
+            PlayVisit(world, VisitFault::None, rule, &seen);
+            for (VisitFault const fault :
+                 {VisitFault::NoReserve, VisitFault::BidsInHand, VisitFault::BidsFromZero, VisitFault::OwnOffers})
+                PlayVisit(world, fault, control[static_cast<std::size_t>(fault)], nullptr);
+        }
+    }
+    std::cout << "visit search: " << seen.visits << " visits, " << seen.lines << " lines (" << seen.buyouts
+              << " buyouts, " << seen.bids << " bids, " << seen.leaderBuyouts << " leader buyouts, " << seen.capped
+              << " skipped at the cap); counterexamples (rule / control): reserve " << rule.belowReserve << "/"
+              << control[1].belowReserve << ", purse " << rule.overPurse << "/" << control[2].overPurse << ", cap "
+              << rule.overCap << "/" << control[3].overCap << ", own " << rule.ownAuction << "/"
+              << control[4].ownAuction << '\n';
+    Check(seen.buyouts > 0 && seen.bids > 0 && seen.leaderBuyouts > 0 && seen.capped > 0,
+          "the visits reach buyouts, bids, leader buyouts and the bid cap");
+    Check(rule.belowReserve == 0, "B2. a visit never leaves the purse below the reserve and the use items' share");
+    Check(control[1].belowReserve > 0, "B2. control: spendable gold that counts the reserve (caught)");
+    Check(rule.overPurse == 0, "B3. never a bid or buyout whose full price exceeds the gold above the reserve");
+    Check(control[2].overPurse > 0, "B3. control: the copper in open bids counted as in hand (caught)");
+    Check(rule.overCap == 0, "B4. never more open bids than the cap, the index's own bids counted");
+    Check(control[3].overCap > 0, "B4. control: open bids counted from the visit only (caught)");
+    Check(rule.ownAuction == 0, "B5. never a bid or buyout on the bot's own auction");
+    Check(control[4].ownAuction > 0, "B5. control: its own auctions left among the offers (caught)");
+    std::cout << "short list search: " << width.books << " books, " << width.needs << " needs, " << width.wider
+              << " lists past " << AuctionIndex::OFFER_LINES_MAX << " lines (longest " << width.longest
+              << "); counterexamples (rule / cheapest five by unit / plus the least total): " << width.rule << "/"
+              << width.unitFive << "/" << width.leastTotal << '\n';
+    Check(width.rule == 0, "B1. the short list holds the whole book's best buyout for every line");
+    Check(width.unitFive > 0, "B1. control: the cheapest five by unit miss a smaller lot (caught)");
+    Check(width.leastTotal > 0, "B1. control: five by unit plus the least total still miss one (caught)");
+}
+
 // ---- the printed decisions ----
 std::string Fixed(double value, int digits)
 {
@@ -1880,6 +2320,7 @@ int main(int argc, char** argv)
     CheckMemory();
     CheckPricingHand();
     SearchPricing();
+    SearchBuying();
     Tables(argc > 1 ? argv[1] : ".");
     std::cout << "auction-rules: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

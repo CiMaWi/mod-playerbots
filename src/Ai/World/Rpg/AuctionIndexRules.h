@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -113,7 +114,7 @@ struct CurrentOffers
     std::uint32_t auctions = 0;
     std::uint32_t units = 0;
     std::uint32_t cheapestUnitBuyout = 0;  // 0 = no auction with a buyout
-    std::vector<OfferLine> cheapest;       // up to OFFER_LINES_MAX, cheapest unit buyout first, no buyout last
+    std::vector<OfferLine> cheapest;       // by LineKey: the OFFER_LINES_MAX cheapest, then the lots LotFrontier adds
 };
 
 struct ItemEntry
@@ -350,12 +351,48 @@ private:
             }
             order.push_back(&line);
         }
+        auto const before = [](OfferLine const* a, OfferLine const* b) { return LineKey(*a) < LineKey(*b); };
         std::size_t const keep = std::min(order.size(), OFFER_LINES_MAX);
-        std::partial_sort(order.begin(), order.begin() + keep, order.end(),
-                          [](OfferLine const* a, OfferLine const* b) { return LineKey(*a) < LineKey(*b); });
-        offers.cheapest.reserve(keep);
-        for (std::size_t i = 0; i < keep; ++i)
-            offers.cheapest.push_back(*order[i]);
+        std::partial_sort(order.begin(), order.begin() + keep, order.end(), before);
+        std::vector<OfferLine const*> kept(order.begin(), order.begin() + keep);
+        if (order.size() > keep)
+        {
+            for (OfferLine const* line : LotFrontier(order))
+                if (std::find(order.begin(), order.begin() + keep, line) == order.begin() + keep)
+                    kept.push_back(line);
+            std::sort(kept.begin(), kept.end(), before);
+        }
+        offers.cheapest.reserve(kept.size());
+        for (OfferLine const* line : kept)
+            offers.cheapest.push_back(*line);
+    }
+
+    // The buyout lots no lot of at least their size undercuts in total (of equal lots the lowest id). Only these can
+    // cost a need's line least (AuctionPricing.h LineCost: a larger lot covers as much, its excess units pay back), so
+    // the short list keeps them beside the cheapest by unit, which a few big cheap stacks can fill (WA4a). Bounded by
+    // the item's distinct lot sizes
+    static std::vector<OfferLine const*> LotFrontier(std::vector<OfferLine const*> lots)
+    {
+        lots.erase(std::remove_if(lots.begin(), lots.end(), [](OfferLine const* line) { return !line->buyout; }),
+                   lots.end());
+        std::sort(lots.begin(), lots.end(),
+                  [](OfferLine const* a, OfferLine const* b)
+                  {
+                      std::uint32_t const countA = std::max<std::uint32_t>(a->count, 1);
+                      std::uint32_t const countB = std::max<std::uint32_t>(b->count, 1);
+                      if (countA != countB)
+                          return countA > countB;
+                      return a->buyout != b->buyout ? a->buyout < b->buyout : a->id < b->id;
+                  });
+        std::vector<OfferLine const*> frontier;
+        std::uint64_t least = std::numeric_limits<std::uint64_t>::max();
+        for (OfferLine const* line : lots)
+            if (line->buyout < least)
+            {
+                frontier.push_back(line);
+                least = line->buyout;
+            }
+        return frontier;
     }
 
     // Each sale weighs 2^(-age / half the window): a sale half the window old counts half a fresh one. The median is

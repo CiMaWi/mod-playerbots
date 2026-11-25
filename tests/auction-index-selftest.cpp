@@ -608,6 +608,52 @@ void CheckSeededStreams()
     Check(PlayStream(20261125u, StreamFault::StaleSale).find("sample") != std::string::npos,
           "negative control: a sale outside the window breaks the sample");
 }
+
+// The least line cost per unit of a need among the buyout lines (excess units worth nothing): a fraction cost/covered
+std::pair<std::uint64_t, std::uint64_t> BestPerUnit(std::vector<OfferLine> const& lines, std::uint32_t need)
+{
+    std::pair<std::uint64_t, std::uint64_t> best{0, 0};
+    for (OfferLine const& line : lines)
+    {
+        std::uint64_t const covered = std::min(std::max<std::uint32_t>(line.count, 1), need);
+        if (line.buyout && (!best.second || line.buyout * best.second < best.first * covered))
+            best = {line.buyout, covered};
+    }
+    return best;
+}
+
+// The short list keeps a smaller lot that costs a line less (WA4a): six 20-stacks at 15 a unit crowd the cheapest five
+// by unit; the 4-stack at 72 and the 10-stack at 250 stay, as no larger lot undercuts them; the dearer 4-stack, the
+// sixth 20-stack (the same lot as the first) and the lot without a buyout do not
+void CheckLotFrontier()
+{
+    std::vector<OfferLine> all;
+    for (std::uint32_t i = 1; i <= 6; ++i)
+        all.push_back(Auction(i, 900, 20, 100, 300));
+    all.push_back(Auction(7, 900, 4, 50, 72));
+    all.push_back(Auction(8, 900, 4, 50, 80));
+    all.push_back(Auction(9, 900, 10, 100, 250));
+    all.push_back(Auction(10, 900, 3, 10, 0));
+    Book book;
+    for (OfferLine const& line : all)
+        book.Add(line);
+    Snapshot const s = Take(book);
+    ItemEntry const* e = Item(s, 900);
+    std::vector<std::uint32_t> ids;
+    if (e)
+        for (OfferLine const& line : e->offers.cheapest)
+            ids.push_back(line.id);
+    Check(ids == std::vector<std::uint32_t>{1, 2, 3, 4, 5, 7, 9},
+          "the cheapest five by unit, then the lots no larger lot undercuts, in unit order");
+    std::vector<OfferLine> const listed = e ? e->offers.cheapest : std::vector<OfferLine>{};
+    std::vector<OfferLine> const unitFive(listed.begin(), listed.begin() + std::min(listed.size(), OFFER_LINES_MAX));
+    bool same = true;
+    for (std::uint32_t const need : {1u, 4u, 7u, 10u, 20u})
+        same = same && BestPerUnit(listed, need) == BestPerUnit(all, need);
+    Check(same, "for needs of 1 to 20 the list's best line cost per unit is the whole book's");
+    Check(BestPerUnit(unitFive, 4) != BestPerUnit(all, 4),
+          "control: the cheapest five by unit miss the 4-stack a need of 4 buys for 72 (caught)");
+}
 }  // namespace
 
 int main()
@@ -619,6 +665,7 @@ int main()
     CheckDeterminism();
     CheckHistoryStore();
     CheckSeededStreams();
+    CheckLotFrontier();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }
