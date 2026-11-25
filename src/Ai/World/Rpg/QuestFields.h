@@ -466,6 +466,49 @@ inline std::vector<Need> TakeNeeds(QuestIndex const& index, Take::Facts const& f
     return needs;
 }
 
+// questing WQ18b part 3: the takes a route walks far for. A route that prices far stops listed every quest given on
+// the bot's map, and each of them is a need that every field of every stop is asked about: a goals job's cost grew
+// with the map's quests (lab13, 2026-11-25: 65.8 ms a job against 3.8 ms without a route). Now, beyond the near
+// radius: the quests of the giver places within the bot's reach, nearest place first, that the take rules allow the
+// bot (TakeNeeds' test), at most FAR_TAKES of them: the next hubs, not the continent. Both are tuning values; a bot
+// with nothing to take in reach has no far take, and without an order the circuit plans its move as before
+constexpr float FAR_TAKE_YARDS = 3000.0f;  // about seven minutes' straight run: the bot's zone and its edges
+constexpr std::size_t FAR_TAKES = 24;      // as many as a route's walk calls (QuestRoute.h WALK_BUDGET)
+
+// `listed`: the near candidates, ascending (TakeCandidates within nearYards). The answer is ascending and holds none of
+// them
+inline std::vector<std::uint32_t> FarTakeCandidates(QuestIndex const& index, Take::Facts const& facts,
+                                                    std::uint32_t mapId, float x, float y, float nearYards,
+                                                    std::span<std::uint32_t const> listed, Pricing const& pricing)
+{
+    Take::Facts bot = facts;
+    bot.eliteGroup = false;
+    std::uint8_t const team = SideOfRace(facts.race);
+    std::vector<std::uint32_t> ids;
+    for (std::uint32_t const place : index.GiversNear(mapId, x, y, FAR_TAKE_YARDS))
+    {
+        if (ids.size() >= FAR_TAKES)
+            break;
+        if (place >= index.places.size() ||
+            std::hypot(index.places[place].x - x, index.places[place].y - y) <= nearYards)
+            continue;
+        for (std::uint32_t const id : index.QuestsGivenAt(place))
+        {
+            if (ids.size() >= FAR_TAKES)
+                break;
+            if (std::binary_search(listed.begin(), listed.end(), id) ||
+                std::find(ids.begin(), ids.end(), id) != ids.end())
+                continue;
+            QuestRecord const* quest = index.Find(id);
+            if (!quest || Take::May(*quest, bot, index) || !TakeNeed(index, *quest, team, pricing, mapId))
+                continue;
+            ids.push_back(id);
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
 // What a field is asked about: the bot (map, point, level, speed, caution, group) and the stay
 struct FieldAsk
 {

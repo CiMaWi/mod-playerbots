@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -109,6 +110,17 @@ bool StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float mi
 // The executor on a way (questing WQ20, `route way`): DoQuest in order mode to x, y of the bot's map, ended by the
 // arrival, taking what the log needs within `allowance` yards of the way (QuestFieldExec::OnOrder)
 bool StartWayOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float allowance);
+// The quest route's orders (questing WQ18b, PlannerService's StartRoute). OrderNeedOpen: the test of whether a need
+// an order expects is open for the bot now (GoalApply::AdvanceRoute's `open`), over one count of the bot's log.
+// StartRouteOrder: DoQuest in order mode on the route's order, its Status row's word `word`; false while the quest
+// index builds or for an order of another map. MarkOrderReplaced: the executor's running order, when it is this one,
+// ends as replaced at its next tick (true) or goes on (false)
+std::function<bool(Planner::QuestOrderNeed const&)> OrderNeedOpen(PlayerbotAI* botAI, Player* bot);
+bool StartRouteOrder(PlayerbotAI* botAI, Player* bot, Planner::QuestOrder const& order, char const* word);
+void MarkOrderReplaced(PlayerbotAI* botAI, Planner::QuestOrder const& order, bool replaced);
+// questing WQ18b part 4: whether a ready quest's ender stands elsewhere in the order's field than where the bot stands
+// (QuestFieldExec::EnderElsewhere over the quest index's enders): the test a no_ender end is named by
+std::function<bool(uint32)> OrderEnderElsewhere(Player* bot, Planner::QuestOrder const& order);
 // Right after a DoQuest start (an order, a pick): ends it at once when the step function refuses the quest or finds
 // no place (QuestExec::EndWord), before any walk or fight; true when it ended
 bool EndQuestAtStart(PlayerbotAI* botAI, Player* bot);

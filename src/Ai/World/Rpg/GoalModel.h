@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -22,6 +23,7 @@
 #include "ErrandRules.h"
 #include "ItemWorthRules.h"
 #include "QuestCircuit.h"
+#include "QuestOrderTypes.h"
 #include "TraitRules.h"
 #include "UpkeepNeedRules.h"
 #include "WorldTravelRules.h"
@@ -167,10 +169,11 @@ enum class TargetType : std::uint8_t
     Node,
     Quest,  // a delivery: the carried quest
     Field,  // a circuit outside every hub and camp (no giver near its start): target 0 (planning WN4)
+    Route,  // the quest route's orders on the bot's map (questing WQ18a): target 0
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(TargetType::Count)> TARGET_WORDS = {
-    "", "camp", "spot", "node", "quest", "field"};
+    "", "camp", "spot", "node", "quest", "field", "route"};
 
 // Short stops after which the current goal goes on
 inline bool IsInterlude(GoalKind kind)
@@ -449,10 +452,17 @@ struct ClassTrip
     float bonus{0.0f};  // XP
 };
 
+struct RoutePlan;
+
 // The inputs the Snapshot lacks; the harness fills them, WT16 fills them live
 struct Situation
 {
     CircuitPlan const* circuit{nullptr};  // the questing circuit at the bot's hub (PlanCircuit)
+    // The quest route (questing WQ18a, WQ.43 point 4). onCircuit: the bot is held on the circuit, so no route is
+    // built or offered; the service clears it for the bots it puts on a route (WQ18b), until then every bot is held
+    bool onCircuit{true};
+    RoutePlan const* route{nullptr};         // PlanGoals builds it (its build function); a harness hands one in
+    std::vector<std::uint64_t> closedCells;  // FieldMap.h's keys of the cells closed to the bot (a dry order)
     HereInfo here;
     std::vector<HubOption> hubs;
     std::vector<Delivery> deliveries;  // empty: PlanGoals fills them from the circuit's carried quests
@@ -526,6 +536,7 @@ struct Option : Goal
 // The reason of the option that stands for the circuit at the bot's own hub; a quest option with another reason
 // names a delivery or a move to another hub or camp in the zone (GoalApply::RoleOf)
 constexpr char const* CIRCUIT_REASON = "circuit";
+constexpr char const* ROUTE_REASON = "route";  // the option of the quest route (its target type is its own)
 
 // <kind>:<target>, the target with its type where the kind does not say it (money:spot_7, move_zone:camp_21)
 inline std::string ChoiceWord(Goal const& option)
@@ -572,6 +583,23 @@ struct RiskInput
     float deaths{0.0f};
     float enemyShare{0.0f};
 };
+
+// The quest route beside the circuit (questing WQ18a): QuestRoute.h's plan as a plan of goals carries it, plain data
+// (QuestRoute.h includes this header, so GoalRoute.h makes the one from the other). Its orders in walk order; none:
+// no route, and the circuit plans as before
+struct RoutePlan
+{
+    std::vector<QuestOrder> orders;
+    float worth{0.0f};           // the stops' worth, in the circuit's value units
+    float minutes{0.0f};         // the walks and the stays
+    RiskInput risk;              // of the first stop's field
+    std::uint32_t walkCalls{0};  // the route searches it asked
+    std::uint32_t gaps{0};       // far fields the search found no way to
+    std::uint32_t capped{0};     // needs whose far fields the job's searches left unpriced
+};
+
+// What builds the route for PlanGoals: GoalRoute.h's over the job's field map
+using RouteBuild = std::function<RoutePlan(Snapshot const&, CircuitContext const&, Model const&, Situation const&)>;
 
 inline bool Finite(RiskInput const& in)
 {
@@ -647,6 +675,7 @@ public:
             return _ranked;
         }
 
+        AddRoute();
         AddCircuit();
         AddHubs();
         AddDeliveries();
@@ -802,6 +831,8 @@ private:
         HereInfo const& here = _situation.here;
         if (plan->value > 0.0f && plan->minutes > 0.0f)
         {
+            if (_routed)
+                return;  // the route owns the bot's map
             Option option;
             option.kind = GoalKind::Quest;
             option.target = here.hub;
@@ -980,6 +1011,8 @@ private:
     {
         for (Delivery const& delivery : _situation.deliveries)
         {
+            if (_routed && !delivery.otherMap)
+                continue;  // the route hands in on the bot's map
             Option option;
             option.kind = GoalKind::Quest;
             option.target = delivery.quest;
@@ -991,6 +1024,28 @@ private:
             option.reason = delivery.otherMap ? "delivery_other_map" : "delivery";
             Add(std::move(option), {});
         }
+    }
+
+    // The quest route as one option (questing WQ18a, WQ.43 point 4): its worth, its minutes and the risk of its
+    // first stop; no crowd factor until batch F3. Kept, it owns the bot's map: the circuit's option and the
+    // deliveries on that map are not offered beside it (AddCircuit, AddDeliveries). Dropped, without an order or
+    // for a bot held on the circuit, they are offered as before
+    void AddRoute()
+    {
+        RoutePlan const* route = _situation.onCircuit ? nullptr : _situation.route;
+        if (!route || route->orders.empty())
+            return;
+        QuestOrder const& first = route->orders.front();
+        Option option;
+        option.kind = GoalKind::Quest;
+        option.targetType = TargetType::Route;
+        option.place = {first.mapId, first.x, first.y, _bot.position.z};
+        option.minutes = route->minutes;
+        option.expected = route->worth;
+        option.reason = ROUTE_REASON;
+        std::size_t const before = _options.size();
+        Add(std::move(option), route->risk);
+        _routed = _options.size() > before;
     }
 
     void AddSpots()
@@ -1349,6 +1404,7 @@ private:
     Model const _model;
     Ranked _ranked;
     std::vector<Option> _options;
+    bool _routed{false};  // the route's option is kept (AddRoute)
 };
 
 // The ranked options for the bot. Pure and deterministic: the same input gives the same list, in any input order
@@ -1361,6 +1417,7 @@ struct GoalPlan
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
     std::vector<ClassQuests::Due> classFailed;  // failed doable class quests: the map thread completes them (WU21a)
+    RoutePlan route;  // the quest route (questing WQ18a); without an order the circuit is the plan
     // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
     std::vector<std::uint32_t> gatherStops;
     std::uint32_t gatherLaps{1};
@@ -1683,7 +1740,8 @@ inline bool BindFar(Snapshot const& bot)
 // The planner job: the circuit with the bot's own weights, then every goal beside it. The ways are asked near before
 // far, so the job's search cap (PlannerRouteCost.h) cuts the farthest first: the class quests' givers, the circuit's
 // moves, the turn-ins, the way back from the bind, then the next zones' hubs
-inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation situation)
+inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation situation,
+                          RouteBuild const& buildRoute = {})
 {
     GoalPlan plan;
     Model const model = Prepare(bot, situation);
@@ -1691,6 +1749,16 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     plan.classBonus = situation.classBonus;
     plan.classFailed = situation.classFailed;
     context.weights = CircuitWeightsFor(model);
+    // The route before the circuit: its searches are the job's first after the class quests' (whose bonus prices
+    // it); the circuit's moves, the deliveries, the bind and the hubs keep what the job's cap then leaves them
+    if (!situation.onCircuit)
+    {
+        if (situation.route)
+            plan.route = *situation.route;
+        else if (buildRoute)
+            plan.route = buildRoute(bot, context, model, situation);
+    }
+    situation.route = situation.onCircuit ? nullptr : &plan.route;
     plan.circuit = PlanCircuit(bot, context);
     if (situation.here.hub == NO_HUB)
         situation.here.hub = CircuitHub(plan.circuit, context);
