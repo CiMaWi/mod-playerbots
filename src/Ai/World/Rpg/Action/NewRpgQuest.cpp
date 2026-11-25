@@ -58,6 +58,7 @@
 #include "Random.h"
 #include "StatsWeightCalculator.h"
 #include "TestConstraints.h"
+#include "TestProbe.h"
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "World.h"
@@ -177,6 +178,57 @@ void CountOrder(Player* bot, Planner::QuestOrderRun& run, std::vector<Planner::Q
     run.lastCount = Planner::QuestFieldExec::Stamp(getMSTime());
 }
 
+// questing WQ18b part 3: the spots of an order's expected hand-ins and takes on the bot's map: the enders and givers
+// the quest index has for them, none hostile to the bot's side or outside the default phase
+std::vector<Planner::QuestFieldExec::NpcSpot> OrderSpots(Player* bot, Planner::QuestOrder const& order,
+                                                         Planner::QuestIndex const& index)
+{
+    std::vector<Planner::QuestFieldExec::NpcSpot> spots;
+    uint32 const side = 1u << static_cast<uint8>(bot->GetTeamId());
+    for (Planner::QuestOrderNeed const& need : order.expected)
+    {
+        bool const handIn = need.objective == Planner::QuestFields::HAND_IN;
+        Planner::QuestRecord const* const record = index.Find(need.quest);
+        if (!record || (!handIn && need.objective != Planner::QuestFields::TAKE))
+            continue;
+        for (uint32 const at : handIn ? record->enders : record->givers)
+        {
+            if (at >= index.places.size())
+                continue;
+            Planner::QuestPlace const& place = index.places[at];
+            if (place.mapId == bot->GetMapId() && !place.otherPhase && !(place.hostileTo & side))
+                spots.push_back({need.quest, need.objective, place.x, place.y, place.z});
+        }
+    }
+    return spots;
+}
+
+// questing WQ18b part 3: an order at NPCs walks to its nearest NPC with something open
+// (QuestFieldExec::NearestSpot), not to the middle of its cell; asked at the order's start and after each count of
+// the log, so the bot goes from one NPC of a hub to the next. A new spot is a new walk: the arrival is taken again
+// there, by the straight walk to it
+void AimOrder(Player* bot, NewRpgInfo::DoQuest& data)
+{
+    constexpr float NPC_ROAM_YARDS = 5.0f;   // at its NPC the bot stays beside it
+    constexpr float SAME_SPOT_YARDS = 1.0f;  // the spot the order already walks to
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index || !data.order || data.order->order.word != Planner::QuestOrderWord::HandIn)
+        return;
+    Planner::QuestOrderRun& run = *data.order;
+    std::vector<Planner::QuestFieldExec::NpcSpot> const spots = OrderSpots(bot, run.order, *index);
+    std::optional<std::size_t> const nearest =
+        Planner::QuestFieldExec::NearestSpot(run.order, run.open, spots, bot->GetPositionX(), bot->GetPositionY());
+    if (!nearest)
+        return;
+    Planner::QuestFieldExec::NpcSpot const& spot = spots[*nearest];
+    data.roam = NPC_ROAM_YARDS;
+    if (data.pos.GetMapId() == bot->GetMapId() && data.pos.GetExactDist2d(spot.x, spot.y) <= SAME_SPOT_YARDS)
+        return;
+    data.pos = WorldPosition(bot->GetMapId(), spot.x, spot.y, spot.z);
+    run.arrivedAt = 0;
+    run.order.walkMinutes = bot->GetExactDist2d(spot.x, spot.y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
+}
+
 // Every quest of the log at its progress (QuestFieldExec::Note): the credits since the marks were last taken, and
 // whether a quest came into the log
 uint32 NoteLog(Player* bot, std::vector<Planner::QuestOrderMark>& marks, bool& added)
@@ -236,6 +288,7 @@ void NoteOrderCredits(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data
     if (!index)
         return;
     CountOrder(bot, run, LogNeeds(bot, *index));
+    AimOrder(bot, data);  // an order at NPCs: on to its next NPC with something open
     for (uint32 const questId : working)
     {
         if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
@@ -942,6 +995,7 @@ bool StartOrder(PlayerbotAI* botAI, Player* bot, Planner::QuestOrder order,
     quest.roam = FIELD_ROAM_YARDS;
     quest.ordered = true;
     quest.order = std::move(run);
+    AimOrder(bot, quest);  // an order at NPCs walks to its NPC, not to the middle of its cell (WQ18b part 3)
     RpgStatus::Start(botAI, std::move(quest), start.word, start.why);
     return true;
 }
@@ -1028,8 +1082,29 @@ std::optional<Planner::QuestOrderEnd> QuestGiveUp::OrderEnded(PlayerbotAI* botAI
     uint32 const quests = Planner::QuestFieldExec::QuestsCredited(marks);
     EventLog::Emit(bot, EventLog::EventType::QuestOrder, Planner::QuestFieldExec::RowSource(run.order.word, end),
                    quests, Planner::QuestFieldExec::RowAmount(placeCredits, wayCredits, minutes, run.order.cell));
-    LOG_INFO("playerbots", "[Quest] {} order {} ended {}: {} credits at the place, {} on the way, {} quests, {} min",
-             bot->GetName(), Planner::QuestOrderWordName(run.order.word), Planner::QuestOrderEndName(end), placeCredits,
-             wayCredits, quests, minutes);
+    // The QuestOrder row holds every field of this line, so it is a debug line (WQ18b part 3: 2.6 % of a lab's log)
+    LOG_DEBUG("playerbots", "[Quest] {} order {} ended {}: {} credits at the place, {} on the way, {} quests, {} min",
+              bot->GetName(), Planner::QuestOrderWordName(run.order.word), Planner::QuestOrderEndName(end),
+              placeCredits, wayCredits, quests, minutes);
+    // A case bot's trace (WQ18b part 3, fault F4): an order at NPCs that the clock ended, with what tells a bound
+    // too short from an arrival that never came
+    if (end == Planner::QuestOrderEnd::Time && run.order.word == Planner::QuestOrderWord::HandIn &&
+        TestProbe::On(botAI->testConstraints))
+    {
+        float nearest = -1.0f;
+        if (std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests())
+            for (Planner::QuestFieldExec::NpcSpot const& spot : OrderSpots(bot, run.order, *index))
+            {
+                float const yards = bot->GetExactDist2d(spot.x, spot.y);
+                nearest = nearest < 0.0f ? yards : std::min(nearest, yards);
+            }
+        uint32 const seconds = run.startedAt ? getMSTimeDiff(run.startedAt, getMSTime()) / IN_MILLISECONDS : 0;
+        LOG_INFO("playerbots",
+                 "[Probe] {} order hand_in ended time: walk {:.2f} min, stay {:.2f} min, {} s since its start, {}, "
+                 "{:.0f} yd from its place, nearest expected NPC {:.0f} yd, {} needs open, {} taken, {} handed in",
+                 bot->GetName(), run.order.walkMinutes, run.order.minutes, seconds,
+                 run.arrivedAt ? "arrived" : "not arrived", bot->GetDistance(data.pos), nearest, run.open.size(),
+                 run.takes, run.handIns);
+    }
     return own;
 }

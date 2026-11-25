@@ -934,21 +934,58 @@ inline void LiftStalls(BotGoals& goals, std::uint64_t log)
         goals.stalled.reset();
 }
 
-// The running order ended, by the executor's word for its end. A dry end closes its cell, and with it the cell's
-// neighbours (CellClosed), for the block time: a route's whole memory until batch F3 (WQ.43 point 6). No other end
-// blocks anything, and the route itself is never blocked (EndRun, StartActive). True: a new block
-inline bool EndOrder(BotGoals& goals, QuestOrderEnd end, std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs)
+// Whether an order's own end closes its cell (questing WQ18b part 3: the coordinator's ruling, which revises WQ.43
+// point 6 narrowly). One rule: the place gave nothing (dry) or could not be reached (`time` before the arrival: the
+// walk's bound passed). A stay that passed at the place, a done, a replaced, a no_ender and a bags end close nothing
+constexpr bool ClosesCell(QuestOrderEnd end, bool reached)
+{
+    return end == QuestOrderEnd::Dry || (end == QuestOrderEnd::Time && !reached);
+}
+
+// The same rule for a status end that is not the order's own: a judged failure of the order's walk or work (stuck,
+// abandoned by the walk's word, timed out by a walk) is a place that could not be reached. Any other end took the bot
+// over (an interlude, a switch, a hold, sickness), and the order is given again (NextOrder)
+constexpr bool FailsOrder(StatusEnd::Outcome outcome)
+{
+    return outcome == StatusEnd::Outcome::Stuck || outcome == StatusEnd::Outcome::Abandoned ||
+           outcome == StatusEnd::Outcome::TimedOut;
+}
+
+// An order's cell closes, and with it the cell's neighbours (CellClosed), for the block time: a route's whole memory
+// until batch F3. True: a new block, which gets its one GoalStalled row (a quest goal's order, with the outcome and
+// the word of what ended it: timeout/dry, timeout/time, abandoned/no_walk)
+inline bool CloseOrderCell(BotGoals& goals, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note,
+                           std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    if (!BlockKey(goals, CellBlockKey(order.cell), log, nowMs, blockMs))
+        return false;
+    goals.stallRow = StallRow{Goals::GoalKind::Quest, true, outcome, note};
+    return true;
+}
+
+// The running order ended, by the executor's word for its end; `reached`: the bot had arrived at its place. An end
+// that closes the cell (ClosesCell) blocks it; no other end blocks anything, and the route itself is never blocked
+// (EndRun, StartActive). True: a new block
+inline bool EndOrder(BotGoals& goals, QuestOrderEnd end, std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs,
+                     bool reached = true)
 {
     std::optional<QuestOrder> const order = std::exchange(goals.route.running, std::nullopt);
     goals.route.replaced = false;
-    if (!order || end != QuestOrderEnd::Dry)
+    if (!order || !ClosesCell(end, reached))
         return false;
-    if (!BlockKey(goals, CellBlockKey(order->cell), log, nowMs, blockMs))
+    return CloseOrderCell(goals, *order, StatusEnd::Outcome::TimedOut, QuestOrderEndName(end), log, nowMs, blockMs);
+}
+
+// The running order's status ended by a failure that is not the order's own end (FailsOrder; `note`: a literal, null:
+// the outcome's word): the order is over, not given again, and its cell closes. True: a new block
+inline bool FailOrder(BotGoals& goals, StatusEnd::Outcome outcome, char const* note, std::uint64_t log,
+                      std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    std::optional<QuestOrder> const order = std::exchange(goals.route.running, std::nullopt);
+    goals.route.replaced = false;
+    if (!order)
         return false;
-    // The closed cell's one row (GoalStalled, questing WQ18b): a quest goal's order that ended dry
-    goals.stallRow =
-        StallRow{Goals::GoalKind::Quest, true, StatusEnd::Outcome::TimedOut, QuestOrderEndName(QuestOrderEnd::Dry)};
-    return true;
+    return CloseOrderCell(goals, *order, outcome, note ? note : StatusEnd::Word(outcome), log, nowMs, blockMs);
 }
 
 // The route goal's next order (questing WQ18a): the held route's next whose cell is not closed and one of whose
@@ -980,20 +1017,37 @@ inline RouteNext AdvanceRoute(BotGoals& goals, std::function<bool(QuestOrderNeed
 // The executor ended an order by its own end (Planner::OnOrderEnd, questing WQ18b). Only the route's running order
 // ends by it: another order (a test's `route field` elsewhere) is not the route's. True: a new block (EndOrder)
 inline bool EndRouteOrder(BotGoals& goals, QuestOrder const& ended, QuestOrderEnd end, std::uint64_t log,
-                          std::uint32_t nowMs, std::uint32_t blockMs)
+                          std::uint32_t nowMs, std::uint32_t blockMs, bool reached = true)
 {
     if (!goals.route.running || !SameOrder(*goals.route.running, ended))
         return false;
-    return EndOrder(goals, end, log, nowMs, blockMs);
+    return EndOrder(goals, end, log, nowMs, blockMs, reached);
+}
+
+// An order's status ended by a failure that is not its own end (Planner::OnOrderFailed, FailsOrder): the route's
+// running order only, as EndRouteOrder. True: a new block (FailOrder)
+inline bool FailRouteOrder(BotGoals& goals, QuestOrder const& ended, StatusEnd::Outcome outcome, char const* note,
+                           std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    if (!goals.route.running || !SameOrder(*goals.route.running, ended))
+        return false;
+    return FailOrder(goals, outcome, note, log, nowMs, blockMs);
 }
 
 // The route goal's executor starts (questing WQ18b): a new goal, the continuation after its order's end, the goal
 // resumed after an interlude. An order its executor did not end (the bot was taken from it: an interlude, a status
 // ended from outside) is given again (ResumeRoute), unless a newer route replaced it; then the route's next order
-// (AdvanceRoute)
+// (AdvanceRoute). A bot a test holds on the circuit (the constraint `circuit`, part 3) gets no order: a route goal it
+// held from before the hold ends at this order boundary, and the held plan starts nothing more
 inline RouteNext NextOrder(BotGoals& goals, std::function<bool(QuestOrderNeed const&)> const& open,
-                           std::span<std::uint64_t const> closed)
+                           std::span<std::uint64_t const> closed, bool heldOnCircuit = false)
 {
+    if (heldOnCircuit)
+    {
+        goals.route = {};
+        goals.planUsed = true;
+        return {};
+    }
     if (goals.route.running)
         ResumeRoute(goals.route);
     return AdvanceRoute(goals, open, closed);

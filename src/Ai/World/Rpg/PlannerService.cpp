@@ -517,13 +517,17 @@ bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Que
 // order mode. An order its executor did not end (an interlude, a status ended from outside) is given again; an order
 // of another map than the bot's is passed over. False when the route has no order left (the goal ends and the plan
 // starts nothing more: GoalApply::AdvanceRoute) or the executor refuses (the quest index is building), which gives
-// the order again at the next start
+// the order again at the next start. A bot a test holds on the circuit (constraint `circuit`, part 3) starts none: a
+// route goal held from before the hold ends here, and a plan is asked for, which has no route (SituationOf)
 bool StartRoute(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
                 char const* word = WorldLog::STATUS_REASON_OTHER)
 {
+    bool const held = TestConstraints::HeldOnCircuit(botAI->testConstraints);
+    if (held)
+        botAI->planner.snapshotDue = true;
     std::function<bool(QuestOrderNeed const&)> const open = NewRpgInternal::OrderNeedOpen(botAI, bot);
     std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, LogNow(bot), getMSTime(), BlockMs());
-    GoalApply::RouteNext next = GoalApply::NextOrder(goals, open, closed);
+    GoalApply::RouteNext next = GoalApply::NextOrder(goals, open, closed, held);
     while (next.step == GoalApply::RouteStep::Order && next.order->mapId != bot->GetMapId())
         next = GoalApply::AdvanceRoute(goals, open, closed);  // ends: each order is given at most once
     if (next.step == GoalApply::RouteStep::Done)
@@ -650,6 +654,19 @@ void LogGoal(Player* bot, Goals::Ranked const& ranked)
             alternatives.Add({alt.choice, alt.value});
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Goal, row.choice, row.reason, row.value, alternatives);
     }
+}
+
+// The route goal's row again, for the route a new plan gave the running goal (questing WQ18b part 3): written where
+// the plan replaces the running order (TakeGoals), so the log shows which goal the bot follows after a pickup's plan.
+// A plan that keeps the running order writes none: the goal's last row still names what the bot does
+void LogRouteGoal(Player* bot, Goals::Ranked const& ranked)
+{
+    for (std::size_t index = 0; index < ranked.options.size(); ++index)
+        if (ranked.options[index].targetType == Goals::TargetType::Route)
+        {
+            LogGoal(bot, GoalApply::ChosenFirst(ranked, index));
+            return;
+        }
 }
 
 void LogCircuit(Player* bot, GoalApply::BotGoals& goals)
@@ -836,11 +853,18 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         goals.lastFailed = false;
         return;
     }
+    bool const wasReplaced = GoalApply::OrderReplaced(goals);
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
     // A route goal's running order (questing WQ18b): its executor learns whether the new route still begins with it
-    // (RefreshRoute). If not, its next tick ends the order as replaced and the new route's first order follows
+    // (RefreshRoute). If not, its next tick ends the order as replaced and the new route's first order follows; the
+    // goal's row is written again for the new route, once (part 3)
     if (goals.route.running)
-        NewRpgInternal::MarkOrderReplaced(botAI, *goals.route.running, GoalApply::OrderReplaced(goals));
+    {
+        bool const replaced = GoalApply::OrderReplaced(goals);
+        NewRpgInternal::MarkOrderReplaced(botAI, *goals.route.running, replaced);
+        if (replaced && !wasReplaced)
+            LogRouteGoal(bot, answer->plan->ranked);
+    }
     // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
     if (!answer->plan->classFailed.empty())
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
@@ -1343,13 +1367,23 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
     }
 }
 
-void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end)
+void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached)
 {
     Planner::BotState& state = botAI->planner;
     Player* const bot = botAI->GetBot();
     if (!state.goals || !bot)
         return;
-    if (GoalApply::EndRouteOrder(*state.goals, order, end, LogNow(bot), getMSTime(), BlockMs()))
+    if (GoalApply::EndRouteOrder(*state.goals, order, end, LogNow(bot), getMSTime(), BlockMs(), reached))
+        NoteStalled(bot, *state.goals);  // the closed cell's row
+}
+
+void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note)
+{
+    Planner::BotState& state = botAI->planner;
+    Player* const bot = botAI->GetBot();
+    if (!state.goals || !bot || !GoalApply::FailsOrder(outcome))
+        return;
+    if (GoalApply::FailRouteOrder(*state.goals, order, outcome, note, LogNow(bot), getMSTime(), BlockMs()))
         NoteStalled(bot, *state.goals);  // the closed cell's row
 }
 
@@ -1498,7 +1532,12 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
             {
                 routeResults.fetch_add(1, std::memory_order_relaxed);
                 if (verdict == Verdict::Position)
+                {
                     routeRejectedMoved.fetch_add(1, std::memory_order_relaxed);
+                    // The night list plans_rejected_moved counts these rows (part 3): one per rejected result
+                    if (WorldLog::Active())
+                        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Circuit, "plan:rejected", "moved", 0.0f);
+                }
             }
             if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63c): a result not used is no plan
                 LOG_INFO("playerbots", "[Probe] {} plan result verdict {}", bot->GetName(), static_cast<int>(verdict));

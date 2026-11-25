@@ -1095,6 +1095,38 @@ void PlacesAndTakes()
               takes[0].kind == NeedKind::Take && takes[0].sources.size() == 1 && takes[0].sources[0].entry == 750 &&
               Near(takes[0].worthPerCredit, 40.0),
           "takes: of the quests given near the bot the one the rules allow (not too low, in the log or elite)");
+
+    // WQ18b part 3 (fault F5): the far takes. Forty givers in a row, a hundred yards apart, one quest each
+    QuestGather wide;
+    std::vector<std::uint32_t> nearest;
+    for (std::uint32_t i = 0; i < 40; ++i)
+    {
+        QuestRecord quest = MakeQuest(200 + i, 400, {});
+        if (i == 5)
+            quest.minLevel = 30;  // refused: the next giver's quest takes its turn
+        else if (i >= 1 && nearest.size() < FAR_TAKES)
+            nearest.push_back(200 + i);
+        wide.quests.push_back(quest);
+        QuestPlace place = near;
+        place.x = Mid(0) + 100.0f * static_cast<float>(i + 1);
+        place.entry = 800 + i;
+        wide.places.push_back(place);
+        wide.relations.push_back({200 + i, 800 + i, false, false});
+    }
+    QuestIndex const row = QuestIndex::Build(wide);
+    Take::Facts roamer = facts;
+    roamer.inLog = {};
+    roamer.takenGroups = {};
+    std::vector<std::uint32_t> const close = TakeCandidates(row, MAP_A, Mid(0), Mid(0), 150.0f);
+    std::vector<std::uint32_t> const far =
+        FarTakeCandidates(row, roamer, MAP_A, Mid(0), Mid(0), 150.0f, close, Pricing{});
+    // From 2000 yd before the row: its first ten givers lie within reach, none within the near radius
+    std::vector<std::uint32_t> const reached =
+        FarTakeCandidates(row, roamer, MAP_A, Mid(0) - 2000.0f, Mid(0), 150.0f, {}, Pricing{});
+    Check(close == std::vector<std::uint32_t>{200} && far.size() == FAR_TAKES && far == nearest && far.back() == 225 &&
+              reached == std::vector<std::uint32_t>{200, 201, 202, 203, 204, 206, 207, 208, 209},
+          "far takes: beyond the near radius the quests of the nearest givers within reach that the rules allow, at "
+          "most FAR_TAKES, none of the near ones (mutants: no count limit, no reach)");
 }
 
 // WQ17b: the generated worlds again (their own stream of the seed) with givers, the take rules' fields and objective

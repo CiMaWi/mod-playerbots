@@ -840,6 +840,76 @@ void RouteSwitch()
               "and follows with its second");
     }
     {
+        // WQ18b part 3 (fault F3): the place could not be reached. `time` before the arrival and a failed walk close
+        // the cell as dry does; the order is over, and every later plan that still names it passes it over
+        BotGoals late = running({a, b});
+        bool const unreached = EndRouteOrder(late, a, QuestOrderEnd::Time, LOG0, 2000, BLOCK_MS, false) &&
+                               !late.route.running && late.stallRow &&
+                               late.stallRow->outcome == StatusEnd::Outcome::TimedOut &&
+                               std::string(late.stallRow->note) == "time" &&
+                               ClosedCells(late, LOG0, 2000, BLOCK_MS) == std::vector<std::uint64_t>{a.cell};
+        std::size_t failed = 0;
+        for (StatusEnd::Outcome const outcome :
+             {StatusEnd::Outcome::Stuck, StatusEnd::Outcome::Abandoned, StatusEnd::Outcome::TimedOut})
+        {
+            BotGoals goals = running({a});
+            bool const closed = FailsOrder(outcome) &&
+                                FailRouteOrder(goals, a, outcome, "no_walk", LOG0, 2000, BLOCK_MS) &&
+                                !goals.route.running && !OrderReplaced(goals);
+            bool const row = goals.stallRow && goals.stallRow->kind == Goals::GoalKind::Quest &&
+                             goals.stallRow->judged && !goals.stallRow->refused && goals.stallRow->outcome == outcome &&
+                             std::string(goals.stallRow->note) == "no_walk";
+            goals.stallRow.reset();
+            std::vector<std::uint64_t> const cells = ClosedCells(goals, LOG0, 2000, BLOCK_MS);
+            bool const done = NextOrder(goals, anyOpen, cells).step == RouteStep::Done && goals.planUsed;
+            // The live loop: a plan every 5 s that names the unreachable order again (lab13: 36 and 62 times)
+            std::size_t given = 0;
+            for (std::uint32_t at = 7000; at < BLOCK_MS; at += 5000)
+            {
+                TakePlan(goals, RouteOf({a}), at);
+                given += NextOrder(goals, anyOpen, ClosedCells(goals, LOG0, at, BLOCK_MS)).step == RouteStep::Order;
+            }
+            // After the block time the place is tried again, once
+            TakePlan(goals, RouteOf({a}), 2000 + BLOCK_MS);
+            bool const later =
+                sameAs(NextOrder(goals, anyOpen, ClosedCells(goals, LOG0, 2000 + BLOCK_MS, BLOCK_MS)), a);
+            failed += closed && row && cells.size() == 1 && cells.front() == a.cell && done && given == 0 && later;
+        }
+        std::size_t takenOver = 0;
+        for (StatusEnd::Outcome const outcome :
+             {StatusEnd::Outcome::Interrupted, StatusEnd::Outcome::Ordered, StatusEnd::Outcome::Sick,
+              StatusEnd::Outcome::Arrived, StatusEnd::Outcome::Finished})
+            takenOver += !FailsOrder(outcome);
+        BotGoals other = running({a, b});
+        bool const notItsOrder =
+            !FailRouteOrder(other, c, StatusEnd::Outcome::Stuck, "no_walk", LOG0, 2000, BLOCK_MS) &&
+            other.route.running && !other.stalled && !other.stallRow;
+        BotGoals stayed = running({a, b});
+        bool const stayPassed = !EndRouteOrder(stayed, a, QuestOrderEnd::Time, LOG0, 2000, BLOCK_MS, true) &&
+                                !stayed.stalled && sameAs(NextOrder(stayed, anyOpen, none), b);
+        Check(unreached && failed == 3 && takenOver == 5 && notItsOrder && stayPassed,
+              "switch: an order whose place could not be reached (time before the arrival; its status stuck, "
+              "abandoned or timed out by a walk) closes its cell with one row and is over: a route of that order "
+              "alone is done, 119 further plans naming it start none, and it is tried again after the block time; a "
+              "stay that passed at the place and a take-over close nothing (mutants: FailOrder without the block, "
+              "ClosesCell for dry only)");
+    }
+    {
+        // WQ18b part 3 (fault F2): a bot a test holds on the circuit gets no order of a route it held from before
+        BotGoals goals = running({a, b});
+        RouteNext const held = NextOrder(goals, anyOpen, none, true);
+        bool const ended =
+            held.step == RouteStep::Done && !goals.route.running && goals.route.next == 0 && goals.planUsed;
+        BotGoals fresh;
+        TakePlan(fresh, RouteOf({a, b}), 1000);
+        bool const none2 = NextOrder(fresh, anyOpen, none, true).step == RouteStep::Done && !fresh.route.running;
+        BotGoals free = running({a, b});
+        bool const goesOn = sameAs(NextOrder(free, anyOpen, none, false), a);
+        Check(ended && none2 && goesOn,
+              "switch: a bot held on the circuit gets no order: the route goal it held ends at the order boundary "
+              "and a new route starts none; a free bot is given its order again (mutant: NextOrder without the hold)");
+    }
+    {
         BotGoals goals = running({a, b});
         OrderNotStarted(goals);
         Check(!goals.route.running && sameAs(NextOrder(goals, anyOpen, none), a),

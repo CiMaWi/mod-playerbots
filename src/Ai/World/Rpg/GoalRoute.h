@@ -8,9 +8,11 @@
 #define _PLAYERBOT_GOALROUTE_H
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -35,6 +37,12 @@ namespace Planner
 {
 namespace GoalRoute
 {
+// A part of the build as its caller times it (questing WQ18b part 3: the service's PerfMonitor rows, where a goals
+// job's route time goes; a harness hands none in and no clock is read)
+using PartTimer = std::function<void(char const* part, std::uint64_t micros)>;
+constexpr char const* PART_NEEDS = "planner route needs";  // the log's needs and the takes listed
+constexpr char const* PART_STOPS = "planner route stops";  // the stops chosen, with their walk searches
+
 // The job's route search as the route's walk function: both ends at the bot's height (an order names the middle of a
 // cell, which has none; the search snaps its ends to the graph). None for no way and for a place past the job's
 // searches; the latter are counted in `capped`
@@ -54,14 +62,22 @@ inline Route::Walk WalkOf(TravelCost const& travel, std::uint32_t mapId, float z
 
 // The route of the bot on its map. The needs are the log's open objectives and ready quests and, while the log has a
 // free slot, the takes of the quests given on the map that the take rules allow the bot (no elite or group quest,
-// none it gave up): within the route's near radius, or over the whole map when the job prices far stops. The closed
-// cells are the situation's. The walk function's calls are the first of the job's searches after the class quests'
+// none it gave up): within the route's near radius, or within its far reach when the job prices far stops. The closed
+// cells are the situation's. The walk function's calls are the first of the job's searches after the class quests'.
+// WQ18b part 3: of the takes beyond the near radius only those QuestFields::FarTakeCandidates lists
 inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitContext const& context,
-                              Goals::Model const& model, Goals::Situation const& situation)
+                              Goals::Model const& model, Goals::Situation const& situation, PartTimer const& timer = {})
 {
+    using Clock = std::chrono::steady_clock;
+    auto const micros = [](Clock::duration span)
+    {
+        return static_cast<std::uint64_t>(
+            std::max<long long>(std::chrono::duration_cast<std::chrono::microseconds>(span).count(), 0));
+    };
     Goals::RoutePlan result;
     if (!context.quests || !Goals::Finite(bot.position))
         return result;
+    Clock::time_point const started = timer ? Clock::now() : Clock::time_point{};
     QuestIndex const& index = *context.quests;
     QuestFields::Pricing const pricing{context.weights, context.unlockBonus};
     std::vector<QuestFields::Need> needs = QuestFields::Needs(index, bot.quests, bot.team, pricing);
@@ -101,12 +117,17 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
                                 .inLog = inLog,
                                 .givenUp = situation.givenUpQuests,
                                 .takenGroups = groups};
-        float const reach = ask.walk ? Route::FAR_RADIUS : ask.radius;
-        std::vector<std::uint32_t> const candidates =
-            QuestFields::TakeCandidates(index, ask.mapId, ask.x, ask.y, reach);
+        std::vector<std::uint32_t> candidates = QuestFields::TakeCandidates(index, ask.mapId, ask.x, ask.y, ask.radius);
+        if (ask.walk)
+        {
+            std::vector<std::uint32_t> const beyond =
+                QuestFields::FarTakeCandidates(index, facts, ask.mapId, ask.x, ask.y, ask.radius, candidates, pricing);
+            candidates.insert(candidates.end(), beyond.begin(), beyond.end());
+        }
         for (QuestFields::Need& take : QuestFields::TakeNeeds(index, facts, ask.mapId, candidates, pricing))
             needs.push_back(std::move(take));
     }
+    Clock::time_point const listed = timer ? Clock::now() : Clock::time_point{};
 
     Route::Plan const built = Route::Build(map, index, needs, ask);
     result.orders.reserve(built.stops.size());
@@ -123,17 +144,22 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
         result.risk =
             QuestFields::FieldOffer(map, needs, built.stops.front().order.cell, Route::Detail::AskAt(ask, ask.x, ask.y))
                 .risk;
+    if (timer)
+    {
+        timer(PART_NEEDS, micros(listed - started));
+        timer(PART_STOPS, micros(Clock::now() - listed));
+    }
     return result;
 }
 
 // Goals::PlanGoals' build function over the job's field map; none while the map is not built
-inline Goals::RouteBuild Builder(std::shared_ptr<FieldMap const> map)
+inline Goals::RouteBuild Builder(std::shared_ptr<FieldMap const> map, PartTimer timer = {})
 {
     if (!map)
         return {};
-    return [map = std::move(map)](Snapshot const& bot, CircuitContext const& context, Goals::Model const& model,
-                                  Goals::Situation const& situation)
-    { return Build(*map, bot, context, model, situation); };
+    return [map = std::move(map), timer = std::move(timer)](
+               Snapshot const& bot, CircuitContext const& context, Goals::Model const& model,
+               Goals::Situation const& situation) { return Build(*map, bot, context, model, situation, timer); };
 }
 }  // namespace GoalRoute
 }  // namespace Planner

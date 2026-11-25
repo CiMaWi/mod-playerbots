@@ -1417,6 +1417,67 @@ void SwitchRules()
     }
 }
 
+// WQ18b part 3 (fault F4): an order at NPCs. Its bounds last the look time longer and its stay restarts at each count
+// of the log; it walks to the nearest spot of an expected need that is open, within its field
+void NpcOrders()
+{
+    constexpr std::uint32_t STAY_MS = 15 * 1000;     // 0.25 min
+    constexpr std::uint32_t WALK_MS = 2 * 6 * 1000;  // twice 0.1 min
+    QuestOrderRun run;
+    run.order.word = QuestOrderWord::HandIn;
+    run.order.mapId = MAP_A;
+    run.order.x = 150.0f;
+    run.order.y = 150.0f;
+    run.order.cell = FieldCellKeyAt(MAP_A, 150.0f, 150.0f);
+    run.order.minutes = 0.25f;
+    run.order.walkMinutes = 0.1f;
+    run.order.expected = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    run.startedAt = run.lastCount = 1000;
+    bool const walk = !X::End(run, 1000 + WALK_MS + STAY_MS + X::LOOK_MS - 1, false) &&
+                      X::End(run, 1000 + WALK_MS + STAY_MS + X::LOOK_MS, false) == QuestOrderEnd::Time;
+    run.arrivedAt = 5000;
+    bool const look =
+        !X::End(run, 5000 + X::LOOK_MS - 1, false) && X::End(run, 5000 + X::LOOK_MS, false) == QuestOrderEnd::NoEnder;
+    bool const clock = !X::End(run, 5000 + STAY_MS + X::LOOK_MS - 1, true) &&
+                       X::End(run, 5000 + STAY_MS + X::LOOK_MS, true) == QuestOrderEnd::Time;
+    run.lastCount = run.lastFound = 40000;  // the hand-in came: the log is counted, the take is still open
+    run.open[0].left = 0;
+    bool const restarted = !X::End(run, 40000 + STAY_MS + X::LOOK_MS - 1, true) &&
+                           X::End(run, 40000 + STAY_MS + X::LOOK_MS, true) == QuestOrderEnd::Time &&
+                           X::End(run, 40000 + X::LOOK_MS, false) == QuestOrderEnd::Dry;
+    QuestOrderRun field = run;
+    field.order.word = QuestOrderWord::Field;
+    field.open[0].left = 1;
+    bool const planned = !X::End(field, 5000 + STAY_MS - 1, true) &&
+                         X::End(field, 5000 + STAY_MS, true) == QuestOrderEnd::Time &&
+                         X::End(field, 40000 + 1, true) == QuestOrderEnd::Time;
+    Check(walk && look && clock && restarted && planned,
+          "an order at NPCs: its walk's bound and its stay last the look time longer, so the look ends it (no_ender, "
+          "dry) before the clock; a count of the log restarts its stay; a field's stay is the planned one from the "
+          "arrival (mutants: End without NpcSlackMs, the stay from the arrival only)");
+
+    run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    std::vector<X::NpcSpot> const spots = {{7, HAND_IN, 180.0f, 150.0f, 5.0f},
+                                           {8, TAKE, 120.0f, 150.0f, 6.0f},
+                                           {9, HAND_IN, 151.0f, 150.0f, 0.0f},  // no need the order expects
+                                           {8, TAKE, 450.0f, 150.0f, 0.0f}};    // outside the field
+    bool const nearest = X::NearestSpot(run.order, run.open, spots, 170.0f, 150.0f) == std::size_t{0} &&
+                         X::NearestSpot(run.order, run.open, spots, 125.0f, 150.0f) == std::size_t{1} &&
+                         X::NearestSpot(run.order, run.open, spots, 440.0f, 150.0f) == std::size_t{0};
+    run.open[0].left = 0;
+    bool const next = X::NearestSpot(run.order, run.open, spots, 180.0f, 150.0f) == std::size_t{1};
+    run.open[1].left = 0;
+    bool const none = !X::NearestSpot(run.order, run.open, spots, 180.0f, 150.0f);
+    bool const noNpcOrder = !X::NearestSpot(field.order, field.open, spots, 180.0f, 150.0f);
+    std::vector<X::NpcSpot> const away = {{8, TAKE, 450.0f, 150.0f, 0.0f}};
+    run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    bool const keepsPlace = !X::NearestSpot(run.order, run.open, away, 180.0f, 150.0f);
+    Check(nearest && next && none && noNpcOrder && keepsPlace,
+          "an order at NPCs walks to the nearest spot of an expected need still open, within its field; a need done "
+          "sends it on to the next NPC; no spot, or a field order: the order keeps its place");
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
@@ -1434,6 +1495,7 @@ int main(int argc, char** argv)
     WayCases();
     Bounds();
     SwitchRules();
+    NpcOrders();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

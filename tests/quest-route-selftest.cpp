@@ -1122,6 +1122,20 @@ void FarField()
     Route::Plan const spent = Route::Build(map, index, needs, ask);
     Check(spent.stops.empty() && spent.walkCalls == 0 && spent.capped == 1,
           "no call allowed: no route, the need capped");
+
+    // WQ18b part 3: the far reach (Route::FAR_RADIUS). The same wolves from 2900 yd are a far stop; from 3900 yd
+    // they are beyond the reach: no stop, and the walk function is not asked
+    ask.walkBudget = Route::WALK_BUDGET;
+    refuse.clear();
+    called = 0;
+    ask.x = Mid(30);
+    Check(Route::Build(map, index, needs, ask).stops.size() == 1 && called > 0,
+          "a field 2900 yd away is within the far reach: a stop");
+    called = 0;
+    ask.x = Mid(40);
+    Route::Plan const beyond = Route::Build(map, index, needs, ask);
+    Check(beyond.stops.empty() && beyond.walkCalls == 0 && called == 0,
+          "a field 3900 yd away is beyond the far reach: no stop, no walk asked");
 }
 }  // namespace
 

@@ -1234,9 +1234,14 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 FillFishWaters(snapshot, path.get(), *gatherRates, filled);
             }
             // The route's build over the field map (questing WQ18a): PlanGoals calls it for a bot not held on the
-            // circuit, which no bot is before WQ18b
+            // circuit (WQ18b: every planner bot but a test's). Its two parts are PerfMonitor rows (part 3)
+            auto const routePart = [](char const* part, std::uint64_t micros)
+            {
+                if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, part))
+                    row->Record(micros);
+            };
             plan = std::make_shared<Goals::GoalPlan const>(
-                Goals::PlanGoals(snapshot, std::move(context), filled, GoalRoute::Builder(data.fields)));
+                Goals::PlanGoals(snapshot, std::move(context), filled, GoalRoute::Builder(data.fields, routePart)));
         }
         catch (...)
         {

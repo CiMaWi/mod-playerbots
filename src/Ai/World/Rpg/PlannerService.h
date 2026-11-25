@@ -112,9 +112,15 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32
 void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr);
 // The status core, right before OnStatusEnd, when the executor ended an order by its own end (questing WQ18b,
 // QuestFieldExec::OwnEnd): the route's running order ends (GoalApply::EndRouteOrder), so its next start gives the
-// next order; a dry end closes the order's cell for the block time, with one GoalStalled row. Nothing for a bot the
-// planner does not own or for an order that is not its route's. O(1)
-void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end);
+// next order. `reached`: the bot had arrived at the order's place. An end that says the place gave nothing or could
+// not be reached (dry; time before the arrival: GoalApply::ClosesCell) closes the order's cell for the block time,
+// with one GoalStalled row. Nothing for a bot the planner does not own or for an order that is not its route's. O(1)
+void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached);
+// The same door, when an order's status ended by anything else (part 3). A failure of its walk or work
+// (GoalApply::FailsOrder: stuck, abandoned, timed out; `note`: the end's word, a literal) ends the route's running
+// order and closes its cell as a dry end does, so the route does not give it again; any other end leaves the order
+// to be given again. O(1)
+void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or

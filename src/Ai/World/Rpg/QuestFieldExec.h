@@ -169,6 +169,12 @@ inline bool HandInOpen(QuestOrder const& order, std::span<QuestOrderOpen const> 
                        [open](QuestOrderNeed const& expected) { return HandInOpen(expected, open); });
 }
 
+// An order at NPCs (word hand_in; questing WQ18b part 3): its planned stay is its hand-ins' and takes' seconds, too
+// short for the walk between two NPCs of a hub and shorter than the look time. Both its bounds last the look time
+// longer, so at the NPC the look's verdict (no_ender, dry) comes before the clock's, and an NPC that gives nothing
+// ends the order by a word that bounds its return (a failure row, a closed cell)
+inline std::uint32_t NpcSlackMs(QuestOrder const& order) { return order.word == QuestOrderWord::HandIn ? LOOK_MS : 0; }
+
 // A newer order first; then the plan's end (done: an order that expects needs and has none open; arrived: a way at its
 // place once it holds no target, WQ20b); then the stay (from the arrival; without one, twice the planned walk plus the
 // stay from the start or the last count of the log, WQ20b: a bot that earns on the way is working, not stuck, and the
@@ -190,12 +196,16 @@ inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t 
         float const bound = std::min(WALK_SLACK * order.walkMinutes + order.minutes, MAX_MINUTES);
         // the start counts the log, so its count is the start's stamp until a credit comes
         std::uint32_t const walked = now - (run.lastCount ? run.lastCount : run.startedAt);
-        if (walked >= MinutesMs(bound))
+        if (walked >= MinutesMs(bound) + NpcSlackMs(order))
             return QuestOrderEnd::Time;
         return std::nullopt;
     }
     std::uint32_t const atPlace = now - run.arrivedAt;
-    if (atPlace >= MinutesMs(order.minutes))
+    // WQ18b part 3: an order at NPCs counts its stay from the last count of the log too (each hand-in and each take
+    // restarts it, as a credit restarts the walk's bound); a field's stay is the planned one, from the arrival
+    bool const atNpc = order.word == QuestOrderWord::HandIn;
+    std::uint32_t const stayed = atNpc && run.lastCount ? std::min(atPlace, now - run.lastCount) : atPlace;
+    if (stayed >= MinutesMs(order.minutes) + NpcSlackMs(order))
         return QuestOrderEnd::Time;
     std::uint32_t const quiet = run.lastFound ? std::min(atPlace, now - run.lastFound) : atPlace;
     if (!finding && quiet >= LOOK_MS)
@@ -380,6 +390,52 @@ inline std::optional<QuestOrderEnd> OwnEnd(char const* word, StatusEnd::Outcome 
         if (std::string_view(word) == QuestOrderEndName(own) && OutcomeOf(own) == outcome)
             return own;
     return std::nullopt;
+}
+
+// WQ18b part 3: a place an order at NPCs can walk to: an ender of a hand-in or a giver of a take, as the quest index
+// has it (the spawn)
+struct NpcSpot
+{
+    std::uint32_t quest{0};
+    std::uint32_t objective{ORDER_HAND_IN};
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+};
+
+// Where an order at NPCs sends the bot (WQ18b part 3): the nearest spot of an expected need that is still open, within
+// the order's field (its cell and the eight round it). An order names the middle of its cell, where no NPC stands: a
+// bot that waited there handed in only what it had passed on its way (lab13, 2026-11-25: 86 `hand_in:time` rows of 12
+// bots). None: no such spot (the order keeps its place), or no order at NPCs. The executor asks at the order's start
+// and after each count of the log, so the bot goes from one NPC of a hub to the next
+inline std::optional<std::size_t> NearestSpot(QuestOrder const& order, std::span<QuestOrderOpen const> open,
+                                              std::span<NpcSpot const> spots, float x, float y)
+{
+    if (order.word != QuestOrderWord::HandIn)
+        return std::nullopt;
+    auto const beside = [](std::int32_t a, std::int32_t b) { return a - b <= 1 && b - a <= 1; };
+    std::optional<std::size_t> best;
+    float bestYards = 0.0f;
+    for (std::size_t i = 0; i < spots.size(); ++i)
+    {
+        NpcSpot const& spot = spots[i];
+        QuestOrderNeed const need{spot.quest, spot.objective, 0};
+        if (std::find(order.expected.begin(), order.expected.end(), need) == order.expected.end() ||
+            std::none_of(open.begin(), open.end(), [&spot](QuestOrderOpen const& one)
+                         { return one.left && one.quest == spot.quest && one.objective == spot.objective; }))
+            continue;
+        std::uint64_t const cell = FieldCellKeyAt(order.mapId, spot.x, spot.y);
+        if (!beside(FieldCellXOf(cell), FieldCellXOf(order.cell)) ||
+            !beside(FieldCellYOf(cell), FieldCellYOf(order.cell)))
+            continue;
+        float const yards = std::hypot(spot.x - x, spot.y - y);
+        if (!best || yards < bestYards)
+        {
+            best = i;
+            bestYards = yards;
+        }
+    }
+    return best;
 }
 
 // A field order at a point (the test order `route field`): the point is the place, its cell the field, the expected
