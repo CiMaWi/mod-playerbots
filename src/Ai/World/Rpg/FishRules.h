@@ -198,7 +198,9 @@ constexpr std::size_t TRIP_ENDS = static_cast<std::size_t>(TripEnd::Count);
 // The trip so far
 struct Trip
 {
-    float minutes{0.0f};  // fished
+    bool cast{false};           // it cast at the water at least once
+    float minutes{0.0f};        // at the water: since its first cast (0 before it)
+    float statusMinutes{0.0f};  // since the trip began, the walk to the water included
     float planMinutes{TRIP_MINUTES};
     bool inCombat{false};
     double bagShare{0.0};  // filled share of the bags, 0 to 1
@@ -206,18 +208,31 @@ struct Trip
     double chance{1.0};  // the catch chance of this water for the bot
 };
 
-// A trip ends in a fight, at full bags, after its time, or when the place gives nothing (PLAN 3.12), in that order
+// A trip ends in a fight, at full bags, after its time at the water, or when the place gives nothing (PLAN 3.12), in
+// that order
 inline TripEnd Ends(Trip const& trip)
 {
     if (trip.inCombat)
         return TripEnd::Fight;
     if (trip.bagShare >= BAG_FULL_SHARE)
         return TripEnd::BagsFull;
-    if (trip.minutes >= trip.planMinutes)
+    if (trip.cast && trip.minutes >= trip.planMinutes)
         return TripEnd::TimeUp;
     if (trip.missesInARow >= BarrenCasts(trip.chance))
         return TripEnd::Barren;
     return TripEnd::None;
+}
+
+// The trip's general bound, the status deadline (WR27): the trip's own ends come first, so one still on after this many
+// times its minutes is a trip whose ends failed. The clock is its time at the water once it cast, else its age (the
+// walk there). The night lab5-20261122-030123 had the deadline at the trip's own minutes, counted with the walk: the
+// status check ran first and ended all 384 trips that fished their time (WR27-record.md). As a planned status's
+// ORDER_OVERRUN_FACTOR (GoalInterface.h)
+constexpr float DEADLINE_FACTOR = 2.0f;
+
+inline bool PastDeadline(Trip const& trip)
+{
+    return (trip.cast ? trip.minutes : trip.statusMinutes) > DEADLINE_FACTOR * trip.planMinutes;
 }
 
 // The planner's minutes for a trip: its time, the casts that fit and the catches expected in them

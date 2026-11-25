@@ -160,6 +160,7 @@ struct NewRpgInfo
         uint32 planMs{0};       // the trip's time; 0: Fish::TRIP_MINUTES
         uint32 spell{0};        // the fishing rank it casts; 0 before the first tick
         uint32 castMs{0};       // the cast in flight began; 0: none
+        uint32 firstCastMs{0};  // the trip's first cast: its time at the water from here (FishRules.h); 0: none
         uint32 lootMs{0};       // a catch's loot window was first seen open; 0: none
         uint32 casts{0};
         uint32 catches{0};

@@ -328,6 +328,20 @@ void TraceMiss(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data, char const* h
              bobber ? static_cast<int32>(bobber->getLootState()) : -1, !data.pool.IsEmpty(), data.casts);
 }
 
+// The trip's clocks (FishRules.h Trip): its time at the water from its first cast, its age and its minutes
+Fish::Trip Clocks(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data)
+{
+    constexpr float MS_PER_MINUTE = static_cast<float>(MINUTE * IN_MILLISECONDS);
+    Fish::Trip trip;
+    trip.cast = data.firstCastMs != 0;
+    if (trip.cast)
+        trip.minutes = GetMSTimeDiffToNow(data.firstCastMs) / MS_PER_MINUTE;
+    trip.statusMinutes = GetMSTimeDiffToNow(botAI->rpgInfo.startT) / MS_PER_MINUTE;
+    if (data.planMs)
+        trip.planMinutes = data.planMs / MS_PER_MINUTE;
+    return trip;
+}
+
 // The cast is over: the next tick casts again
 void CastOver(NewRpgInfo::DoFish& data)
 {
@@ -395,11 +409,9 @@ bool NewRpgDoFishAction::Execute(Event /*event*/)
             return true;
         }
     }
-    // The trip's own ends (FishRules.h): full bags, its time, a water that gives nothing; a fight ends it by OnCombat
-    Fish::Trip trip;
-    trip.minutes = GetMSTimeDiffToNow(botAI->rpgInfo.startT) / static_cast<float>(MINUTE * IN_MILLISECONDS);
-    if (data.planMs)
-        trip.planMinutes = data.planMs / static_cast<float>(MINUTE * IN_MILLISECONDS);
+    // The trip's own ends (FishRules.h): full bags, its time at the water, a water that gives nothing; a fight ends it
+    // by OnCombat
+    Fish::Trip trip = Clocks(botAI, data);
     trip.bagShare = AI_VALUE(uint8, "bag space") / 100.0;
     trip.missesInARow = data.missesInARow;
     trip.chance = data.chance;
@@ -480,6 +492,8 @@ bool NewRpgDoFishAction::Execute(Event /*event*/)
         return true;
     }
     data.castMs = std::max<uint32>(getMSTime(), 1);
+    if (!data.firstCastMs)
+        data.firstCastMs = data.castMs;
     data.channelSeen = false;
     ++data.casts;
     return true;
@@ -590,6 +604,12 @@ bool NewRpgDoFishAction::KeepsOnFoot(PlayerbotAI* botAI, Player* bot)
     auto const* data = std::get_if<NewRpgInfo::DoFish>(&botAI->rpgInfo.data);
     return data && !(data->stand == WorldPosition()) && data->stand.GetMapId() == bot->GetMapId() &&
            bot->GetExactDist2d(data->stand.GetPositionX(), data->stand.GetPositionY()) < ON_FOOT_YARDS;
+}
+
+bool NewRpgDoFishAction::PastDeadline(PlayerbotAI* botAI)
+{
+    auto const* data = std::get_if<NewRpgInfo::DoFish>(&botAI->rpgInfo.data);
+    return data && Fish::PastDeadline(Clocks(botAI, *data));
 }
 
 void NewRpgDoFishAction::Trace(NewRpgInfo::DoFish const& data, char const* where)

@@ -18,6 +18,7 @@
 #include "Map.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
+#include "NewRpgDoFish.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
@@ -32,7 +33,6 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
-#include "ProfessionConfig.h"
 #include "PursuitRules.h"
 #include "QuestDef.h"
 #include "QuestFailRecord.h"
@@ -221,13 +221,17 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             break;
         }
         case RPG_DO_GATHER:
+        {
+            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusDoGatherDuration)))
+                return true;
+            break;
+        }
         case RPG_DO_FISH:
         {
-            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer. DO_FISH: a trip its own
-            // rules have not ended by Fish.TripDeadlineSeconds is given up (its FishTrip row says "deadline")
-            int32 const limit = status == RPG_DO_GATHER ? statusDoGatherDuration
-                                                        : sPlayerbotAIConfig.Professions.FishTripDeadlineSeconds * 1000;
-            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(limit)))
+            // DO_FISH -> IDLE: a trip its own rules have not ended by twice its minutes is given up
+            // (Fish::PastDeadline, professions WR27; its FishTrip row says "deadline")
+            if (Planner::StatusOver(botAI, status, NewRpgDoFishAction::PastDeadline(botAI)))
                 return true;
             break;
         }

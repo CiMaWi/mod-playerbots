@@ -166,6 +166,9 @@ void HandCases()
     // A trip ends at each of its ends, in order
     Trip trip;
     Check(Fish::Ends(trip) == TripEnd::None, "a fresh trip goes on");
+    trip.statusMinutes = 99.0f;
+    Check(Fish::Ends(trip) == TripEnd::None, "its time runs at the water: a trip that never cast has no time_up");
+    trip.cast = true;
     trip.inCombat = true;
     trip.bagShare = 1.0;
     trip.minutes = 99.0f;
@@ -183,6 +186,20 @@ void HandCases()
     Check(Fish::BarrenCasts(0.15) > Fish::BarrenCasts(0.5) && Fish::BarrenCasts(1.0) == Fish::BARREN_MIN_CASTS &&
               Fish::BarrenCasts(0.0) == Fish::BARREN_MAX_CASTS,
           "the barren run grows as the chance falls and stays bounded");
+    // Its own time ends a trip before the deadline, whatever the walk took (WR27: the deadline at the trip's minutes,
+    // counted with the walk, ended every trip that fished its time on the night lab5-20261122-030123)
+    Trip due;
+    due.statusMinutes = 2.0f * Fish::TRIP_MINUTES - 0.1f;
+    Check(!Fish::PastDeadline(due), "a walk within twice the trip's minutes is no deadline");
+    due.statusMinutes = 2.0f * Fish::TRIP_MINUTES + 0.1f;
+    Check(Fish::PastDeadline(due), "a walk that never reached the water ends at the deadline");
+    due.cast = true;
+    due.minutes = Fish::TRIP_MINUTES + 0.5f;
+    due.statusMinutes = due.minutes + 15.0f;
+    Check(Fish::Ends(due) == TripEnd::TimeUp && !Fish::PastDeadline(due),
+          "its time at the water ends a trip after a long walk, before the deadline");
+    due.minutes = 2.0f * Fish::TRIP_MINUTES + 0.1f;
+    Check(Fish::PastDeadline(due), "a trip whose ends failed meets the deadline");
     Fish::TripPlan const plan = Fish::PlanTrip(easy, fair, false);
     Check(Near(plan.casts, Fish::TRIP_MINUTES / Fish::CAST_MINUTES) &&
               Near(plan.catches, plan.casts * Fish::ChanceAt(easy, fair, false)),
@@ -201,6 +218,7 @@ struct Rules
     std::function<double(std::uint32_t, std::int32_t, bool)> chance = Fish::CatchChance;
     bool tripEnds = true;
     bool fishAtZeroSkill = false;
+    std::function<bool(Trip const&)> pastDeadline = Fish::PastDeadline;
 };
 
 struct Violations
@@ -208,6 +226,7 @@ struct Violations
     int harder{0};
     int zeroSkill{0};
     int endless{0};
+    int deadline{0};  // a trip the status deadline ended before its own ends
     int poolLowers{0};
     int refusedPicked{0};
     int nondeterministic{0};
@@ -260,16 +279,28 @@ void SearchWorld(std::mt19937& rng, Rules const& rules, Violations& v)
     if (!bot.skill && (rules.fishAtZeroSkill || Fish::Usable(candidates[0].water, bot, false)))
         ++v.zeroSkill;
 
-    // A trip always ends: random casts at the water's chance end within a bounded count
+    // A trip always ends, by its own rule before the status deadline: after a walk of up to its minutes, casts at the
+    // water's chance that last up to a whole channel and its loot (CAST_MINUTES) end within a bounded count. The status
+    // check runs first in an engine pass, the trip's ends only between casts (NewRpgStatus.cpp, NewRpgDoFish.cpp)
     double const chance = rules.chance(bot.skill, base, false);
     Trip trip;
+    trip.planMinutes = static_cast<float>(u(3, 30));
+    trip.statusMinutes = static_cast<float>(u(0, static_cast<int>(trip.planMinutes)));
     trip.chance = std::max(chance, 0.01);
     trip.bagShare = u(0, 60) / 100.0;
     std::uniform_real_distribution<double> roll(0.0, 1.0);
     bool ended = false;
     for (int cast = 0; cast < 1000 && !ended; ++cast)
     {
-        trip.minutes += Fish::CAST_MINUTES;
+        float const length = Fish::CAST_MINUTES * u(1, 10) / 10.0f;
+        trip.cast = true;
+        trip.minutes += length;
+        trip.statusMinutes += length;
+        if (rules.pastDeadline(trip))
+        {
+            ++v.deadline;
+            break;
+        }
         if (roll(rng) < chance)
         {
             trip.missesInARow = 0;
@@ -298,6 +329,7 @@ void SearchCases()
     Check(v.harder == 0, "a harder water is never easier: " + std::to_string(v.harder));
     Check(v.zeroSkill == 0, "no fishing at skill 0: " + std::to_string(v.zeroSkill));
     Check(v.endless == 0, "a trip always ends: " + std::to_string(v.endless));
+    Check(v.deadline == 0, "a trip ends by its own rule before the deadline: " + std::to_string(v.deadline));
     Check(v.poolLowers == 0, "a pool never lowers the chance: " + std::to_string(v.poolLowers));
     Check(v.refusedPicked == 0, "a refused water is never picked: " + std::to_string(v.refusedPicked));
     Check(v.nondeterministic == 0, "the same input gives the same answer: " + std::to_string(v.nondeterministic));
@@ -310,6 +342,9 @@ void SearchCases()
     Rules never;
     never.tripEnds = false;
     Check(Search(never).endless > 0, "control: a trip that never ends is caught");
+    Rules night;
+    night.pastDeadline = [](Trip const& trip) { return trip.statusMinutes > trip.planMinutes; };
+    Check(Search(night).deadline > 0, "control: the night's deadline at the trip's minutes with the walk is caught");
     Rules zero;
     zero.fishAtZeroSkill = true;
     Check(Search(zero).zeroSkill > 0, "control: fishing at skill 0 is caught");

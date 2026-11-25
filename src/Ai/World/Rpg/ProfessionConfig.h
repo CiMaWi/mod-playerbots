@@ -27,9 +27,6 @@ struct ProfessionConfig
     // Craft.VisitDeadlineSeconds (60-3600): seconds a craft visit (the walk to a station included) may take before it
     // is given up
     std::uint32_t CraftVisitDeadlineSeconds = 900;
-    // Fish.TripDeadlineSeconds (60-3600): seconds a fishing trip (the walk to the water included) may take before it
-    // is given up
-    std::uint32_t FishTripDeadlineSeconds = 1200;
     // VisitStepSeconds (1-60): seconds one step of a profession visit (a trainer's answer, a cast's result) may wait
     std::uint32_t VisitStepSeconds = 10;
     // Share.<Craft> (0-100): the global share of each craft over the roster, in the order of ProfessionRules::CRAFTS
