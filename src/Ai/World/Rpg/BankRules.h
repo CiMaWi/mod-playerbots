@@ -37,6 +37,7 @@
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
 //   void AssignStock(entries, laterBySlot, bags, bank);                   // demand's use stock per stack (WI9b)
 //   CarriedKeeps KeptInBags(BankIn const& in);                            // the bag items kept for a later level
+//   bool ListsStack(CarriedKeeps const&, uint32_t itemGuid);              // the auction visit lists this bag stack
 //   uint32_t KeptWorthEach(CarriedKeeps const&, uint32_t entry, uint8_t level);  // the item usage's O(k) lookup
 //   DueTotal DueAt(std::vector<Kept> const& kept, uint8_t level);         // the kept items due at the level
 //   char const* ChoiceWord(BankChoice), ReasonWord(BankReason);           // the `bank` decision row's words
@@ -241,16 +242,13 @@ inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& b
     return item.recipeSkill ? RecipeForLater(item, bot) : PathMaterial(item, bot);
 }
 
-// The units of a stack beyond what the bot's skill path uses: all of them when the path uses none
-inline uint32_t StockUnits(KeepItemIn const& item)
-{
-    uint32_t const count = std::max<uint32_t>(item.count, 1);
-    return count - std::min(count, item.materialUsed);
-}
+// The units of a stack auction stock may take: the whole stack, none when the bot's skill path uses the entry. The
+// visit lists whole stacks, so a stack with units the path needs is never stock (WA3-4 review B1)
+inline uint32_t StockUnits(KeepItemIn const& item) { return item.materialUsed ? 0 : std::max<uint32_t>(item.count, 1); }
 
 // Auction stock (auction house WA3a, PLAN 3.5, WA.17): an item the item usage sells at the auction house whose listing
 // is worth more than a vendor pays for it now. Never gear the gear rule keeps to wear, a recipe the bot will learn or
-// the units its skill path uses. Unsold (its worth already beats the vendor's payout) and due at no level: banked, and
+// an entry its skill path uses. Unsold (its worth already beats the vendor's payout) and due at no level: banked, and
 // never fetched by a trip of its own
 inline constexpr char const* AUCTION_STOCK_PROVIDER = "auction_stock";
 
@@ -748,13 +746,13 @@ inline std::vector<KeptEntry> KeptInBank(BankIn const& in)
 }
 
 // Kept and not due yet: a due item is gear the bot may wear now, which the item usage labels as an upgrade first
-inline CarriedKeeps KeptInBags(BankIn const& in)
+inline CarriedKeeps KeptInBags(BankIn const& in, std::span<KeepProvider const> providers = KEEP_PROVIDERS)
 {
     using namespace BankRulesDetail;
     std::vector<Decided> kept;
     for (BankItemIn const& item : in.bags)
     {
-        KeepAnswer const answer = DecideKeep(item.item, in.bot);
+        KeepAnswer const answer = DecideKeep(item.item, in.bot, providers);
         if (answer.keeps && !IsDue(answer, in.bot))
             kept.push_back({&item, answer});
     }
@@ -765,7 +763,7 @@ inline CarriedKeeps KeptInBags(BankIn const& in)
     for (Decided const& decided : kept)
     {
         carried.items.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
-                                 decided.answer.dueLevel, decided.answer.provider});
+                                 decided.answer.dueLevel, decided.answer.provider, decided.item->item.itemGuid});
         // Auction stock's worth beats the payout (AuctionStock), so the gain is positive; the trip weighs it (WA3b)
         KeepItemIn const& item = decided.item->item;
         bool const stock = std::string_view(decided.answer.provider) == AUCTION_STOCK_PROVIDER;
@@ -785,6 +783,17 @@ inline uint32_t KeptWorthEach(CarriedKeeps const& carried, uint32_t entry, uint8
         if (item.entry == entry)
             return std::max<uint32_t>(item.laterWorth / std::max<uint32_t>(item.count, 1), 1);
     return 0;
+}
+
+// The auction visit lists a bag stack only when its own keep is auction stock: it lists whole stacks, so a stack
+// another provider keeps (a path's materials, use stock, gear) is never listed, whatever the keeps of its entry's other
+// stacks
+inline bool ListsStack(CarriedKeeps const& carried, uint32_t itemGuid)
+{
+    for (KeptEntry const& item : carried.items)
+        if (item.itemGuid == itemGuid)
+            return std::string_view(item.provider) == AUCTION_STOCK_PROVIDER;
+    return false;
 }
 
 // One line of what a plan does, for the selftest and the command

@@ -148,6 +148,7 @@ struct KeptEntry
     uint32_t laterWorth = 0;
     uint8_t dueLevel = 0;
     char const* provider = "";
+    uint32_t itemGuid = 0;  // the bag stack's low guid (CarriedKeeps; the auction visit lists by it, ListsStack)
 };
 
 // The bag items the rule keeps for a later level, as the bot remembers them for its item usage (ITEM_USAGE_BANK):

@@ -2329,6 +2329,71 @@ void MarketNeeds()
     Check(controlParts > 0, "control: PartsOf without the market's exclusion adds them as parts (caught)");
 }
 
+// The market's kept copper (UpkeepNeeds::MarketKept, WA3-4 review N1): what the purse keeps from the auction visit and
+// the stop's worth. Over a sweep of purses, the spendable gold (the purse above it) never reaches into what Fund paid a
+// need before the market, and buys exactly the market's share. Its control, the reserve and the funded use items alone
+// (WA4b), lets a spendthrift's small reserve and a riding purchase beyond the reserve be spent at the market
+std::uint64_t MarketKeptOfWA4b(NeedList const& list) { return list.reserve + FundedOf(list, NeedOrder::Use); }
+
+void MarketKeptNeeds(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the market keeps what Fund pays before it (WA3-4 review N1)\n";
+    auto const withMarket = [](NeedRates rates)
+    {
+        rates.marketWants.push_back({ITEM_MARKET_CLOTH, 20, 3000});
+        rates.marketWants.push_back({ITEM_MARKET_BAG, 1, 400000});
+        return rates;
+    };
+    Snapshot spendthrift = Bot(index, CLASS_WARRIOR, 20, 0, 14);
+    spendthrift.repairCost = 450;
+    spendthrift.traits = Traits(TraitRules::MIN_VALUE, 0, false);
+    // Riding bought for the want, its worth alone too small for the reserve: the purchase lies beyond the reserve
+    Snapshot rider = Bot(index, CLASS_WARRIOR, 20, 0, 20);
+    rider.traits = Traits(0, 0, true);
+    struct Case
+    {
+        char const* name;
+        Snapshot bot;
+        NeedRates rates;
+        int rule = 0;
+        int control = 0;
+        int funded = 0;
+    };
+    std::vector<Case> cases = {
+        {"spendthrift warrior at 20, six levels untrained, repair due", spendthrift, withMarket(Rates(20))},
+        {"collector warrior at 20 walking 3 min/h, riding bought beyond the reserve", rider,
+         withMarket(Rates(20, 3.0f))}};
+    for (Case& c : cases)
+    {
+        for (std::uint64_t money = 0; money <= 300 * GOLD; money += 4999)
+        {
+            Snapshot bot = c.bot;
+            bot.money = static_cast<std::uint32_t>(money);
+            NeedList const list = ComputeNeeds(bot, index, c.rates);
+            std::uint64_t before = 0;
+            std::uint64_t marketCopper = 0;
+            for (Need const& need : list.needs)
+            {
+                before += need.order != NeedOrder::Market ? need.funded : 0;
+                marketCopper += need.order == NeedOrder::Market ? need.copper : 0;
+            }
+            std::uint64_t const marketFunded = FundedOf(list, NeedOrder::Market);
+            auto const wrong = [&](std::uint64_t kept)
+            {
+                std::uint64_t const spendable = money > kept ? money - kept : 0;
+                return spendable + before > money || std::min(spendable, marketCopper) != marketFunded;
+            };
+            c.rule += wrong(MarketKept(list)) ? 1 : 0;
+            c.control += wrong(MarketKeptOfWA4b(list)) ? 1 : 0;
+            c.funded += before > list.reserve + FundedOf(list, NeedOrder::Use) ? 1 : 0;
+        }
+        std::cout << "   " << c.name << ": " << c.funded << " purses where earlier needs take more than the reserve "
+                  << "and the use items; counterexamples (rule / control) " << c.rule << "/" << c.control << "\n";
+        Check(c.rule == 0, std::string(c.name) + ": the market spends only its share, never an earlier need's");
+        Check(c.control > 0, std::string(c.name) + ": control: the reserve and the use items alone (caught)");
+    }
+}
+
 int main(int argc, char** argv)
 {
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
@@ -2380,6 +2445,7 @@ int main(int argc, char** argv)
     DemandKinds(index);
     UseNeeds();
     MarketNeeds();
+    MarketKeptNeeds(index);
     DemandStockNeeds();
 
     std::cout << passed << " passed, " << failed << " failed\n";

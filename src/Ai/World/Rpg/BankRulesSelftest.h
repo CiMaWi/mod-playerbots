@@ -1246,12 +1246,40 @@ inline KeepAnswer StockIgnoringPath(KeepItemIn const& item, KeepBotIn const& bot
     return AuctionStock(whole, bot);
 }
 
-inline KeepAnswer StockOfWholeStack(KeepItemIn const& item, KeepBotIn const& bot)
+inline KeepAnswer StockOfFullStack(KeepItemIn const& item, KeepBotIn const& bot)
 {
     KeepAnswer answer = AuctionStock(item, bot);
     if (answer.keeps)
-        answer.laterWorth = item.auctionWorth / StockUnits(item) * std::max<uint32_t>(item.count, 1);
+        answer.laterWorth =
+            item.auctionWorth / std::max<uint32_t>(item.count, 1) * std::max<uint32_t>(item.stackMax, 1);
     return answer;
+}
+
+// The WA3a rule (WA3-4 review B1): stock for the units beyond the path's use, though the visit lists whole stacks
+inline KeepAnswer StockBeyondPathUse(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    if (!item.auctionable || std::max<uint32_t>(item.count, 1) <= item.materialUsed ||
+        item.auctionWorth <= item.vendorPayout)
+        return {};
+    if (GearForLaterLevel(item, bot).keeps || (item.recipeSkill && RecipeForLater(item, bot).keeps))
+        return {};
+    return {true, item.auctionWorth, STOCK_LATER_LEVEL, AUCTION_STOCK, true};
+}
+
+// The stacks the auction visit lists (AuctionVisit.cpp NextStock): the bag stacks whose own keep is auction stock;
+// byEntry: WA3b's pick, any stack of an entry with a stack kept as stock (the control of review B1)
+inline std::vector<uint32_t> ListedAtVisit(BankIn const& in, CarriedKeeps const& carried, bool byEntry = false)
+{
+    std::vector<uint32_t> listed;
+    for (BankItemIn const& item : in.bags)
+    {
+        bool lists = ListsStack(carried, item.item.itemGuid);
+        for (KeptEntry const& kept : carried.items)
+            lists = lists || (byEntry && kept.entry == item.item.entry && std::string(kept.provider) == AUCTION_STOCK);
+        if (lists)
+            listed.push_back(item.item.itemGuid);
+    }
+    return listed;
 }
 
 inline KeepAnswer StockIgnoringGear(KeepItemIn const& item, KeepBotIn const&)
@@ -1399,44 +1427,62 @@ inline void CheckAuctionStock(Checker& checker)
     checker.Check(sold == std::vector<uint32_t>{1202, 1206},
                   "sample: sold at a vendor stop only the gear the usage equips first and the linen at p 1/2");
 
-    // "50 linen, the path uses 20": stacks of 20, 20 and 10 have no unit beyond the path's use, so the path keeps
-    // them whole and none is stock; a single stack of 50 has 30 stock units, kept whole either way, by the higher worth
-    KeepBotIn smith = SmithIn(SMITH_SKILL, {}, {}).bot;
+    // "50 linen, the path uses 20" (WA3-4 review B1): the visit lists whole stacks, so an entry the path uses is never
+    // stock. Stacks of 20, 20 and 10, and a single stack of 50 whose 30 units beyond the path's use would list for 700
+    // (more than the path's 600): each is the path's, kept whole, and the visit lists none of them
+    KeepBotIn const smith = SmithIn(SMITH_SKILL, {}, {}).bot;
     bool pathOnly = true;
-    for (uint32_t const count : {20u, 20u, 10u})
+    std::vector<KeepItemIn> linen;
+    for (uint32_t const count : {20u, 20u, 10u, 50u})
     {
         KeepItemIn stack = UsedMaterial(LINEN, count, 20, SMITH_SKILL + 50);
-        stack.auctionable = true;
-        stack.vendorPayout = count * CASE_VENDOR_EXIT / LINEN_LOT;
-        stack.auctionWorth = stack.vendorPayout * 2;
-        KeepAnswer const answer = DecideKeep(stack, smith);
-        checker.Show("50 linen, the path uses 20: a stack of " + std::to_string(count), answer);
-        pathOnly = pathOnly && answer.keeps && std::string(answer.provider) == "materials" &&
-                   !AuctionStock(stack, smith).keeps;
-    }
-    checker.Check(pathOnly, "50 linen in stacks of 20: every stack is the path's, kept whole, none is stock");
-    bool wholeKept = true;
-    for (uint32_t const worth : {500u, 700u})
-    {
-        KeepItemIn stack = UsedMaterial(LINEN, 50, 20, SMITH_SKILL + 50);
+        stack.itemGuid = 100 + static_cast<uint32_t>(linen.size());
         stack.stackMax = 100;
         stack.auctionable = true;
-        stack.vendorPayout = 30 * CASE_VENDOR_EXIT / LINEN_LOT;
-        stack.auctionWorth = worth;
+        stack.vendorPayout = count * CASE_VENDOR_EXIT / LINEN_LOT;
+        stack.auctionWorth = count == 50 ? 700 : stack.vendorPayout * 2;
         KeepAnswer const answer = DecideKeep(stack, smith);
-        checker.Show(
-            "one stack of 50, the path uses 20 (600 later), its 30 stock units listing worth " + std::to_string(worth),
-            answer);
-        wholeKept = wholeKept && answer.keeps && answer.unsold && (worth > 600) == IsStock(answer);
+        checker.Show("50 linen, the path uses 20: a stack of " + std::to_string(count) + ", listing worth " +
+                         std::to_string(stack.auctionWorth),
+                     answer);
+        pathOnly = pathOnly && answer.keeps && answer.unsold && std::string(answer.provider) == "materials" &&
+                   !AuctionStock(stack, smith).keeps;
+        linen.push_back(stack);
     }
-    checker.Check(wholeKept, "a stack of 50: kept whole, by the higher later worth of the path's units and the stock");
+    checker.Check(pathOnly, "B1. an entry the path uses is never stock: every stack, the 50 too, is the path's");
+    BankIn const linenBags = SmithIn(SMITH_SKILL, linen, {});
+    std::vector<uint32_t> const linenListed = ListedAtVisit(linenBags, KeptInBags(linenBags));
+    KeepProvider const beyondPath[] = {GearForLaterLevel, StockForLater, ProfessionMaterials, StockBeyondPathUse};
+    std::vector<uint32_t> const beyondListed = ListedAtVisit(linenBags, KeptInBags(linenBags, beyondPath));
+    checker.Note("  the visit lists " + std::to_string(linenListed.size()) + " of the 4 linen stacks; the WA3a rule (" +
+                 "stock beyond the path's use) lists " + std::to_string(beyondListed.size()));
+    checker.Check(linenListed.empty(), "B1. the visit lists no stack of an entry the path uses");
+    checker.Check(!beyondListed.empty(),
+                  "B1. control: stock for the units beyond the path's use lists the stack of 50 whole (caught)");
+
+    // The visit picks a stack by its own keep: of two stacks of one entry, the one kept as use stock for later stays,
+    // the one kept as auction stock is listed; WA3b's pick by the entry lists both
+    KeepItemIn useStock = Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4));
+    useStock.itemGuid = 201;
+    useStock.stockWorthEach = 100;
+    useStock.stockLater = true;
+    KeepItemIn listing = Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4));
+    listing.itemGuid = 202;
+    CarriedView const mixedEntry = ViewOf(20, {useStock, listing});
+    std::vector<uint32_t> const ownListed = ListedAtVisit(mixedEntry.in, mixedEntry.carried);
+    std::vector<uint32_t> const entryListed = ListedAtVisit(mixedEntry.in, mixedEntry.carried, true);
+    checker.Show("  linen kept as use stock for later", DecideKeep(useStock, mixedEntry.in.bot));
+    checker.Show("  linen of the same entry", DecideKeep(listing, mixedEntry.in.bot));
+    checker.Check(ownListed == std::vector<uint32_t>{202},
+                  "B1. the visit lists the stack kept as auction stock, not its entry's stack kept as use stock");
+    checker.Check(entryListed.size() == 2, "B1. control: picking by the entry lists the use stock too (caught)");
 }
 
 // The seeded search over random bags (invariants 1, 4, 6 and 7)
 struct StockTally
 {
     uint32_t kept = 0;
-    uint32_t pathViolations = 0;   // 1: stock made of the units the path uses
+    uint32_t pathViolations = 0;   // 1: stock of an entry the path uses
     uint32_t worthViolations = 0;  // 4: stock worth more than its held units, or more units kept than held
     uint32_t gearViolations = 0;   // 7: stock of gear the gear rule keeps or a recipe the bot will learn; a keep lost
     std::vector<uint32_t> list;    // 6: every decision, in order
@@ -1460,7 +1506,7 @@ inline StockTally StockSearch(uint32_t seed, KeepProvider stock, bool pathBlind)
     {
         uint8_t const level = static_cast<uint8_t>(1 + next(80));
         std::vector<KeepItemIn> bags;
-        std::vector<uint32_t> heldWorth;  // the worth of each stack's units beyond the path's use
+        std::vector<uint32_t> heldWorth;  // the worth of each stack's stock units (StockUnits)
         uint32_t const count = 1 + next(8);
         for (uint32_t i = 0; i < count; ++i)
         {
@@ -1539,19 +1585,19 @@ inline void CheckStockSearch(Checker& checker, uint32_t seed)
     StockTally const rule = StockSearch(seed, AuctionStock, false);
     StockTally const again = StockSearch(seed, AuctionStock, false);
     StockTally const pathBlind = StockSearch(seed, StockIgnoringPath, true);
-    StockTally const whole = StockSearch(seed, StockOfWholeStack, false);
+    StockTally const whole = StockSearch(seed, StockOfFullStack, false);
     StockTally const gearBlind = StockSearch(seed, StockIgnoringGear, false);
     StockTally const noisy = StockSearch(seed, NoisyStock, false);
     StockTally const noisyAgain = StockSearch(seed, NoisyStock, false);
     checker.Note("stock search (seed " + std::to_string(seed) + ", 2000 bags): " + std::to_string(rule.kept) +
                  " stacks stock; violations path " + std::to_string(rule.pathViolations) + ", held " +
                  std::to_string(rule.worthViolations) + ", gear and recipes " + std::to_string(rule.gearViolations) +
-                 "; controls: path blind " + std::to_string(pathBlind.pathViolations) + ", whole stack " +
+                 "; controls: path blind " + std::to_string(pathBlind.pathViolations) + ", full stack " +
                  std::to_string(whole.worthViolations) + ", gear blind " + std::to_string(gearBlind.gearViolations));
-    checker.Check(rule.kept > 0 && rule.pathViolations == 0, "1. the units a skill path uses are never stock");
+    checker.Check(rule.kept > 0 && rule.pathViolations == 0, "1. an entry a skill path uses is never stock");
     checker.Check(pathBlind.pathViolations > 0, "1. control: a rule blind to the path's use makes them stock (caught)");
     checker.Check(rule.worthViolations == 0, "4. stock never exceeds what is held, in units or worth");
-    checker.Check(whole.worthViolations > 0, "4. control: valuing a whole stack beyond the path's use (caught)");
+    checker.Check(whole.worthViolations > 0, "4. control: valuing a stack as a full one (caught)");
     checker.Check(rule.gearViolations == 0,
                   "7. gear the gear rule keeps and a recipe the bot will learn are never stock; other keeps unchanged");
     checker.Check(gearBlind.gearViolations > 0, "7. control: a rule blind to the gear rule (caught)");

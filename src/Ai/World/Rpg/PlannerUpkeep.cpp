@@ -1049,15 +1049,6 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
     return AuctionRules::BuyList(std::move(lines));
 }
 
-std::uint64_t MarketKept(UpkeepNeeds::NeedList const& list)
-{
-    std::uint64_t useFunded = 0;
-    for (UpkeepNeeds::Need const& need : list.needs)
-        if (need.order == UpkeepNeeds::NeedOrder::Use)
-            useFunded += need.funded;
-    return list.reserve + useFunded;
-}
-
 // The buy list's lines the market prices under their ceilings (WA4b, AuctionBuyList.h TypicalCopper): upkeep's
 // market needs (AddMarketNeeds), funded last
 void FillMarketWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)

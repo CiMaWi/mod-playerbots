@@ -1765,6 +1765,23 @@ inline void Fund(NeedList& list)
     }
 }
 
+// The copper the market leaves in the purse (auction house WA4b, PLAN 3.6), as Fund pays it: the market takes only
+// what every need before it leaves and only the gold above the reserve the use items leave, so it keeps the larger of
+// the two. A riding or training purchase beyond the reserve (a bot saving, a spendthrift's small reserve) stays kept
+inline std::uint64_t MarketKept(NeedList const& list)
+{
+    std::uint64_t before = 0;
+    std::uint64_t useFunded = 0;
+    for (Need const& need : list.needs)
+    {
+        if (need.order == NeedOrder::Market)
+            continue;
+        before += need.funded;
+        useFunded += need.order == NeedOrder::Use ? need.funded : 0;
+    }
+    return std::max(list.reserve + useFunded, before);
+}
+
 // The needs list, the reserve and the shortfall
 inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index, NeedRates const& rates)
 {

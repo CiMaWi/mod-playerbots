@@ -87,9 +87,6 @@ std::vector<Planner::Service const*> StableMasterSpawns(Player* bot, Planner::Pl
 // Mailboxes and bankers (each kind's nearest few) that join the trip's stops by position
 constexpr std::size_t BANK_MAIL_STOPS = 4;
 
-// The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (keeps its possessions).
-// With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go onto the vendor
-// stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
 // What the buy list's lines save at their typical prices (WA4b, AuctionBuyList.h WantedWorth; WA.4: no current offer
 // read here) for the gold the market may spend: the needs list's (cached per trip state, ErrandNeeds)
 uint32 WantedWorthOf(PlayerbotAI* botAI, Player* bot)
@@ -101,7 +98,7 @@ uint32 WantedWorthOf(PlayerbotAI* botAI, Player* bot)
         upkeep && market ? NewRpgInternal::ErrandNeeds(botAI, upkeep) : nullptr;
     if (!needs)
         return 0;
-    uint64 const spendable = AuctionRules::Spendable(bot->GetMoney(), Planner::MarketKept(needs->needs), 0);
+    uint64 const spendable = AuctionRules::Spendable(bot->GetMoney(), UpkeepNeeds::MarketKept(needs->needs), 0);
     if (!spendable)
         return 0;
     uint64 worth = 0;
@@ -111,6 +108,9 @@ uint32 WantedWorthOf(PlayerbotAI* botAI, Player* bot)
     return static_cast<uint32>(std::min<uint64>(worth, std::numeric_limits<uint32>::max()));
 }
 
+// The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (keeps its possessions).
+// With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go onto the vendor
+// stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
 void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel::ErrandSnapshot& snapshot)
 {
     snapshot.Governed = botAI->KeepsPossessions();

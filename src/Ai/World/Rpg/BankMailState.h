@@ -126,7 +126,7 @@ struct AuctionVisitData
     // The buy step (WA4b)
     bool buying{false};
     uint32 only{0};               // the GM command's line (a test's filter); 0 = every line
-    uint64 kept{0};               // copper the market leaves in the purse (Planner::MarketKept), read once
+    uint64 kept{0};               // copper the market leaves in the purse (UpkeepNeeds::MarketKept), read once
     uint32 openBids{0};           // the index's open bids of the bot at the first buy step, plus those placed since
     bool bagTaken{false};         // one bag per visit
     std::vector<uint32> decided;  // the items whose line was decided on this visit

@@ -13,7 +13,6 @@
 #include <shared_mutex>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -239,18 +238,14 @@ bool Tried(std::vector<uint32> const& tried, Item const* item)
     return std::find(tried.begin(), tried.end(), item->GetGUID().GetCounter()) != tried.end();
 }
 
-// The next bag stack of the bot's auction stock not looked at on this visit: an item of an entry the carried keeps
-// hold as auction stock (AuctionStock, refreshed at the visit's first step)
+// The next bag stack of the bot's auction stock not looked at on this visit: a stack whose own carried keep is auction
+// stock (AuctionStock, refreshed at the visit's first step; ListsStack). The visit lists whole stacks, so a stack
+// another provider keeps is never listed, whatever its entry's other stacks are
 Item* NextStock(PlayerbotAI* botAI, Player* bot, std::vector<uint32> const& tried)
 {
-    std::vector<KeptEntry> const& kept = botAI->bankMail.bank.carried.items;
-    auto const stock = [&kept](Item const* item)
-    {
-        return std::any_of(
-            kept.begin(), kept.end(), [item](KeptEntry const& keep)
-            { return keep.entry == item->GetEntry() && std::string_view(keep.provider) == AUCTION_STOCK_PROVIDER; });
-    };
-    return FirstBagItem(bot, [&](Item const* item) { return !Tried(tried, item) && stock(item); });
+    CarriedKeeps const& carried = botAI->bankMail.bank.carried;
+    return FirstBagItem(bot, [&](Item const* item)
+                        { return !Tried(tried, item) && ListsStack(carried, item->GetGUID().GetCounter()); });
 }
 
 // A held entry is held for every stack of it: its other stacks count as looked at (one row and one memory step per
@@ -370,7 +365,11 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
     }
     else
     {
+        // A refusal steps the expiry memory as a hold does, so a stack the core always refuses stops being stock
+        // (RelistLimit) instead of drawing a trip at every plan
         ++visit.refused;
+        MarkEntryTried(bot, visit.awaitingEntry, visit.tried);
+        AuctionMemory::Held(bot->GetGUID().GetCounter(), visit.awaitingEntry);
         LOG_DEBUG("playerbots", "[Auction] {} listing of item {} at {} copper not taken by the core", bot->GetName(),
                   visit.awaitingEntry, visit.ask);
     }
@@ -386,7 +385,7 @@ uint64 MarketKeptNow(PlayerbotAI* botAI)
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     std::shared_ptr<UpkeepNeeds::VisitNeeds const> const needs =
         upkeep ? NewRpgInternal::ErrandNeeds(botAI, upkeep) : nullptr;
-    return needs ? Planner::MarketKept(needs->needs) : std::numeric_limits<uint64>::max();
+    return needs ? UpkeepNeeds::MarketKept(needs->needs) : std::numeric_limits<uint64>::max();
 }
 
 // The buy step after the stock (WA4b, PLAN 3.6): each line of the buy list once per visit, at the house's current
@@ -481,8 +480,8 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
         auctioneer ? AuctionHouseMgr::GetAuctionHouseEntryFromFactionTemplate(auctioneer->GetFaction()) : nullptr;
     if (!house)
         return VisitTurn{VisitNext::End, VisitEnd::NoSpot};
-    // The bags may have changed since the trip was planned (or no trip planned it: the GM command)
-    if (visit.tried.empty())
+    // The bags may have changed since the trip was planned (or no trip planned it: the GM command); once per visit
+    if (visit.tried.empty() && !visit.buying)
         RefreshCarriedKeeps(botAI);
 
     while (Item* item = NextStock(botAI, bot, visit.tried))
@@ -505,13 +504,14 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
 
         // QueuePacket takes ownership; the world thread runs the handler when it drains the bot's session
         WorldPacket* packet = new WorldPacket(CMSG_AUCTION_SELL_ITEM, SELL_PACKET_BYTES);
-        *packet << auctioneer->GetGUID() << uint32(1) << item->GetGUID() << item->GetCount()
-                << static_cast<uint32>(ask.startBid) << static_cast<uint32>(ask.ask) << minutes;
+        // Clamped as the buy side: an ask above the core's money cap is refused, never sold at a truncated price
+        *packet << auctioneer->GetGUID() << uint32(1) << item->GetGUID() << item->GetCount() << Clamped(ask.startBid)
+                << Clamped(ask.ask) << minutes;
         bot->GetSession()->QueuePacket(packet);
         visit.awaiting = item->GetGUID().GetCounter();
         visit.awaitingEntry = item->GetEntry();
-        visit.ask = static_cast<uint32>(ask.ask);
-        visit.floor = static_cast<uint32>(std::min<uint64>(ask.floor, std::numeric_limits<uint32>::max()));
+        visit.ask = Clamped(ask.ask);
+        visit.floor = Clamped(ask.floor);
         visit.relist = ask.reason == AuctionWords::Reason::Expired;
         visit.moneyBefore = bot->GetMoney();
         visit.stepTick = GameTick();

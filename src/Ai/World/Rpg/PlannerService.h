@@ -260,9 +260,6 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
 // generic bags the auction index knows, each by the slots it adds (ItemWorthRules.h BagWorth). Empty for a bot that
 // keeps no possessions (WA.12). The caller includes AuctionBuyList.h
 std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI);
-// The copper the market leaves in the purse (UpkeepNeedRules.h Fund): the reserve and what the use items' needs take
-// before it. The caller includes UpkeepNeedRules.h
-std::uint64_t MarketKept(UpkeepNeeds::NeedList const& list);
 // The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
 // cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
 void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);
