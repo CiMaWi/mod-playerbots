@@ -772,7 +772,8 @@ void NewRpgDoFishAction::EndTrip(PlayerbotAI* botAI, NewRpgInfo::DoFish const& d
              "back {}, {} s",
              bot->GetName(), source, area, data.casts, data.catches, data.pool.IsEmpty() ? "not" : "", data.chance,
              weaponBack ? 1 : 0, GetMSTimeDiffToNow(botAI->rpgInfo.startT) / IN_MILLISECONDS);
-    EventLog::Emit(bot, EventLog::EventType::FishTrip, source, area, data.catches);
+    // The trip's casts beside its catches (WR19c); the row's own area column says where
+    EventLog::Emit(bot, EventLog::EventType::FishTrip, source, data.casts, data.catches);
 }
 
 void NewRpgDoFishAction::OnCombat(PlayerbotAI* botAI)

@@ -11,11 +11,14 @@
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "EventWanted.h"
+#include "GameObject.h"
+#include "GatherNodeMgr.h"
 #include "Item.h"
 #include "Map.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Player.h"
+#include "ProfessionConfig.h"
 #include "QuestDef.h"
 #include "QuestStatEvents.h"
 #include "ScriptMgr.h"
@@ -122,6 +125,40 @@ void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* sour
 {
     if (uint32 const entry = EventLog::TakeStoredEntry(item))
         EventLog::Emit(player, EventLog::EventType::ItemIn, source, entry, count);
+}
+
+// What a harvest gave (professions WR19c): an item looted from a node of the gather index or from a skinned corpse is a
+// `profession gather yield` row, value the count, alternatives the item and the node's or the creature's entry, ref the
+// spawn. The loot's source is read on the looter's thread, as the core's loot handler reads it
+void WriteHarvestYield(Player* player, ObjectGuid loot, uint32 entry, uint32 count)
+{
+    char const* kind = nullptr;
+    uint32 target = 0;
+    uint32 spawn = 0;
+    if (loot.IsGameObject())
+    {
+        GameObject* node = player->GetMap()->GetGameObject(loot);
+        if (!node || !node->GetSpawnId() || !sGatherNodeMgr.Find(node->GetSpawnId()))
+            return;
+        kind = "node";
+        target = node->GetEntry();
+        spawn = node->GetSpawnId();
+    }
+    else if (loot.IsCreatureOrVehicle())
+    {
+        Creature* corpse = player->GetMap()->GetCreature(loot);
+        if (!corpse || corpse->loot.loot_type != LOOT_SKINNING)
+            return;
+        kind = "skin";
+        target = corpse->GetEntry();
+        spawn = corpse->GetSpawnId();
+    }
+    else
+        return;
+    WorldLog::Decision(player, WorldLogFormat::DecisionKind::Profession,
+                       Professions::ChoiceWord(Professions::Choice::Gather),
+                       Professions::ReasonWord(Professions::Reason::Yield), static_cast<float>(count),
+                       {{"item", static_cast<float>(entry)}, {kind, static_cast<float>(target)}}, spawn);
 }
 
 class WorldLogPlayerScript : public PlayerScript
@@ -370,9 +407,14 @@ public:
             EventLog::NoteStoredItem(item, item->GetEntry());
     }
 
-    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
+    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid lootguid) override
     {
-        EmitStoredItemIn(player, item, count, "loot");
+        uint32 const entry = EventLog::TakeStoredEntry(item);
+        if (!entry)
+            return;
+        EventLog::Emit(player, EventLog::EventType::ItemIn, "loot", entry, count);
+        if (WorldLog::Active())
+            WriteHarvestYield(player, lootguid, entry, count);
     }
 
     // A won need or greed roll: Group stores the item itself and fires only this hook, not OnPlayerLootItem
