@@ -18,7 +18,7 @@
 
 #include "FieldMap.h"
 #include "QuestFields.h"
-#include "QuestOrder.h"
+#include "QuestOrderTypes.h"
 #include "StatusEndTypes.h"
 
 // The executor on an order (questing plan WQ19a, PLAN 3.10 part 4, WQ.43 points 5 and 6): at the order's place the

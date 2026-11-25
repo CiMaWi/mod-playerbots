@@ -23,7 +23,7 @@
 #include "QuestCircuit.h"
 #include "QuestFields.h"
 #include "QuestIndex.h"
-#include "QuestOrder.h"
+#include "QuestOrderTypes.h"
 
 // The quest route (questing plan WQ17c, PLAN 3.10 part 4, WQ.40 to WQ.43): from the log's needs and the takes
 // (QuestFields.h) and the field map, a short list of orders for the bot's next half hour with its worth and minutes.

@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of the executor on an order (questing WQ19a, QuestFieldExec.h over QuestOrder.h's QuestOrderRun):
+// Offline proof of the executor on an order (questing WQ19a, QuestFieldExec.h over QuestOrderTypes.h's QuestOrderRun):
 // generated orders and logs over made-up maps (the seed is printed; argv[1] replays it, argv[2] traces that order),
 // each ticked every 2 s with generated candidates and credits and checked against the step's invariants by the
 // harness's own rules, plus hand-built cases shaped as the three matrix cases (field-two, field-dry, field-above).

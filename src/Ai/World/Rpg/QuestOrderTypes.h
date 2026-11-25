@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-#ifndef _PLAYERBOT_QUESTORDER_H
-#define _PLAYERBOT_QUESTORDER_H
+#ifndef _PLAYERBOT_QUESTORDERTYPES_H
+#define _PLAYERBOT_QUESTORDERTYPES_H
 
 #include <array>
 #include <cstddef>

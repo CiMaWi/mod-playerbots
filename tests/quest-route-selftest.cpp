@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of the quest route (questing WQ17c, QuestRoute.h and QuestOrder.h): generated logs over made-up maps
+// Offline proof of the quest route (questing WQ17c, QuestRoute.h, QuestOrderTypes.h): generated logs over made-up maps
 // (the seed is printed; argv[1] replays it, argv[2] prints that log's route) checked against the step's invariants,
 // plus hand-built cases whose sums are worked by hand. Each route is replayed stop by stop with the log as the plan
 // expects it to be (Route::Advance), and every stop is asked again of the field map with the harness's own questions.
