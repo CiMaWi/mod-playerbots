@@ -170,8 +170,10 @@ void OnFightTick(PlayerbotAI* botAI);
 // A bot came back to life here (the Resurrect hook; `how` is the Resurrect row's word): the Rise row (AW8), the
 // return's memo cleared, the store's rise (AW9: for every bot, whether or not a row is wanted)
 void OnRise(Player* bot, std::string_view how);
-// A bot died: the row of deaths and the death's stamp (AW9, every death), DeathScene (killer null: the environment)
-void OnDeath(Player* bot, Unit* killer);
+// A bot died, at the death's edge (AW31: the world log's OnPlayerJustDied, once per death): the row of deaths and the
+// death's stamp (AW9, every death), DeathScene with the killer the kill hooks named (null: the environment, none
+// named, or gone by the edge) and its entry as the row's ref
+void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry);
 // The meter line of `playerbots tickperf`: reads and rebuilds since the last reset; `reset` starts a new window
 std::string MeterLine(bool reset);
 }  // namespace Awareness

@@ -1596,7 +1596,7 @@ void OnRise(Player* bot, std::string_view how)
     store.roseY = bot->GetPositionY();
 }
 
-void OnDeath(Player* bot, Unit* killer)
+void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
 {
     PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
     if (!botAI || !bot->IsInWorld())
@@ -1649,8 +1649,7 @@ void OnDeath(Player* bot, Unit* killer)
         AwarenessRules::NearestHelper(picture, store.fightEnemies.data(), store.fightEnemyCount);
     if (helper.found)
         row.helperYards = std::min(Rounded(helper.yards), AwarenessRules::HELPER_NONE - 1);
-    EventLog::Emit(bot, EventLog::EventType::DeathScene, AwarenessRules::Word(helper),
-                   killer && killer != bot ? killer->GetEntry() : 0,
+    EventLog::Emit(bot, EventLog::EventType::DeathScene, AwarenessRules::Word(helper), killerEntry,
                    static_cast<int64>(AwarenessRules::DeathAmount(row)));
 }
 }  // namespace Awareness

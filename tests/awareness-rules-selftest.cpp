@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "AwarenessRules.h"
+#include "DeathEdgeRules.h"
 #include "DeathRowRules.h"
 
 namespace
@@ -3319,6 +3320,181 @@ void TestAw9Generated()
     std::printf("AW9 every death row: %d steps, %d counterexamples\n", rows, counterexamples);
     Check(counterexamples == 0, "AW9 every death row as the oracle's table");
 }
+// AW31: the world log's hooks on the rules of DeathEdgeRules.h, as WorldLogHooks.cpp runs them for one player. A
+// kill hook names the killer and writes the killer's side (QuestStatDeath, NoteTravelDeath, PvpKill) once per life;
+// the edge writes the rows; a resurrect writes a still-named death's rows first, then its own
+struct EdgePlayer
+{
+    DeathEdge::Killer life;
+    std::vector<std::string> rows;  // Death:<word> PvpDeath Resurrect, in order
+    int sides = 0;                  // the killer's side written
+
+    void Kill(DeathEdge::Kind kind, std::uint32_t id)
+    {
+        DeathEdge::Killer killer;
+        killer.kind = kind;
+        killer.id = id;
+        killer.entry = id;
+        killer.unit = id;
+        if (DeathEdge::Name(life, killer))
+            ++sides;
+    }
+
+    void Write()
+    {
+        DeathEdge::Killer const killer = DeathEdge::Take(life);
+        rows.push_back(std::string("Death:") + DeathEdge::DeathWord(killer.kind));
+        if (DeathEdge::IsPvp(killer.kind))
+            rows.push_back("PvpDeath");
+    }
+
+    void Edge() { Write(); }
+
+    void Resurrect()
+    {
+        if (DeathEdge::RowsAtResurrect(life))
+            Write();
+        rows.push_back("Resurrect");
+    }
+};
+
+using Rows = std::vector<std::string>;
+
+void TestDeathEdgeFixed()
+{
+    using DeathEdge::Kind;
+    Check(DeathEdge::KindOf(true, true, false) == Kind::Environment, "AW31 a player's kill of itself: environment");
+    Check(DeathEdge::KindOf(true, false, true) == Kind::Player, "AW31 a player's kill: player");
+    Check(DeathEdge::KindOf(false, false, false) == Kind::Creature, "AW31 a creature's kill: creature");
+    Check(DeathEdge::KindOf(false, false, true) == Kind::PlayerPet, "AW31 a pet's kill: player_pet");
+    Check(std::strcmp(DeathEdge::DeathWord(Kind::None), "unknown") == 0, "AW31 no killer named: unknown");
+    Check(DeathEdge::IsPvp(Kind::Player) && DeathEdge::IsPvp(Kind::PlayerPet) && !DeathEdge::IsPvp(Kind::Creature) &&
+              !DeathEdge::IsPvp(Kind::Environment) && !DeathEdge::IsPvp(Kind::None),
+          "AW31 PvpDeath for a player's and a pet's kill only");
+
+    // Spirit of Redemption: two Unit::Kill in one life, one edge at the form's end: the first killer, once
+    EdgePlayer priest;
+    priest.Kill(Kind::Creature, 525);
+    priest.Kill(Kind::Player, 7);
+    priest.Edge();
+    priest.Resurrect();
+    Check(priest.rows == Rows{"Death:creature", "Resurrect"} && priest.sides == 1,
+          "AW31 Spirit of Redemption killed twice: one Death creature, the killer's side once");
+
+    // A death no kill hook sees: unknown at the edge, no killer's side; the next life is named afresh
+    EdgePlayer unseen;
+    unseen.Edge();
+    unseen.Resurrect();
+    unseen.Kill(Kind::Player, 9);
+    unseen.Edge();
+    unseen.Resurrect();
+    Check(
+        unseen.rows == Rows{"Death:unknown", "Resurrect", "Death:player", "PvpDeath", "Resurrect"} && unseen.sides == 1,
+        "AW31 an unseen death writes unknown and leaves the next life unnamed");
+
+    // A bot revived before its edge: the resurrect writes the death's rows first; no edge follows
+    EdgePlayer early;
+    early.Kill(Kind::PlayerPet, 11);
+    early.Resurrect();
+    Check(early.rows == Rows{"Death:player_pet", "PvpDeath", "Resurrect"} && early.life.kind == Kind::None,
+          "AW31 revived before the edge: Death, PvpDeath, then Resurrect, the name ended");
+
+    // Two players: a name stays with its own player
+    EdgePlayer one;
+    EdgePlayer two;
+    one.Kill(Kind::Creature, 1);
+    two.Edge();
+    one.Edge();
+    Check(two.rows == Rows{"Death:unknown"} && one.rows == Rows{"Death:creature"},
+          "AW31 a killer named for one player is not another's");
+}
+
+// Generated lives: each death one of the core's paths (a kill and the edge; Spirit of Redemption killed again or
+// left to the form's end; a death no hook sees; a revive before the edge), for several players interleaved. Every
+// death writes one Death row before its Resurrect, with the first killer's word or unknown, PvpDeath for a player's
+// or a pet's kill, and the killer's side once per named life
+void TestDeathEdgeGenerated()
+{
+    using DeathEdge::Kind;
+    constexpr int PLAYERS = 4;
+    constexpr int CASES = 2000;
+    enum Step : std::uint8_t
+    {
+        KILL,
+        EDGE,
+        RESURRECT
+    };
+    Generator generator;
+    std::uint32_t const seed = generator.state;
+    int counterexamples = 0;
+    for (int c = 0; c < CASES; ++c)
+    {
+        std::array<EdgePlayer, PLAYERS> players;
+        std::array<Rows, PLAYERS> expected;
+        std::array<int, PLAYERS> sides{};
+        std::array<std::vector<std::pair<Step, Kind>>, PLAYERS> events;
+        for (int p = 0; p < PLAYERS; ++p)
+        {
+            int const deaths = 1 + static_cast<int>(generator.Next() % 5);
+            for (int d = 0; d < deaths; ++d)
+            {
+                Kind const first = static_cast<Kind>(1 + generator.Next() % 4);
+                Kind const second = static_cast<Kind>(1 + generator.Next() % 4);
+                // 0 a kill and its edge, 1 killed again in the redemption form, 2 the form's end (as 0 for the
+                // hooks), 3 a death no hook sees, 4 revived before the edge
+                std::uint32_t const path = generator.Next() % 5;
+                if (path == 3)
+                {
+                    events[p].push_back({EDGE, Kind::None});
+                    expected[p].push_back("Death:unknown");
+                }
+                else
+                {
+                    events[p].push_back({KILL, first});
+                    if (path == 1)
+                        events[p].push_back({KILL, second});
+                    if (path != 4)
+                        events[p].push_back({EDGE, Kind::None});
+                    expected[p].push_back(std::string("Death:") + DeathEdge::DeathWord(first));
+                    if (DeathEdge::IsPvp(first))
+                        expected[p].push_back("PvpDeath");
+                    ++sides[p];
+                }
+                events[p].push_back({RESURRECT, Kind::None});
+                expected[p].push_back("Resurrect");
+            }
+        }
+        std::array<std::size_t, PLAYERS> next{};
+        for (;;)
+        {
+            int left = 0;
+            for (int p = 0; p < PLAYERS; ++p)
+                left += next[p] < events[p].size() ? 1 : 0;
+            if (!left)
+                break;
+            int p = static_cast<int>(generator.Next() % PLAYERS);
+            while (next[p] >= events[p].size())
+                p = (p + 1) % PLAYERS;
+            auto const [step, kind] = events[p][next[p]++];
+            if (step == KILL)
+                players[p].Kill(kind, static_cast<std::uint32_t>(p + 1));
+            else if (step == EDGE)
+                players[p].Edge();
+            else
+                players[p].Resurrect();
+        }
+        bool bad = false;
+        for (int p = 0; p < PLAYERS; ++p)
+            bad = bad || players[p].rows != expected[p] || players[p].sides != sides[p] ||
+                  players[p].life.kind != Kind::None;
+        if (bad && ++counterexamples <= 3)
+            std::printf("AW31 counterexample: case %d (seed %u)\n", c, seed);
+    }
+    std::printf("AW31 invariant one death one row: %d cases, %d counterexamples (seed %u)\n", CASES, counterexamples,
+                seed);
+    Check(counterexamples == 0, "AW31 every generated death writes its rows once");
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -3348,6 +3524,8 @@ int main(int argc, char** argv)
     TestDeadGenerated();
     TestAw9Fixed();
     TestAw9Generated();
+    TestDeathEdgeFixed();
+    TestDeathEdgeGenerated();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
