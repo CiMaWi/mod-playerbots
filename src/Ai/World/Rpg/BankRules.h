@@ -124,6 +124,12 @@ struct KeepItemIn
     uint16_t recipeSkill = 0;
     uint16_t recipeRank = 0;
     bool recipeKnown = false;
+    // Auction house WA3a: the item usage sells it at the auction house (ITEM_USAGE_AH, or the bank usage it has as
+    // stock), what a vendor pays for its stock units now (StockUnits; worn gear pays less) and what listing them is
+    // worth (AuctionRules::StockWorth, 0: not worth listing)
+    bool auctionable = false;
+    uint32_t vendorPayout = 0;
+    uint32_t auctionWorth = 0;
 };
 
 struct KeepBotIn
@@ -234,8 +240,29 @@ inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& b
     return item.recipeSkill ? RecipeForLater(item, bot) : PathMaterial(item, bot);
 }
 
+// The units of a stack beyond what the bot's skill path uses: all of them when the path uses none
+inline uint32_t StockUnits(KeepItemIn const& item)
+{
+    uint32_t const count = std::max<uint32_t>(item.count, 1);
+    return count - std::min(count, item.materialUsed);
+}
+
+// Auction stock (auction house WA3a, PLAN 3.5, WA.17): an item the item usage sells at the auction house whose listing
+// is worth more than a vendor pays for it now. Never gear the gear rule keeps to wear, a recipe the bot will learn or
+// the units its skill path uses. Unsold (its worth already beats the vendor's payout) and due at no level: banked, and
+// never fetched by a trip of its own
+inline KeepAnswer AuctionStock(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    if (!item.auctionable || !StockUnits(item) || item.auctionWorth <= item.vendorPayout)
+        return {};
+    if (GearForLaterLevel(item, bot).keeps || (item.recipeSkill && RecipeForLater(item, bot).keeps))
+        return {};
+
+    return {true, item.auctionWorth, STOCK_LATER_LEVEL, "auction_stock", true};
+}
+
 // Every provider, asked in this order
-inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater, ProfessionMaterials};
+inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater, ProfessionMaterials, AuctionStock};
 
 // The rule (WB.2): kept when its later worth exceeds what it fetches now; an equal worth is not kept
 inline bool Keeps(KeepAnswer const& answer, uint32_t sellNow)

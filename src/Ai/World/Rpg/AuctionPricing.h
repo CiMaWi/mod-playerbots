@@ -340,6 +340,39 @@ inline AskResult Ask(AskInput const& in, AuctionConfig const& config)
     return ListingTerms(in, config, p, floor, std::max(ask, lowest), belowFloor);
 }
 
+// ---- what a vendor pays and stock (WA3a, WA.17) ----
+// The core's deduction for a worn item (ItemHandler.cpp HandleSellItemOpcode, GPL v2): the lost durability times the
+// item level's multiplier for its subclass (a uint32 product) and the quality's factor, rounded up, at least 1
+inline std::uint32_t DurabilityDeduction(std::uint32_t lost, std::uint32_t multiplier, float qualityMod)
+{
+    double const deduction = std::ceil(static_cast<double>(lost * multiplier) * static_cast<double>(qualityMod));
+    return std::max<std::uint32_t>(static_cast<std::uint32_t>(deduction), 1);
+}
+
+// V: what a vendor pays for count units now, in the core's order: the sell price, less the deduction when the item
+// lost durability; a deduction above the price pays 1 copper, an equal one 0
+inline std::uint32_t VendorPayout(std::uint32_t sellPrice, std::uint32_t count, std::uint32_t lost,
+                                  std::uint32_t multiplier, float qualityMod)
+{
+    std::uint32_t const money = sellPrice * count;  // the core's uint32
+    if (!lost)
+        return money;
+    std::uint32_t const deduction = DurabilityDeduction(lost, multiplier, qualityMod);
+    return deduction > money ? 1 : money - deduction;
+}
+
+// What listing a lot as stock is worth (PLAN 3.5): Ask's expected value, rounded down, when its evidence (the typical
+// price, else the reference value) is itself worth listing; 0 when the evidence lies below the floor, since Ask then
+// asks the floor, a price nothing backs, or when it holds
+inline std::uint32_t StockWorth(AskInput const& in, AuctionConfig const& config)
+{
+    AskResult const result = Ask(in, config);
+    if (result.kind != AskResult::Kind::List || EvidenceAsk(in, config) < result.floor || !(result.expected > 0.0))
+        return 0;
+    return static_cast<std::uint32_t>(
+        std::min(std::floor(result.expected), static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
+}
+
 // ---- what a bot pays at most, buyout or bid (PLAN 3.4, 3.6, WA.5) ----
 constexpr std::int64_t BID_PATIENCE_SECONDS = 2 * 3600;  // [E] a bid only on an auction that ends this soon
 constexpr std::uint32_t LOT_UNITS_MAX = 1u << 20;        // keeps the ranking's cross products in 64 bits

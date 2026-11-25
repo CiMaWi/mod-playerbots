@@ -12,6 +12,10 @@
 #include <limits>
 #include <optional>
 
+#include "AuctionIndex.h"
+#include "AuctionPricing.h"
+#include "AuctionReference.h"
+#include "AuctionRules.h"
 #include "BankMailConfig.h"
 #include "BankMailState.h"
 #include "BotKind.h"
@@ -223,13 +227,41 @@ WornSlots SlotsFor(Player const* bot, ItemTemplate const* proto, uint32 level)
     }
 }
 
+// Auction house WA3a: what the item usage may sell at the auction house (its ITEM_USAGE_AH precondition but the
+// soulbound test), demand's consumables apart: the bag items auction stock (AuctionStock) may hold
+bool MaybeAuctionStock(ItemTemplate const* proto)
+{
+    return proto->SellPrice > 0 && proto->Quality >= ITEM_QUALITY_NORMAL && proto->Bonding != BIND_WHEN_PICKED_UP &&
+           proto->Class != ITEM_CLASS_CONSUMABLE;
+}
+
+// V for units of the item (WA.17), read as HandleSellItemOpcode reads it. A worn item the core finds no cost row for
+// is refused by the vendor, so a vendor pays nothing for it
+uint32 VendorPayoutOf(Item const* item, ItemTemplate const* proto, uint32 units)
+{
+    uint32 const maxDurability = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+    uint32 const lost = maxDurability ? maxDurability - item->GetUInt32Value(ITEM_FIELD_DURABILITY) : 0;
+    if (!lost)
+        return AuctionRules::VendorPayout(proto->SellPrice, units, 0, 0, 0.0f);
+    DurabilityCostsEntry const* costs = sDurabilityCostsStore.LookupEntry(proto->ItemLevel);
+    DurabilityQualityEntry const* quality = sDurabilityQualityStore.LookupEntry((proto->Quality + 1) * 2);
+    if (!costs || !quality)
+        return 0;
+    uint32 const multiplier = costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class, proto->SubClass)];
+    return AuctionRules::VendorPayout(proto->SellPrice, units, lost, multiplier, quality->quality_mod);
+}
+
 class ItemReader
 {
 public:
     explicit ItemReader(PlayerbotAI* botAI)
         : _botAI(botAI),
           _sellMultiplier(static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(botAI->GetBot()))),
-          _path(botAI->KeepsPossessions() ? Planner::KeptPath(botAI) : nullptr)
+          _path(botAI->KeepsPossessions() ? Planner::KeptPath(botAI) : nullptr),
+          _reference(botAI->KeepsPossessions() ? AuctionReference::Current() : nullptr),
+          _index(_reference ? AuctionIndex::Current() : nullptr),
+          _fees(AuctionReference::HouseFees(botAI->GetBot()->GetTeamId() == TEAM_ALLIANCE ? AuctionRules::HOUSE_ALLIANCE
+                                                                                          : AuctionRules::HOUSE_HORDE))
     {
     }
 
@@ -255,6 +287,7 @@ public:
                                                _sellMultiplier, 0, demandEach);
         Player* bot = _botAI->GetBot();
         ReadProfession(proto, keep);
+        ReadAuction(item, proto, randomPropertyId, keep);
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
         WornSlots const slots = SlotsFor(bot, proto, dueLevel);
         // Gear of the bot's level or below: the item usage answers whether the bot wears it now, the answer the equip
@@ -262,7 +295,7 @@ public:
         if (slots.first != NULL_SLOT && proto->RequiredLevel <= bot->GetLevel())
         {
             keep.wearAnswer = WearAnswer::ItemUsage;
-            keep.usage = static_cast<uint8_t>(UsageNow(proto->ItemId, randomPropertyId));
+            keep.usage = static_cast<uint8_t>(UsageOf("item upgrade", proto->ItemId, randomPropertyId));
             return in;
         }
         keep.wearable = slots.first != NULL_SLOT && IsWearable(bot, proto, dueLevel);
@@ -318,14 +351,41 @@ private:
         }
     }
 
-    // The item usage's answer for the item now: the context value the equip action asks (EquipAction.cpp), qualified
-    // by the entry and the random property when it has one
-    ItemUsage UsageNow(uint32 entry, int32 randomPropertyId) const
+    // Auction house WA3a: the item usage's AH label, what a vendor pays for the stock units now and what listing them
+    // is worth (AuctionStock). The usage, the dearest read, is asked only for a listing that beats the vendor; it
+    // answers without the keep inside RefreshCarriedKeeps, whose bags' memo is empty then, and at a bank read it
+    // labels stock kept already ITEM_USAGE_BANK
+    void ReadAuction(Item const* item, ItemTemplate const* proto, int32 randomPropertyId, KeepItemIn& keep) const
+    {
+        uint32 const units = StockUnits(keep);
+        if (!_reference || !units || !MaybeAuctionStock(proto) || item->IsSoulBound())
+            return;
+
+        keep.vendorPayout = VendorPayoutOf(item, proto, units);
+        AuctionRules::AskInput in;
+        in.count = units;
+        in.sellPrice = proto->SellPrice;
+        in.vendorPayout = keep.vendorPayout;
+        if (AuctionRules::ItemReference const* row = _reference->Find(proto->ItemId))
+            in.reference = row->copper;
+        if (AuctionIndex::ItemEntry const* entry = _index ? _index->Find(proto->ItemId) : nullptr)
+            in.typical = entry->typical;
+        in.fees = _fees;
+        keep.auctionWorth = AuctionRules::StockWorth(in, sPlayerbotAIConfig.Auction);
+        if (keep.auctionWorth <= keep.vendorPayout)
+            return;
+        ItemUsage const usage = UsageOf("item usage", proto->ItemId, randomPropertyId);
+        keep.auctionable = usage == ITEM_USAGE_AH || usage == ITEM_USAGE_BANK;
+    }
+
+    // An item usage value's answer for the item now ("item upgrade" is the one the equip action asks, EquipAction.cpp;
+    // "item usage" the sale's), qualified by the entry and the random property when it has one
+    ItemUsage UsageOf(char const* value, uint32 entry, int32 randomPropertyId) const
     {
         std::string qualifier = std::to_string(entry);
         if (randomPropertyId != 0)
             qualifier += "," + std::to_string(randomPropertyId);
-        return _botAI->GetAiObjectContext()->GetValue<ItemUsage>("item upgrade", qualifier)->Get();
+        return _botAI->GetAiObjectContext()->GetValue<ItemUsage>(value, qualifier)->Get();
     }
 
     // Built at the first wearable item: its weights cost more than reading a bank of non-gear
@@ -342,6 +402,11 @@ private:
     PlayerbotAI* _botAI;
     float _sellMultiplier;
     SkillPath::Path const* _path;  // the path the bot keeps, null for a bot without one
+    // Auction house WA3a: the reference table (null until built, or for a bot that keeps no possessions: no stock),
+    // the index's snapshot and the fees of the bot's faction house, taken once per read
+    std::shared_ptr<AuctionRules::Table const> _reference;
+    std::shared_ptr<AuctionIndex::Snapshot const> _index;
+    AuctionRules::Fees _fees;
     std::optional<StatsWeightCalculator> _calculator;
 };
 
@@ -500,10 +565,12 @@ void ReadBankSpace(PlayerbotAI* botAI, Player const* bot, BankIn& in)
 }
 
 // What the bank rule may keep and the bot cannot use yet: gear the bot may wear only above its level
-// (GearForLaterLevel), a recipe item (RecipeForLater) and a material of the bot's skill path (PathMaterial); the bag
-// items that can be kept and not due
-bool MaybeKeptForLater(ItemTemplate const* proto, uint8 level, SkillPath::Path const* path)
+// (GearForLaterLevel), a recipe item (RecipeForLater), a material of the bot's skill path (PathMaterial) and, while the
+// reference table is built, what may be auction stock (AuctionStock); the bag items that can be kept and not due
+bool MaybeKeptForLater(ItemTemplate const* proto, uint8 level, SkillPath::Path const* path, bool auctions)
 {
+    if (auctions && MaybeAuctionStock(proto))
+        return true;
     if (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR)
         return proto->RequiredLevel > level;
     if (proto->Class == ITEM_CLASS_RECIPE)
@@ -585,9 +652,10 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
     std::optional<ItemReader> reader;  // most bags hold no gear above the bot's level
     uint8 const level = in.bot.level;
     SkillPath::Path const* const path = Planner::KeptPath(botAI);
+    bool const auctions = AuctionReference::Current() != nullptr;
     bool surplus = false;
     ForEachBagItem(bot,
-                   [&in, &reader, &surplus, botAI, level, path](Item const* item, uint8 bag, uint8 slot)
+                   [&in, &reader, &surplus, botAI, level, path, auctions](Item const* item, uint8 bag, uint8 slot)
                    {
                        ItemTemplate const* proto = item->GetTemplate();
                        if (proto->Class == ITEM_CLASS_CONSUMABLE)
@@ -596,7 +664,7 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
                                      ItemUse::DemandVerdictOf(botAI, proto->ItemId) == ItemUse::DemandVerdict::Surplus;
                            return;
                        }
-                       if (!MaybeKeptForLater(proto, level, path))
+                       if (!MaybeKeptForLater(proto, level, path, auctions))
                            return;
                        if (!reader)
                            reader.emplace(botAI);

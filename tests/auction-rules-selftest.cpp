@@ -671,9 +671,9 @@ constexpr std::uint32_t SECONDS_24H = 24 * 3600;
 constexpr std::uint32_t SECONDS_48H = 48 * 3600;
 using AuctionWords::Reason;
 
-// The economy reference's auction cases: hub docs/economy-reference/cases/auction_vendor.json, read 2026-11-25,
-// copied with their ids and never regenerated from the functions under test. Of bids_and_cancellation and
-// two_listings only the checks a function here answers
+// The economy reference's auction cases: hub docs/economy-reference/cases/auction_vendor.json, read 2026-11-25, and
+// the vendor payout of worn gear from gear_trade.json (WA3a), copied with their ids and never regenerated from the
+// functions under test. Of bids_and_cancellation and two_listings only the checks a function here answers
 struct CaseCheck
 {
     char const* id;
@@ -728,6 +728,10 @@ constexpr CaseCheck CASES[] = {
     {"auction_vendor.two_listings", "large_net_if_funded_and_surplus_immediately_vendored", 92, 1},
     {"auction_vendor.two_listings", "small_net_for_need", 72, 1},
     {"auction_vendor.two_listings", "difference_with_surplus_exit", 20, 1},
+    {"gear_trade.sell_boundary", "wear seven: deduction equals sell price", 6, 1},
+    {"gear_trade.sell_boundary", "wear seven: paid", 0, 1},
+    {"gear_trade.sell_boundary", "wear eight: deduction exceeds sell price", 7, 1},
+    {"gear_trade.sell_boundary", "wear eight: strict-overrun branch paid", 1, 1},
 };
 
 AskInput Lot(std::uint32_t count, std::uint32_t sellPrice, Fees const& fees = FACTION_FEES)
@@ -847,6 +851,14 @@ std::map<std::string, double> OurCaseValues()
     put("two_listings", "large_net_if_funded_and_surplus_immediately_vendored", d(LineCost(LARGE, 300)));
     put("two_listings", "small_net_for_need", d(LineCost(SMALL, 72)));
     put("two_listings", "difference_with_surplus_exit", d(LineCost(LARGE, 300)) - d(LineCost(SMALL, 72)));
+
+    // The Outfitter Belt (2186): sell 6, multiplier 1, the quality's factor the case's q
+    float const beltQuality = 13421773.0f / 16777216.0f;
+    auto gear = [&v](char const* name, double value) { v[std::string("gear_trade.sell_boundary.") + name] = value; };
+    gear("wear seven: deduction equals sell price", d(DurabilityDeduction(7, 1, beltQuality)));
+    gear("wear seven: paid", d(VendorPayout(6, 1, 7, 1, beltQuality)));
+    gear("wear eight: deduction exceeds sell price", d(DurabilityDeduction(8, 1, beltQuality)));
+    gear("wear eight: strict-overrun branch paid", d(VendorPayout(6, 1, 8, 1, beltQuality)));
     return v;
 }
 
@@ -868,6 +880,41 @@ void CheckCases()
         met += ok ? 1 : 0;
     }
     std::cout << "cases: " << met << " of " << std::size(CASES) << " economy reference values met\n";
+}
+
+// WA3a: what listing a lot as stock is worth. The case sale_expiry_threshold's lot terms follow from its sell total, so
+// one unit that sells for 260 with a typical price of 311 is its 20 linen; p from the history, (sales + 1) / (sales +
+// expiries + 2): 2 sales give 3/4, none 1/2, 24 sales and 8 expiries 25/34
+void CheckStockWorth()
+{
+    AuctionConfig const config;
+    auto lot = [](std::uint32_t sales, std::uint32_t expiries)
+    {
+        AskInput in = Lot(1, 260);
+        in.typical.unitPrice = 311;
+        in.typical.sample = sales;
+        in.typical.weight = static_cast<double>(sales);
+        in.typical.expiries = expiries;
+        return in;
+    };
+    AskInput const threeQuarters = lot(2, 0);
+    AskInput const half = lot(0, 0);
+    AskInput const parity = lot(24, 8);
+    Check(SaleChance(threeQuarters.typical) == 0.75 && SaleChance(half.typical) == 0.5 &&
+              Near(SaleChance(parity.typical), 25.0 / 34.0),
+          "stock: the planted histories give p = 3/4, 1/2 and 25/34");
+    std::uint32_t const atThreeQuarters = StockWorth(threeQuarters, config);
+    std::uint32_t const atHalf = StockWorth(half, config);
+    std::uint32_t const atParity = StockWorth(parity, config);
+    std::cout << "stock worth of the case's lot (vendor 260): p 3/4 " << atThreeQuarters << ", p 1/2 " << atHalf
+              << ", p 25/34 " << atParity << "\n";
+    Check(atThreeQuarters == 262, "stock: case sale_expiry_threshold at p = 3/4 is worth 262, above the vendor's 260");
+    Check(atHalf <= 260 && atParity <= 260,
+          "stock: at p = 1/2 and at the break-even p = 25/34 the lot is worth no more than the vendor's 260");
+    AskResult const lifted = Ask(half, config);
+    Check(lifted.kind == AskResult::Kind::List && lifted.ask > 311 && lifted.expected > 260.0 && atHalf == 0,
+          "stock: control: Ask lists the p = 1/2 lot at its floor above the evidence, worth more than the vendor; "
+          "stock asks the evidence (caught)");
 }
 
 bool Equal(AskResult const& a, AskResult const& b)
@@ -1781,6 +1828,7 @@ int main(int argc, char** argv)
     CheckHand();
     Search();
     CheckCases();
+    CheckStockWorth();
     CheckPricingHand();
     SearchPricing();
     Tables(argc > 1 ? argv[1] : ".");
