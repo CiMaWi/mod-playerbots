@@ -344,6 +344,25 @@ bool NewRpgDoQuestAction::SeekHeld(NewRpgInfo::DoQuest& data)
     return false;
 }
 
+namespace
+{
+// questing WQ20: the order's ask of the bot: where it stands, its level, and whether it walks to the place (before the
+// arrival the way's allowance applies, QuestFieldExec::OnOrder)
+Planner::QuestFieldExec::PickAsk OrderAsk(Player const* bot, NewRpgInfo::DoQuest const& data)
+{
+    Planner::QuestFieldExec::PickAsk ask{bot->GetPositionX(), bot->GetPositionY(), static_cast<uint8>(bot->GetLevel()),
+                                         Planner::QuestFieldExec::NEUTRAL_CAUTION};
+    ask.onWay = data.order && !data.order->arrivedAt;
+    return ask;
+}
+}  // namespace
+
+bool NewRpgDoQuestAction::OnOrder(NewRpgInfo::DoQuest const& data, WorldObject const* target) const
+{
+    return !data.order || Planner::QuestFieldExec::OnOrder(data.order->order, OrderAsk(bot, data), target->GetMapId(),
+                                                           target->GetPositionX(), target->GetPositionY());
+}
+
 bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
 {
     Planner::QuestOrderRun& run = *data.order;
@@ -431,9 +450,7 @@ bool NewRpgDoQuestAction::LookOrder(NewRpgInfo::DoQuest& data)
             if (go->isSpawned() && !Planner::QuestExec::Remembered(data.passed, go->GetGUID()))
                 add(go->GetEntry(), true, 0, go->GetPositionX(), go->GetPositionY());
     }
-    Planner::QuestFieldExec::PickAsk const ask{bot->GetPositionX(), bot->GetPositionY(),
-                                               static_cast<uint8>(bot->GetLevel()),
-                                               Planner::QuestFieldExec::NEUTRAL_CAUTION};
+    Planner::QuestFieldExec::PickAsk const ask = OrderAsk(bot, data);
     // The nearest candidate's need becomes the executor's quest and objective, and that objective's own seek holds the
     // target (its checks are the one-quest executor's); a need whose targets that seek refuses is left for this look
     while (std::optional<std::size_t> const at = Planner::QuestFieldExec::Pick(candidates, run.open, run.order, ask))
@@ -485,6 +502,10 @@ bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature*
         return false;
     // questing WQ19a: on an order a creature too far above the bot is left (QuestFieldExec's reach rule)
     if (data.order && !Planner::QuestFieldExec::LevelWithinReach(creature->GetLevel(), bot->GetLevel()))
+        return false;
+    // questing WQ20: on an order a creature the order does not take (off the field and, on the way, beyond the
+    // allowance) is left, though nearer than the one the look picked
+    if (!OnOrder(data, creature))
         return false;
     // A test's nofight bot is immune to NPCs, so it can attack none: it still holds the objective's creature and its
     // attack is refused, so the order runs without progress (the give-up case, WT35c) instead of finding no target

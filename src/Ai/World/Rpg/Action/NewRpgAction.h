@@ -150,6 +150,9 @@ protected:
     bool DoOrder(NewRpgInfo::DoQuest& data);
     bool LookOrder(NewRpgInfo::DoQuest& data);
     bool PickNeed(NewRpgInfo::DoQuest& data, uint32 need);
+    // questing WQ20: whether the order takes a target where it stands (QuestFieldExec::OnOrder: the field, or on the
+    // way within the allowance); ValidTarget and the seeks ask it, so a nearer target off the way is not held
+    bool OnOrder(NewRpgInfo::DoQuest const& data, WorldObject const* target) const;
 
 public:
     // The bot's AI held through the channel of its pending quest use (PlayerbotAI::UpdateAI, as HoldTameChannel)

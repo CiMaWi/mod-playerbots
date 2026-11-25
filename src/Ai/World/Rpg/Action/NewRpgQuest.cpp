@@ -782,9 +782,46 @@ bool NewRpgInternal::StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 q
     return true;
 }
 
-bool NewRpgInternal::StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float minutes)
+namespace
+{
+// An order's start (questing WQ19a field, WQ20 way): the planned walk, the log's needs counted and marked, then
+// DoQuest in order mode at the order's point of the bot's map
+bool StartOrder(PlayerbotAI* botAI, Player* bot, Planner::QuestOrder order,
+                std::vector<Planner::QuestFields::Need> const& needs, char const* word)
 {
     constexpr float FIELD_ROAM_YARDS = 40.0f;  // round the place as round an objective's widest area
+    float const x = order.x;
+    float const y = order.y;
+    // The ground at the point (terrain, no buildings: a field lies in the open)
+    float z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, MAX_HEIGHT, false);
+    if (z <= INVALID_HEIGHT)
+        z = bot->GetPositionZ();
+    Planner::QuestOrderRun run;
+    run.order = std::move(order);
+    // The planned walk: straight yards at the bot's run speed
+    run.order.walkMinutes = bot->GetExactDist2d(x, y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
+    CountOrder(run, needs);
+    bool added = false;
+    NoteLog(bot, run.marks, added);
+    run.startedAt = Planner::QuestFieldExec::Stamp(getMSTime());
+    LOG_INFO("playerbots",
+             "[Route] {} {} order at {:.0f} {:.0f} ({:.0f} min, walk {:.1f} min, allowance {:.0f} yd): {} needs open, "
+             "{} expected",
+             bot->GetName(), word, x, y, run.order.minutes, run.order.walkMinutes, run.order.allowanceYards,
+             run.open.size(), run.order.expected.size());
+    botAI->GetTravel().CancelLootInteraction("order");
+    NewRpgInfo::DoQuest quest;
+    quest.pos = WorldPosition(bot->GetMapId(), x, y, z);
+    quest.roam = FIELD_ROAM_YARDS;
+    quest.ordered = true;
+    quest.order = std::move(run);
+    RpgStatus::Start(botAI, std::move(quest), "order", StatusEnd::Outcome::Ordered);
+    return true;
+}
+}  // namespace
+
+bool NewRpgInternal::StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float minutes)
+{
     std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
     std::shared_ptr<Planner::FieldMap const> const fields = Planner::Fields();
     if (!index || !fields)
@@ -793,31 +830,21 @@ bool NewRpgInternal::StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, f
                  bot->GetName());
         return false;
     }
-    uint32 const mapId = bot->GetMapId();
-    // The ground at the point (terrain, no buildings: a field lies in the open)
-    float z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, MAX_HEIGHT, false);
-    if (z <= INVALID_HEIGHT)
-        z = bot->GetPositionZ();
     std::vector<Planner::QuestFields::Need> const needs = LogNeeds(bot, *index);
-    Planner::QuestOrderRun run;
-    run.order = Planner::QuestFieldExec::FieldOrder(*fields, needs, mapId, x, y, minutes);
-    // The planned walk: straight yards at the bot's run speed
-    run.order.walkMinutes = bot->GetExactDist2d(x, y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
-    CountOrder(run, needs);
-    bool added = false;
-    NoteLog(bot, run.marks, added);
-    run.startedAt = Planner::QuestFieldExec::Stamp(getMSTime());
-    LOG_INFO("playerbots",
-             "[Route] {} field order at {:.0f} {:.0f} ({:.0f} min, walk {:.1f} min): {} needs open, {} expected",
-             bot->GetName(), x, y, minutes, run.order.walkMinutes, run.open.size(), run.order.expected.size());
-    botAI->GetTravel().CancelLootInteraction("order");
-    NewRpgInfo::DoQuest order;
-    order.pos = WorldPosition(mapId, x, y, z);
-    order.roam = FIELD_ROAM_YARDS;
-    order.ordered = true;
-    order.order = std::move(run);
-    RpgStatus::Start(botAI, std::move(order), "order", StatusEnd::Outcome::Ordered);
-    return true;
+    return StartOrder(botAI, bot, Planner::QuestFieldExec::FieldOrder(*fields, needs, bot->GetMapId(), x, y, minutes),
+                      needs, "field");
+}
+
+bool NewRpgInternal::StartWayOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float allowance)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index)
+    {
+        LOG_INFO("playerbots", "[Route] {} way order refused: the quest index is building", bot->GetName());
+        return false;
+    }
+    std::vector<Planner::QuestFields::Need> const needs = LogNeeds(bot, *index);
+    return StartOrder(botAI, bot, Planner::QuestFieldExec::WayOrder(bot->GetMapId(), x, y, allowance), needs, "way");
 }
 
 void QuestGiveUp::OrderEnded(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, StatusEnd::Outcome outcome,

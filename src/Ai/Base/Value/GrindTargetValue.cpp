@@ -54,6 +54,8 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     float distance = 0;
     Unit* result = nullptr;
     std::unordered_map<uint32, bool> needForQuestMap;
+    NewRpgInfo::DoQuest const* const quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    bool const onOrder = quest && quest->order;
 
     for (ObjectGuid const guid : targets)
     {
@@ -113,6 +115,10 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         bool outOfAggro = unit->ToCreature() && bot->GetDistance(unit) > aggroRange;
         if (inactiveGrindStatus && outOfAggro)
         {
+            // questing WQ20: a bot on an order takes a quest target beyond aggro reach only by its executor's rule
+            // (the order's place, the way's allowance); what comes at it is fought as before
+            if (onOrder)
+                continue;
             if (needForQuestMap.find(unit->GetEntry()) == needForQuestMap.end())
                 needForQuestMap[unit->GetEntry()] = needForQuest(unit);
 

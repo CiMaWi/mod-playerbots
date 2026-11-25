@@ -106,6 +106,9 @@ bool StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId);
 // The executor on a field order (questing WQ19a, `route field`): DoQuest in order mode at x, y of the bot's map for
 // `minutes`, expecting every open need of the log with a field-map row there; false while the indexes build
 bool StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float minutes);
+// The executor on a way (questing WQ20, `route way`): DoQuest in order mode to x, y of the bot's map, ended by the
+// arrival, taking what the log needs within `allowance` yards of the way (QuestFieldExec::OnOrder)
+bool StartWayOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float allowance);
 // Right after a DoQuest start (an order, a pick): ends it at once when the step function refuses the quest or finds
 // no place (QuestExec::EndWord), before any walk or fight; true when it ended
 bool EndQuestAtStart(PlayerbotAI* botAI, Player* bot);

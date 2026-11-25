@@ -262,6 +262,7 @@ public:
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"field", HandleRouteFieldCommand, SEC_GAMEMASTER, Console::Yes},
+            {"way", HandleRouteWayCommand, SEC_GAMEMASTER, Console::Yes},
             {"start", HandleRouteStartCommand, SEC_GAMEMASTER, Console::Yes},
             {"flush", HandleRouteFlushCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
@@ -884,6 +885,37 @@ public:
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE field: {} at {:.0f} {:.0f} for {:.0f} min ordered", target.GetName(), x, y,
                                  stay);
+        return true;
+    }
+
+    // `playerbots route way <bot> <x> <y> [allowance]` (tests, questing WQ20): a way to that point of the bot's map; on
+    // the walk the executor works what the log needs within `allowance` yards of the way (default the user's median
+    // detour, as Planner::Route::ALLOWANCE_YARDS; 0: the place's field only), the end the arrival
+    // (NewRpgInternal::StartWayOrder); the world-log rows are Status order 5 0 and, at its end, QuestOrder way:<end>.
+    // It rides on the field order's fields: place "way", minutes the allowance
+    static bool HandleRouteWayCommand(ChatHandler* handler, PlayerIdentifier target, float x, float y,
+                                      Optional<float> allowance)
+    {
+        // QuestRoute.h's ALLOWANCE_YARDS: that header does not compile beside windows.h here (its `far`)
+        constexpr float WAY_ALLOWANCE_YARDS = 184.0f;
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        float const yards = allowance.value_or(WAY_ALLOWANCE_YARDS);
+        if (yards < 0.0f)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route way <bot> <x> <y> [allowance >= 0]");
+            return false;
+        }
+        TravelOrder order;
+        order.field = true;
+        order.dest = WorldPosition(0, x, y, 0.0f);  // the bot's map, taken where the order is applied
+        order.minutes = yards;
+        order.place = "way";
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE way: {} to {:.0f} {:.0f}, allowance {:.0f} yd, ordered", target.GetName(), x, y,
+                                 yards);
         return true;
     }
 
