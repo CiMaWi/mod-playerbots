@@ -450,6 +450,36 @@ std::int16_t PickTarget(Player* bot, Picture const& picture, std::string_view te
     return best;
 }
 
+// The unit `aw judge ... sides|target` names: a name first (`_` for a space; a player, a pet or a creature, the
+// nearest of that name), else PickTarget's `<entry>` or `guid:<counter>`, which name creatures only (a player's counter
+// can equal a creature's). Its slot, or NOT_IN_PICTURE
+std::int16_t PickUnit(Player* bot, Picture const& picture, std::string_view text)
+{
+    std::string name(text);
+    std::replace(name.begin(), name.end(), '_', ' ');
+    std::int16_t best = AwarenessRules::NOT_IN_PICTURE;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (StringEqualI(NameOf(bot, unit), name) &&
+            (best < 0 || AwarenessRules::Nearer(unit, picture.units[best], picture.self.x, picture.self.y)))
+            best = static_cast<std::int16_t>(i);
+    }
+    return best >= 0 ? best : PickTarget(bot, picture, text);
+}
+
+// A strength in thousandths as the rules' figure (2.500 for a player at its level and full health)
+double Figure(std::uint32_t thousandths) { return static_cast<double>(thousandths) / 1000.0; }
+
+// The slots of a list as ` #a,#b`, empty for none
+std::string SlotsText(AwarenessRules::UnitList const& list)
+{
+    std::string text;
+    for (std::uint8_t i = 0; i < list.size; ++i)
+        text += Acore::StringFormat("{}#{}", i ? "," : " ", list.refs[i]);
+    return text;
+}
+
 // Who would join the named target, as `aw look` and `aw check` print it
 struct Join
 {
@@ -703,9 +733,10 @@ std::string AnswerText(Player* bot, AwarenessRules::PointAnswer const& answer)
                                    ObjectGuid(answer.nearest).GetCounter());
     }
     return Acore::StringFormat(
-        "{} reaching {} nearest {} clearance {:.1f} top d{:+} {} {} {}", answer.clear ? "clear" : "reached",
-        answer.reaching, name, answer.clearance, int(answer.topLevelDiff), AwarenessRules::Word(answer.topRank),
-        answer.inView ? "inview" : "outview", AwarenessRules::Takeable(answer) ? "takeable" : "untakeable");
+        "{} reaching {} nearest {} clearance {:.1f} top d{:+} {} {} {} weight {:.3f} support {:.3f}",
+        answer.clear ? "clear" : "reached", answer.reaching, name, answer.clearance, int(answer.topLevelDiff),
+        AwarenessRules::Word(answer.topRank), answer.inView ? "inview" : "outview",
+        AwarenessRules::Takeable(answer) ? "takeable" : "untakeable", Figure(answer.weight), Figure(answer.support));
 }
 
 // The reply of `aw judge` and `aw safe`: the line, and with expect= the test's verdict line
@@ -732,7 +763,9 @@ void Reply(ChatHandler* handler, Player* bot, std::string const& line, std::vect
 constexpr char const* JUDGE_USAGE =
     "Usage: .playerbots aw judge <bot> point <x> <y> <z> | from <self|entry|guid:<counter>|name> "
     "<here|home|ahead <yd>|behind <yd>|toward <yd>|away <yd>> "
-    "[expect=<clear|reached|inview|outview|takeable|untakeable,..>]";
+    "[expect=<clear|reached|inview|outview|takeable|untakeable|supported|unsupported,..>] | "
+    "sides <self|name|entry|guid:<counter>> [expect=<holds|outweighed>] | "
+    "target <name|entry|guid:<counter>> [expect=<take|leave|none|strong|many|unknown|joins0,..>]";
 constexpr char const* SAFE_USAGE =
     "Usage: .playerbots aw safe <bot> <radius 0..46.5> [expect=<found|none|clear|reached,..>]";
 // The search's largest radius: the centre and 6 rings fill CANDIDATES_MAX
@@ -750,6 +783,40 @@ AwarenessRules::PointAnswer JudgePoint(PlayerbotAI* botAI, Position const& posit
     AwarenessRules::PointAnswer answer;
     if (bot && bot->IsInWorld())
         answer = AwarenessRules::JudgePoint(picture, position.GetPositionX(), position.GetPositionY());
+    if (pmo)
+        pmo->finish();
+    return answer;
+}
+
+AwarenessRules::SidesAnswer JudgeSides(PlayerbotAI* botAI, std::uint64_t unitGuid)
+{
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness sides", nullptr) : nullptr;
+    Picture const& picture = Read(botAI, true);
+    Player* bot = botAI->GetBot();
+    AwarenessRules::SidesAnswer answer;
+    std::int16_t const slot = unitGuid ? AwarenessRules::SlotOf(picture, unitGuid) : AwarenessRules::THE_BOT;
+    // A unit not in the picture is in no fight the picture knows: it holds with theirs 0, the answer's default
+    if (bot && bot->IsInWorld() && slot != AwarenessRules::NOT_IN_PICTURE)
+        answer = AwarenessRules::JudgeSides(picture, slot);
+    if (pmo)
+        pmo->finish();
+    return answer;
+}
+
+AwarenessRules::TargetAnswer JudgeTarget(PlayerbotAI* botAI, std::uint64_t targetGuid)
+{
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness target", nullptr) : nullptr;
+    Picture const& picture = Read(botAI, true);
+    Player* bot = botAI->GetBot();
+    AwarenessRules::TargetAnswer answer;
+    if (bot && bot->IsInWorld())
+    {
+        // The joiners on this same picture: JoinersOf would Look again, and a rebuild between would renumber the slots
+        std::int16_t const slot = AwarenessRules::SlotOf(picture, targetGuid);
+        answer = AwarenessRules::JudgeTarget(picture, AwarenessRules::THE_BOT, slot, JoinersIn(bot, picture, slot));
+    }
     if (pmo)
         pmo->finish();
     return answer;
@@ -864,16 +931,88 @@ static Optional<Position> PointFrom(PlayerbotAI* botAI, Player* bot, std::vector
     return Position(x, y, z);
 }
 
+// `aw judge <bot> sides|target <unit>`: the call's answer about the unit PickUnit names (`self` the bot), as a line
+static bool JudgeUnitCommand(ChatHandler* handler, PlayerbotAI* botAI, Player* bot, std::string_view word, bool sides,
+                             std::vector<std::string_view> const& expect)
+{
+    std::uint64_t guid = bot->GetGUID().GetRawValue();
+    std::string name = bot->GetName();
+    if (word != "self")
+    {
+        Picture const& picture = Read(botAI, true);
+        std::int16_t const slot = PickUnit(bot, picture, word);
+        if (slot < 0)
+        {
+            handler->SendErrorMessage(
+                Acore::StringFormat("AW judge {}: error, no unit {} in the picture", bot->GetName(), std::string(word)),
+                false);
+            return false;
+        }
+        guid = picture.units[slot].guid;
+        name = NameOf(bot, picture.units[slot]);
+    }
+    std::string text;
+    std::vector<std::string_view> got;
+    if (sides)
+    {
+        AwarenessRules::SidesAnswer const answer = JudgeSides(botAI, guid);
+        text = Acore::StringFormat("{} ours {:.3f} theirs {:.3f} helpers {}{} enemies {}{}",
+                                   answer.holds ? "holds" : "outweighed", Figure(answer.ours), Figure(answer.theirs),
+                                   answer.helpers.size, SlotsText(answer.helpers), answer.enemies.size,
+                                   SlotsText(answer.enemies));
+        got = {answer.holds ? "holds" : "outweighed"};
+    }
+    else
+    {
+        AwarenessRules::TargetAnswer const answer = JudgeTarget(botAI, guid);
+        text = Acore::StringFormat("{} reason {} ours {:.3f} weight {:.3f} joins {}{}", AwarenessRules::Word(answer),
+                                   AwarenessRules::Word(answer.reason), Figure(answer.ours), Figure(answer.weight),
+                                   answer.joins.size, SlotsText(answer.joins));
+        got = {AwarenessRules::Word(answer), AwarenessRules::Word(answer.reason)};
+        if (!answer.joins.size)
+            got.push_back("joins0");
+    }
+    Store const& store = *botAI->awareness;
+    for (std::string const& line : Listing(bot, store))
+        LOG_INFO("playerbots", "{}", line);
+    std::string const line = Acore::StringFormat("AW judge {}: {} {} guid {}: {} | built {} ms ago", bot->GetName(),
+                                                 sides ? "sides" : "target", name, ObjectGuid(guid).GetCounter(), text,
+                                                 getMSTimeDiff(store.picture.builtMs, getMSTime()));
+    Reply(handler, bot, line, expect, got);
+    return true;
+}
+
 bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
 {
     std::vector<std::string_view> words = Words(rest);
+    bool const bySides = !words.empty() && words[0] == "sides";
+    bool const byTarget = !words.empty() && words[0] == "target";
     std::vector<std::string_view> expect;
     bool expectOk = true;
     if (!words.empty() && words.back().substr(0, 7) == "expect=")
     {
-        expectOk = ParseExpect(words.back().substr(7), expect,
-                               {"clear", "reached", "inview", "outview", "takeable", "untakeable"});
+        std::vector<std::string_view> const known =
+            bySides    ? std::vector<std::string_view>{"holds", "outweighed"}
+            : byTarget ? std::vector<std::string_view>{"take", "leave", "none", "strong", "many", "unknown", "joins0"}
+                       : std::vector<std::string_view>{"clear",    "reached",    "inview",    "outview",
+                                                       "takeable", "untakeable", "supported", "unsupported"};
+        expectOk = ParseExpect(words.back().substr(7), expect, known);
         words.pop_back();
+    }
+    if (bySides || byTarget)
+    {
+        if (!expectOk || words.size() != 2)
+        {
+            handler->SendErrorMessage(JUDGE_USAGE);
+            return false;
+        }
+        Player* bot = botAI->GetBot();
+        if (!bot || !bot->IsInWorld())
+        {
+            handler->SendErrorMessage("AW: the bot is not in the world");
+            return false;
+        }
+        return JudgeUnitCommand(handler, botAI, bot, words[1], bySides, expect);
     }
     bool const byPoint = words.size() == 4 && words[0] == "point";
     bool const byUnit = (words.size() == 3 || words.size() == 4) && words[0] == "from";
@@ -913,8 +1052,13 @@ bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_vi
                             AwarenessRules::PlanarDistance(bot->GetPositionX(), bot->GetPositionY(),
                                                            point.GetPositionX(), point.GetPositionY()),
                             AnswerText(bot, answer), getMSTimeDiff(store.picture.builtMs, getMSTime()));
-    std::vector<std::string_view> const got = {answer.clear ? "clear" : "reached", answer.inView ? "inview" : "outview",
-                                               AwarenessRules::Takeable(answer) ? "takeable" : "untakeable"};
+    std::vector<std::string_view> got = {answer.clear ? "clear" : "reached", answer.inView ? "inview" : "outview",
+                                         AwarenessRules::Takeable(answer) ? "takeable" : "untakeable"};
+    // supported: the allies standing by outweigh the units reaching the point; unsupported: none stands by
+    if (answer.support > answer.weight)
+        got.push_back("supported");
+    if (!answer.support)
+        got.push_back("unsupported");
     Reply(handler, bot, line, expect, got);
     return true;
 }
