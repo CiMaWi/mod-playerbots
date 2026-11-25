@@ -14,7 +14,12 @@
 // rows (Kind::Dropped, the fight estimate): hand checks, and random worlds whose drop rows the drop build makes from
 // random creatures, spawns and sources, searched for five more invariants with a negative control each (a dearer or
 // more dangerous row never makes a material cheaper; a skin is never offered without its skill; no row stands on an
-// instance map; the chosen row is the cheapest; a creature friendly to the bot's side is never a source).
+// instance map; the chosen row is the cheapest; a creature friendly to the bot's side is never a source). The auction
+// house's WA7a adds the auction as a source (Kind::Auction at the market's typical price, weighed by the need factor)
+// and what a listing fetches (Market::ProceedsEach): hand checks, and random worlds with random prices searched for
+// five invariants with a negative control each (the auction is taken only with a price and only when strictly cheaper,
+// a strictly cheaper auction is never passed over; an empty market changes no cost; a dearer auction price never makes
+// a material cheaper; a poorer bot never pays more copper for a material than a richer one).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -23,6 +28,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <random>
 #include <set>
 #include <span>
@@ -30,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "MarketRules.h"
 #include "MaterialRules.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
@@ -827,6 +834,264 @@ void Search()
     Check(controlFriendly > 0, "negative control: ignoring the bot's side is caught");
 }
 
+// ---- the market (auction house WA7a): the auction as a source, and what a listing fetches ----
+using Prices = std::map<std::uint32_t, std::uint32_t>;  // item -> typical unit price
+
+constexpr std::uint32_t MARKET_SEED = 20261126;
+constexpr int MARKET_WORLDS = 2000;
+constexpr std::uint32_t MARKET_PRICE_MAX = 600;  // copper, around the random worlds' vendor and gathering costs
+
+Bot WithMarket(Bot bot, Prices const& prices)
+{
+    auto const shared = std::make_shared<Prices const>(prices);
+    bot.auctionCopper = [shared](std::uint32_t item)
+    {
+        auto const found = shared->find(item);
+        return found == shared->end() ? 0u : found->second;
+    };
+    return bot;
+}
+
+void CheckAuction()
+{
+    RecipeIndex const index = HandIndex();
+    Bot const bot = HandBot();
+    double const ore = (35.0 / (7.0 * 60.0) + 0.25) / 2.0 * 100.0;  // gathered in the near zone, as in CheckHand
+    Bot const market = WithMarket(bot, {{ORE, 10}, {THREAD, 10}, {LINEN, 30}, {BRACERS, 1000000}});
+    Pricer const pricer(index, market);
+    Cost const o = pricer.UnitCost(ORE);
+    Check(o.kind == Kind::Auction && o.via == ORE && Near(o.value, 10.0) && Near(o.copperPaid, 10.0) && 10.0 < ore,
+          "WA7a: ore the market sells below its gathering cost is bought at auction, at the typical price");
+    Cost const bar = pricer.UnitCost(BAR);
+    Check(bar.kind == Kind::Made && Near(bar.value, 10.0 + 1.5 / 60.0 * 100.0) && Near(bar.copperPaid, 10.0),
+          "WA7a: a bar is made from ore bought at auction");
+    Check(pricer.UnitCost(THREAD).kind == Kind::Bought, "WA7a: at the vendor's price the vendor wins the tie");
+    Cost const linen = pricer.UnitCost(LINEN);
+    Check(linen.kind == Kind::Auction && Near(linen.value, 30.0),
+          "WA7a: an item without another source is bought at auction");
+    Check(pricer.UnitCost(BRACERS).kind == Kind::Made, "WA7a: a dear auction price leaves the cheaper source");
+    Check(pricer.UnitCost(LIMITED).Blocked() && pricer.UnitCost(123).Blocked(), "WA7a: no price, no auction source");
+    Expansion const three = pricer.Expand(BRACERS, 3);
+    bool ok = !three.Blocked();
+    for (Line const& line : three.lines)
+        ok = ok && (line.item != ORE || (line.kind == Kind::Auction && line.via == ORE && line.quantity == 6));
+    Check(ok, "WA7a: three bracers expand to six ore bought at auction");
+    Bot poor = market;
+    poor.rates.factor = 3.0f;
+    Pricer const poorPricer(index, poor);
+    Check(poorPricer.UnitCost(ORE).kind == Kind::Gathered && Near(poorPricer.UnitCost(LINEN).value, 90.0),
+          "WA7a: a poor bot weighs the auction price by its need factor: it gathers the ore");
+
+    // The view reads the typical price only; no view, an empty one or an item without a price is no market
+    auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+    snapshot->items[ORE].typical = {10, 4, 4.0, 0};
+    snapshot->items[LINEN].offers.cheapestUnitBuyout = 5;  // offers only: the current offers are not read (WA.4)
+    Market::View const view{snapshot, {}, {}};
+    Bot viewBot = bot;
+    viewBot.auctionCopper = view.BuyCopperOf();
+    Pricer const viewPricer(index, viewBot);
+    Check(viewPricer.UnitCost(ORE).kind == Kind::Auction && viewPricer.UnitCost(LINEN).Blocked(),
+          "WA7a: the market view reads the typical price, never the current offers");
+    Bot emptyBot = bot;
+    emptyBot.auctionCopper = Market::View{std::make_shared<AuctionIndex::Snapshot>(), {}, {}}.BuyCopperOf();
+    Check(Market::View{}.Empty() && !Market::View{}.BuyCopperOf() && !emptyBot.auctionCopper,
+          "WA7a: no snapshot, or an empty one, is no market");
+    bool same = true;
+    Pricer const plain(index, bot);
+    Bot const zeroBot = WithMarket(bot, {{ORE, 0}});
+    Pricer const unpriced(index, zeroBot);
+    for (std::uint32_t const item : {ORE, BAR, BRACERS, THREAD, LIMITED, LINEN, HERB, PIGMENT, INK, CYCLE_A})
+    {
+        Cost const a = plain.UnitCost(item);
+        Cost const b = unpriced.UnitCost(item);
+        same = same && a.kind == b.kind && a.via == b.via && a.cause == b.cause && a.value == b.value;
+    }
+    Check(same, "WA7a: a market without a price for the materials leaves every cost as the vendor-only one");
+}
+
+void CheckProceeds()
+{
+    AuctionRules::Fees const shared;  // the shared house's row as WA.9 sets it: deposit 5 %, cut 5 %, rates 1
+    AuctionConfig const config;
+    AuctionIndex::TypicalPrice const typical{1000, 9, 9.0, 1};
+    Check(Market::ProceedsEach({}, 250, 20, shared, config) == 0.0, "WA7a: no typical price, no proceeds");
+    // 20 units at 1000c, 24 h: ask 20000, cut 1000, deposit 1500, V 5000, p 10/12: 16416 over 20 units
+    double const each = Market::ProceedsEach(typical, 250, 20, shared, config);
+    Check(Near(each, 820.8), "WA7a: proceeds are the listing's expected value less cut and deposit, per unit");
+    Check(Market::ProceedsEach({2, 3, 3.0, 0}, 1, 1, shared, config) == 0.0,
+          "WA7a: a listing that does not beat the vendor fetches nothing at auction (the vendor is the outlet)");
+    int belowVendor = 0;
+    int falls = 0;
+    int listed = 0;
+    for (std::uint32_t const lot : {1u, 5u, 20u})
+        for (std::uint32_t sell = 0; sell <= 600; sell += 37)
+        {
+            double before = 0.0;
+            for (std::uint32_t unit = 1; unit <= 3000; unit += 7)
+            {
+                double const proceeds = Market::ProceedsEach({unit, 3, 3.0, 1}, sell, lot, shared, config);
+                listed += proceeds > 0.0 ? 1 : 0;
+                belowVendor += proceeds > 0.0 && proceeds < sell ? 1 : 0;
+                falls += proceeds < before ? 1 : 0;
+                before = proceeds;
+            }
+        }
+    std::cout << "proceeds: " << listed << " listings worth more than the vendor; counterexamples: " << belowVendor
+              << " below the vendor's price, " << falls << " lower at a higher typical price\n";
+    Check(listed > 0 && belowVendor == 0 && falls == 0,
+          "WA7a: proceeds are 0 or at least the vendor's price, and never fall as the typical price rises");
+}
+
+// Counterexamples of the auction as a source in one world
+struct AuctionChoice
+{
+    int chosen{0};
+    int unpriced{0};    // taken without a price
+    int notCheaper{0};  // taken while another source is as cheap
+    int passedOver{0};  // not taken while strictly cheaper
+    int misweighed{0};  // not costing the price times the need factor
+};
+
+AuctionChoice ChoiceOf(RecipeIndex const& index, Bot const& bot, Prices const& prices)
+{
+    AuctionChoice found;
+    std::vector<Cost> const costs = Costs(index, WithMarket(bot, prices));
+    for (std::uint32_t item = 1; item <= WORLD_ITEMS; ++item)
+    {
+        Cost const& cost = costs[item - 1];
+        if (cost.cause == Cause::Bound)
+            continue;
+        auto const priced = prices.find(item);
+        std::uint32_t const price = priced == prices.end() ? 0 : priced->second;
+        double const weighed = static_cast<double>(price) * bot.rates.factor;
+        if (cost.kind == Kind::Auction)
+        {
+            Prices others = prices;
+            others.erase(item);
+            Bot const otherBot = WithMarket(bot, others);
+            Cost const other = Pricer(index, otherBot).UnitCost(item);  // every source but this item's auction
+            ++found.chosen;
+            found.unpriced += price ? 0 : 1;
+            found.notCheaper += Cheaper(cost, other) ? 0 : 1;
+            found.misweighed += Near(cost.copperPaid, price) && Near(cost.value, weighed) ? 0 : 1;
+        }
+        else if (price)
+        {
+            Cost offer;
+            offer.kind = Kind::Auction;
+            offer.cause = Cause::None;
+            offer.copperPaid = price;
+            offer.value = weighed;
+            offer.via = item;
+            found.passedOver += Cheaper(offer, cost) ? 1 : 0;
+        }
+    }
+    return found;
+}
+
+// 1 when the poorer bot pays more copper for some material than the richer one
+int MoreCopper(std::vector<Cost> const& rich, std::vector<Cost> const& poor)
+{
+    for (std::size_t i = 0; i < rich.size(); ++i)
+        if (!rich[i].Blocked() && !poor[i].Blocked() &&
+            poor[i].copperPaid > rich[i].copperPaid + 1e-9 * std::max(1.0, rich[i].copperPaid))
+            return 1;
+    return 0;
+}
+
+void MarketSearch()
+{
+    std::mt19937 rng(MARKET_SEED);  // its own stream: the searches above print as before WA7a
+    AuctionChoice total;
+    AuctionChoice controlFirst;
+    AuctionChoice controlUnpriced;
+    int emptyDiffers = 0;
+    int dearerCheaper = 0;
+    int poorerCheaper = 0;
+    int poorerMoreCopper = 0;
+    int controlEmpty = 0;
+    int controlInverse = 0;
+    int controlUnweighed = 0;
+    auto add = [](AuctionChoice& sum, AuctionChoice const& one)
+    {
+        sum.chosen += one.chosen;
+        sum.unpriced += one.unpriced;
+        sum.notCheaper += one.notCheaper;
+        sum.passedOver += one.passedOver;
+        sum.misweighed += one.misweighed;
+    };
+    for (int run = 0; run < MARKET_WORLDS; ++run)
+    {
+        RecipeIndex const index = RandomWorld(rng).Index();
+        Bot const bot = RandomBot(rng);
+        Prices prices;
+        for (std::uint32_t item = 1; item <= WORLD_ITEMS; ++item)
+            if (rng() % 2)
+                prices[item] = 1 + static_cast<std::uint32_t>(rng() % MARKET_PRICE_MAX);
+        auto const faulty = [&bot](Fault fault)
+        {
+            Bot broken = bot;
+            broken.fault = fault;
+            return broken;
+        };
+        std::vector<Cost> const vendorOnly = Costs(index, bot);
+        std::vector<Cost> const market = Costs(index, WithMarket(bot, prices));
+
+        add(total, ChoiceOf(index, bot, prices));
+        add(controlFirst, ChoiceOf(index, faulty(Fault::AuctionFirst), prices));
+        add(controlUnpriced, ChoiceOf(index, faulty(Fault::AuctionUnpriced), prices));
+
+        emptyDiffers += Same(vendorOnly, Costs(index, WithMarket(bot, {}))) ? 0 : 1;
+        controlEmpty += Same(vendorOnly, Costs(index, WithMarket(faulty(Fault::AuctionUnpriced), {}))) ? 0 : 1;
+
+        if (!prices.empty())
+        {
+            Prices dearer = prices;
+            std::uint32_t& raised = std::next(dearer.begin(), static_cast<long>(rng() % dearer.size()))->second;
+            raised = static_cast<std::uint32_t>(raised * (1.1 + static_cast<double>(rng() % 200) / 100.0)) + 1;
+            dearerCheaper += NotCheaper(market, Costs(index, WithMarket(bot, dearer)), false) ? 0 : 1;
+            Bot const inverse = faulty(Fault::AuctionInverse);
+            controlInverse +=
+                NotCheaper(Costs(index, WithMarket(inverse, prices)), Costs(index, WithMarket(inverse, dearer)), false)
+                    ? 0
+                    : 1;
+        }
+
+        float const poorer = 1.1f + static_cast<float>(rng() % 200) / 100.0f;
+        Bot poor = bot;
+        poor.rates.factor *= poorer;
+        std::vector<Cost> const poorMarket = Costs(index, WithMarket(poor, prices));
+        poorerCheaper += NotCheaper(market, poorMarket, false) ? 0 : 1;
+        poorerMoreCopper += MoreCopper(market, poorMarket);
+        Bot const unweighed = faulty(Fault::AuctionUnweighed);
+        Bot poorUnweighed = unweighed;
+        poorUnweighed.rates.factor *= poorer;
+        controlUnweighed +=
+            MoreCopper(Costs(index, WithMarket(unweighed, prices)), Costs(index, WithMarket(poorUnweighed, prices)));
+    }
+    std::cout << "market search: " << MARKET_WORLDS << " worlds, " << total.chosen
+              << " materials bought at auction; counterexamples: " << total.unpriced << " taken without a price, "
+              << total.notCheaper << " taken while not strictly cheaper, " << total.passedOver
+              << " strictly cheaper but passed over, " << total.misweighed << " not the price x the need factor, "
+              << emptyDiffers << " changed by an empty market, " << dearerCheaper
+              << " cheaper at a dearer auction price, " << poorerCheaper << " cheaper when poorer, " << poorerMoreCopper
+              << " more copper when poorer; negative controls: " << controlFirst.notCheaper << " auction taken first, "
+              << controlUnpriced.unpriced << " unpriced offered, " << controlEmpty << " empty market offering, "
+              << controlInverse << " inverse price, " << controlUnweighed << " unweighed by need\n";
+    Check(total.chosen > MARKET_WORLDS && total.misweighed == 0,
+          "WA7a: the search buys materials at auction, at the price times the need factor");
+    Check(total.unpriced == 0 && total.notCheaper == 0 && total.passedOver == 0,
+          "WA7a: the auction is taken only with a price and only when strictly cheaper; the cheapest source wins");
+    Check(emptyDiffers == 0, "WA7a: with an empty market every cost is the vendor-only one");
+    Check(dearerCheaper == 0, "WA7a: a dearer auction price never makes a material cheaper");
+    Check(poorerCheaper == 0 && poorerMoreCopper == 0,
+          "WA7a: with a market a poorer bot never pays less value or more copper for a material");
+    Check(controlFirst.notCheaper > 0, "negative control: taking the auction first is caught");
+    Check(controlUnpriced.unpriced > 0 && controlEmpty > 0, "negative control: offering unpriced items is caught");
+    Check(controlInverse > 0, "negative control: an auction cost falling with its price is caught");
+    Check(controlUnweighed > 0, "negative control: an auction price not weighed by the need factor is caught");
+}
+
 // ---- the dumped fixture's tables ----
 struct Variant
 {
@@ -946,7 +1211,10 @@ int main(int argc, char** argv)
     CheckHand();
     CheckDisenchant();
     CheckDrops();
+    CheckAuction();
+    CheckProceeds();
     Search();
+    MarketSearch();
     Tables(argc > 1 ? argv[1] : ".");
     std::cout << "MATERIAL rules selftest: " << passed + failed << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";

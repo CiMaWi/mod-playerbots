@@ -2236,9 +2236,10 @@ void Tables(std::string const& root)
                  "388, 450), at its gold reserve, no danger, every zone in reach; a minute is worth the band's "
                  "earning rate (30, 100, 250, 500, 1000 copper). An item's band: the lowest band from its required "
                  "level's on whose typical bot can get it.\n";
-    std::cout << "- Missing until professions' WRL5: drop rows (WR20a: no loot-source index yet), so kill loot and "
-                 "skinning are no source; the cost rule counts the game's default skill-gain and loot rates (WR29). "
-                 "WA7a prints this table again after adopting WRL5.\n";
+    std::cout << "- With professions' WRL5 (printed again by WA7a): the fixture holds the drop rows (WR20a) and the "
+                 "server rates of its dump header, which the cost rule counts (WR29: skill gain and loot x2). The "
+                 "typical bots carry no level and no skinning skill, so kill loot and skinning still price no item "
+                 "here. No market price enters this table.\n";
     std::cout << "- Goods with no way of getting them on purpose: buy price per unit (or 4 x the sell price) x "
                  "cmangos's level multiplier x a rarity multiplier by quality (0.92 common, 1.12 uncommon, 1.58 rare, "
                  "2.59 epic); poor items at their sell price. Never below the sell price.\n\n";

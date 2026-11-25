@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "CraftRules.h"
+#include "MarketRules.h"
 #include "MaterialRules.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
@@ -337,6 +338,7 @@ struct PathWorld
     std::vector<Water> waters;
     Fault fault{Fault::None};
     std::vector<ToolSource> tools;  // empty: a missing tool has no source
+    Market::View market;            // the typical prices (auction house WA7a); empty: only vendors buy and sell
 };
 
 // A missing tool an option gets before its cast, in full: bought (maker 0) or made by a recipe of the profession,
@@ -487,6 +489,7 @@ public:
         materials.reach.assign(_zones.begin(), _zones.end());  // a std::set: sorted
         materials.level = _bot.level;
         materials.side = _bot.side;
+        materials.auctionCopper = _world.market.BuyCopperOf();
         return materials;
     }
 

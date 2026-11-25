@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -24,8 +25,9 @@
 // getting. Buying costs the copper weighed by the bot's need factor; getting costs its minutes at what a minute is
 // worth to the bot, and a risky place makes each minute worth less and adds the expected cost of dying. A made
 // material costs its inputs plus its casts, a processed one its input by the expected yield, a disenchanted one the
-// sale of the bot's own gear it gives up (WR14d). No source means blocked, never free. Pure and std only: the caller
-// fills the rates (WR11) and the place risk (WR13b).
+// sale of the bot's own gear it gives up (WR14d). Buying at auction (auction house plan WA7a, PLAN 3.7) costs the
+// market's typical price, weighed by the need factor like a vendor's. No source means blocked, never free. Pure and
+// std only: the caller fills the rates (WR11), the place risk (WR13b) and the auction prices (Market::View).
 // The pure-rules shape is adapted from Solfood/mod-playerbots CraftPlanRules.h at e8c3eb42, the bounded dependency
 // expansion (depth, work and quantity bounds) from damienselarez/mod-playerbots ProfessionPlan.h at be691a93
 // (GPL v2), without their order-dependent work counter: a query evaluates every (item, depth) it reaches once.
@@ -40,7 +42,7 @@ enum class Kind : std::uint8_t
     Processed,  // disenchanting (the bot's own unwanted gear), prospecting or milling
     Fished,     // empty until WR16b
     Dropped,    // kill loot and skinning: the recipe index's drop rows from questing's source index (WR20a)
-    Auction     // empty until WR23
+    Auction     // the market's typical price (auction house WA7a); none without a market
 };
 
 enum class Cause : std::uint8_t
@@ -57,6 +59,7 @@ constexpr std::uint32_t MAX_QUANTITY = 1000;  // units of one material along an 
 constexpr float CAST_FLOOR_MS = 1500.0f;      // [E] a cast takes at least the global cooldown
 constexpr float PROCESS_CAST_MS = 3000.0f;    // [E] one disenchant, prospect or mill cast
 constexpr double COST_EPSILON = 1e-9;         // equal costs: the lower kind and source id win
+constexpr double AUCTION_FAULT_COPPER = 1e6;  // the AuctionInverse negative control's numerator
 
 // The skinning skill a creature of a level asks for (the core's SpellEffects.cpp); the skill path and the gather rules
 // read it too
@@ -97,10 +100,14 @@ constexpr std::uint8_t SideBit(std::uint32_t team)
 enum class Fault : std::uint8_t
 {
     None,
-    DangerCheaper,    // the fight estimate falls with the creature's level and elite share
-    IgnoreSkinSkill,  // offers a skin without the skinning skill it asks
-    IgnoreSide,       // offers a creature friendly to the bot's side
-    FirstDrop         // offers only the first drop row that is a source, not every one
+    DangerCheaper,     // the fight estimate falls with the creature's level and elite share
+    IgnoreSkinSkill,   // offers a skin without the skinning skill it asks
+    IgnoreSide,        // offers a creature friendly to the bot's side
+    FirstDrop,         // offers only the first drop row that is a source, not every one
+    AuctionFirst,      // takes an auction price whenever there is one, cheaper sources or not (WA7a)
+    AuctionUnpriced,   // offers an item the market has no price for at a copper
+    AuctionUnweighed,  // weighs an auction price at a copper's neutral worth, not the bot's need factor
+    AuctionInverse     // weighs an auction price by its inverse: a dearer price costs less
 };
 
 inline char const* KindWord(Kind kind)
@@ -170,6 +177,9 @@ struct Bot
     std::vector<std::uint32_t> reach;  // the zones it may gather in, sorted (WR11: reach and level); empty: every zone
     std::uint32_t level{0};            // the fight estimate's (a drop source); 0 counts as level 1
     std::uint8_t side{BOTH_SIDES};     // its side's bit in DropRow::friendlyTo (1 << team); both: not known
+    // Per unit, what buying an item at auction costs before the need factor: the market's typical price
+    // (Market::View::BuyCopperOf, WA7a); empty, or 0 for an item: no auction offer, the vendor-only cost
+    std::function<std::uint32_t(std::uint32_t)> auctionCopper;
     Fault fault{Fault::None};
 
     [[nodiscard]] bool Reaches(std::uint32_t zone) const
@@ -429,6 +439,10 @@ private:
     {
         Choice choice;
         choice.Offer(Bought(item));
+        Cost const auction = Auctioned(item);
+        if (_bot.fault == Fault::AuctionFirst && !auction.Blocked())
+            return auction;
+        choice.Offer(auction);
         for (std::size_t const at : _index.NodesOf(item))
             if (_bot.Reaches(_index.Nodes()[at].zone))
                 choice.Offer(Gathered(_index.Nodes()[at]));
@@ -460,6 +474,26 @@ private:
         cost.cause = Cause::None;
         cost.copperPaid = static_cast<double>(vendor->buyCopper) / std::max<std::uint32_t>(vendor->buyCount, 1);
         cost.value = cost.copperPaid * _bot.rates.factor;
+        cost.via = item;
+        return cost;
+    }
+
+    // Bought at auction (WA7a, PLAN 3.7): the market's typical price, a buying cost weighed by the need factor like a
+    // vendor's price; an item without a price has no auction source. Ties go to the other sources (Auction is the last
+    // kind), so the auction is taken only when it is strictly cheaper
+    [[nodiscard]] Cost Auctioned(std::uint32_t item) const
+    {
+        std::uint32_t price = _bot.auctionCopper ? _bot.auctionCopper(item) : 0;
+        if (!price && _bot.fault == Fault::AuctionUnpriced)
+            price = 1;
+        if (!price)
+            return BlockedBy(Cause::NoSource);
+        Cost cost;
+        cost.kind = Kind::Auction;
+        cost.cause = Cause::None;
+        cost.copperPaid = price;
+        double const weighed = _bot.fault == Fault::AuctionInverse ? AUCTION_FAULT_COPPER / price : cost.copperPaid;
+        cost.value = weighed * (_bot.fault == Fault::AuctionUnweighed ? _bot.rates.exchange : _bot.rates.factor);
         cost.via = item;
         return cost;
     }

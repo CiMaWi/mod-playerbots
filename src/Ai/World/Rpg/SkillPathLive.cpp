@@ -10,6 +10,8 @@
 #include <chrono>
 #include <vector>
 
+#include "AuctionIndex.h"
+#include "AuctionReference.h"
 #include "BotProfessionMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -97,6 +99,14 @@ std::vector<SkillPath::ToolSource> const& ToolSources()
             return proto ? static_cast<std::uint32_t>(std::max<int32>(proto->BuyPrice, 0)) : 0u;
         });
     return sources;
+}
+
+// The market a path sees (auction house WA7a, WA.4): the auction index's published snapshot, read on this worker
+// through its lock-free pointer (typical prices only), the shared house's fee row (7, WA.9) and the poster's numbers
+Market::View MarketView()
+{
+    return {AuctionIndex::Current(), AuctionReference::HouseFees(AuctionRules::HOUSE_NEUTRAL),
+            sPlayerbotAIConfig.Auction};
 }
 
 // The decision row's reason for a profession taken: the largest part of what its stretch brings
@@ -296,7 +306,8 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
                                      std::move(skinnables),
                                      {},
                                      SkillPath::Fault::None,
-                                     ToolSources()};
+                                     ToolSources(),
+                                     MarketView()};
     SkillPathBridge::Computed computed =
         SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
                                  CategoriesOf(snapshot.toolsHeld));
