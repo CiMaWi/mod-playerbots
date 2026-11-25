@@ -886,14 +886,14 @@ void CheckAuction()
     auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
     snapshot->items[ORE].typical = {10, 4, 4.0, 0};
     snapshot->items[LINEN].offers.cheapestUnitBuyout = 5;  // offers only: the current offers are not read (WA.4)
-    Market::View const view{snapshot, {}, {}};
+    Market::View const view{snapshot, {}, {}, {}};
     Bot viewBot = bot;
     viewBot.auctionCopper = view.BuyCopperOf();
     Pricer const viewPricer(index, viewBot);
     Check(viewPricer.UnitCost(ORE).kind == Kind::Auction && viewPricer.UnitCost(LINEN).Blocked(),
           "WA7a: the market view reads the typical price, never the current offers");
     Bot emptyBot = bot;
-    emptyBot.auctionCopper = Market::View{std::make_shared<AuctionIndex::Snapshot>(), {}, {}}.BuyCopperOf();
+    emptyBot.auctionCopper = Market::View{std::make_shared<AuctionIndex::Snapshot>(), {}, {}, {}}.BuyCopperOf();
     Check(Market::View{}.Empty() && !Market::View{}.BuyCopperOf() && !emptyBot.auctionCopper,
           "WA7a: no snapshot, or an empty one, is no market");
     bool same = true;

@@ -20,12 +20,6 @@ namespace SkillPath
 constexpr std::uint32_t PATH_VERSION = 1;
 constexpr int NONE = -1;
 
-// The second gatherer (PLAN 3.2; the WR10/WR11 review's hold, awaiting the user's ruling): a bot short of gold may take
-// a second gatherer in its craft's place only once a buyer other than the vendors pays for materials (the auction
-// house, WR23). Until then the craft's learn waits instead, as before WR11. The disenchant outlet (WR12) counts other
-// buyers' prices for its yields behind the same switch
-constexpr bool BUYERS_BEYOND_VENDORS = false;
-
 enum class StepKind : std::uint8_t
 {
     Craft,   // casts of a recipe for skill points

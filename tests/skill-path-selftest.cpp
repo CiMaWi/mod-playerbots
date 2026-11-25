@@ -989,8 +989,7 @@ void CheckDisenchantOutlet()
         for (Recipes::Yield const& yield : disenchant.yields)
         {
             Material const* material = MaterialOf(path, yield.item);
-            yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, 0, 0,
-                                                                          BUYERS_BEYOND_VENDORS)});
+            yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, 0, 0)});
         }
         return WorldTravel::DisenchantPays(WorldTravel::DisenchantWorth(yields), sale);
     };

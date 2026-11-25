@@ -608,6 +608,7 @@ ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI*
         return outlet;
 
     SkillPath::Path const* path = Planner::KeptPath(botAI);
+    Market::View const market = Planner::MarketView();
     std::vector<WorldTravel::OutletYield> yields;
     yields.reserve(process->yields.size());
     for (Recipes::Yield const& yield : process->yields)
@@ -616,9 +617,9 @@ ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI*
         uint32 const vendor = yieldProto ? yieldProto->SellPrice : 0;  // plain copper, as the item's sale (WR14d)
         SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
         outlet.usedByPath = outlet.usedByPath || material;
-        // No auction price source exists yet: the other buyer's price is 0 behind the user's switch
-        yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, vendor, 0,
-                                                                      SkillPath::BUYERS_BEYOND_VENDORS)});
+        // the other buyer is the auction: a listing's proceeds (WA7a), 0 without a typical price
+        yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, vendor,
+                                                                      Planner::MarketProceeds(market, yield.item))});
     }
     outlet.worthEach = WorldTravel::DisenchantWorth(yields);
     return outlet;

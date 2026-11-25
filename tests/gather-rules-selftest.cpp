@@ -225,15 +225,20 @@ void HandCases()
     Check(Near(Gather::PoolShare(chain), 0.03), "the share multiplies up through the mother pool");
     Check(Near(Gather::PoolShare({}), 1.0), "outside a pool: 1");
 
-    // A node's worth: the sale by need, the path's price above the vendor's, other buyers behind the switch
+    // A node's worth: the sale by need, the path's price above the vendor's, a listing's proceeds (WA7a) by need when
+    // they are worth more than the path's use; a flush bot's use (its need below its exchange) outweighs a dearer sale
     Gatherer bot = BotWith(100, 100, 100);
     Node node = NodeAt(1, HERBALISM, 50, 100.0f, 0.0f, 300, 1.0f, 50);
     double const skillPoint = 0.25 * bot.rates.minuteValue * Planner::Goals::SKILLUP_MINUTES;  // green: 50 + 50
     Check(Near(Gather::NodeWorth(node, bot), 100.0 + skillPoint), "two units at 50 c plus a green skill point");
     node.yields[0].pathCopper = 80;
+    Check(Near(Gather::NodeWorth(node, bot), 160.0 + skillPoint), "the path's price wins over the vendor's");
     node.yields[0].otherCopper = 200;
-    Check(Near(Gather::NodeWorth(node, bot, false), 160.0 + skillPoint), "the path's price wins over the vendor's");
-    Check(Near(Gather::NodeWorth(node, bot, true), 400.0 + skillPoint), "another buyer counts only behind the switch");
+    Check(Near(Gather::NodeWorth(node, bot), 400.0 + skillPoint), "a listing's proceeds above the path's use count");
+    Gatherer flush = bot;
+    flush.rates.factor = 0.1f;
+    Check(Near(Gather::NodeWorth(node, flush), 160.0 + skillPoint),
+          "a flush bot keeps the path's use: 80 c at its exchange outweigh 200 c at a tenth");
     node.required = 150;
     Check(Gather::NodeWorth(node, bot) == 0.0, "a node above the skill is worth nothing");
 
@@ -1498,6 +1503,84 @@ void RateCases()
           "a kill's coins: the gold range's mean times the money rate (a single or inverted range: its top)");
 }
 
+// WA7a (PLAN 3.7): a listing's proceeds as the yields' other outlet. Over random yields, rates (a poor bot's need
+// above its exchange, a flush one's below) and typical prices: without a typical price a node is worth its vendor-only
+// worth; a node's worth and a hide's net never fall as an item's typical price rises (the catch's worth is the same
+// YieldsWorth). Control: the outlet taken by the most copper before weighing (the flat maximum), which lets a flush
+// bot's dearer sale displace its own use
+void MarketSearch()
+{
+    std::mt19937 rng(20261126);
+    auto const range = [&rng](std::uint32_t low, std::uint32_t high)
+    { return std::uniform_int_distribution<std::uint32_t>(low, high)(rng); };
+    auto const flat = [](std::vector<Yield> const& yields, Materials::Rates const& rates)
+    {
+        double worth = 0.0;
+        for (Yield const& yield : yields)
+        {
+            std::uint32_t const each = std::max({yield.pathCopper, yield.vendorCopper, yield.otherCopper});
+            bool const used = yield.pathCopper > yield.vendorCopper && each == yield.pathCopper;
+            worth += std::max(yield.perNode, 0.0) * each * std::max(used ? rates.exchange : rates.factor, 0.0f);
+        }
+        return worth;
+    };
+    constexpr int WORLDS = 3000;
+    std::uint32_t changed = 0;
+    std::uint32_t fell = 0;
+    std::uint32_t hideFell = 0;
+    std::uint32_t rose = 0;
+    std::uint32_t listed = 0;
+    std::uint32_t caught = 0;
+    for (int world = 0; world < WORLDS; ++world)
+    {
+        Gatherer bot = BotWith(range(1, 300), 100, range(1, 300));
+        bot.rates.factor = static_cast<float>(range(1, 30)) / 10.0f;  // 0.1 (flush) to 3 (broke) x the exchange
+        Node node = NodeAt(1, HERBALISM, range(1, 100), 0.0f, 0.0f, 300, 1.0f, 0);
+        std::size_t const count = range(1, 3);
+        node.yields.clear();
+        std::vector<AuctionIndex::TypicalPrice> low(count);
+        std::vector<AuctionIndex::TypicalPrice> high(count);
+        for (std::size_t at = 0; at < count; ++at)
+        {
+            node.yields.push_back({static_cast<std::uint32_t>(1000 + at), range(1, 30) / 10.0,
+                                   range(0, 2) ? 0u : range(1, 400), range(0, 200), 0});
+            low[at] = {range(0, 3) ? range(1, 1500) : 0u, range(1, 10), static_cast<double>(range(1, 10)), range(0, 5)};
+            high[at] = low[at];
+            high[at].unitPrice += range(1, 800);
+        }
+        auto const priced = [&node](std::vector<AuctionIndex::TypicalPrice> const& prices)
+        {
+            Node copy = node;
+            for (std::size_t at = 0; at < copy.yields.size(); ++at)
+                copy.yields[at].otherCopper = static_cast<std::uint32_t>(
+                    Market::ProceedsEach(prices[at], copy.yields[at].vendorCopper, Market::MAX_LOT, {}, {}));
+            return copy;
+        };
+        Node const none = priced(std::vector<AuctionIndex::TypicalPrice>(count));
+        changed += Gather::NodeWorth(none, bot) != Gather::NodeWorth(node, bot) ? 1 : 0;
+        Node const a = priced(low);
+        Node const b = priced(high);
+        double const worthA = Gather::NodeWorth(a, bot);
+        double const worthB = Gather::NodeWorth(b, bot);
+        fell += worthB < worthA ? 1 : 0;
+        rose += worthB > worthA ? 1 : 0;
+        listed += std::any_of(b.yields.begin(), b.yields.end(), [](Yield const& yield) { return yield.otherCopper; });
+        Hide const hideA{20, a.yields, {}};
+        Hide const hideB{20, b.yields, {}};
+        hideFell += Gather::JudgeHide(hideB, bot, false, 1).net < Gather::JudgeHide(hideA, bot, false, 1).net ? 1 : 0;
+        caught += flat(b.yields, bot.rates) < flat(a.yields, bot.rates) ||
+                          flat(a.yields, bot.rates) < flat(none.yields, bot.rates)
+                      ? 1
+                      : 0;
+    }
+    std::cout << "market search (seed 20261126, " << WORLDS << " nodes): " << listed << " with proceeds, " << rose
+              << " worth more at a dearer price; counterexamples: " << changed << " changed without a price, " << fell
+              << " node worth fell, " << hideFell << " hide net fell; control flat maximum: " << caught << " fell\n";
+    Check(changed == 0 && fell == 0 && hideFell == 0 && rose > 0 && listed > 0,
+          "search: proceeds never lower a node's or a hide's worth, and without a price it is the vendor-only one");
+    Check(caught > 0, "control flat maximum: the most copper before weighing lets a dearer price lower a worth");
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1 && std::string(argv[1]) == "--decisions")
@@ -1514,6 +1597,7 @@ int main(int argc, char** argv)
     CreatureCases();
     CreatureSearch();
     RateCases();
+    MarketSearch();
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
     return failed ? 1 : 0;

@@ -24,6 +24,7 @@
 #include "PlannerService.h"
 #include "PlannerSnapshot.h"
 #include "QueryResult.h"
+#include "SkillPathLive.h"
 #include "SkillPathTypes.h"
 #include "ThreadCheck.h"
 #include "UpkeepNeedRules.h"
@@ -206,7 +207,9 @@ void FillFishWaters(Snapshot const& snapshot, SkillPath::Path const* path, Mater
                                                   proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE);
     if (!fisher.poleHeld)
         return;
-    // The fish at the bot's prices: a vendor's, and the skill path's for a material it uses (a cook's fish)
+    // The fish at the bot's prices: a vendor's, the skill path's for a material it uses (a cook's fish) and a
+    // listing's proceeds (WA7a)
+    Market::View const market = MarketView();
     Fish::Candidate candidate{*zone, {}};
     for (std::vector<Gather::Yield>* yields : {&candidate.water.openYields, &candidate.water.poolYields})
         for (Gather::Yield& yield : *yields)
@@ -215,6 +218,7 @@ void FillFishWaters(Snapshot const& snapshot, SkillPath::Path const* path, Mater
             SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
             yield.vendorCopper = proto ? proto->SellPrice : 0;
             yield.pathCopper = material ? material->copperEach : 0;
+            yield.otherCopper = MarketProceeds(market, yield.item);
         }
     candidate.water.spots.clear();
     bool pool = false;

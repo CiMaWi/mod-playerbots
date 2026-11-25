@@ -101,14 +101,6 @@ std::vector<SkillPath::ToolSource> const& ToolSources()
     return sources;
 }
 
-// The market a path sees (auction house WA7a, WA.4): the auction index's published snapshot, read on this worker
-// through its lock-free pointer (typical prices only), the shared house's fee row (7, WA.9) and the poster's numbers
-Market::View MarketView()
-{
-    return {AuctionIndex::Current(), AuctionReference::HouseFees(AuctionRules::HOUSE_NEUTRAL),
-            sPlayerbotAIConfig.Auction};
-}
-
 // The decision row's reason for a profession taken: the largest part of what its stretch brings
 Professions::Reason BringsReason(SkillPath::Brings const& brings)
 {
@@ -179,6 +171,24 @@ std::string SecondText(SkillPath::SecondChoice const& second)
 
 constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps the command prints
 }  // namespace
+
+Market::View MarketView()
+{
+    return {AuctionIndex::Current(), AuctionReference::HouseFees(AuctionRules::HOUSE_NEUTRAL),
+            sPlayerbotAIConfig.Auction, [](std::uint32_t item)
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+                return proto ? proto->GetMaxStackSize() : 1u;
+            }};
+}
+
+std::uint32_t MarketProceeds(Market::View const& market, std::uint32_t item)
+{
+    if (market.Empty())
+        return 0;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    return static_cast<std::uint32_t>(market.ProceedsOf(item, proto ? proto->SellPrice : 0u));
+}
 
 PathData PathDataNow()
 {
@@ -286,10 +296,11 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
     }
     auto const started = std::chrono::steady_clock::now();
     // The creatures a skinner meets (WR20a), from the drop rows; read only for skinning: a skinner's stretches, or the
-    // second gatherer a bot short of gold may take once other buyers pay
+    // second gatherer a bot short of gold may take where the market buys skins (SkillPathBridge::MarketPays)
+    Market::View market = MarketView();
     std::vector<SkillPath::Skinnable> skinnables;
     bool const skins =
-        SkillPath::BUYERS_BEYOND_VENDORS ||
+        !market.Empty() ||
         std::any_of(
             snapshot.skills.begin(), snapshot.skills.end(), [](Planner::Skill const& skill)
             { return skill.value > 0 && skill.id == static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning); });
@@ -298,7 +309,8 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         Materials::Bot killer;
         killer.level = snapshot.level;
         killer.side = Materials::SideBit(snapshot.team);
-        skinnables = SkillPath::SkinnablesOf(*data.recipes, killer, SellCopper);
+        skinnables = SkillPath::SkinnablesOf(
+            *data.recipes, killer, [&market](std::uint32_t item) { return market.SaleOf(item, SellCopper(item)); });
     }
     SkillPath::PathWorld const world{*data.recipes,
                                      [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
@@ -307,7 +319,7 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
                                      {},
                                      SkillPath::Fault::None,
                                      ToolSources(),
-                                     MarketView()};
+                                     std::move(market)};
     SkillPathBridge::Computed computed =
         SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
                                  CategoriesOf(snapshot.toolsHeld));

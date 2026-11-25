@@ -65,8 +65,6 @@ constexpr std::uint32_t MAX_POINTS = 450;              // points of one climb
 constexpr double MIN_MINUTES = Materials::CAST_FLOOR_MS / Planner::Goals::MINUTE_MS;
 constexpr std::uint32_t TOOL_DEPTH = 1;  // a made tool's own tools may be bought, not made in turn
 
-// BUYERS_BEYOND_VENDORS (the second gatherer's hold) is in SkillPathTypes.h
-
 // Deliberate errors the selftest's negative controls switch on (each must find a counterexample to its invariant);
 // always None in the game
 enum class Fault : std::uint8_t
@@ -86,7 +84,8 @@ enum class Fault : std::uint8_t
     ToolFree,         // 12: crafts without the tools the recipe asks for
     WantsOnly,        // 13: lists as the path's materials only what it wants, not what it holds
     IgnoreAbility,    // 14: lets a trainer teach a recipe without the abilities its row asks for (WR.27)
-    RatesInverted     // 15: a skill-up of the server's step gives one point at the step's cost (WR.28)
+    RatesInverted,    // 15: a skill-up of the server's step gives one point at the step's cost (WR.28)
+    AnyMarket         // 16: weighs a second gatherer for any market view, whether it prices the gatherer's yields
 };
 
 inline char const* FaultWord(Fault fault)
@@ -123,6 +122,8 @@ inline char const* FaultWord(Fault fault)
             return "ignore_ability";
         case Fault::RatesInverted:
             return "rates_inverted";
+        case Fault::AnyMarket:
+            return "any_market";
         default:
             return "none";
     }
@@ -1223,7 +1224,18 @@ private:
         return _world.fault == Fault::IgnoreLock || !_world.mayLearn || _world.mayLearn(spell);
     }
 
-    [[nodiscard]] double Sell(std::uint32_t item) const { return _world.sellCopper ? _world.sellCopper(item) : 0.0; }
+    // What one unit fetches: a vendor's price, or a listing's proceeds where the market pays more (auction house
+    // WA7a, PLAN 3.7: the path's income term); the vendor's alone without a market. Kept per item for the weigh
+    [[nodiscard]] double Sell(std::uint32_t item) const
+    {
+        double const vendor = _world.sellCopper ? _world.sellCopper(item) : 0.0;
+        if (_world.market.Empty())
+            return vendor;
+        auto const [at, added] = _sold.try_emplace(item, vendor);
+        if (added)
+            at->second = _world.market.SaleOf(item, vendor);
+        return at->second;
+    }
 
     [[nodiscard]] bool Plays(std::uint32_t zone) const { return _zones.empty() || _zones.count(zone); }
 
@@ -1575,6 +1587,7 @@ private:
     std::vector<SkillLevel> _skills;
     std::map<std::uint16_t, std::vector<std::size_t>> _recipesOf;  // positions in the index's recipes
     std::map<std::uint16_t, std::vector<NodeKind>> _nodesOf;       // by zone and entry
+    mutable std::unordered_map<std::uint32_t, double> _sold;       // Sell's answers with a market
 };
 
 // The skill path of a bot: every stretch weighed, the one taken, its needs, wants and crafts

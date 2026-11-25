@@ -136,6 +136,7 @@ CreatureStops CreatureStopsOf(Snapshot const& snapshot, SkillPath::Path const* p
     if (!wants && !gatherer.shortOfGold)
         return out;
     bool const skinner = gatherer.Find(Gather::SKINNING) != nullptr;
+    Market::View const market = MarketView();
     std::vector<Recipes::DropRow const*> rows;
     std::vector<uint32> chosen;
     std::vector<uint32> wanted;
@@ -170,7 +171,7 @@ CreatureStops CreatureStopsOf(Snapshot const& snapshot, SkillPath::Path const* p
             {
                 SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, row->item) : nullptr;
                 Gather::Yield const yield{row->item, row->perKill, material ? material->copperEach : 0u,
-                                          SellCopper(row->item), 0u};
+                                          SellCopper(row->item), MarketProceeds(market, row->item)};
                 (row->kind == Recipes::DropKind::Skin ? kind.creature.hide : kind.yields).push_back(yield);
                 kind.creature.minLevel = row->minLevel;
                 kind.creature.maxLevel = row->maxLevel;
