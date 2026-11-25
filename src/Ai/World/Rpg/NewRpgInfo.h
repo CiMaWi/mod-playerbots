@@ -229,6 +229,8 @@ struct NewRpgInfo
         // queue's crafts looked at so far (one craft visit each, a bounded number per stop)
         bool craft{false};
         uint8 craftsTried{0};
+        // The auction errand (auction house WA3b): an auctioneer visit lists the bag stock, before the deposit
+        bool auction{false};
     };
     struct Errands
     {

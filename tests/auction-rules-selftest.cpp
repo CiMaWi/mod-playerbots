@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "AuctionMemory.h"
 #include "AuctionPricing.h"
 #include "AuctionRules.h"
 #include "ProfessionRules.h"
@@ -1823,12 +1824,60 @@ void Tables(std::string const& root)
 }
 }  // namespace
 
+// WA3b: the seller's expiry memory the visit's ask reads (expiredSteps, quickSale)
+void CheckMemory()
+{
+    AuctionMemory::SellerMemory memory;
+    memory.Listed(1, 1000, 1000 + 24 * 3600);
+    memory.Expired(1, 77);
+    memory.Drop(1);
+    memory.Listed(2, 90000, 90000 + 48 * 3600);
+    memory.Expired(2, 77);
+    Check(memory.Of(77).expiredSteps == 2 && !memory.Of(77).quickSale && memory.listings.empty(),
+          "memory: two expiries are two steps, their listings gone");
+    Check(memory.Of(78).expiredSteps == 0, "memory: an item never expired has no step");
+    memory.Listed(3, 200000, 200000 + 48 * 3600);
+    memory.Sold(3, 77, 200000 + 3600);
+    Check(memory.Of(77).expiredSteps == 0 && memory.Of(77).quickSale, "memory: a sale in its first quarter is quick");
+    memory.Listed(4, 400000, 400000 + 12 * 3600);
+    memory.Sold(4, 77, 400000 + 11 * 3600);
+    Check(!memory.Of(77).quickSale && memory.Empty(), "memory: a late sale clears the item; nothing is left");
+    memory.Sold(9, 78, 500000);
+    Check(memory.Empty(), "memory: a sale of an unknown listing leaves nothing");
+    memory.Held(79);
+    Check(memory.Of(79).expiredSteps == 1, "memory: a held stack counts a step");
+    for (std::uint32_t entry = 1000; entry < 1000 + AuctionMemory::ITEMS_MAX; ++entry)
+        memory.Held(entry);
+    Check(memory.items.size() == AuctionMemory::ITEMS_MAX && memory.Of(79).expiredSteps == 0,
+          "memory: bounded, the oldest item goes first");
+
+    // The ask reads it: an expiry lowers the ask by a step, past the relist limit the stock is held
+    AskInput in;
+    in.count = 1;
+    in.sellPrice = 100;
+    in.vendorPayout = 100;
+    in.reference = 2000;
+    in.fees = FACTION_FEES;
+    AuctionConfig config;
+    AskResult const first = Ask(in, config);
+    in.expiredSteps = 1;
+    AskResult const relist = Ask(in, config);
+    in.expiredSteps = config.RelistLimit + 1;
+    AskResult const past = Ask(in, config);
+    Check(first.kind == AskResult::Kind::List && relist.kind == AskResult::Kind::List && relist.ask < first.ask &&
+              relist.reason == AuctionWords::Reason::Expired,
+          "memory: one expiry relists lower");
+    Check(past.kind == AskResult::Kind::Hold && StockWorth(in, config) == 0,
+          "memory: past the relist limit the ask holds and the item is no stock");
+}
+
 int main(int argc, char** argv)
 {
     CheckHand();
     Search();
     CheckCases();
     CheckStockWorth();
+    CheckMemory();
     CheckPricingHand();
     SearchPricing();
     Tables(argc > 1 ? argv[1] : ".");

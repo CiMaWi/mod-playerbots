@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "AuctionVisit.h"
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
@@ -91,9 +92,9 @@ UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
     return levels;
 }
 
-// A bank or mail errand at the stop: the visit's own action (relevance 13, any status) walks to the box and holds
-// the bot until the visit ends with its row; the trip goes on after it. A box beyond the stop's reach or a refused
-// start skips the errand with a row, so the trip never waits for it
+// A bank, mail or auction errand at the stop: the visit's own action (relevance 13, any status) walks to the box or
+// NPC and holds the bot until the visit ends with its row; the trip goes on after it. One beyond the stop's reach or a
+// refused start skips the errand with a row, so the trip never waits for it
 bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kind)
 {
     auto const* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
@@ -103,7 +104,16 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
     float const joinYards = WorldTravel::STOP_JOIN_YARDS;
     char const* reason = "busy";
     bool started = false;
-    if (kind == WorldTravel::ErrandKind::Mail)
+    if (kind == WorldTravel::ErrandKind::Auction)
+    {
+        std::optional<BankMail::AuctioneerSpot> const spot = BankMail::AuctioneerSpotNear(
+            bot, place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), joinYards);
+        if (!spot)
+            reason = "no_auctioneer";
+        else
+            started = BankMail::BeginAuctionVisit(botAI, *spot);
+    }
+    else if (kind == WorldTravel::ErrandKind::Mail)
     {
         std::optional<BankMail::MailboxSpot> const spot = BankMail::MailboxSpotNear(
             bot, place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), joinYards);
@@ -447,6 +457,15 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     if (stop.craft)
         return BankMail::CraftStop(botAI, stop.craftsTried, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS,
                                    stop.craft, data->visited);
+
+    // The auction errand (auction house WA3b): the bag stock is listed before the deposit would bank it
+    if (stop.auction)
+    {
+        stop.auction = false;
+        if (StartStopVisit(botAI, bot, WorldTravel::ErrandKind::Auction))
+            data->visited = true;
+        return true;
+    }
 
     if (stop.bankAfter || stop.mail)
     {

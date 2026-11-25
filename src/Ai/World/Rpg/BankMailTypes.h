@@ -157,6 +157,7 @@ struct CarriedKeeps
 {
     std::vector<KeptEntry> items;  // by later worth
     uint8_t level = 0;             // the bot's level when they were decided; 0 = never
+    uint32_t auctionGain = 0;      // the auction stock among them: listing's worth above the vendor's payout (WA3b)
 };
 
 enum class VisitKind : uint8_t

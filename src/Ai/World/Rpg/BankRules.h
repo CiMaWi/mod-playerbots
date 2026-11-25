@@ -14,6 +14,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "BankMailTypes.h"
@@ -251,6 +252,8 @@ inline uint32_t StockUnits(KeepItemIn const& item)
 // is worth more than a vendor pays for it now. Never gear the gear rule keeps to wear, a recipe the bot will learn or
 // the units its skill path uses. Unsold (its worth already beats the vendor's payout) and due at no level: banked, and
 // never fetched by a trip of its own
+inline constexpr char const* AUCTION_STOCK_PROVIDER = "auction_stock";
+
 inline KeepAnswer AuctionStock(KeepItemIn const& item, KeepBotIn const& bot)
 {
     if (!item.auctionable || !StockUnits(item) || item.auctionWorth <= item.vendorPayout)
@@ -258,7 +261,7 @@ inline KeepAnswer AuctionStock(KeepItemIn const& item, KeepBotIn const& bot)
     if (GearForLaterLevel(item, bot).keeps || (item.recipeSkill && RecipeForLater(item, bot).keeps))
         return {};
 
-    return {true, item.auctionWorth, STOCK_LATER_LEVEL, "auction_stock", true};
+    return {true, item.auctionWorth, STOCK_LATER_LEVEL, AUCTION_STOCK_PROVIDER, true};
 }
 
 // Every provider, asked in this order
@@ -760,8 +763,15 @@ inline CarriedKeeps KeptInBags(BankIn const& in)
     CarriedKeeps carried;
     carried.level = in.bot.level;
     for (Decided const& decided : kept)
+    {
         carried.items.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
                                  decided.answer.dueLevel, decided.answer.provider});
+        // Auction stock's worth beats the payout (AuctionStock), so the gain is positive; the trip weighs it (WA3b)
+        KeepItemIn const& item = decided.item->item;
+        bool const stock = std::string_view(decided.answer.provider) == AUCTION_STOCK_PROVIDER;
+        if (stock && item.auctionWorth > item.vendorPayout)
+            carried.auctionGain += item.auctionWorth - item.vendorPayout;
+    }
     return carried;
 }
 

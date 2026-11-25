@@ -314,8 +314,8 @@ struct ErrandSnapshot
     CraftAt Craft;            // one station per trip
     PetAt Pet;
     StableAt Stable;
-    // The auction plan: zero until WA3b and WA4b fill them
-    uint32_t AuctionStockWorth = 0;   // copper the stock a bot would list fetches at its asks
+    // The auction plan (WA3b fills the stock, WA4b the wanted lines)
+    uint32_t AuctionStockWorth = 0;   // copper listing the bag stock fetches above a vendor's payout (CarriedKeeps)
     uint32_t AuctionWantedWorth = 0;  // copper the wanted lines of its buy list are worth to it
 };
 
@@ -626,6 +626,21 @@ inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<Erran
     offers.push_back(offer);
 }
 
+// Auction stock in the bags (WA3b): worth what listing it fetches above a vendor's payout, against the detour like
+// any errand; an auctioneer beside a stop the bot makes anyway joins it. It comes before the deposit, which would
+// bank the stock, and the mailbox, where a sale's money arrives later
+inline void ProvideAuction(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Governed || !snapshot.AuctionStockWorth)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Auction;
+    offer.Service = SERVICE_AUCTIONEER;
+    offer.WorthCopper = static_cast<float>(snapshot.AuctionStockWorth);
+    offers.push_back(offer);
+}
+
 // A mailbox or banker near a stop is done at that stop (STOP_JOIN_YARDS): its service bit goes onto the nearest stop
 // within that distance, else it stands as a stop of its own. PlanTrip joins an unplaced errand only to a stop whose
 // Services carry the bit, so the snapshot's stops come through here (WB8)
@@ -673,7 +688,8 @@ inline std::vector<ProviderRow> const& TravelProviders()
 }
 
 // The trip's providers with the bank and mail rows. A stop does its errands in the order the offers come: a banker's
-// withdrawal first (it may bring gear or sellable items), then selling and the rest, then the deposit and the mailbox
+// withdrawal first (it may bring gear or sellable items), then selling and the rest, the auction stock's listing,
+// then the deposit and the mailbox
 inline std::vector<ProviderRow> const& TripProviders()
 {
     static std::vector<ProviderRow> const rows = []
@@ -681,6 +697,7 @@ inline std::vector<ProviderRow> const& TripProviders()
         std::vector<ProviderRow> all = {{ErrandKind::BankWithdraw, "bank_withdraw", &ProvideBankWithdraw}};
         all.insert(all.end(), TravelProviders().begin(), TravelProviders().end());
         all.push_back({ErrandKind::Craft, "craft", &ProvideCraft});  // before the deposit: its products may go too
+        all.push_back({ErrandKind::Auction, "auction", &ProvideAuction});  // before the deposit banks the stock
         all.push_back({ErrandKind::BankDeposit, "bank_deposit", &ProvideBankDeposit});
         all.push_back({ErrandKind::Mail, "mail", &ProvideMail});
         return all;

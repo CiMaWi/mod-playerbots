@@ -26,10 +26,12 @@ namespace BankMail
 {
 struct MailKnowledge
 {
-    uint16 waiting{0};         // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
-    uint32 seenCopper{0};      // worth the bot saw in mail it read and left in the box; in memory only
-    uint32 expectedCopper{0};  // worth of the mail it expects (sent to itself, a sale); 0 until something fills it
-    uint32 refreshedMs{0};     // when waiting was last counted; 0 = never
+    uint16 waiting{0};     // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
+    uint32 seenCopper{0};  // worth the bot saw in mail it read and left in the box; in memory only
+    // Copper of delivered auction house mail not taken yet (a sale's proceeds, a bid back): the house's notice told
+    // the bot of it (auction WA3b; RefreshMailKnowledge counts it from the mail list)
+    uint32 expectedCopper{0};
+    uint32 refreshedMs{0};  // when waiting was last counted; 0 = never
 };
 
 // An item the bot keeps in its bank for a later level
@@ -103,6 +105,25 @@ struct CraftVisitData
     uint32 fire{0};           // the spell that lights the station where the bot stands first (WR15); 0: none or lit
 };
 
+// The auction's own data of an auctioneer visit (AuctionVisit.h, auction house WA3b; the lifecycle is
+// BotBankMail::visit). The bag stock is read anew at every step; this keeps the stacks looked at, so none is listed or
+// held twice, and the awaited listing, whose stack the next read no longer finds once the core took it.
+struct AuctionVisitData
+{
+    uint32 stepTick{0};  // the world tick (game time ms) the awaited listing was queued in
+    uint32 awaiting{0};  // the awaited listing's item low guid; 0 = none
+    uint32 awaitingEntry{0};
+    uint32 ask{0};  // its buyout, copper
+    uint32 floor{0};
+    uint32 moneyBefore{0};      // the bot's copper when it was queued
+    bool relist{false};         // listed again after an expiry
+    std::vector<uint32> tried;  // item low guids listed, held or refused on this visit
+    uint32 posted{0};
+    uint32 held{0};
+    uint32 refused{0};   // listings the core did not take
+    uint32 deposits{0};  // copper the listings cost
+};
+
 struct BotBankMail
 {
     MailKnowledge mail;
@@ -111,6 +132,7 @@ struct BotBankMail
     MailVisitData mailData;
     BankVisitData bankData;
     CraftVisitData craftData;
+    AuctionVisitData auctionData;
 };
 
 // A visit of any kind runs: the one test the AI update makes while none does

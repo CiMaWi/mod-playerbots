@@ -108,10 +108,13 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     snapshot.BankDueCount = due.count;
     snapshot.BankDueWorth = due.worth;
     snapshot.BankDepositSlots = std::min<uint32>(carried, known.bank.freeSlots);
+    // The bag stock's gain over a vendor, as SellableSlots' refresh just decided it at this level (WA3b)
+    if (known.bank.carried.level == bot->GetLevel())
+        snapshot.AuctionStockWorth = known.bank.carried.auctionGain;
 
     bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
     bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
-    // The auction plan's worths are zero until WA3b and WA4b fill them: no auctioneer joins a trip before then
+    // The auction plan's worths (WA3b stock; WA4b wanted lines): an auctioneer joins the stops only for them
     bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth;
     std::shared_ptr<Planner::PlannerIndexes const> const indexes =
         Planner::IndexesReady() ? Planner::Indexes() : nullptr;
@@ -126,7 +129,8 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
                               BANK_MAIL_STOPS, reachYards))
         {
             Planner::Service const& spot = indexes->services[found.index];
-            if (kind == Planner::ServiceKind::Banker && !BankMail::BankerServes(bot, spot.factionTemplate))
+            if ((kind == Planner::ServiceKind::Banker || kind == Planner::ServiceKind::Auctioneer) &&
+                !BankMail::BankerServes(bot, spot.factionTemplate))
                 continue;
             extras.push_back({kind == Planner::ServiceKind::Mailbox ? 0 : spot.entry,
                               {spot.mapId, spot.x, spot.y, spot.z},
@@ -531,6 +535,9 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 case WorldTravel::ErrandKind::Mail:
                     stop.mail = true;
                     continue;
+                case WorldTravel::ErrandKind::Auction:
+                    stop.auction = true;
+                    continue;
                 case WorldTravel::ErrandKind::Craft:
                     stop.craft = true;
                     break;
@@ -569,7 +576,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
             for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
                 if (errand.Kind == WorldTravel::ErrandKind::Mail ||
                     errand.Kind == WorldTravel::ErrandKind::BankWithdraw ||
-                    errand.Kind == WorldTravel::ErrandKind::BankDeposit)
+                    errand.Kind == WorldTravel::ErrandKind::BankDeposit ||
+                    errand.Kind == WorldTravel::ErrandKind::Auction)
                     bankMail.emplace_back(errand, joined ? "joined" : "detour");
         }
         tripMinutes += tripStop.DetourMinutes;

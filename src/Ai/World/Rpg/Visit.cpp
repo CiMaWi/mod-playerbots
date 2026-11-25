@@ -38,6 +38,8 @@ VisitKindRow const* RowOf(VisitKind kind)
             return &MailVisitRow();
         case VisitKind::Craft:
             return &CraftVisitRow();
+        case VisitKind::Auction:
+            return &AuctionVisitRow();
         default:
             return nullptr;
     }

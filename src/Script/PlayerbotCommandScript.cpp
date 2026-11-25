@@ -21,6 +21,7 @@
 #include "AuctionFixture.h"
 #include "AuctionIndex.h"
 #include "AuctionReference.h"
+#include "AuctionVisit.h"
 #include "Awareness.h"
 #include "BankCommands.h"
 #include "BattleGroundTactics.h"
@@ -374,6 +375,7 @@ public:
             {"index", AuctionIndex::HandleIndexCommand, SEC_PLAYER, Console::Yes},
             {"ref", AuctionReference::HandleRefCommand, SEC_PLAYER, Console::Yes},
             {"fixture", AuctionFixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
+            {"visit", BankMail::HandleAuctionVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

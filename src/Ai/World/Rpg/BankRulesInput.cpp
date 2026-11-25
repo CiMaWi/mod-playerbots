@@ -16,6 +16,7 @@
 #include "AuctionPricing.h"
 #include "AuctionReference.h"
 #include "AuctionRules.h"
+#include "AuctionVisit.h"
 #include "BankMailConfig.h"
 #include "BankMailState.h"
 #include "BotKind.h"
@@ -371,6 +372,11 @@ private:
         if (AuctionIndex::ItemEntry const* entry = _index ? _index->Find(proto->ItemId) : nullptr)
             in.typical = entry->typical;
         in.fees = _fees;
+        // WA3b: the seller's expiry memory; an item expired past the relist limit is held, so it is no stock any more
+        AuctionMemory::ItemMemory const memory =
+            AuctionMemory::Of(_botAI->GetBot()->GetGUID().GetCounter(), proto->ItemId);
+        in.expiredSteps = memory.expiredSteps;
+        in.quickSale = memory.quickSale;
         keep.auctionWorth = AuctionRules::StockWorth(in, sPlayerbotAIConfig.Auction);
         if (keep.auctionWorth <= keep.vendorPayout)
             return;
@@ -578,6 +584,11 @@ bool MaybeKeptForLater(ItemTemplate const* proto, uint8 level, SkillPath::Path c
     return path && SkillPath::MaterialOf(*path, proto->ItemId);
 }
 }  // namespace
+
+uint32_t AuctionVendorPayout(Item const* item, uint32_t units)
+{
+    return VendorPayoutOf(item, item->GetTemplate(), units);
+}
 
 KeepBotIn BuildKeepBot(Player const* bot)
 {

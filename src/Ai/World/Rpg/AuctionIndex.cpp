@@ -14,6 +14,7 @@
 
 #include "AuctionConfig.h"
 #include "AuctionHouseMgr.h"
+#include "AuctionVisit.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
@@ -217,31 +218,39 @@ public:
     void OnAuctionAdd(AuctionHouseObject* /*ah*/, AuctionEntry* entry) override
     {
         PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex add");
-        if (entry)
-            book.Add(FactsOf(entry));
+        if (!entry)
+            return;
+        book.Add(FactsOf(entry));
+        AuctionMemory::Listed(entry);
     }
 
     // After Successful or Expire, the same auction's end; alone, a cancel
     void OnAuctionRemove(AuctionHouseObject* /*ah*/, AuctionEntry* entry) override
     {
         PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex remove");
-        if (entry)
-            book.Remove(entry->Id);
+        if (!entry)
+            return;
+        book.Remove(entry->Id);
+        AuctionMemory::Removed(entry);
     }
 
     // A buyout (bid set to the buyout) or the leading bid at expiry
     void OnAuctionSuccessful(AuctionHouseObject* /*ah*/, AuctionEntry* entry) override
     {
         PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex sale");
-        if (entry)
-            book.Sale(FactsOf(entry), GameNow());
+        if (!entry)
+            return;
+        book.Sale(FactsOf(entry), GameNow());
+        AuctionMemory::Sold(entry);
     }
 
     void OnAuctionExpire(AuctionHouseObject* /*ah*/, AuctionEntry* entry) override
     {
         PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex expire");
-        if (entry)
-            book.Expire(FactsOf(entry), GameNow());
+        if (!entry)
+            return;
+        book.Expire(FactsOf(entry), GameNow());
+        AuctionMemory::Expired(entry);
     }
 };
 

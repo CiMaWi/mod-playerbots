@@ -39,9 +39,23 @@ uint16 CountWaitingMail(Player const* bot)
     return static_cast<uint16>(std::min<uint32>(waiting, std::numeric_limits<uint16>::max()));
 }
 
+// The copper of delivered auction house mail the bot has not taken (auction WA3b): what the house's notices of its
+// sales and of bids given back told it, so the trip planner sends it to a mailbox for the money
+uint32 AuctionCopperWaiting(Player const* bot)
+{
+    time_t const now = GameTime::GetGameTime().count();
+    uint64 copper = 0;
+    for (Mail const* mail : bot->GetMails())
+        if (mail->state != MAIL_STATE_DELETED && mail->messageType == MAIL_AUCTION && mail->money &&
+            now >= mail->deliver_time && now <= mail->expire_time)
+            copper += mail->money;
+    return static_cast<uint32>(std::min<uint64>(copper, std::numeric_limits<uint32>::max()));
+}
+
 void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail)
 {
     mail.waiting = CountWaitingMail(bot);
+    mail.expectedCopper = AuctionCopperWaiting(bot);
     mail.refreshedMs = std::max<uint32>(getMSTime(), 1);
 }
 
