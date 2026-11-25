@@ -1039,6 +1039,11 @@ int main()
         goals.slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
         Check(apply(goals, HOLD, NOQUEST) && !goals.slot.End(0) && !goals.slot.Query().Is(),
               "a quest goal under a kept noquest ends, also behind an interlude (WR20c-3's case)");
+        BotGoals routed;
+        routed.slot.Set(Typed(Goals::GoalKind::Quest, Goals::TargetType::Route, Goals::ROUTE_REASON));
+        routed.slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
+        Check(apply(routed, HOLD, NOQUEST) && !routed.slot.End(0) && !routed.slot.Query().Is(),
+              "a route goal (kind quest, target route) under a kept noquest ends too, behind an interlude (WQL5b)");
         goals.plan = std::make_shared<Goals::GoalPlan>();
         goals.planUsed = false;
         goals.slot.Set(GoalOf(Goals::GoalKind::MoveZone, 9, Source::Planner));

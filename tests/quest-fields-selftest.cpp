@@ -1127,6 +1127,24 @@ void PlacesAndTakes()
               reached == std::vector<std::uint32_t>{200, 201, 202, 203, 204, 206, 207, 208, 209},
           "far takes: beyond the near radius the quests of the nearest givers within reach that the rules allow, at "
           "most FAR_TAKES, none of the near ones (mutants: no count limit, no reach)");
+
+    // One far giver place with more quests than the cap: the count stops inside the place too (WQL5b review L9)
+    QuestGather crowded;
+    for (std::uint32_t i = 0; i < FAR_TAKES + 2; ++i)
+    {
+        crowded.quests.push_back(MakeQuest(300 + i, 400, {}));
+        crowded.relations.push_back({300 + i, 900, false, false});
+    }
+    QuestPlace hub = near;
+    hub.x = Mid(0) + 500.0f;
+    hub.entry = 900;
+    crowded.places.push_back(hub);
+    QuestIndex const busy = QuestIndex::Build(crowded);
+    std::vector<std::uint32_t> const capped =
+        FarTakeCandidates(busy, roamer, MAP_A, Mid(0), Mid(0), 150.0f, {}, Pricing{});
+    Check(capped.size() == FAR_TAKES,
+          "far takes: a far place that gives more quests than FAR_TAKES gives at most FAR_TAKES (mutant: the cap "
+          "inside a place removed)");
 }
 
 // WQ17b: the generated worlds again (their own stream of the seed) with givers, the take rules' fields and objective

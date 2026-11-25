@@ -2143,6 +2143,27 @@ inline void HeldFromQuests(std::vector<Check>& checks)
                                    [](auto const& dropped) { return dropped.kind == GoalKind::Quest; });
     Add(checks, "held from quests: a free bot is offered quest goals, a held one none (each named dropped)",
         Has(free, GoalKind::Quest) && !Has(held, GoalKind::Quest) && named, Summary(held));
+
+    // Questing WQL5b: the route's option (WQ18a) is a quest goal too, dropped by its kind under the same word
+    RoutePlan const route = SampleRoute(bot);
+    situation.route = &route;
+    situation.onCircuit = false;
+    situation.questsHeld = false;
+    Ranked const routedFree = Rank(bot, situation);
+    situation.questsHeld = true;
+    Ranked const routedHeld = Rank(bot, situation);
+    auto const heldWords = [](Ranked const& ranked)
+    {
+        return std::count_if(ranked.dropped.begin(), ranked.dropped.end(), [](Dropped const& dropped)
+                             { return dropped.kind == GoalKind::Quest && dropped.reason == "noquest"; });
+    };
+    bool const offered = std::any_of(routedFree.options.begin(), routedFree.options.end(), [](Option const& one)
+                                     { return IsRoute(one) && ChoiceWord(one) == "quest:route_0"; });
+    Add(checks,
+        "held from quests: a held bot with a route is offered no quest goal of either kind, the route dropped as "
+        "noquest (mutant: the gate keyed on the circuit's reason)",
+        offered && !Has(routedHeld, GoalKind::Quest) && heldWords(routedHeld) == heldWords(held) + 1,
+        Summary(routedHeld));
 }
 
 inline std::vector<Check> SyntheticChecks()
