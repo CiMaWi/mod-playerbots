@@ -695,6 +695,12 @@ bool LootObjectStack::WasLeft(ObjectGuid guid) const
     return itr != availableLoot.end() && itr->left.Left;
 }
 
+float LootObjectStack::Reach(ObjectGuid guid) const
+{
+    LootTargetList::const_iterator itr = availableLoot.find(guid);
+    return itr != availableLoot.end() ? itr->reach : 0.0f;
+}
+
 bool LootObjectStack::IsDeferred(ObjectGuid guid) const
 {
     LootTargetList::const_iterator itr = availableLoot.find(guid);

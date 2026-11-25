@@ -7,6 +7,9 @@
 #ifndef PLAYERBOTS_GRINDTARGETVALUE_H
 #define PLAYERBOTS_GRINDTARGETVALUE_H
 
+#include <ctime>
+#include <unordered_map>
+
 #include "TargetValue.h"
 
 class PlayerbotAI;
@@ -23,6 +26,10 @@ private:
     uint32 GetTargetingPlayerCount(Unit* unit);
     Unit* FindTargetForGrinding(uint32 assistCount);
     bool needForQuest(Unit* target);
+    bool Takes(Unit* unit);
+
+    // AW14: when each left candidate's `target` row was written (raw guid -> time()), pruned when a row is written
+    std::unordered_map<uint64, std::time_t> _leftRows;
 };
 
 #endif

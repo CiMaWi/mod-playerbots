@@ -21,6 +21,7 @@
 #include "GoalInterface.h"
 #include "PlannerPoolTypes.h"
 #include "QuestFailBook.h"
+#include "TestConstraints.h"
 #include "WorldTravelRules.h"
 
 namespace
@@ -463,6 +464,82 @@ int main()
         slot.Set(GoalOf(Goals::GoalKind::Errand, 0, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
         Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
+    }
+
+    // A test's release (professions WR30): ApplyConstraints ends the planner goals at a hold row turning off, so a
+    // released bot's first goal is chosen after the release; a constraint change that releases nothing keeps the goal
+    {
+        using namespace TestConstraints;
+        auto const apply = [](BotGoals& goals, std::uint32_t before, std::uint32_t after)
+        { return Releases(before, after) && Release(goals); };
+        // The control: WR20c-3's old rule (a quest goal under noquest only) leaves every other kind standing
+        auto const questOnly = [](BotGoals& goals, std::uint32_t, std::uint32_t after)
+        {
+            if (QuestChoicesAllowed(after) || !goals.slot.Holds(Goals::GoalKind::Quest))
+                return false;
+            return goals.slot.Cancel(Source::Planner);
+        };
+        auto const endsEveryKind = [](auto const& rule)
+        {
+            int ended = 0;
+            int kinds = 0;
+            for (std::size_t k = 1; k < static_cast<std::size_t>(Goals::GoalKind::Count); ++k)
+            {
+                BotGoals goals;
+                goals.slot.Set(GoalOf(static_cast<Goals::GoalKind>(k), 7, Source::Planner));
+                goals.run.running = true;
+                ++kinds;
+                if (rule(goals, HOLD, Next(HOLD, 0, HOLD & ~NOQUEST)) && !goals.slot.Query().Is() &&
+                    !goals.run.running && !goals.stalled)
+                    ++ended;
+            }
+            return ended == kinds;
+        };
+        Check(endsEveryKind(apply), "a release ends the held goal of every kind, with its run and without a stall");
+        Check(!endsEveryKind(questOnly), "control: the quest-only rule leaves the other kinds standing (caught)");
+
+        BotGoals goals;
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 8, Source::Planner));
+        goals.slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
+        Check(apply(goals, HOLD, NOQUEST) && !goals.slot.End(0) && !goals.slot.Query().Is(),
+              "a quest goal under a kept noquest ends, also behind an interlude (WR20c-3's case)");
+        goals.plan = std::make_shared<Goals::GoalPlan>();
+        goals.planUsed = false;
+        goals.slot.Set(GoalOf(Goals::GoalKind::MoveZone, 9, Source::Planner));
+        Check(apply(goals, HOLD, PLANNER | STATUS) && goals.planUsed,
+              "the plan taken before the release starts no goal after it");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Gather, 10, Source::Planner));
+        std::uint32_t const released = NOQUEST;
+        Check(!apply(goals, released, Next(released, NOFIGHT, 0)) &&
+                  goals.slot.Query().kind == Goals::GoalKind::Gather && !apply(goals, released, released) &&
+                  goals.slot.Query().target == 10,
+              "a goal chosen after the release stays at a change that releases nothing");
+        BotGoals never;
+        never.slot.Set(GoalOf(Goals::GoalKind::MoveZone, 11, Source::Planner));
+        Check(!apply(never, 0, Next(0, 0, HOLD)) && !apply(never, NOFIGHT, 0) && never.slot.Query().target == 11,
+              "a bot never held keeps its goal (a state row turning off is no release)");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 12, Source::Bridge));
+        Check(!apply(goals, HOLD, 0) && goals.slot.HasExternal(), "the bridge's quest order stays at a release");
+    }
+
+    // The gain rule (professions WR20c): a gather or money goal that took items or copper made progress without XP;
+    // the same gain is none for a grind or a quest goal, and no gain stalls a gather goal
+    {
+        auto const stalls = [](Goals::GoalKind kind, std::uint64_t gain)
+        {
+            BotGoals goals;
+            goals.run = {77, 5, 100, XpIsProgress(kind), true, false, kind};
+            goals.run.startGain = 10;
+            goals.run.gainCounts = GainIsProgress(kind);
+            GoalApply::EndRun(goals, 5, 100, 0, BLOCK, gain);
+            return goals.stalled.has_value();
+        };
+        Check(!stalls(Goals::GoalKind::Gather, 11) && !stalls(Goals::GoalKind::Money, 11),
+              "a gather or money goal that gained items or copper made progress");
+        Check(stalls(Goals::GoalKind::Gather, 10) && stalls(Goals::GoalKind::Money, 9),
+              "a gather or money goal without a gain stalls (mutant: any end is progress)");
+        Check(stalls(Goals::GoalKind::Grind, 11) && stalls(Goals::GoalKind::Quest, 11),
+              "a grind or quest goal's gain is no progress (mutant: gain counts for every kind)");
     }
 
     // The idle step
@@ -1837,11 +1914,13 @@ int main()
                   "on the way to the spot only the overrun ends it, timed out order_overrun at the factor times the "
                   "minutes");
         }
-        // gather, money at a node: the minutes; the executor's own ends (finished, bags_full) stay its own
+        // gather, money at a node: the executor's own ends (circuit_done, a stop's ends) and the overrun (WR13d-2)
         for (GoalKind kind : {GoalKind::Gather, GoalKind::Money})
-            Check(goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT - 1))) &&
-                      ends(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT)), Outcome::Finished, "order_time"),
-                  "a planned gather ends finished order_time when its minutes are over");
+            Check(goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT))) &&
+                      goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, OVER - 1))) &&
+                      ends(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, OVER)), Outcome::TimedOut, "order_overrun"),
+                  "a planned gather goes on past its minutes (its circuit ends it) and ends timed out order_overrun at "
+                  "the factor times the minutes (mutant: order_time at the minutes)");
         Check(!PlannedEnd(order(GoalKind::Gather), facts(STATUS_WANDER_RANDOM, OVER)).planned &&
                   !PlannedEnd(order(GoalKind::Grind), facts(STATUS_DO_GATHER, OVER)).planned &&
                   !PlannedEnd(order(GoalKind::Grind), facts(STATUS_WANDER_NPC, OVER)).planned,

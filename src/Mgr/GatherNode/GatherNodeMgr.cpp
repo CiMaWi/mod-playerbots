@@ -417,11 +417,12 @@ void GatherNodeMgr::LoadYields()
 {
     _nodeYields.clear();
     _hideYields.clear();
+    _rates = Planner::ReadServerRates();
     Recipes::LootTable const references = Planner::LoadLootTable("reference_loot_template");
-    auto const yieldsOf = [&references](Recipes::LootTable const& table, uint32 entry)
+    auto const yieldsOf = [this, &references](Recipes::LootTable const& table, uint32 entry)
     {
         std::vector<GatherYield> yields;
-        for (Recipes::Yield const& yield : Recipes::ExpectedYield(table, entry, &references))
+        for (Recipes::Yield const& yield : Recipes::ExpectedYield(table, entry, &references, _rates))
             yields.push_back({yield.item, yield.expected});
         return yields;
     };

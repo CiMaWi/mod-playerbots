@@ -53,6 +53,7 @@ constexpr float CAST_MIN_YARDS = 10.0f;
 constexpr float STAND_MAX_YARDS = 17.5f;
 constexpr float SECTOR_YARDS[] = {11.0f, 15.0f, 19.0f};
 constexpr float SECTOR_RADIANS = 15.0f * static_cast<float>(M_PI) / 180.0f;
+constexpr float CAST_HALF_ARC_DEGREES = 17.5f;  // the core's spread either side of the facing
 constexpr uint32 SECTOR_WET = 7;
 constexpr float FISHABLE_DEPTH = 1.0f;  // the core's 0.75 yd and a margin
 constexpr float DRY_WADE_YARDS = 0.2f;  // a stand's ground lies at most this far under a liquid's surface
@@ -74,7 +75,6 @@ constexpr uint32 MESH_TRIES = 4;           // stands judged by their path's end 
 constexpr float HERE_YARDS = 4.0f;         // a bot this near the place tries to fish where it stands
 constexpr float ON_FOOT_YARDS = 20.0f;     // a bot this near its stand walks on (KeepsOnFoot)
 constexpr uint32 MAX_PROBES = 3;
-constexpr uint32 MAX_REFUSED_CASTS = 3;
 constexpr uint32 CAST_START_MS = 2 * IN_MILLISECONDS;   // a cast that started no channel by then was refused
 constexpr uint32 CAST_STALL_MS = 30 * IN_MILLISECONDS;  // longer than the channel (21 s): the cast is over
 constexpr uint32 LOOT_WAIT_MS = 5 * IN_MILLISECONDS;    // the loot pipeline's time to store a catch
@@ -328,6 +328,47 @@ void TraceMiss(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data, char const* h
              bobber ? static_cast<int32>(bobber->getLootState()) : -1, !data.pool.IsEmpty(), data.casts);
 }
 
+// The trip's clocks (FishRules.h Trip): its time at the water from its first cast, its age and its minutes
+Fish::Trip Clocks(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data)
+{
+    constexpr float MS_PER_MINUTE = static_cast<float>(MINUTE * IN_MILLISECONDS);
+    Fish::Trip trip;
+    trip.cast = data.firstCastMs != 0;
+    if (trip.cast)
+        trip.minutes = GetMSTimeDiffToNow(data.firstCastMs) / MS_PER_MINUTE;
+    trip.statusMinutes = GetMSTimeDiffToNow(botAI->rpgInfo.startT) / MS_PER_MINUTE;
+    if (data.planMs)
+        trip.planMinutes = data.planMs / MS_PER_MINUTE;
+    return trip;
+}
+
+// The cast's channel seen (the watch or the hold): the stand holds, so its refused casts count in a row again
+// (FishRules.h RefusedAfter)
+void SeeChannel(NewRpgInfo::DoFish& data)
+{
+    data.channelSeen = true;
+    data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, true);
+}
+
+// The bot faces the water before its cast. The core aims the bobber at the facing the bot holds when the spell runs
+// (Spell.cpp TARGET_DEST_CASTER_FISHING), in the unit update before the movement update that would apply a
+// SetFacingTo turn (Unit::Update), so the facing is set at once; else the cast goes where the walk or another action
+// left the bot turned and starts no channel (WR25a-2: 8 of 30 first casts at a stand, 11 of 987 later ones)
+void FaceWater(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data, float facing)
+{
+    Player* const bot = botAI->GetBot();
+    if (botAI->testConstraints)
+    {
+        float const off = Position::NormalizeOrientation(bot->GetOrientation() - facing);
+        float const degrees = std::min(off, 2.0f * static_cast<float>(M_PI) - off) * 180.0f / static_cast<float>(M_PI);
+        if (degrees > CAST_HALF_ARC_DEGREES)
+            LOG_INFO("playerbots", "[Probe] {} fish turn {:.0f} degrees before cast {}", bot->GetName(), degrees,
+                     data.casts + 1);
+    }
+    bot->SetOrientation(facing);
+    bot->SendMovementFlagUpdate(true);
+}
+
 // The cast is over: the next tick casts again
 void CastOver(NewRpgInfo::DoFish& data)
 {
@@ -395,11 +436,9 @@ bool NewRpgDoFishAction::Execute(Event /*event*/)
             return true;
         }
     }
-    // The trip's own ends (FishRules.h): full bags, its time, a water that gives nothing; a fight ends it by OnCombat
-    Fish::Trip trip;
-    trip.minutes = GetMSTimeDiffToNow(botAI->rpgInfo.startT) / static_cast<float>(MINUTE * IN_MILLISECONDS);
-    if (data.planMs)
-        trip.planMinutes = data.planMs / static_cast<float>(MINUTE * IN_MILLISECONDS);
+    // The trip's own ends (FishRules.h): full bags, its time at the water, a water that gives nothing; a fight ends it
+    // by OnCombat
+    Fish::Trip trip = Clocks(botAI, data);
     trip.bagShare = AI_VALUE(uint8, "bag space") / 100.0;
     trip.missesInARow = data.missesInARow;
     trip.chance = data.chance;
@@ -471,15 +510,18 @@ bool NewRpgDoFishAction::Execute(Event /*event*/)
         Finish(POLE_REFUSED);
         return true;
     }
-    bot->SetFacingTo(facing);
+    FaceWater(botAI, data, facing);
     if (!botAI->CastSpell(data.spell, bot))
     {
         Trace(data, "cast refused");
-        if (++data.refusedCasts >= MAX_REFUSED_CASTS)
+        data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, false);
+        if (Fish::StandLost(data.refusedCasts))
             data.stand = WorldPosition();
         return true;
     }
     data.castMs = std::max<uint32>(getMSTime(), 1);
+    if (!data.firstCastMs)
+        data.firstCastMs = data.castMs;
     data.channelSeen = false;
     ++data.casts;
     return true;
@@ -592,6 +634,12 @@ bool NewRpgDoFishAction::KeepsOnFoot(PlayerbotAI* botAI, Player* bot)
            bot->GetExactDist2d(data->stand.GetPositionX(), data->stand.GetPositionY()) < ON_FOOT_YARDS;
 }
 
+bool NewRpgDoFishAction::PastDeadline(PlayerbotAI* botAI)
+{
+    auto const* data = std::get_if<NewRpgInfo::DoFish>(&botAI->rpgInfo.data);
+    return data && Fish::PastDeadline(Clocks(botAI, *data));
+}
+
 void NewRpgDoFishAction::Trace(NewRpgInfo::DoFish const& data, char const* where)
 {
     if (!botAI->testConstraints || where == traced)
@@ -634,7 +682,7 @@ bool NewRpgDoFishAction::Watch(NewRpgInfo::DoFish& data)
     Spell* const channel = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
     bool const fishing = channel && channel->m_spellInfo && IsFishingRank(channel->m_spellInfo->Id);
     if (fishing)
-        data.channelSeen = true;
+        SeeChannel(data);
     if (GameObject* const bobber = Bite(bot, data))
     {
         Click(botAI, data, bobber);
@@ -653,7 +701,8 @@ bool NewRpgDoFishAction::Watch(NewRpgInfo::DoFish& data)
     else
     {
         TraceMiss(botAI, data, "no_channel", nullptr);
-        if (++data.refusedCasts >= MAX_REFUSED_CASTS)
+        data.refusedCasts = Fish::RefusedAfter(data.refusedCasts, false);
+        if (Fish::StandLost(data.refusedCasts))
             data.stand = WorldPosition();
     }
     CastOver(data);
@@ -671,7 +720,7 @@ bool NewRpgDoFishAction::HoldFishChannel(PlayerbotAI* botAI)
         return false;
     PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "NewRpgDoFish::HoldChannel")
                                                     : nullptr);
-    data->channelSeen = true;
+    SeeChannel(*data);
     NoteWatchTick(botAI, *data);
     if (GameObject* const bobber = Bite(bot, *data))
         Click(botAI, *data, bobber);
@@ -723,7 +772,8 @@ void NewRpgDoFishAction::EndTrip(PlayerbotAI* botAI, NewRpgInfo::DoFish const& d
              "back {}, {} s",
              bot->GetName(), source, area, data.casts, data.catches, data.pool.IsEmpty() ? "not" : "", data.chance,
              weaponBack ? 1 : 0, GetMSTimeDiffToNow(botAI->rpgInfo.startT) / IN_MILLISECONDS);
-    EventLog::Emit(bot, EventLog::EventType::FishTrip, source, area, data.catches);
+    // The trip's casts beside its catches (WR19c); the row's own area column says where
+    EventLog::Emit(bot, EventLog::EventType::FishTrip, source, data.casts, data.catches);
 }
 
 void NewRpgDoFishAction::OnCombat(PlayerbotAI* botAI)

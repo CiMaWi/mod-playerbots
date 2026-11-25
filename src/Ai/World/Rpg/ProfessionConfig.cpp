@@ -88,7 +88,7 @@ constexpr std::size_t ServedCell(std::size_t n)
     return 0;
 }
 
-constexpr std::size_t PlainRowCount = 4;
+constexpr std::size_t PlainRowCount = 3;
 constexpr std::size_t KeyCount = CRAFT_COUNT + ServedCellCount();
 constexpr std::size_t RowCount = PlainRowCount + KeyCount;
 
@@ -142,8 +142,6 @@ constexpr Row RowAt(std::size_t index)
         case 1:
             return {"Craft.VisitDeadlineSeconds", &ProfessionConfig::CraftVisitDeadlineSeconds, 60, 3600};
         case 2:
-            return {"Fish.TripDeadlineSeconds", &ProfessionConfig::FishTripDeadlineSeconds, 60, 3600};
-        case 3:
             return {"VisitStepSeconds", &ProfessionConfig::VisitStepSeconds, 1, 60};
         default:
             break;

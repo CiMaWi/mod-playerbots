@@ -346,7 +346,8 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
                 if (!botAI->HasSkill(SKILL_SKINNING) || !GatherPassBy::Skins(botAI, lootObject.guid) ||
                     !botAI->CastSpell(SKINNING, creature))
                     return false;
-                GatherPassBy::NoteTake(botAI, lootObject.guid, true);  // a hide that paid (WR13c)
+                NewRpgDoGatherAction::NoteHarvestCast(botAI, lootObject.guid);  // a creature stop's skin (WR20c)
+                GatherPassBy::NoteTake(botAI, lootObject.guid, true);           // a hide that paid (WR13c)
                 return true;
         }
     }

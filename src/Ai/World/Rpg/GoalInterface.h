@@ -159,6 +159,12 @@ public:
 
     Active const& Query() const { return _current; }
 
+    // A goal of this kind holds the slot or waits behind the interlude that holds it
+    bool Holds(Goals::GoalKind kind) const
+    {
+        return (_current.Is() && _current.kind == kind) || (_previous && _previous->kind == kind);
+    }
+
     // Minutes since the goal started, 0 without one
     float MinutesSince(std::uint32_t nowMs) const
     {
@@ -577,6 +583,13 @@ inline bool XpIsProgress(Goals::GoalKind kind)
     return kind == Goals::GoalKind::Grind || kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
 }
 
+// The goals judged by what they took (professions WR20c): a gather or a money goal that gained items or copper made
+// progress, whether or not its kills gave XP
+inline bool GainIsProgress(Goals::GoalKind kind)
+{
+    return kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
+}
+
 // The goal in the slot (no interlude) while its executor runs: its key, the log signature and the experience (level
 // and XP, XpNow) when it started
 struct Run
@@ -590,7 +603,9 @@ struct Run
     Goals::GoalKind kind{Goals::GoalKind::None};
     bool judged{false};  // a judged end of its executor came (NoteStatusEnd): the last one's outcome and note
     StatusEnd::Outcome lastOutcome{StatusEnd::Outcome::Finished};
-    char const* lastNote{""};  // a literal (StatusEnd::Note)
+    char const* lastNote{""};    // a literal (StatusEnd::Note)
+    std::uint64_t startGain{0};  // the bot's copper plus its bag items' count at the start (Planner GainNow)
+    bool gainCounts{false};      // GainIsProgress(kind): a gain of them is progress
 };
 
 // A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
@@ -898,8 +913,10 @@ struct PlannedAnswer
 };
 
 // A status the planner started for its goal ends by the goal's condition, not by upstream's timer (3.19 (4)): a grind
-// or money spot and a gather when the order's minutes since its start are over (finished, order_time; on the way to
-// the spot only the overrun); a rest once rested (finished, rested); any of them once the order ran
+// or money spot when the order's minutes since its start are over (finished, order_time; on the way to the spot only
+// the overrun); a gather by its executor's own ends (circuit_done, its stops' ends; professions WR13d-2: a circuit's
+// minutes are a straight-line estimate, and a one-stop lap of under a minute ended before its walk arrived), so only
+// the overrun bounds it; a rest once rested (finished, rested); any of them once the order ran
 // ORDER_OVERRUN_FACTOR times its minutes (timed out, order_overrun). Planned: a planner goal of those kinds in the
 // status that carries it out, for a bot the planner owns, no fallback, no sick rest. The other kinds keep their
 // executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. The idle step's fallback (3.19
@@ -930,7 +947,7 @@ inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
         if (in.healthPercent >= RESTED_PERCENT && (in.manaPercent < 0.0f || in.manaPercent >= RESTED_PERCENT))
             return {true, true, StatusEnd::Outcome::Finished, "rested"};
     }
-    else if (!way && minutes >= goal.minutes)
+    else if (!way && !node && minutes >= goal.minutes)
         return {true, true, StatusEnd::Outcome::Finished, "order_time"};
     if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
         return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};
@@ -955,10 +972,12 @@ inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_
 }
 
 // The running goal's executor ended: its key stalls for the block time (BlockKey) when the log is as it was at the
-// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress: it does
-// not stall, and the others stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd)
-// closes without a stall; a changed log still lifts every stall
-inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs)
+// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress, and so
+// did a gather or money goal that gained items or copper (gain: GainNow, WR20c): it does not stall, and the others
+// stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall; a
+// changed log still lifts every stall
+inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs,
+                   std::uint64_t gain = 0)
 {
     if (!goals.run.running)
         return;
@@ -973,8 +992,25 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
         return;
     if (goals.run.xpCounts && xp > goals.run.startXp)
         return;
+    if (goals.run.gainCounts && gain > goals.run.startGain)
+        return;
     if (BlockKey(goals, goals.run.key, log, nowMs, blockMs))
         goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
+}
+
+// A test's release (TestConstraints::Releases, TravelOrders::ApplyConstraints): every planner goal the bot holds ends,
+// of any kind and also one behind an interlude, with its run and without a stall, and the plan taken before the
+// release starts no goal, so the first goal after it comes from the release's own snapshot, chosen under the
+// constraints the release keeps (professions WR30: a zone move taken at the pool spot before the hold walked the
+// released bot away from its fixture). A quest goal under a kept noquest is one such goal; the plans offer it none
+// (Goals::Situation::questsHeld). The bridge's goal stays. True when a goal ended
+inline bool Release(BotGoals& goals)
+{
+    goals.planUsed = true;
+    if (!goals.slot.Cancel(Source::Planner))
+        return false;
+    goals.run = {};
+    return true;
 }
 
 // How a goal's start went (3.5); anything but Started changed nothing but a refused goal's block (StartActive)
@@ -996,6 +1032,7 @@ struct StartFacts
     bool stallRule{true};      // false: the bridge's order, the partner's wish
     std::uint32_t nowMs{0};    // the planner's clock (getMSTime)
     std::uint32_t blockMs{0};  // how long a block holds (Planner.BlockMinutes); 0: none holds
+    std::uint64_t gain{0};     // the bot's copper plus its bag items' count (GainNow)
 };
 
 // One goal started by its executor (3.5): `start` (StartGoal) returns false having ended nothing, and then the goals
@@ -1026,8 +1063,10 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
             goals.stallRow = StallRow{kind, false, StatusEnd::Outcome::Finished, "", true};
         return StartResult::Refused;
     }
-    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs);
+    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs, facts.gain);
     goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
+    goals.run.startGain = facts.gain;
+    goals.run.gainCounts = GainIsProgress(kind);
     goals.noOptionRun = 0;
     return StartResult::Started;
 }

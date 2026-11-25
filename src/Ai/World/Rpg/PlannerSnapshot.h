@@ -190,6 +190,13 @@ struct Snapshot
     std::optional<ProfessionRules::BotProfessions> person;
     std::vector<ProfessionRung> ladders;
 
+    // What a gatherer knows of its zone's spawn points (WR13d, GatherLive.cpp FillGatherSight; a herbalist or miner
+    // only): those within its sight (the map's visibility range) that hold a node, and those within it that hold none
+    // or that it took or found empty within their respawn (Gather::Memory); spawn ids, sorted. The circuit counts
+    // the first as up and leaves the second out (Gather::ApplySight)
+    std::vector<std::uint32_t> gatherUp;
+    std::vector<std::uint32_t> gatherDown;
+
     // The route search's own view of the bot as a trip asks it (planning WN1a, PlannerRouteCost.h): filled on the map
     // thread with the rest, transports on and the test constraints applied; its points and taxi mask are its own copy
     TravelRoute::Snapshot route;
@@ -208,7 +215,8 @@ struct Snapshot
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
                ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
-               (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
+               (knownRecipes.capacity() + toolsHeld.capacity() + gatherUp.capacity() + gatherDown.capacity()) *
+                   sizeof(std::uint32_t) +
                ladders.capacity() * sizeof(ProfessionRung) + materials.capacity() * sizeof(MaterialHeld) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *

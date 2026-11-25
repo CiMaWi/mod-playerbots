@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "FishRules.h"
+#include "economy-cases.h"
 
 using Fish::Candidate;
 using Fish::Fisher;
@@ -166,6 +167,9 @@ void HandCases()
     // A trip ends at each of its ends, in order
     Trip trip;
     Check(Fish::Ends(trip) == TripEnd::None, "a fresh trip goes on");
+    trip.statusMinutes = 99.0f;
+    Check(Fish::Ends(trip) == TripEnd::None, "its time runs at the water: a trip that never cast has no time_up");
+    trip.cast = true;
     trip.inCombat = true;
     trip.bagShare = 1.0;
     trip.minutes = 99.0f;
@@ -183,7 +187,52 @@ void HandCases()
     Check(Fish::BarrenCasts(0.15) > Fish::BarrenCasts(0.5) && Fish::BarrenCasts(1.0) == Fish::BARREN_MIN_CASTS &&
               Fish::BarrenCasts(0.0) == Fish::BARREN_MAX_CASTS,
           "the barren run grows as the chance falls and stays bounded");
+    // Its own time ends a trip before the deadline, whatever the walk took (WR27: the deadline at the trip's minutes,
+    // counted with the walk, ended every trip that fished its time on the night lab5-20261122-030123)
+    Trip due;
+    due.statusMinutes = 2.0f * Fish::TRIP_MINUTES - 0.1f;
+    Check(!Fish::PastDeadline(due), "a walk within twice the trip's minutes is no deadline");
+    due.statusMinutes = 2.0f * Fish::TRIP_MINUTES + 0.1f;
+    Check(Fish::PastDeadline(due), "a walk that never reached the water ends at the deadline");
+    due.cast = true;
+    due.minutes = Fish::TRIP_MINUTES + 0.5f;
+    due.statusMinutes = due.minutes + 15.0f;
+    Check(Fish::Ends(due) == TripEnd::TimeUp && !Fish::PastDeadline(due),
+          "its time at the water ends a trip after a long walk, before the deadline");
+    due.minutes = 2.0f * Fish::TRIP_MINUTES + 0.1f;
+    Check(Fish::PastDeadline(due), "a trip whose ends failed meets the deadline");
+    // Refused casts count in a row: a cast seen channelling resets them (WR27 follow-up). The control counts them in
+    // total, as the code did until WR25a, and loses a stand that fished 66 times
+    {
+        std::vector<bool> const casts = {true, false, true, false, false, true, false, true, false, false, true, true};
+        auto const lost = [&casts](bool inARow)
+        {
+            std::uint32_t refused = 0;
+            for (bool const channelled : casts)
+            {
+                refused = inARow ? Fish::RefusedAfter(refused, channelled) : refused + (channelled ? 0u : 1u);
+                if (Fish::StandLost(refused))
+                    return true;
+            }
+            return false;
+        };
+        Check(!lost(true), "a stand with refusals between good casts is kept");
+        Check(lost(false), "control: refusals counted in total lose that stand");
+        std::uint32_t refused = 0;
+        for (std::uint32_t i = 0; i < Fish::MAX_REFUSED_CASTS - 1; ++i)
+            refused = Fish::RefusedAfter(refused, false);
+        Check(!Fish::StandLost(refused) && Fish::StandLost(Fish::RefusedAfter(refused, false)) &&
+                  !Fish::StandLost(Fish::RefusedAfter(refused, true)),
+              "refused casts in a row lose the stand, a channel resets");
+    }
+    // The estimate on the trip's option (WR25a): the plan's catches, and the units those give
+    Water twoEach = easy;
+    twoEach.openYields = {{500, 2.0, 0, 5000, 0}};
+    Planner::Goals::GatherNode const tripOption = Fish::TripOption(twoEach, fair, quiet, false, Fish::Spot{}, 1.0f);
     Fish::TripPlan const plan = Fish::PlanTrip(easy, fair, false);
+    Check(tripOption.id && Near(tripOption.takes, plan.catches) && Near(tripOption.units, 2.0 * plan.catches) &&
+              Near(tripOption.gatherMinutes, plan.minutes) && tripOption.fightMinutes == 0.0f,
+          "estimate: the trip's option carries the plan's catches, minutes and units");
     Check(Near(plan.casts, Fish::TRIP_MINUTES / Fish::CAST_MINUTES) &&
               Near(plan.catches, plan.casts * Fish::ChanceAt(easy, fair, false)),
           "a trip's casts and expected catches");
@@ -201,6 +250,7 @@ struct Rules
     std::function<double(std::uint32_t, std::int32_t, bool)> chance = Fish::CatchChance;
     bool tripEnds = true;
     bool fishAtZeroSkill = false;
+    std::function<bool(Trip const&)> pastDeadline = Fish::PastDeadline;
 };
 
 struct Violations
@@ -208,6 +258,7 @@ struct Violations
     int harder{0};
     int zeroSkill{0};
     int endless{0};
+    int deadline{0};  // a trip the status deadline ended before its own ends
     int poolLowers{0};
     int refusedPicked{0};
     int nondeterministic{0};
@@ -260,16 +311,28 @@ void SearchWorld(std::mt19937& rng, Rules const& rules, Violations& v)
     if (!bot.skill && (rules.fishAtZeroSkill || Fish::Usable(candidates[0].water, bot, false)))
         ++v.zeroSkill;
 
-    // A trip always ends: random casts at the water's chance end within a bounded count
+    // A trip always ends, by its own rule before the status deadline: after a walk of up to its minutes, casts at the
+    // water's chance that last up to a whole channel and its loot (CAST_MINUTES) end within a bounded count. The status
+    // check runs first in an engine pass, the trip's ends only between casts (NewRpgStatus.cpp, NewRpgDoFish.cpp)
     double const chance = rules.chance(bot.skill, base, false);
     Trip trip;
+    trip.planMinutes = static_cast<float>(u(3, 30));
+    trip.statusMinutes = static_cast<float>(u(0, static_cast<int>(trip.planMinutes)));
     trip.chance = std::max(chance, 0.01);
     trip.bagShare = u(0, 60) / 100.0;
     std::uniform_real_distribution<double> roll(0.0, 1.0);
     bool ended = false;
     for (int cast = 0; cast < 1000 && !ended; ++cast)
     {
-        trip.minutes += Fish::CAST_MINUTES;
+        float const length = Fish::CAST_MINUTES * u(1, 10) / 10.0f;
+        trip.cast = true;
+        trip.minutes += length;
+        trip.statusMinutes += length;
+        if (rules.pastDeadline(trip))
+        {
+            ++v.deadline;
+            break;
+        }
         if (roll(rng) < chance)
         {
             trip.missesInARow = 0;
@@ -298,6 +361,7 @@ void SearchCases()
     Check(v.harder == 0, "a harder water is never easier: " + std::to_string(v.harder));
     Check(v.zeroSkill == 0, "no fishing at skill 0: " + std::to_string(v.zeroSkill));
     Check(v.endless == 0, "a trip always ends: " + std::to_string(v.endless));
+    Check(v.deadline == 0, "a trip ends by its own rule before the deadline: " + std::to_string(v.deadline));
     Check(v.poolLowers == 0, "a pool never lowers the chance: " + std::to_string(v.poolLowers));
     Check(v.refusedPicked == 0, "a refused water is never picked: " + std::to_string(v.refusedPicked));
     Check(v.nondeterministic == 0, "the same input gives the same answer: " + std::to_string(v.nondeterministic));
@@ -310,6 +374,9 @@ void SearchCases()
     Rules never;
     never.tripEnds = false;
     Check(Search(never).endless > 0, "control: a trip that never ends is caught");
+    Rules night;
+    night.pastDeadline = [](Trip const& trip) { return trip.statusMinutes > trip.planMinutes; };
+    Check(Search(night).deadline > 0, "control: the night's deadline at the trip's minutes with the walk is caught");
     Rules zero;
     zero.fishAtZeroSkill = true;
     Check(Search(zero).zeroSkill > 0, "control: fishing at skill 0 is caught");
@@ -320,10 +387,65 @@ void SearchCases()
 }
 }  // namespace
 
+// The economy reference's fishing case (WR29): Westfall's open water (area 40, base skill -20) at effective skill 50,
+// its loot rows of the world database (fishing_loot_template 40: reference 11002 in group 1 at 100 %; the
+// reference's group of fish), the catch rule here and the loot at the server's rates (Recipes::ExpectedYield)
+void RateCases()
+{
+    using EconomyCases::At;
+    constexpr std::uint32_t SMALLFISH = 6291;
+    Recipes::LootTable open;
+    open[40] = {{11002, 11002, 100.0f, 1, 1, 1, 1}};
+    Recipes::LootTable references;
+    references[11002] = {{858, 0, 0.5f, 1, 1, 1, 1},   {3385, 0, 0.5f, 1, 1, 1, 1},  {6289, 0, 0.0f, 1, 1, 1, 1},
+                         {6291, 0, 18.0f, 1, 1, 1, 1}, {6308, 0, 30.0f, 1, 1, 1, 1}, {6309, 0, 0.4f, 1, 1, 1, 1},
+                         {6310, 0, 0.2f, 1, 1, 1, 1},  {6311, 0, 0.06f, 1, 1, 1, 1}, {6363, 0, 0.03f, 1, 1, 1, 1},
+                         {6364, 0, 0.01f, 1, 1, 1, 1}, {6645, 0, 0.3f, 1, 1, 1, 1},  {8350, 0, 0.05f, 1, 1, 1, 2}};
+    std::vector<EconomyCases::Case> const cases = {
+        {"fishing",
+         {{"Open-water normal catch percentage", "catch", At::Both, 44.0},
+          {"Open-water junk chance", "junk", At::Both, 14.0 / 25.0},
+          {"Mean smallfish from area 40 default-mode branch, stock", "smallfish", At::Stock, 99.0 / 1250.0},
+          {"Configured smallfish from that branch", "smallfish", At::Ours, 99.0 / 625.0},
+          {"Pool normal catch gate", "pool", At::Both, 100.0},
+          {"Fishing pure skill 150 chance is truncated before scaling", "perMille", At::Both, 330.0},
+          {"Expected clicks per gain at 150", "clicks", At::Both, 100.0 / 33.0}},
+         [&](Recipes::ServerRates const& rates)
+         {
+             double const catchChance = Fish::CatchChance(50, -20, false);
+             double fish = 0.0;
+             for (Recipes::Yield const& yield : Recipes::ExpectedYield(open, 40, &references, rates))
+                 if (yield.item == SMALLFISH)
+                     fish = yield.expected;
+             double const perMille = SkillPath::FishChancePerMille(150);
+             return std::map<std::string, double>{{"catch", std::round(catchChance * 100.0)},
+                                                  {"junk", 1.0 - catchChance},
+                                                  {"smallfish", catchChance * fish},
+                                                  {"pool", Fish::CatchChance(50, -20, true) * 100.0},
+                                                  {"perMille", perMille},
+                                                  {"clicks", SkillPath::PER_MILLE / perMille}};
+         }},
+    };
+    EconomyCases::Run(cases, Check);
+    // a catch's skill worth counts the server's gathering step
+    Water water;
+    water.area = 40;
+    water.baseSkill = -20;
+    Fisher bot;
+    bot.skill = 50;
+    bot.maxSkill = 75;
+    bot.poleHeld = true;
+    bot.rates.minuteValue = 10.0f;
+    double const stock = Fish::CastWorth(water, bot, false);
+    bot.server = EconomyCases::Ours();
+    Check(Fish::CastWorth(water, bot, false) > stock, "a cast's skill worth grows with the gathering step");
+}
+
 int main()
 {
     HandCases();
     SearchCases();
+    RateCases();
     std::cout << "FISH rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
     return failed ? 1 : 0;
