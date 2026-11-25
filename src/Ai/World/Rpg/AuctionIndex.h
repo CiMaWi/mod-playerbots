@@ -25,6 +25,10 @@ std::shared_ptr<Snapshot const> Current();
 // World thread, from the module's world update: a timer add; every PublishSeconds a refresh and a publication
 void Update(std::uint32_t diff);
 
+// World thread: a publication now, the same work as Update's (the auction fixture's check reads the index right after
+// an act, WA1c)
+void PublishNow();
+
 // playerbots auction index <item id or link>: prints an item's entry from the snapshot (read only)
 bool HandleIndexCommand(ChatHandler* handler, char const* args);
 }  // namespace AuctionIndex

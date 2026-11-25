@@ -194,6 +194,12 @@ void Update(std::uint32_t diff)
         pmo->finish();
 }
 
+void PublishNow()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex::PublishNow");
+    Publish();
+}
+
 bool HandleIndexCommand(ChatHandler* handler, char const* args)
 {
     std::string text = args ? args : "";
