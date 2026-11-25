@@ -1050,16 +1050,18 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
 
     // The skill path's materials the auction sells cheapest (auction house WA7b, PLAN 3.7): the kept path's wants
     // there, each at most what getting it the cheapest other way costs; funded as the market's claim, after the
-    // profession reserve (UpkeepNeeds::Fund)
+    // profession reserve (UpkeepNeeds::Fund). The path was computed earlier: the units held now (bags and bank, as
+    // the path's snapshot counts them) come off its want
     if (SkillPath::Path const* path = KeptPath(botAI))
     {
+        auto const held = [bot](uint32 item) { return bot->GetItemCount(item, true); };
         auto const payout = [](uint32 item)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
             return proto ? proto->SellPrice : 0u;
         };
         for (AuctionRules::BuyLine const& line :
-             AuctionRules::PathLines(path->materials, static_cast<uint8>(Materials::Kind::Auction), payout))
+             AuctionRules::PathLines(path->materials, static_cast<uint8>(Materials::Kind::Auction), held, payout))
             lines.push_back(line);
     }
     return AuctionRules::BuyList(std::move(lines));

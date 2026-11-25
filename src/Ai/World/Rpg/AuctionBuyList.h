@@ -86,15 +86,25 @@ inline BuyLine PathLine(std::uint32_t item, std::uint32_t units, std::uint32_t o
 }
 
 // The skill path's lines: each material whose cheapest source is the auction (source == auctionKind, the pricer's
-// Materials::Kind::Auction), for the units beyond what the bags hold (its want). Recipes and ranks stay with the
-// trainers and vendors. payout(item): one unit's vendor payout in copper
-template <typename MaterialList, typename Payout>
-std::vector<BuyLine> PathLines(MaterialList const& materials, std::uint8_t auctionKind, Payout const& payout)
+// Materials::Kind::Auction), for the units the bot lacks now: its want when the path was computed, at most what the
+// path uses beyond the units the bot holds at this moment (heldNow(item): bags and bank, as the path counts them). The
+// kept path is older than the bags, so a bot that gathered or was sent the material since buys no unit it already
+// holds, and one whose bags emptied never asks for more than the path's want. Recipes and ranks stay with the trainers
+// and vendors. payout(item): one unit's vendor payout in copper
+template <typename MaterialList, typename Held, typename Payout>
+std::vector<BuyLine> PathLines(MaterialList const& materials, std::uint8_t auctionKind, Held const& heldNow,
+                               Payout const& payout)
 {
     std::vector<BuyLine> lines;
     for (auto const& material : materials)
-        if (material.wanted && material.source == auctionKind)
-            lines.push_back(PathLine(material.item, material.wanted, material.otherCopperEach, payout(material.item)));
+    {
+        if (!material.wanted || material.source != auctionKind)
+            continue;
+        std::uint32_t const held = heldNow(material.item);
+        std::uint32_t const lacking = material.used > held ? material.used - held : 0;
+        if (std::uint32_t const units = std::min<std::uint32_t>(material.wanted, lacking))
+            lines.push_back(PathLine(material.item, units, material.otherCopperEach, payout(material.item)));
+    }
     return lines;
 }
 

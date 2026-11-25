@@ -1036,8 +1036,10 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     std::size_t marketSales = 0;
     auto const linesOf = [&](SkillPath::Path const& path)
     {
-        std::vector<AuctionRules::BuyLine> const lines = AuctionRules::BuyList(
-            AuctionRules::PathLines(path.materials, auctionKind, [](std::uint32_t) { return 0u; }));
+        // the sample bots hold nothing, as when their paths were computed: every want stands
+        auto const none = [](std::uint32_t) { return 0u; };
+        std::vector<AuctionRules::BuyLine> const lines =
+            AuctionRules::BuyList(AuctionRules::PathLines(path.materials, auctionKind, none, none));
         std::size_t expected = 0;
         for (SkillPath::Material const& material : path.materials)
         {

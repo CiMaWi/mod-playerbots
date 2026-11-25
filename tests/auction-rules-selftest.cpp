@@ -1735,21 +1735,40 @@ void CheckBuyListHand()
     struct PathMaterialRow
     {
         std::uint32_t item;
+        std::uint32_t used;
         std::uint32_t wanted;
         std::uint8_t source;
         std::uint32_t otherCopperEach;
     };
     constexpr std::uint8_t AUCTION_KIND = 7;  // Materials::Kind::Auction
     std::vector<PathMaterialRow> const materials = {
-        {820, 5, AUCTION_KIND, 90}, {821, 5, 3, 0}, {822, 0, AUCTION_KIND, 90}, {823, 2, AUCTION_KIND, 0}};
+        {820, 5, 5, AUCTION_KIND, 90}, {821, 5, 5, 3, 0}, {822, 9, 0, AUCTION_KIND, 90}, {823, 2, 2, AUCTION_KIND, 0}};
+    auto const payoutOf = [](std::uint32_t) { return 4u; };
     std::vector<BuyLine> const pathLines =
-        BuyList(PathLines(materials, AUCTION_KIND, [](std::uint32_t) { return 4u; }));
+        BuyList(PathLines(materials, AUCTION_KIND, [](std::uint32_t) { return 0u; }, payoutOf));
     for (BuyLine const& line : pathLines)
         std::cout << "  path line " << line.item << " x" << line.units << " ceiling " << CeilingOf(line) << '\n';
     Check(pathLines.size() == 1 && pathLines[0].item == 820 && pathLines[0].units == 5 &&
               pathLines[0].owner == LineOwner::Path && CeilingOf(pathLines[0]) == 90 &&
               pathLines[0].excessUnitWorth == 4,
           "a path line only for a wanted material the auction sells cheapest, at most its other way's cost");
+    // The kept path is older than the bags (WA7 review): 824's path uses 12 and wanted 7 with 5 held. A line asks for
+    // what the bot lacks now, never for more than the path's want. Control: a rule that does not read the bags
+    std::vector<PathMaterialRow> const kept = {{824, 12, 7, AUCTION_KIND, 90}};
+    auto const unitsHolding = [&](std::uint32_t heldNow, bool readsBags = true)
+    {
+        std::vector<BuyLine> const now =
+            BuyList(PathLines(kept, AUCTION_KIND, [=](std::uint32_t) { return readsBags ? heldNow : 0u; }, payoutOf));
+        return now.empty() ? 0u : now[0].units;
+    };
+    std::cout << "  path line 824 (uses 12, wanted 7) holding 5: x" << unitsHolding(5) << ", 9: x" << unitsHolding(9)
+              << ", 12: x" << unitsHolding(12) << ", 40: x" << unitsHolding(40) << ", 0: x" << unitsHolding(0)
+              << "; control holding 40 unread: x" << unitsHolding(40, false) << '\n';
+    Check(unitsHolding(5) == 7 && unitsHolding(9) == 3 && unitsHolding(12) == 0 && unitsHolding(40) == 0,
+          "a path line asks for the units the bot lacks now: none it has come to hold since the path was computed");
+    Check(unitsHolding(0) == 7, "a path line never asks for more than the path's want, emptied bags or not");
+    Check(unitsHolding(40, false) == 7,
+          "control: a path line that does not read the bags buys 7 units of what the bot holds (caught)");
     BuyLine const atAuctionCost = PathLine(820, 5, 60, 4);  // control: the ceiling from the auction's own cost
     Check(
         TypicalCopper(pathLines.empty() ? BuyLine{} : pathLines[0], 60) == 300 && TypicalCopper(atAuctionCost, 60) == 0,
