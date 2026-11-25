@@ -1004,6 +1004,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
     // Class quests (upkeep WU20a): a governed bot's (one that keeps its possessions) facts for the unlock bonus; the
     // job adds the trainer's spells
     situation.questsHeld = !TestConstraints::QuestChoicesAllowed(botAI->testConstraints);  // a test's noquest
+    situation.fightsHeld = !TestConstraints::StartsFights(botAI->testConstraints);         // a test's nofight
     situation.governed = botAI->KeepsPossessions();
     if (situation.governed)
     {

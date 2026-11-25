@@ -457,6 +457,7 @@ struct Situation
     std::uint32_t gatherRefusedItem{0};  // a wanted material only creatures the bot may not fight give (WR20c)
     float gatherRefusedLevels{0.0f};     // the least levels those creatures are above the bot
     bool questsHeld{false};              // a test's noquest (TestConstraints): no quest goal is offered
+    bool fightsHeld{false};              // a test's nofight (TestConstraints): no creature stop is offered
     Bags bags;
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
