@@ -227,10 +227,10 @@ void HandCases()
     // The estimate on the trip's option (WR25a): the plan's catches, and the units those give
     Water twoEach = easy;
     twoEach.openYields = {{500, 2.0, 0, 5000, 0}};
-    Planner::Goals::GatherNode const trip = Fish::TripOption(twoEach, fair, quiet, false, Fish::Spot{}, 1.0f);
+    Planner::Goals::GatherNode const tripOption = Fish::TripOption(twoEach, fair, quiet, false, Fish::Spot{}, 1.0f);
     Fish::TripPlan const plan = Fish::PlanTrip(easy, fair, false);
-    Check(trip.id && Near(trip.takes, plan.catches) && Near(trip.units, 2.0 * plan.catches) &&
-              Near(trip.gatherMinutes, plan.minutes) && trip.fightMinutes == 0.0f,
+    Check(tripOption.id && Near(tripOption.takes, plan.catches) && Near(tripOption.units, 2.0 * plan.catches) &&
+              Near(tripOption.gatherMinutes, plan.minutes) && tripOption.fightMinutes == 0.0f,
           "estimate: the trip's option carries the plan's catches, minutes and units");
     Check(Near(plan.casts, Fish::TRIP_MINUTES / Fish::CAST_MINUTES) &&
               Near(plan.catches, plan.casts * Fish::ChanceAt(easy, fair, false)),
