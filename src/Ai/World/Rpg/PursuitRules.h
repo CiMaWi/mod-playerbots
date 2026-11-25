@@ -47,13 +47,29 @@ inline bool IsGiveUpWord(char const* word)
                        [text](std::string_view prefix) { return text.starts_with(prefix); });
 }
 
+// The words of a use that really fails (the executor's use ends, QuestUseExecRules.h): its item or its spell is
+// missing, the game refused it, or the executor has no way to do it
+constexpr std::string_view USE_FAIL_WORDS[] = {"no_item", "no_spell"};
+
+inline bool IsUseFailWord(char const* word)
+{
+    if (!word)
+        return false;
+    std::string_view const text(word);
+    return std::find(std::begin(USE_FAIL_WORDS), std::end(USE_FAIL_WORDS), text) != std::end(USE_FAIL_WORDS) ||
+           std::any_of(std::begin(GIVE_UP_PREFIXES), std::end(GIVE_UP_PREFIXES),
+                       [text](std::string_view prefix) { return text.starts_with(prefix); });
+}
+
 // Whether a quest status's end writes its failure row at the status door (questing WQ19b). On an order (WQ.43 point
-// 6) only no_ender does, the failed hand-in; any other quest status does when it is given up (Abandoned) or ends with
-// a give-up word whatever its outcome (a walk's deadline, timeout, ends TimedOut)
+// 6) a target that is not there writes none: only no_ender does, the failed hand-in, and a use that really fails
+// (WQ19a: given up with a use's word, for the quest of the need being worked); any other quest status does when it is
+// given up (Abandoned) or ends with a give-up word whatever its outcome (a walk's deadline, timeout, ends TimedOut)
 inline bool WritesFailure(bool order, StatusEnd::Outcome outcome, char const* word)
 {
     if (order)
-        return word && std::string_view(word) == NO_ENDER;
+        return word && (std::string_view(word) == NO_ENDER ||
+                        (outcome == StatusEnd::Outcome::Abandoned && IsUseFailWord(word)));
     return outcome == StatusEnd::Outcome::Abandoned || IsGiveUpWord(word);
 }
 

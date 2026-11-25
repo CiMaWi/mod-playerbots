@@ -369,9 +369,9 @@ inline void PriceFar(Walks& walks, Log const& log, float x, float y, std::vector
 inline std::vector<Candidate> Priced(FieldMap const& map, Log const& log, Ask const& ask, float x, float y,
                                      std::span<std::uint64_t const> used = {}, Detail::Walks* walks = nullptr)
 {
-    bool const far = walks && walks->On();
+    bool const withFar = walks && walks->On();
     QuestFields::FieldAsk from = Detail::AskAt(ask, x, y);
-    if (far)
+    if (withFar)
         from.radius = std::max(FAR_RADIUS, ask.radius);
     std::vector<Candidate> priced;
     std::vector<std::pair<Candidate, float>> beyond;  // with their straight yards
@@ -387,7 +387,7 @@ inline std::vector<Candidate> Priced(FieldMap const& map, Log const& log, Ask co
         Candidate candidate = Detail::CandidateOf(field, log, ask);
         if (!(candidate.worth > 0.0f))
             continue;
-        float const yards = far ? Circuit::Yards(here, {field.offer.x, field.offer.y, 0.0f}) : 0.0f;
+        float const yards = withFar ? Circuit::Yards(here, {field.offer.x, field.offer.y, 0.0f}) : 0.0f;
         if (yards > ask.radius)
         {
             beyond.emplace_back(std::move(candidate), yards);

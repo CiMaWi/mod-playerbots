@@ -395,7 +395,9 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
         data.lastScan = getMSTime();
         if (LookOrder(data))
         {
-            run.lastFound = Planner::QuestFieldExec::Stamp(getMSTime());
+            // The picked need's seek can end the status (a use that really fails): the order is gone then
+            if (auto* const doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data); doing && doing->order)
+                doing->order->lastFound = Planner::QuestFieldExec::Stamp(getMSTime());
             return true;
         }
     }

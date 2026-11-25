@@ -896,7 +896,7 @@ public:
     static bool HandleRouteWayCommand(ChatHandler* handler, PlayerIdentifier target, float x, float y,
                                       Optional<float> allowance)
     {
-        // QuestRoute.h's ALLOWANCE_YARDS: that header does not compile beside windows.h here (its `far`)
+        // A copy of QuestRoute.h's ALLOWANCE_YARDS (Planner::Route): the planner's header is not included here
         constexpr float WAY_ALLOWANCE_YARDS = 184.0f;
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
         if (!botAI)

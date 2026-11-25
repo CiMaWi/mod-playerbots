@@ -233,11 +233,17 @@ void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, cha
     Player* const bot = botAI->GetBot();
     if (!bot)
         return;
-    // An order gives up only its failed hand-ins (no_ender, questing WQ19b): one row for each expected ready quest
-    // still in the log, none for one handed in
+    // An order gives up its failed hand-ins (no_ender, questing WQ19b): one row for each expected ready quest still in
+    // the log, none for one handed in; and, when a use really failed (WQ19a: the item missing, the use refused), the
+    // quest of the need it worked. Pursuit::WritesFailure lets no other end of an order in
     if (data.order)
     {
-        for (uint32 const questId : Planner::QuestFieldExec::NoEnderQuests(*data.order))
+        std::vector<uint32> quests;
+        if (cause && std::string_view(cause) == Pursuit::NO_ENDER)
+            quests = Planner::QuestFieldExec::NoEnderQuests(*data.order);
+        else if (data.questId)
+            quests.push_back(data.questId);
+        for (uint32 const questId : quests)
         {
             NewRpgInfo::DoQuest one;
             one.questId = questId;

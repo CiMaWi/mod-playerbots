@@ -362,6 +362,11 @@ void FailureRows(Rules const& rules)
               !rules.writes(false, Outcome::TimedOut, "deadline"),
           "a quest that ends otherwise writes none");
     Check(rules.writes(true, Outcome::Abandoned, NO_ENDER), "an order's failed hand-in writes its row");
+    Check(rules.writes(true, Outcome::Abandoned, "no_item") && rules.writes(true, Outcome::Abandoned, "refused:far"),
+          "an order's use that really fails writes its row (WQ19a)");
+    Check(!rules.writes(true, Outcome::TimedOut, "no_item") && !rules.writes(true, Outcome::Abandoned, "abandoned") &&
+              !rules.writes(true, Outcome::Abandoned, "no_target"),
+          "and only when the use's word gives the quest up");
     Check(!rules.writes(true, Outcome::Abandoned, "no_path") && !rules.writes(true, Outcome::TimedOut, TIMEOUT) &&
               !rules.writes(true, Outcome::TimedOut, "dry") && !rules.writes(true, Outcome::Finished, "done"),
           "an order writes no row for anything else");
@@ -485,6 +490,11 @@ int main()
     outcomeOnly.writes = [](bool order, StatusEnd::Outcome outcome, char const* word)
     { return order ? WritesFailure(true, outcome, word) : outcome == StatusEnd::Outcome::Abandoned; };
     Mutant("a walk's timeout writes no row (the 15 rows)", outcomeOnly);
+
+    Rules orderHandInOnly;
+    orderHandInOnly.writes = [](bool order, StatusEnd::Outcome outcome, char const* word)
+    { return order ? word && std::string_view(word) == NO_ENDER : WritesFailure(false, outcome, word); };
+    Mutant("an order's failed use writes no row", orderHandInOnly);
 
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;
