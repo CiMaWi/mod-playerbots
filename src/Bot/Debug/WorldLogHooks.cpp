@@ -473,11 +473,14 @@ public:
     }
 
     // A mail item is moved into the bags, not stored new, so there is no note and the item is read here: safe while
-    // no script registered before this one destroys the taken item in this hook (none does)
+    // no script registered before this one destroys the taken item in this hook (none does). The take of an auction
+    // house mail runs under the source auction (PlayerbotMgr's QueuedPacketSource): a won or returned item (WA4b)
     void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
     {
-        if (item && player && EventLog::Wanted(EventLog::EventType::ItemIn))
-            EventLog::Emit(player, EventLog::EventType::ItemIn, "mail", item->GetEntry(), count);
+        if (!item || !player || !EventLog::Wanted(EventLog::EventType::ItemIn))
+            return;
+        bool const auction = EventLog::SourceWordOf(EventLog::CurrentSource()) == "auction";
+        EventLog::Emit(player, EventLog::EventType::ItemIn, auction ? "auction" : "mail", item->GetEntry(), count);
     }
 
     // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole

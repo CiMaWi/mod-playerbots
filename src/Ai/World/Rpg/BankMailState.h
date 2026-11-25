@@ -107,7 +107,8 @@ struct CraftVisitData
 
 // The auction's own data of an auctioneer visit (AuctionVisit.h, auction house WA3b; the lifecycle is
 // BotBankMail::visit). The bag stock is read anew at every step; this keeps the stacks looked at, so none is listed or
-// held twice, and the awaited listing, whose stack the next read no longer finds once the core took it.
+// held twice, and the awaited listing, whose stack the next read no longer finds once the core took it. The buy step
+// after it (WA4b) keeps the lines decided, so each is decided once, and the awaited bid or buyout.
 struct AuctionVisitData
 {
     uint32 stepTick{0};  // the world tick (game time ms) the awaited listing was queued in
@@ -120,8 +121,26 @@ struct AuctionVisitData
     std::vector<uint32> tried;  // item low guids listed, held or refused on this visit
     uint32 posted{0};
     uint32 held{0};
-    uint32 refused{0};   // listings the core did not take
+    uint32 refused{0};   // listings the core did not take, and bids or buyouts it did not take
     uint32 deposits{0};  // copper the listings cost
+    // The buy step (WA4b)
+    bool buying{false};
+    uint32 only{0};               // the GM command's line (a test's filter); 0 = every line
+    uint64 kept{0};               // copper the market leaves in the purse (Planner::MarketKept), read once
+    uint32 openBids{0};           // the index's open bids of the bot at the first buy step, plus those placed since
+    bool bagTaken{false};         // one bag per visit
+    std::vector<uint32> decided;  // the items whose line was decided on this visit
+    uint32 awaitAuction{0};       // the awaited bid or buyout's auction id; 0 = none (awaitingEntry: its item)
+    uint32 awaitPrice{0};         // its price, copper
+    uint32 awaitCeiling{0};       // the line's ceiling for the units the lot covers
+    uint32 awaitCost{0};          // the line cost (the price less the worth of units beyond the need)
+    uint32 awaitSpendable{0};     // the gold the market could spend at the choice
+    uint8 awaitKind{0};           // AuctionRules::BuyKind
+    uint8 awaitReason{0};         // AuctionWords::Reason of a bid: why not the buyout
+    bool awaitBag{false};
+    uint32 bought{0};  // buyouts the core took
+    uint32 bids{0};    // bids the core took
+    uint32 spent{0};   // copper they cost
 };
 
 struct BotBankMail

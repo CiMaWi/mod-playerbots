@@ -837,6 +837,36 @@ inline void AuctionScenarios(std::vector<Check>& checks)
     Add(checks, "auction: no stock, or a bot the bank rule does not govern, makes no auction offer", !offered,
         offered ? "an auction offer" : "none");
 
+    // Buying (WA4b): wanted lines alone earn the trip, and a stop's worth is what it sells and buys together
+    ErrandSnapshot wanted = stock;
+    wanted.AuctionStockWorth = 0;
+    wanted.AuctionWantedWorth = 5000;
+    TripPlan const wantedPlan = Plan(wanted, Request(wanted), TripProviders());
+    Add(checks, "auction: wanted lines worth 5000 c and no stock earn a trip to the auctioneer",
+        wantedPlan.Stops.size() == 1 && HasErrand(wantedPlan.Stops[0], ErrandKind::Auction) &&
+            wantedPlan.Refused.empty(),
+        Describe(wantedPlan));
+
+    ErrandSnapshot both = stock;
+    both.AuctionStockWorth = 400;
+    both.AuctionWantedWorth = 4600;
+    float sumWorth = 0.0f;
+    for (ErrandOffer const& offer : CollectOffers(both, TripProviders()))
+        if (offer.Kind == ErrandKind::Auction)
+            sumWorth += offer.WorthCopper;
+    TripPlan const bothPlan = Plan(both, Request(both), TripProviders());
+    Add(checks, "auction: stock 400 c and wanted lines 4600 c make one offer worth 5000 c, a trip",
+        sumWorth == 5000.0f && bothPlan.Stops.size() == 1 && HasErrand(bothPlan.Stops[0], ErrandKind::Auction),
+        std::to_string(sumWorth) + "; " + Describe(bothPlan));
+
+    ErrandSnapshot wantedUngoverned = wanted;
+    wantedUngoverned.Governed = false;
+    bool wantedOffered = false;
+    for (ErrandOffer const& offer : CollectOffers(wantedUngoverned, TripProviders()))
+        wantedOffered = wantedOffered || offer.Kind == ErrandKind::Auction;
+    Add(checks, "auction: wanted lines of a bot the bank rule does not govern make no auction offer", !wantedOffered,
+        wantedOffered ? "an auction offer" : "none");
+
     // A vendor stop with an auctioneer, a banker and a mailbox within the join distance: listing comes after the sale
     // and before the deposit (which would bank the stock) and the mailbox
     ErrandSnapshot town = GovernedBot(0, 12);

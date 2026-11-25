@@ -23,12 +23,16 @@
 #include <vector>
 
 #include "AiObjectContext.h"
+#include "AuctionBuyList.h"
+#include "AuctionIndex.h"
 #include "Bag.h"
 #include "BotProfessionMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "InventorySlots.h"
 #include "ItemDemand.h"
+#include "ItemUsageValue.h"
 #include "ItemUseIndex.h"
 #include "ItemWorthRules.h"
 #include "LabCopies.h"
@@ -974,6 +978,102 @@ void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
     }
 }
 
+namespace
+{
+// The bag lines' candidates (WA4b): the generic bags any class and race may carry that a player can trade, read once
+// from the item templates (immutable after the load), so a buy list looks up a few dozen entries, never the index
+std::vector<ItemTemplate const*> const& BagCandidates()
+{
+    static std::vector<ItemTemplate const*> const bags = []
+    {
+        std::vector<ItemTemplate const*> found;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+            if (proto.Class == ITEM_CLASS_CONTAINER && proto.SubClass == ITEM_SUBCLASS_CONTAINER &&
+                proto.ContainerSlots > 0 && proto.BuyPrice > 0 && proto.AllowableClass == -1 &&
+                proto.AllowableRace == -1 && proto.Bonding != BIND_WHEN_PICKED_UP &&
+                proto.Quality <= ITEM_QUALITY_UNCOMMON)
+                found.push_back(&proto);
+        return found;
+    }();
+    return bags;
+}
+}  // namespace
+
+std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
+{
+    std::vector<AuctionRules::BuyLine> lines;
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !botAI->KeepsPossessions())
+        return lines;
+
+    // Item use's lines (WA.6: no gear): demand's strongest offered entry up to the wanted stock; food, drink and
+    // coatings stay upkeep's vendor stock (FillUseWants). An entry bound on pickup (a battleground supply officer's
+    // bandage) never stands in a house: no line. A copy: a worth asked of demand may answer anew
+    if (ItemUse::DemandAnswers(botAI) && !Upkeep::Granted(bot, UpkeepKind::Consumable))
+    {
+        auto const demand = ItemUse::DemandOf(botAI).lines;
+        for (ItemUse::DemandLine const& line : demand)
+        {
+            if (!line.buyUnits || !line.buyEntry || ItemUse::UpkeepStockSlot(line.slot))
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(line.buyEntry);
+            if (!proto || proto->Bonding == BIND_WHEN_PICKED_UP || proto->Bonding == BIND_QUEST_ITEM)
+                continue;
+            uint32 const vendorEach = proto->BuyPrice / std::max<uint32>(proto->BuyCount, 1);
+            lines.push_back(AuctionRules::UseLine(line.buyEntry, line.buyUnits,
+                                                  ItemUse::DemandWorthEach(botAI, line.buyEntry), vendorEach,
+                                                  proto->SellPrice));
+        }
+    }
+
+    // The bags the index knows that add slots: each by its worth, its ceiling at most the template's vendor price
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    if (index)
+    {
+        WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+        WorldTravel::SlotBand const& band = config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())];
+        WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
+            botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(), band);
+        uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
+        uint32 const smallest = ItemUsageValue::SmallestBagSize(bot);
+        for (ItemTemplate const* proto : BagCandidates())
+        {
+            if (proto->ContainerSlots <= smallest || !index->Find(proto->ItemId))
+                continue;
+            uint32 const worth =
+                WorldTravel::BagWorth(rates, freeSlots, proto->ContainerSlots, smallest, band.BagHorizonHours);
+            if (worth)
+                lines.push_back(AuctionRules::BagLine(proto->ItemId, worth, proto->BuyPrice));
+        }
+    }
+    return AuctionRules::BuyList(std::move(lines));
+}
+
+std::uint64_t MarketKept(UpkeepNeeds::NeedList const& list)
+{
+    std::uint64_t useFunded = 0;
+    for (UpkeepNeeds::Need const& need : list.needs)
+        if (need.order == UpkeepNeeds::NeedOrder::Use)
+            useFunded += need.funded;
+    return list.reserve + useFunded;
+}
+
+// The buy list's lines the market prices under their ceilings (WA4b, AuctionBuyList.h TypicalCopper): upkeep's
+// market needs (AddMarketNeeds), funded last
+void FillMarketWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
+{
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    if (!index)
+        return;
+    for (AuctionRules::BuyLine const& line : BuyListOf(botAI))
+    {
+        AuctionIndex::ItemEntry const* entry = index->Find(line.item);
+        std::uint64_t const copper = entry ? AuctionRules::TypicalCopper(line, entry->typical.unitPrice) : 0;
+        if (copper)
+            rates.marketWants.push_back({line.item, line.units, copper});
+    }
+}
+
 void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh)
 {
     if (!ItemUse::DemandAnswers(botAI))
@@ -1042,6 +1142,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
     FillStockWants(rates, botAI);
+    FillMarketWants(rates, botAI);
     AddKeptPath(botAI, rates);
     return rates;
 }

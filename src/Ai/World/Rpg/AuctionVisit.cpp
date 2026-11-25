@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "AuctionConfig.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionIndex.h"
@@ -40,6 +41,7 @@
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
+#include "NewRpgErrandInternal.h"
 #include "ObjectAccessor.h"
 #include "Opcodes.h"
 #include "PlannerIndexes.h"
@@ -49,6 +51,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Timer.h"
+#include "UpkeepNeedRules.h"
 #include "VisitLifecycle.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -122,6 +125,21 @@ void Expired(AuctionEntry const* auction)
         EventLog::Emit(seller, EventLog::EventType::AuctionExpire, "expired", auction->item_template, auction->deposit);
 }
 
+// AuctionBuy: src buyout, amount = the price; AuctionWon: src bid, amount = the winning bid. The core sets the bid to
+// the buyout before a buyout's mail
+void Won(AuctionEntry const* auction, Player* buyer)
+{
+    bool const buyout = auction->buyout && auction->bid >= auction->buyout;
+    EventLog::Emit(buyer, buyout ? EventLog::EventType::AuctionBuy : EventLog::EventType::AuctionWon,
+                   buyout ? "buyout" : "bid", auction->item_template, auction->bid);
+}
+
+// AuctionOutbid: src outbid, amount = the new bid (the old one comes back by mail)
+void Outbid(AuctionEntry const* auction, Player* bidder, uint32 newPrice)
+{
+    EventLog::Emit(bidder, EventLog::EventType::AuctionOutbid, "outbid", auction->item_template, newPrice);
+}
+
 void Held(uint32 sellerLow, uint32 entry)
 {
     std::unique_lock<std::shared_mutex> const guard(sellersLock);
@@ -153,6 +171,11 @@ constexpr uint32 AUCTION_VISIT_SECONDS = 120;
 constexpr uint32 MINUTES_PER_HOUR = 60;
 // The sell packet: the auctioneer, the item count, one item guid and its count, bid, buyout, minutes
 constexpr size_t SELL_PACKET_BYTES = 8 + 4 + 8 + 4 + 4 + 4 + 4;
+// The bid packet: the auctioneer, the auction id, the price (a buyout's price is the buyout)
+constexpr size_t BID_PACKET_BYTES = 8 + 4 + 4;
+// The AuctionVisit row's id: the purchases (buyouts and bids the core took), capped, above the three counts
+constexpr uint32 BUY_COUNT_SHIFT = 30;
+constexpr uint32 BUY_COUNT_MAX = 3;
 
 uint32 LimitSeconds() { return AUCTION_VISIT_SECONDS; }
 
@@ -274,6 +297,59 @@ void WriteRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason rea
                            {{"floor", static_cast<float>(floor)}, {"deposit", static_cast<float>(deposit)}}, entry);
 }
 
+uint32 Clamped(uint64 copper)
+{
+    return static_cast<uint32>(std::min<uint64>(copper, std::numeric_limits<uint32>::max()));
+}
+
+// The `auction` decision row of a buy-list line (WA4b): value = the price (a skip: its nearest offer's, 0 with none);
+// the ceiling for the units the lot covers, the line cost and the gold the market could spend beside it; ref = the item
+void WriteBuyRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason reason, uint64 price, uint64 ceiling,
+                 uint64 cost, uint64 spendable, uint32 entry)
+{
+    if (WorldLog::Active())
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Auction, AuctionWords::ChoiceWord(choice),
+                           AuctionWords::ReasonWord(reason), static_cast<float>(price),
+                           {{"ceiling", static_cast<float>(ceiling)},
+                            {"cost", static_cast<float>(cost)},
+                            {"spendable", static_cast<float>(spendable)}},
+                           entry);
+}
+
+// The core took the bid or buyout when the purse paid for it: a refused bid has no answer packet and no hook (the
+// handler returns silently). A bid's row is the visit's; a buyout's AuctionBuy comes from the won mail's hook
+VisitTurn AwaitPurchase(PlayerbotAI* botAI, Player* bot)
+{
+    AuctionVisitData& visit = botAI->bankMail.auctionData;
+    uint32 const paid = visit.moneyBefore > bot->GetMoney() ? visit.moneyBefore - bot->GetMoney() : 0;
+    bool const buyout = visit.awaitKind == static_cast<uint8>(AuctionRules::BuyKind::Buyout);
+    if (paid)
+    {
+        visit.spent += paid;
+        visit.bagTaken = visit.bagTaken || visit.awaitBag;
+        if (buyout)
+            ++visit.bought;
+        else
+        {
+            ++visit.bids;
+            ++visit.openBids;
+            EventLog::Emit(bot, EventLog::EventType::AuctionBid, "bid", visit.awaitingEntry, visit.awaitPrice);
+        }
+        WriteBuyRow(bot, buyout ? AuctionWords::Choice::Buy : AuctionWords::Choice::Bid,
+                    buyout ? AuctionWords::Reason::UnderCeiling : static_cast<AuctionWords::Reason>(visit.awaitReason),
+                    visit.awaitPrice, visit.awaitCeiling, visit.awaitCost, visit.awaitSpendable, visit.awaitingEntry);
+    }
+    else
+    {
+        ++visit.refused;
+        LOG_DEBUG("playerbots", "[Auction] {} {} of item {} at {} copper on auction {} not taken by the core",
+                  bot->GetName(), buyout ? "buyout" : "bid", visit.awaitingEntry, visit.awaitPrice, visit.awaitAuction);
+    }
+    visit.awaitAuction = 0;
+    visit.awaitingEntry = 0;
+    return VisitTurn{VisitNext::Continue};
+}
+
 // The core took the stack when the bags no longer hold it (the AuctionPost row comes from its add hook). The handler
 // runs in the world thread's drain after this tick's map update: the answer shows from the next world tick on
 VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
@@ -281,6 +357,8 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
     AuctionVisitData& visit = botAI->bankMail.auctionData;
     if (GameTick() == visit.stepTick || bot->IsBeingTeleported())
         return VisitTurn{VisitNext::Pending};
+    if (visit.awaitAuction)
+        return AwaitPurchase(botAI, bot);
     if (!bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(visit.awaiting)))
     {
         ++visit.posted;
@@ -298,6 +376,99 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
     }
     visit.awaiting = 0;
     return VisitTurn{VisitNext::Continue};
+}
+
+// The copper the market leaves in the purse, from the trip's needs list (ErrandNeeds, cached per trip state); without
+// a needs list nothing is spendable
+uint64 MarketKeptNow(PlayerbotAI* botAI)
+{
+    std::shared_ptr<Planner::UpkeepIndex const> const upkeep =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const needs =
+        upkeep ? NewRpgInternal::ErrandNeeds(botAI, upkeep) : nullptr;
+    return needs ? Planner::MarketKept(needs->needs) : std::numeric_limits<uint64>::max();
+}
+
+// The buy step after the stock (WA4b, PLAN 3.6): each line of the buy list once per visit, at the house's current
+// offers (WA.4: read only here, at the auctioneer): ChooseLine's buyout or bid goes out as the core's bid packet and
+// waits for its answer, a skip writes its row and the next line is decided. One auction per line and one bag per
+// visit; the purse is read at every line, so the gold spent counts. The bot's own auctions are not left out by id
+// (the index has no owner): the core refuses a bid on them, which counts as refused
+VisitTurn BuyNext(PlayerbotAI* botAI, Player* bot, Creature const* auctioneer, uint8 houseId)
+{
+    AuctionVisitData& visit = botAI->bankMail.auctionData;
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    if (!index)
+        return VisitTurn{VisitNext::End, VisitEnd::Done};
+    uint64 const ownGuid = bot->GetGUID().GetRawValue();
+    if (!visit.buying)
+    {
+        visit.buying = true;
+        visit.openBids = AuctionRules::OpenBids(*index, ownGuid);
+        visit.kept = MarketKeptNow(botAI);
+    }
+
+    AuctionIndex::CurrentOffers const none;
+    for (AuctionRules::BuyLine const& line : Planner::BuyListOf(botAI))
+    {
+        if ((visit.only && line.item != visit.only) ||
+            std::find(visit.decided.begin(), visit.decided.end(), line.item) != visit.decided.end())
+            continue;
+        visit.decided.push_back(line.item);
+        bool const bag = line.owner == AuctionRules::LineOwner::Bag;
+        if (bag && visit.bagTaken)
+            continue;
+
+        uint64 const spendable = AuctionRules::Spendable(bot->GetMoney(), visit.kept, 0);
+        AuctionRules::BuyInput buyer;
+        buyer.spendable = spendable;
+        buyer.openBids = visit.openBids;
+        buyer.openBidsMax = sPlayerbotAIConfig.Auction.OpenBidsMax;
+        buyer.now = static_cast<std::int64_t>(GameTime::GetGameTime().count());
+        buyer.ownGuid = ownGuid;
+        AuctionIndex::ItemEntry const* entry = index->Find(line.item);
+        AuctionIndex::CurrentOffers const& offers = entry ? entry->offers : none;
+        AuctionRules::BuyChoice const choice = AuctionRules::ChooseLine(offers, line, houseId, {}, buyer);
+
+        // The chosen offer, or a skip's nearest, for the row's amounts
+        AuctionRules::OfferInput offer;
+        bool found = false;
+        for (AuctionIndex::OfferLine const& candidate : offers.cheapest)
+            if (choice.auctionId && candidate.id == choice.auctionId)
+            {
+                offer = {candidate, line.units, line.excessUnitWorth};
+                found = true;
+                break;
+            }
+        uint64 const price = choice.kind != AuctionRules::BuyKind::Skip ? choice.price
+                             : found                                    ? AuctionRules::RankPrice(offer.line)
+                                                                        : 0;
+        uint64 const ceiling = AuctionRules::CeilingOf(line) * (found ? AuctionRules::Covered(offer) : line.units);
+        uint64 const cost = found ? AuctionRules::LineCost(offer, price) : 0;
+        if (choice.kind == AuctionRules::BuyKind::Skip)
+        {
+            WriteBuyRow(bot, AuctionWords::Choice::Skip, choice.reason, price, ceiling, cost, spendable, line.item);
+            continue;
+        }
+
+        // QueuePacket takes ownership; the world thread runs the handler when it drains the bot's session
+        WorldPacket* packet = new WorldPacket(CMSG_AUCTION_PLACE_BID, BID_PACKET_BYTES);
+        *packet << auctioneer->GetGUID() << choice.auctionId << Clamped(choice.price);
+        bot->GetSession()->QueuePacket(packet);
+        visit.awaitAuction = choice.auctionId;
+        visit.awaitingEntry = line.item;
+        visit.awaitPrice = Clamped(choice.price);
+        visit.awaitCeiling = Clamped(ceiling);
+        visit.awaitCost = Clamped(cost);
+        visit.awaitSpendable = Clamped(spendable);
+        visit.awaitKind = static_cast<uint8>(choice.kind);
+        visit.awaitReason = static_cast<uint8>(choice.reason);
+        visit.awaitBag = bag;
+        visit.moneyBefore = bot->GetMoney();
+        visit.stepTick = GameTick();
+        return VisitTurn{VisitNext::Await};
+    }
+    return VisitTurn{VisitNext::End, VisitEnd::Done};
 }
 
 // Bag reads: the bot's own map thread inside its AI update. Each stock stack is asked for once: a hold writes its
@@ -346,20 +517,25 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
         visit.stepTick = GameTick();
         return VisitTurn{VisitNext::Await};
     }
-    return VisitTurn{VisitNext::End, VisitEnd::Done};
+    return BuyNext(botAI, bot, auctioneer, static_cast<uint8>(house->houseId));
 }
 
-// AuctionVisit: src the end word; id = posted | held << 10 | refused << 20; amount = the deposits paid
+// AuctionVisit: src the end word; id = posted | held << 10 | refused << 20 | min(purchases, 3) << 30 (buyouts and
+// bids the core took, WA4b); amount = the deposits paid
 bool WriteAuctionEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, VisitEnd end)
 {
     AuctionVisitData& visit = botAI->bankMail.auctionData;
     char const* how = VisitEndWord(VisitKind::Auction, end);
-    EventLog::Emit(bot, EventLog::EventType::AuctionVisit, how,
-                   WorldLogFormat::PackVisitCounts(visit.posted, visit.held, visit.refused), visit.deposits);
+    uint32 const purchases = std::min(visit.bought + visit.bids, BUY_COUNT_MAX);
+    EventLog::Emit(
+        bot, EventLog::EventType::AuctionVisit, how,
+        WorldLogFormat::PackVisitCounts(visit.posted, visit.held, visit.refused) | purchases << BUY_COUNT_SHIFT,
+        visit.deposits);
     LOG_DEBUG("playerbots",
-              "[Auction] {} auctioneer visit {}: {} listed, {} held, {} refused, {} copper deposits, {} s",
-              bot->GetName(), how, visit.posted, visit.held, visit.refused, visit.deposits,
-              getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
+              "[Auction] {} auctioneer visit {}: {} listed, {} held, {} refused, {} copper deposits, {} bought, {} "
+              "bids, {} copper spent, {} s",
+              bot->GetName(), how, visit.posted, visit.held, visit.refused, visit.deposits, visit.bought, visit.bids,
+              visit.spent, getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
     visit = AuctionVisitData{};
     return false;
 }
@@ -409,10 +585,11 @@ bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args)
 {
     std::istringstream in(args ? args : "");
     std::string name;
-    in >> name;
+    uint32 only = 0;
+    in >> name >> only;
     if (name.empty())
     {
-        handler->SendErrorMessage("Usage: playerbots auction visit <bot name>");
+        handler->SendErrorMessage("Usage: playerbots auction visit <bot name> [<item>]");
         return false;
     }
     std::string const asked = name;
@@ -454,6 +631,7 @@ bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("AUCTION visit {}: refused, {}", bot->GetName(), refusal ? refusal : "no visit");
         return false;
     }
+    botAI->bankMail.auctionData.only = only;
 
     handler->PSendSysMessage("AUCTION visit {}: started at ({:.0f}, {:.0f}) on map {}, {:.0f} yd away", bot->GetName(),
                              spot->x, spot->y, spot->mapId, spot->distance);

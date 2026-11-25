@@ -79,11 +79,13 @@ enum class Reason : std::uint8_t
     OverCeiling,
     Budget,
     BidCap,
-    DetourTooLong
+    DetourTooLong,
+    UnderCeiling  // a buyout's row (WA4b): the line cost within the ceiling and in hand
 };
-constexpr std::size_t REASON_COUNT = 8;
+constexpr std::size_t REASON_COUNT = 9;
 constexpr std::array<std::string_view, REASON_COUNT> REASON_WORDS = {
-    "above_vendor", "below_floor", "expired", "no_offer", "over_ceiling", "budget", "bid_cap", "detour_too_long"};
+    "above_vendor", "below_floor", "expired",         "no_offer",     "over_ceiling",
+    "budget",       "bid_cap",     "detour_too_long", "under_ceiling"};
 
 constexpr std::string_view ChoiceWord(Choice choice)
 {
@@ -98,7 +100,7 @@ constexpr std::string_view ReasonWord(Reason reason)
 }
 
 static_assert(static_cast<std::size_t>(Choice::Skip) + 1 == CHOICE_COUNT, "a word for every auction choice");
-static_assert(static_cast<std::size_t>(Reason::DetourTooLong) + 1 == REASON_COUNT, "a word for every auction reason");
+static_assert(static_cast<std::size_t>(Reason::UnderCeiling) + 1 == REASON_COUNT, "a word for every auction reason");
 }  // namespace AuctionWords
 
 #endif

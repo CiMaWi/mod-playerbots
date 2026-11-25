@@ -626,18 +626,20 @@ inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<Erran
     offers.push_back(offer);
 }
 
-// Auction stock in the bags (WA3b): worth what listing it fetches above a vendor's payout, against the detour like
-// any errand; an auctioneer beside a stop the bot makes anyway joins it. It comes before the deposit, which would
-// bank the stock, and the mailbox, where a sale's money arrives later
+// Auction stock in the bags (WA3b) and the buy list's wanted lines (WA4b): worth what listing the stock fetches above
+// a vendor's payout plus what the wanted lines save under their ceilings at their typical prices, against the detour
+// like any errand (selling and buying share one stop); an auctioneer beside a stop the bot makes anyway joins it. It
+// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later
 inline void ProvideAuction(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Governed || !snapshot.AuctionStockWorth)
+    uint64_t const worth = static_cast<uint64_t>(snapshot.AuctionStockWorth) + snapshot.AuctionWantedWorth;
+    if (!snapshot.Governed || !worth)
         return;
 
     ErrandOffer offer;
     offer.Kind = ErrandKind::Auction;
     offer.Service = SERVICE_AUCTIONEER;
-    offer.WorthCopper = static_cast<float>(snapshot.AuctionStockWorth);
+    offer.WorthCopper = static_cast<float>(worth);
     offers.push_back(offer);
 }
 

@@ -211,7 +211,9 @@ public:
     AuctionIndexScript()
         : AuctionHouseScript("AuctionIndexScript",
                              {AUCTIONHOUSEHOOK_ON_AUCTION_ADD, AUCTIONHOUSEHOOK_ON_AUCTION_REMOVE,
-                              AUCTIONHOUSEHOOK_ON_AUCTION_SUCCESSFUL, AUCTIONHOUSEHOOK_ON_AUCTION_EXPIRE})
+                              AUCTIONHOUSEHOOK_ON_AUCTION_SUCCESSFUL, AUCTIONHOUSEHOOK_ON_AUCTION_EXPIRE,
+                              AUCTIONHOUSEHOOK_ON_BEFORE_AUCTIONHOUSEMGR_SEND_AUCTION_WON_MAIL,
+                              AUCTIONHOUSEHOOK_ON_BEFORE_AUCTIONHOUSEMGR_SEND_AUCTION_OUTBIDDED_MAIL})
     {
     }
 
@@ -251,6 +253,27 @@ public:
             return;
         book.Expire(FactsOf(entry), GameNow());
         AuctionMemory::Expired(entry);
+    }
+
+    // A buyout or the leading bid at the end: the buyer's row, online buyers only (WA4b)
+    void OnBeforeAuctionHouseMgrSendAuctionWonMail(AuctionHouseMgr* /*mgr*/, AuctionEntry* auction, Player* bidder,
+                                                   uint32& /*bidderAccId*/, bool& /*sendNotification*/,
+                                                   bool& /*updateAchievementCriteria*/, bool& /*sendMail*/) override
+    {
+        PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex won mail");
+        if (auction && bidder)
+            AuctionMemory::Won(auction, bidder);
+    }
+
+    // A higher bid gives the old bidder's copper back by mail: its row, online bidders only (WA4b)
+    void OnBeforeAuctionHouseMgrSendAuctionOutbiddedMail(AuctionHouseMgr* /*mgr*/, AuctionEntry* auction,
+                                                         Player* oldBidder, uint32& /*oldBidderAccId*/,
+                                                         Player* /*newBidder*/, uint32& newPrice,
+                                                         bool& /*sendNotification*/, bool& /*sendMail*/) override
+    {
+        PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex outbid mail");
+        if (auction && oldBidder)
+            AuctionMemory::Outbid(auction, oldBidder, newPrice);
     }
 };
 

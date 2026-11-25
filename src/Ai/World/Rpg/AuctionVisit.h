@@ -30,8 +30,9 @@ using AuctioneerSpot = VisitSpot;
 std::optional<AuctioneerSpot> AuctioneerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards);
 // World thread or the bot's map thread: starts the visit; false while a visit of any kind runs
 bool BeginAuctionVisit(PlayerbotAI* botAI, AuctioneerSpot const& spot);
-// GM console `playerbots auction visit <bot>`: the visit at the nearest auctioneer serving the bot within the
-// command's reach (VISIT_COMMAND_REACH_YARDS); answers `AUCTION visit <bot>: started ..` or `.. refused, <reason>`
+// GM console `playerbots auction visit <bot> [<item>]`: the visit at the nearest auctioneer serving the bot within the
+// command's reach (VISIT_COMMAND_REACH_YARDS); answers `AUCTION visit <bot>: started ..` or `.. refused, <reason>`.
+// An item (a test's filter, WA4b) makes the buy step decide that line alone
 bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args);
 }  // namespace BankMail
 
@@ -47,6 +48,10 @@ void Listed(AuctionEntry const* auction);
 void Sold(AuctionEntry const* auction);
 void Expired(AuctionEntry const* auction);
 void Removed(AuctionEntry const* auction);
+// World thread, from the won and outbid mails' hooks (WA4b), online players only: AuctionBuy (a buyout) or AuctionWon
+// (the leading bid at the end) of the buyer, AuctionOutbid of the bidder a higher bid displaced
+void Won(AuctionEntry const* auction, Player* buyer);
+void Outbid(AuctionEntry const* auction, Player* bidder, uint32 newPrice);
 // The bot's map thread: its auctioneer visit held a stack of the item (AuctionMemory.h, SellerMemory::Held)
 void Held(uint32 sellerLow, uint32 entry);
 }  // namespace AuctionMemory

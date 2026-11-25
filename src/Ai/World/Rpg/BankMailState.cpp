@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <limits>
 
+#include "AuctionIndex.h"
 #include "BankMailService.h"
 #include "BankRulesInput.h"
 #include "GameTime.h"
 #include "Mail.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "StringFormat.h"
@@ -39,16 +41,28 @@ uint16 CountWaitingMail(Player const* bot)
     return static_cast<uint16>(std::min<uint32>(waiting, std::numeric_limits<uint16>::max()));
 }
 
-// The copper of delivered auction house mail the bot has not taken (auction WA3b): what the house's notices of its
-// sales and of bids given back told it, so the trip planner sends it to a mailbox for the money
+// The copper of delivered auction house mail the bot has not taken (auction WA3b, WA4b): what the house's notices of
+// its sales and of bids given back told it, and the items a won auction or an unsold listing sent back, each counted
+// once at its typical price, else its vendor price (a stack is counted as one unit: the mail lists its items without
+// their counts). The trip planner sends the bot to a mailbox for them
 uint32 AuctionCopperWaiting(Player const* bot)
 {
     time_t const now = GameTime::GetGameTime().count();
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
     uint64 copper = 0;
     for (Mail const* mail : bot->GetMails())
-        if (mail->state != MAIL_STATE_DELETED && mail->messageType == MAIL_AUCTION && mail->money &&
-            now >= mail->deliver_time && now <= mail->expire_time)
-            copper += mail->money;
+    {
+        if (mail->state == MAIL_STATE_DELETED || mail->messageType != MAIL_AUCTION || now < mail->deliver_time ||
+            now > mail->expire_time)
+            continue;
+        copper += mail->money;
+        for (MailItemInfo const& info : mail->items)
+        {
+            AuctionIndex::ItemEntry const* entry = index ? index->Find(info.item_template) : nullptr;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(info.item_template);
+            copper += entry && entry->typical.unitPrice ? entry->typical.unitPrice : proto ? proto->SellPrice : 0;
+        }
+    }
     return static_cast<uint32>(std::min<uint64>(copper, std::numeric_limits<uint32>::max()));
 }
 
