@@ -8,6 +8,7 @@
 #include "AcquaintanceMgr.h"
 #include "ArenaTeamFormation.h"
 #include "AuctionIndex.h"
+#include "AuctionReference.h"
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
@@ -724,6 +725,7 @@ public:
             // which food and water restore something (NE8a)
             ItemUseIndex::Build();
             Planner::StartUpkeepIndex();        // and for the upkeep index
+            AuctionReference::Gather();         // the item templates for the reference table (auction WA2a)
             Planner::StartRecipeIndex();        // and for the recipe index (professions WR3a)
             Planner::StartFishIndex();          // and for the fishing index (professions WR16a)
             Planner::StartFlightMap();          // the flying height maps, read on their own thread

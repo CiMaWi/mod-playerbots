@@ -275,10 +275,15 @@ public:
             if (!LoadRow(row, now))
                 corrected = true;
         _historyDirty = false;
+        _loadOk = true;
         Prune(now, windowSeconds);
         _historyDirty = _historyDirty || corrected;
         return CountHistory();
     }
+
+    // The stored history could not be read (WA2a): the session's own records still feed the index, but no save may
+    // overwrite the stored rows it did not read
+    void LoadFailed() { _loadOk = false; }
 
     // Every record as a row, items in id order and each list oldest first: the save's full rewrite
     std::vector<HistoryRow> ExportHistory() const
@@ -309,6 +314,9 @@ public:
 
     // A sale, an expiry or a prune that dropped records changed the history since the last save
     bool HistoryDirty() const { return _historyDirty; }
+    // A save is due when the stored rows were read and the history changed since: never before a load or after a
+    // failed one
+    bool SaveDue() const { return _loadOk && _historyDirty; }
     void MarkHistorySaved() { _historyDirty = false; }
 
 private:
@@ -467,6 +475,7 @@ private:
     std::uint64_t _cancels = 0;
     std::uint64_t _vanished = 0;
     bool _historyDirty = false;  // the history changed since the last save or load
+    bool _loadOk = false;        // the stored history was read (LoadHistory), not failed or never tried
 };
 
 // The snapshot as text, items in id order: the selftest's comparison

@@ -135,6 +135,9 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
                      "SELECT `Item`, `Kind`, `Time`, `UnitPrice`, `Count`, `AuctionId` "
                      "FROM `playerbots_auction_history`",
                      CONNECTION_SYNCH);
+    // WA2a: always one row when the query ran (the pool gives null for an empty and a failed SELECT alike)
+    PrepareStatement(PLAYERBOTS_SEL_AUCTION_HISTORY_COUNT, "SELECT COUNT(*) FROM `playerbots_auction_history`",
+                     CONNECTION_SYNCH);
     PrepareStatement(PLAYERBOTS_INS_AUCTION_HISTORY,
                      "INSERT INTO `playerbots_auction_history` (`Item`, `Kind`, `Time`, `UnitPrice`, `Count`, "
                      "`AuctionId`) VALUES (?, ?, ?, ?, ?, ?)",

@@ -37,7 +37,6 @@ Book book;                              // world thread only
 Planner::SharedSlot<Snapshot> current;  // any thread
 std::uint32_t publishTimer = 0;         // world thread only
 std::uint32_t saveTimer = 0;            // world thread only
-bool historyLoaded = false;             // world thread only: no save before the load, so a failed start keeps the table
 std::uint64_t sequence = 0;             // world thread only
 std::uint32_t startupAuctions = 0;      // set once by the startup walk
 std::uint32_t startupHouses = 0;
@@ -112,9 +111,25 @@ void Publish()
 void LoadHistory()
 {
     std::uint32_t const start = getMSTime();
+    // The pool returns null for a failed query and an empty result alike; the count always has one row when it ran,
+    // so null means the table could not be read: the save stays off and the stored rows stay as they are (WA2a)
+    PreparedQueryResult const count =
+        PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_AUCTION_HISTORY_COUNT));
+    std::uint64_t const stored = count ? count->Fetch()[0].Get<uint64>() : 0;
     std::vector<HistoryRow> rows;
-    if (PreparedQueryResult result =
-            PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_AUCTION_HISTORY)))
+    PreparedQueryResult result =
+        stored ? PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_AUCTION_HISTORY))
+               : PreparedQueryResult();
+    if (!count || (stored && !result))
+    {
+        book.LoadFailed();
+        LOG_ERROR("playerbots",
+                  "Auction index: history load FAILED ({} stored rows, the {} query returned nothing); saves are off "
+                  "for this session, the stored rows stay as they are",
+                  stored, count ? "row" : "count");
+        return;
+    }
+    if (result)
     {
         rows.reserve(result->GetRowCount());
         do
@@ -131,7 +146,6 @@ void LoadHistory()
         } while (result->NextRow());
     }
     HistoryCounts const counts = book.LoadHistory(rows, GameNow(), WindowSeconds());
-    historyLoaded = true;
     LOG_INFO("server.loading", "Auction index: history loaded {} sales, {} expiries of {} items ({} rows read, {} ms)",
              counts.sales, counts.expiries, counts.items, rows.size(), GetMSTimeDiffToNow(start));
 }
@@ -140,7 +154,7 @@ void LoadHistory()
 // the world thread only builds the statements
 void SaveHistory(bool atShutdown)
 {
-    if (!historyLoaded || !book.HistoryDirty())
+    if (!book.SaveDue())
         return;
     std::vector<HistoryRow> const rows = book.ExportHistory();
     PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();

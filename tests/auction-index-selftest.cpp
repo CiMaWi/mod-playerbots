@@ -447,6 +447,33 @@ void CheckHistoryStore()
     Check(!g.HistoryDirty(), "dirty: a prune that drops nothing leaves it clean");
     g.Prune(NOW + WINDOW, WINDOW);
     Check(g.HistoryDirty(), "dirty: true after a prune that dropped records");
+
+    // Loaded ok (WA2a): a failed load keeps the session's records for the index but never saves over the stored rows
+    Book lost;
+    lost.LoadFailed();
+    lost.Sale(Bought(Auction(600, 800, 2, 10, 300), 9), NOW);
+    lost.Remove(600);
+    lost.Expire(Auction(601, 800, 1, 10, 0), NOW);
+    lost.Remove(601);
+    Check(lost.HistoryDirty() && !lost.SaveDue(), "loaded ok: after a failed load a sale and an expiry are no save");
+    Check(lost.ExportHistory().size() == 2, "loaded ok: after a failed load the session's two records are kept");
+    Snapshot const sl = Take(lost);
+    Check(sl.Find(800) && sl.Find(800)->typical.unitPrice == 150 && sl.Find(800)->typical.sample == 1 &&
+              sl.Find(800)->typical.expiries == 1,
+          "loaded ok: after a failed load the typical price reads the session's records");
+    Book never;
+    never.Sale(Bought(Auction(610, 800, 1, 10, 90), 9), NOW);
+    never.Remove(610);
+    Check(never.HistoryDirty() && !never.SaveDue(), "loaded ok: a book never loaded saves nothing");
+    Book fresh;
+    fresh.LoadHistory({}, NOW, WINDOW);
+    Check(!fresh.SaveDue(), "loaded ok: after an empty load no save until a change");
+    fresh.Sale(Bought(Auction(620, 800, 1, 10, 90), 9), NOW);
+    fresh.Remove(620);
+    Check(fresh.SaveDue(), "loaded ok: after an empty load a sale makes the save due");
+    // Negative control: the old gate without the flag would write the failed book's two rows over the stored ones
+    auto const gateWithoutFlag = [](Book const& book) { return book.HistoryDirty(); };
+    Check(gateWithoutFlag(lost), "loaded ok control: a gate that ignores the flag saves after a failed load (caught)");
 }
 
 // A seeded search over hook streams (PLAN 0, open-ended inputs): adds, sales, expiries and cancels in a random mix
