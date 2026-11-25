@@ -3572,13 +3572,17 @@ void TestFightFixture(char const* file)
         Check(false, "fixture: tests/data/aw-fights.tsv is read");
         return;
     }
+    // every tab starts a cell, so an empty last cell (a fight with no enemy row) still counts
     auto split = [](std::string const& text)
     {
         std::vector<std::string> cells;
-        std::istringstream stream(text);
-        std::string cell;
-        while (std::getline(stream, cell, '\t'))
-            cells.push_back(cell);
+        std::size_t start = 0;
+        for (std::size_t tab = text.find('\t'); tab != std::string::npos; tab = text.find('\t', start))
+        {
+            cells.push_back(text.substr(start, tab - start));
+            start = tab + 1;
+        }
+        cells.push_back(text.substr(start));
         return cells;
     };
     std::vector<std::string> const head = split(line);
