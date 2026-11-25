@@ -7,6 +7,8 @@
 #include "AuctionReference.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
@@ -16,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionHouseMgr.h"
+#include "AuctionPricing.h"
 #include "AuctionRules.h"
 #include "Chat.h"
 #include "Config.h"
@@ -26,6 +30,7 @@
 #include "PlannerRecipes.h"
 #include "PlayerbotAIConfig.h"
 #include "ThreadCheck.h"
+#include "World.h"
 #include "WorldTravelConfig.h"
 
 namespace AuctionReference
@@ -43,6 +48,46 @@ struct Gathered
 
 std::shared_ptr<Gathered> gathered;
 Planner::SharedSlot<AuctionRules::Table> current;
+
+// The houses' fees: written once on the world thread at startup, then read only
+constexpr std::array<std::uint8_t, 3> HOUSES = {AuctionRules::HOUSE_ALLIANCE, AuctionRules::HOUSE_HORDE,
+                                                AuctionRules::HOUSE_NEUTRAL};
+std::array<AuctionRules::Fees, 3> houseFees{};
+std::atomic<bool> feesRead{false};
+
+std::size_t FeeSlot(std::uint8_t houseId)
+{
+    return houseId == AuctionRules::HOUSE_ALLIANCE ? 0 : houseId == AuctionRules::HOUSE_HORDE ? 1 : 2;
+}
+
+void ReadFees()
+{
+    AuctionRules::FeeRates rates;
+    rates.deposit = sWorld->getRate(RATE_AUCTION_DEPOSIT);
+    rates.cut = sWorld->getRate(RATE_AUCTION_CUT);
+    rates.time = sWorld->getRate(RATE_AUCTION_TIME);
+    for (std::uint8_t const house : HOUSES)
+    {
+        AuctionRules::Fees& fees = houseFees[FeeSlot(house)];
+        fees.rates = rates;
+        if (AuctionHouseEntry const* entry =
+                AuctionHouseMgr::GetAuctionHouseEntryFromHouse(static_cast<AuctionHouseId>(house)))
+            fees.row = {entry->depositPercent, entry->cutPercent};
+        else
+            LOG_ERROR("server.loading", "Auction fees: no AuctionHouse.dbc row for house {}, the core's defaults kept",
+                      static_cast<std::uint32_t>(house));
+    }
+    feesRead.store(true, std::memory_order_release);
+    auto row = [](std::uint8_t house) { return houseFees[FeeSlot(house)].row; };
+    LOG_INFO(
+        "server.loading",
+        "Auction fees: house 2 deposit {} cut {}, house 6 deposit {} cut {}, house 7 deposit {} cut {}, rates d {} "
+        "c {} t {}, shared house {}",
+        row(AuctionRules::HOUSE_ALLIANCE).depositPercent, row(AuctionRules::HOUSE_ALLIANCE).cutPercent,
+        row(AuctionRules::HOUSE_HORDE).depositPercent, row(AuctionRules::HOUSE_HORDE).cutPercent,
+        row(AuctionRules::HOUSE_NEUTRAL).depositPercent, row(AuctionRules::HOUSE_NEUTRAL).cutPercent, rates.deposit,
+        rates.cut, rates.time, sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_AUCTION) ? "yes" : "no");
+}
 
 std::uint32_t MsSince(std::chrono::steady_clock::time_point start)
 {
@@ -86,6 +131,7 @@ void SendLine(ChatHandler* handler, AuctionRules::Table const& table, std::uint3
 void Gather()
 {
     PLAYERBOT_CHECK_WORLD_THREAD("AuctionReference::Gather");
+    ReadFees();
     auto const start = std::chrono::steady_clock::now();
     auto data = std::make_shared<Gathered>();
 
@@ -135,6 +181,13 @@ void Gather()
     LOG_INFO("server.loading", "Auction reference: gathered {} item templates, {} items vendors always stock, in {} ms",
              data->inputs.size(), stocked.size(), MsSince(start));
     gathered = std::move(data);
+}
+
+AuctionRules::Fees HouseFees(std::uint8_t houseId)
+{
+    if (!feesRead.load(std::memory_order_acquire))
+        return {};
+    return houseFees[FeeSlot(houseId)];
 }
 
 void OnRecipeIndexReady(std::shared_ptr<Recipes::RecipeIndex const> index)
