@@ -205,6 +205,8 @@ void FillBags(Player* bot, Snapshot& snapshot)
     snapshot.repairCheapest = static_cast<std::uint32_t>(repairPrice.cheapest);
 }
 
+}  // namespace
+
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
 {
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
@@ -221,6 +223,8 @@ void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
     }
 }
 
+namespace
+{
 void FillQuests(Player* bot, Snapshot& snapshot)
 {
     FillSlots(bot, snapshot.quests);
@@ -1315,6 +1319,21 @@ void SituationChanged(PlayerbotAI* botAI)
     state.snapshotDue = true;
     if (state.goals)
         state.goals->situationChanged = true;
+}
+
+void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
+{
+    Planner::BotState& state = botAI->planner;
+    if (!state.goals || !Owns(botAI))
+        return;
+    QuestLog::Round& round = state.goals->pickups;
+    uint32 const now = getMSTime();
+    if (accepted)
+        QuestLog::NoteAccept(round, now);
+    if (!QuestLog::PlanDue(round, now, giverStillOffers))
+        return;
+    round = {};
+    SituationChanged(botAI);
 }
 
 void NoteBagSlots(PlayerbotAI* botAI)

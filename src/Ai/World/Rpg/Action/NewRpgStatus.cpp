@@ -185,8 +185,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         case RPG_DO_QUEST:
         {
             // DO_QUEST -> IDLE: a backstop beside the order's give-up clock (PursuitRules.h), a give-up like it
-            // (questing WT35c: its failure row and record)
-            if (info.HasStatusPersisted(statusDoQuestDuration))
+            // (questing WT35c: its failure row and record). An order is bounded by its own minutes (questing WQ19a)
+            if (!std::get<NewRpgInfo::DoQuest>(info.data).order && info.HasStatusPersisted(statusDoQuestDuration))
             {
                 RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = Pursuit::TIMEOUT});
                 return true;

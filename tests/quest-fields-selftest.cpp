@@ -48,6 +48,9 @@ constexpr std::uint32_t USE_ITEM = 3000;
 constexpr std::uint32_t EVENT_SPELL = 5000;
 constexpr std::uint32_t UNKNOWN_QUEST = 99999;
 constexpr float FAR_RADIUS = 1.0e6f;
+constexpr std::uint32_t FIRST_ORDINARY = 1200;  // WQ17b: ordinary hostiles added to a field
+constexpr std::uint8_t HUMAN = 1;               // a race of each side
+constexpr std::uint8_t ORC = 2;
 constexpr float SLACK = 1.0e-4f;  // relative slack of float comparisons
 
 int passed = 0;
@@ -794,10 +797,10 @@ void MomentTen()
           "minute 10: three needs, a kill and two loots");
     if (needs.size() != 3)
         return;
-    // Worth per credit: XP over the objective's credits plus the hand-in (copper 0)
-    Check(Near(needs[0].worthPerCredit, 840.0 / 21.0) && Near(needs[1].worthPerCredit, 875.0 / 9.0) &&
-              Near(needs[2].worthPerCredit, 400.0 / 4.0),
-          "minute 10: worth per credit 40, 97.2, 100");
+    // Worth per credit (WQ17b): the credits' 40 % of the XP over the objective's credits (copper 0)
+    Check(Near(needs[0].worthPerCredit, 840.0 * 0.4 / 20.0) && Near(needs[1].worthPerCredit, 875.0 * 0.4 / 8.0) &&
+              Near(needs[2].worthPerCredit, 400.0 * 0.4 / 3.0),
+          "minute 10: worth per credit 16.8, 43.75, 53.3");
     Check(
         needs[1].sources.size() == 1 && needs[1].sources[0].entry == GORETUSK && Near(needs[1].sources[0].chance, 0.5),
         "minute 10: the liver from Goretusks at 50 %");
@@ -809,11 +812,11 @@ void MomentTen()
     ask.stayMinutes = 10.0f;
     Ranking const ranking = TopFields(map, needs, ask);
     // Watchers 6 x (1 + 600 / 300) = 18 of 20 (the cap 600 / 30 = 20); livers 4 x 3 x 0.5 = 6 of 8 (cap 13.3)
-    double const worth = 18.0 * 40.0 + 6.0 * 875.0 / 9.0;
+    double const worth = 18.0 * 16.8 + 6.0 * 43.75;
     Check(!ranking.fields.empty() && ranking.fields[0].offer.centre == FieldCellKey(MAP_A, 0, 0) &&
               Near(ranking.fields[0].offer.worth, worth) && Near(ranking.fields[0].value, worth / 10.0) &&
               Near(ranking.fields[0].offer.worthPerMinute, worth / 10.0),
-          "minute 10: the field on the watchers is first, worth 1303.3 over 10 minutes");
+          "minute 10: the field on the watchers is first, worth 564.9 over 10 minutes");
     Check(ranking.noField.size() == 1 && ranking.noField[0].need == 2 && ranking.noField[0].why == NoField::OutOfRadius,
           "minute 10: the eyes' murlocs lie 2,000 yd off: out of the radius");
     Offer const offer = FieldOffer(map, needs, FieldCellKey(MAP_A, 0, 0), ask);
@@ -914,7 +917,7 @@ void Kinds()
               needs[1].sources.size() == 1 && needs[1].sources[0].entry == TALKER &&
               needs[2].kind == NeedKind::HandIn && needs[2].objective == HAND_IN && needs[2].sources.size() == 1 &&
               needs[2].sources[0].entry == ENDER && needs[2].seconds == Circuit::TURNIN_SECONDS &&
-              Near(needs[2].worthPerCredit, 300.0 / 4.0),
+              Near(needs[2].worthPerCredit, 300.0 * 0.5),
           "explore and talk listed, the refused quest left out, the ready one a hand-in at its ender");
     FieldAsk ask;
     ask.x = Mid(0);
@@ -941,6 +944,351 @@ void Kinds()
               MapGap(map, needs[0], maps) == NoField::Fieldless,
           "the census's gap: a field on the quest's map, another map, none needed");
 }
+
+// WQ17b: a quest's worth by step: the take 10 %, the credits 40 % spread over them, the hand-in 50 %; a quest without
+// a worked objective gives 90 % at its hand-in
+void Steps()
+{
+    constexpr std::uint32_t WOLF = 320;
+    QuestRecord worked = MakeQuest(
+        90, 1000,
+        {MakeObjective(ObjectiveKind::Kill, WOLF, 4, 0), MakeObjective(ObjectiveKind::Explore, 4002, 0, POI_NONE)});
+    worked.givers = {0};
+    QuestRecord bare = MakeQuest(91, 1000, {});
+    bare.givers = {0};
+    QuestIndex index = FixedIndex({worked, bare}, SourceGather{});
+    QuestPlace giver;
+    giver.mapId = MAP_A;
+    giver.x = Mid(0);
+    giver.y = Mid(0);
+    giver.entry = FIRST_ENDER;
+    index.places.push_back(giver);
+    std::vector<QuestSlot> const open = {{90, 0, {}}};
+    std::vector<QuestSlot> const ready = {{90, Circuit::SLOT_COMPLETE, {4, 0, 0, 0}}, {91, Circuit::SLOT_COMPLETE, {}}};
+    std::vector<Need> const credits = Needs(index, open, 0, Pricing{});
+    std::vector<Need> const handIns = Needs(index, ready, 0, Pricing{});
+    std::optional<Need> const take = TakeNeed(index, index.quests[0], 0, Pricing{});
+    std::optional<Need> const bareTake = TakeNeed(index, index.quests[1], 0, Pricing{});
+    Check(credits.size() == 2 && credits[0].left == 4 && Near(credits[0].worthPerCredit, 80.0) &&
+              credits[1].left == 1 && Near(credits[1].worthPerCredit, 80.0),
+          "steps: five credits at 400 / 5 = 80");
+    Check(handIns.size() == 2 && Near(handIns[0].worthPerCredit, 500.0) && Near(handIns[1].worthPerCredit, 900.0),
+          "steps: the hand-in 500, without an objective 900");
+    Check(take && take->kind == NeedKind::Take && take->objective == TAKE && take->left == 1 &&
+              Near(take->worthPerCredit, 100.0) && take->sources.size() == 1 && take->sources[0].entry == FIRST_ENDER &&
+              bareTake && Near(bareTake->worthPerCredit, 100.0),
+          "steps: the take 100 at the giver");
+}
+
+// WQ17b, the replay's moments 22 and 29: a level-26 rare alone in a cell beside a level-12 field no longer closes it
+// and counts to the elite share; a camp of level-20 elites beside the field still closes it
+void LoneRare()
+{
+    constexpr std::uint32_t BOAR = 330;  // needed, level 11-12
+    constexpr std::uint32_t WOLF = 331;  // ordinary hostiles around
+    constexpr std::uint32_t RARE = 332;
+    constexpr std::uint32_t GUARD = 333;
+    std::vector<FieldSpawn> spawns;
+    AddSpawns(spawns, BOAR, 0, 0, 6, 11, 12, 300);
+    AddSpawns(spawns, WOLF, -1, 0, 5, 10, 12, 300);
+    AddSpawns(spawns, WOLF, 0, -1, 5, 10, 12, 300);
+    AddSpawns(spawns, RARE, 1, 1, 1, 26, 26, 0);
+    QuestIndex const index =
+        FixedIndex({MakeQuest(95, 800, {MakeObjective(ObjectiveKind::Kill, BOAR, 10, 0)})}, SourceGather{});
+    std::vector<QuestSlot> const log = {{95, 0, {}}};
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    FieldAsk ask;
+    ask.x = Mid(0);
+    ask.y = Mid(0);
+    ask.level = 12;
+    ask.stayMinutes = 5.0f;
+    std::uint64_t const centre = FieldCellKey(MAP_A, 0, 0);
+    FieldMap const lone = FieldMap::Build(spawns);
+    Offer const open = FieldOffer(lone, needs, centre, ask);
+    Check(open.risk.levelsAbove == 0.0f && Near(open.risk.eliteShare, 1.0 / 17.0) &&
+              Weighted(open.risk, ask) <= Goals::RISK_REFUSE && FindField(TopFields(lone, needs, ask), centre),
+          "a level-26 rare alone beside a level-12 field: the field open, the rare one of 17 in its elite share");
+    std::vector<FieldSpawn> camp = spawns;
+    for (std::pair<std::int32_t, std::int32_t> const& cell :
+         {std::make_pair(1, 0), std::make_pair(1, -1), std::make_pair(0, 1)})
+    {
+        std::size_t const first = camp.size();
+        AddSpawns(camp, GUARD, cell.first, cell.second, 5, 20, 20, 300);
+        for (std::size_t i = first; i < camp.size(); ++i)
+            camp[i].elite = true;
+    }
+    FieldMap const guarded = FieldMap::Build(camp);
+    Offer const closed = FieldOffer(guarded, needs, centre, ask);
+    Check(Weighted(closed.risk, ask) > Goals::RISK_REFUSE && !FindField(TopFields(guarded, needs, ask), centre),
+          "a camp of fifteen level-20 elites beside the field: still refused");
+}
+
+// WQ17b: an explore with a place in the index gets a field there and no gap, one without stays a named gap; the takes
+// are the quests given near the bot that the rules allow, at their givers
+void PlacesAndTakes()
+{
+    QuestObjective placedExplore = MakeObjective(ObjectiveKind::Explore, 4003, 0, POI_NONE);
+    AreaPoint area;
+    area.mapId = MAP_A;
+    area.x = Mid(3);
+    area.y = Mid(3);
+    area.radius = 20.0f;
+    area.points = 1;
+    placedExplore.areas.push_back(area);
+    QuestIndex const index =
+        FixedIndex({MakeQuest(100, 500, {placedExplore, MakeObjective(ObjectiveKind::Explore, 4004, 0, POI_NONE)})},
+                   SourceGather{});
+    std::vector<QuestSlot> const log = {{100, 0, {}}};
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<FieldSpawn> spawns;
+    AddSpawns(spawns, 340, 3, 3, 2, 5, 5, 300);
+    FieldMap const map = FieldMap::Build(spawns);
+    FieldAsk ask;
+    ask.x = Mid(2);
+    ask.y = Mid(2);
+    ask.level = 5;
+    ask.stayMinutes = 5.0f;
+    Ranking const ranking = TopFields(map, needs, ask);
+    std::array<std::uint32_t, 1> const maps = {MAP_A};
+    Check(needs.size() == 2 && needs[0].places.size() == 1 && needs[1].places.empty() && UsesPlaces(map, needs[0]) &&
+              !ranking.fields.empty() && ranking.fields[0].offer.needs.size() == 1 &&
+              ranking.fields[0].offer.needs[0].need == 0 && Near(ranking.fields[0].offer.needs[0].credits, 1.0) &&
+              ranking.noField.size() == 1 && ranking.noField[0].need == 1 &&
+              ranking.noField[0].why == NoField::Fieldless && !MapGap(map, needs[0], maps) &&
+              MapGap(map, needs[1], maps) == NoField::Fieldless,
+          "an explore with a place: a field there, no gap; one without a place: a named gap");
+
+    QuestGather gather;
+    QuestRecord high = MakeQuest(111, 400, {});
+    high.minLevel = 30;
+    QuestRecord elite = MakeQuest(115, 400, {});
+    elite.flags = QuestFlag::ELITE;
+    gather.quests = {MakeQuest(110, 400, {}), high, MakeQuest(112, 400, {}), MakeQuest(113, 400, {}),
+                     MakeQuest(114, 400, {}), elite};
+    QuestPlace near;
+    near.mapId = MAP_A;
+    near.x = Mid(0);
+    near.y = Mid(0);
+    near.entry = 750;
+    QuestPlace away = near;
+    away.x = Mid(40);
+    away.entry = 751;
+    gather.places = {near, away};
+    gather.relations = {{110, 750, false, false},
+                        {111, 750, false, false},
+                        {112, 750, false, false},
+                        {113, 751, false, false},
+                        {115, 750, false, false}};  // 114: only an item starts it
+    QuestIndex const built = QuestIndex::Build(gather);
+    std::vector<std::uint32_t> const candidates = TakeCandidates(built, MAP_A, Mid(0), Mid(0), 200.0f);
+    std::array<std::uint32_t, 1> const inLog = {112};
+    std::vector<std::int32_t> const groups = TakenGroups(built, inLog, {});
+    Take::Facts facts;
+    facts.race = HUMAN;
+    facts.cls = 1;
+    facts.level = 10;
+    facts.eliteGroup = true;
+    facts.inLog = inLog;
+    facts.takenGroups = groups;
+    std::vector<Need> const takes = TakeNeeds(built, facts, MAP_A, candidates, Pricing{});
+    Check(candidates == std::vector<std::uint32_t>{110, 111, 112, 115} && takes.size() == 1 && takes[0].quest == 110 &&
+              takes[0].kind == NeedKind::Take && takes[0].sources.size() == 1 && takes[0].sources[0].entry == 750 &&
+              Near(takes[0].worthPerCredit, 40.0),
+          "takes: of the quests given near the bot the one the rules allow (not too low, in the log or elite)");
+}
+
+// WQ17b: the generated worlds again (their own stream of the seed) with givers, the take rules' fields and objective
+// places added: the shares, the takes, the places and ordinary hostiles over every log
+void GeneratedSteps(std::uint32_t seed)
+{
+    Gen gen{std::mt19937(seed + 1)};
+    Pricing const pricing{};
+    Invariant sums{"the shares of every quest sum to its worth (take, credits, hand-in)"};
+    Invariant handIn{"a ready quest's hand-in is worth more than one of its credits was"};
+    Invariant takeLog{"a quest in the log gives no take"};
+    Invariant takeRule{"a quest Take::May refuses gives no need, one it allows with a giver on the map exactly one"};
+    Invariant noGap{"a need with a place in the index is never returned as a gap"};
+    Invariant ordinary{"more ordinary hostiles of a level the bot can fight never close a field"};
+    std::size_t takeCount = 0;
+    std::size_t refusedCount = 0;
+    std::size_t placedCount = 0;
+    std::size_t grownCount = 0;
+    for (std::size_t logIndex = 0; logIndex < LOGS; ++logIndex)
+    {
+        World w = Generate(gen);
+        int const level = w.ask.level;
+        for (QuestRecord& quest : w.index.quests)
+        {
+            for (int g = gen.Int(0, 2); g > 0; --g)
+            {
+                QuestPlace place;
+                place.mapId = gen.Chance(0.8f) ? MAP_A : MAP_B;
+                place.x = Mid(gen.Int(CELL_LOW, CELL_HIGH));
+                place.y = Mid(gen.Int(CELL_LOW, CELL_HIGH));
+                place.entry = gen.Pick(FIRST_ENDER, ENDERS);
+                place.hostileTo = gen.Chance(0.1f) ? static_cast<std::uint8_t>(1u << w.team) : std::uint8_t{0};
+                place.otherPhase = gen.Chance(0.05f);
+                quest.givers.push_back(static_cast<std::uint32_t>(w.index.places.size()));
+                w.index.places.push_back(place);
+            }
+            quest.minLevel = static_cast<std::uint32_t>(std::max(1, level - gen.Int(-1, 6)));
+            quest.level = gen.Chance(0.1f) ? -1 : std::max(1, level + gen.Int(-6, 4));
+            if (gen.Chance(0.1f))
+                quest.flags |= QuestFlag::ELITE;
+            if (gen.Chance(0.05f))
+                quest.flags |= QuestFlag::REPEATABLE;
+            if (gen.Chance(0.2f))
+                quest.exclusiveGroup = gen.Int(1, 3);
+            if (gen.Chance(0.2f))
+                quest.prev = (gen.Chance(0.5f) ? 1 : -1) * static_cast<std::int32_t>(FIRST_QUEST + 3 * gen.Int(0, 7));
+            for (QuestObjective& objective : quest.objectives)
+                for (int a = gen.Chance(0.5f) ? gen.Int(1, 2) : 0; a > 0; --a)
+                {
+                    AreaPoint area;
+                    area.mapId = gen.Chance(0.8f) ? MAP_A : MAP_B;
+                    area.x =
+                        (static_cast<float>(gen.Int(CELL_LOW, CELL_HIGH)) + gen.Real(0.01f, 0.99f)) * FIELD_CELL_YARDS;
+                    area.y =
+                        (static_cast<float>(gen.Int(CELL_LOW, CELL_HIGH)) + gen.Real(0.01f, 0.99f)) * FIELD_CELL_YARDS;
+                    area.radius = gen.Real(5.0f, 60.0f);
+                    area.points = 1;
+                    area.notTeams = gen.Chance(0.1f) ? static_cast<std::uint8_t>(1u << w.team) : std::uint8_t{0};
+                    objective.areas.push_back(area);
+                }
+        }
+        std::vector<std::uint32_t> inLog;
+        for (QuestSlot const& slot : w.log)
+            inLog.push_back(slot.quest);
+        std::sort(inLog.begin(), inLog.end());
+        inLog.erase(std::unique(inLog.begin(), inLog.end()), inLog.end());
+        std::vector<std::uint32_t> rewarded;
+        std::vector<std::uint32_t> givenUp;
+        std::vector<std::uint32_t> candidates;
+        for (QuestRecord const& quest : w.index.quests)
+        {
+            candidates.push_back(quest.id);
+            if (std::binary_search(inLog.begin(), inLog.end(), quest.id))
+                continue;
+            if (gen.Chance(0.2f))
+                rewarded.push_back(quest.id);
+            else if (gen.Chance(0.1f))
+                givenUp.push_back(quest.id);
+        }
+        candidates.push_back(UNKNOWN_QUEST);
+        std::vector<std::int32_t> const groups = TakenGroups(w.index, inLog, rewarded);
+        Take::Facts facts;
+        facts.race = w.team ? ORC : HUMAN;
+        facts.cls = 1;
+        facts.level = w.ask.level;
+        facts.eliteGroup = gen.Chance(0.5f);
+        facts.rewarded = rewarded;
+        facts.inLog = inLog;
+        facts.givenUp = givenUp;
+        facts.takenGroups = groups;
+        Take::Facts strict = facts;
+        strict.eliteGroup = false;
+        std::vector<Need> const takes = TakeNeeds(w.index, facts, w.ask.mapId, candidates, pricing);
+        takeCount += takes.size();
+
+        for (QuestRecord const& quest : w.index.quests)
+        {
+            std::size_t mine = 0;
+            for (Need const& take : takes)
+                mine += take.quest == quest.id ? 1 : 0;
+            bool giver = false;
+            for (std::uint32_t const at : quest.givers)
+            {
+                QuestPlace const& place = w.index.places[at];
+                giver =
+                    giver || (place.mapId == w.ask.mapId && !place.otherPhase && !(place.hostileTo & (1u << w.team)));
+            }
+            std::optional<Take::Reason> const why = Take::May(quest, strict, w.index);
+            refusedCount += why ? 1 : 0;
+            takeRule.Note(why ? mine == 0 : mine == (giver ? 1u : 0u), logIndex, "quest " + std::to_string(quest.id));
+            if (std::binary_search(inLog.begin(), inLog.end(), quest.id))
+                takeLog.Note(mine == 0, logIndex, "quest " + std::to_string(quest.id));
+
+            if (RefusedFor(quest, w.team))
+                continue;
+            float const worth = QuestWorth(quest, pricing);
+            QuestShares const shares = SharesOf(quest, pricing);
+            std::array<QuestSlot, 1> const open = {QuestSlot{quest.id, 0, {}}};
+            std::array<QuestSlot, 1> const ready = {QuestSlot{quest.id, Circuit::SLOT_COMPLETE, {}}};
+            std::vector<Need> const credits = Needs(w.index, open, w.team, pricing);
+            std::vector<Need> const handIns = Needs(w.index, ready, w.team, pricing);
+            std::optional<Need> const take = TakeNeed(w.index, quest, w.team, pricing);
+            double sum = take ? take->worthPerCredit : shares.take;
+            float most = 0.0f;
+            for (Need const& need : credits)
+            {
+                sum += static_cast<double>(need.left) * need.worthPerCredit;
+                most = std::max(most, need.worthPerCredit);
+            }
+            sum += handIns.size() == 1 ? handIns[0].worthPerCredit : 0.0f;
+            sums.Note(handIns.size() == 1 &&
+                          std::fabs(sum - worth) <= 1e-3 * std::max(1.0, std::fabs(static_cast<double>(worth))),
+                      logIndex, "quest " + std::to_string(quest.id));
+            if (worth > 0.0f && !credits.empty() && handIns.size() == 1)
+                handIn.Note(handIns[0].worthPerCredit > most, logIndex, "quest " + std::to_string(quest.id));
+        }
+
+        std::vector<Need> needs = Needs(w.index, w.log, w.team, pricing);
+        needs.insert(needs.end(), takes.begin(), takes.end());
+        Ranking const ranking = TopFields(w.map, needs, w.ask);
+        for (std::uint32_t i = 0; i < needs.size(); ++i)
+        {
+            if (needs[i].places.empty())
+                continue;
+            placedCount += UsesPlaces(w.map, needs[i]) ? 1 : 0;
+            bool ok = !MapGap(w.map, needs[i], {});
+            for (Missing const& m : ranking.noField)
+                ok = ok && (m.need != i ||
+                            (m.why != NoField::NoSource && m.why != NoField::NoSpawn && m.why != NoField::Fieldless));
+            noGap.Note(ok, logIndex, "need " + std::to_string(i) + " of quest " + std::to_string(needs[i].quest));
+        }
+
+        // Ordinary hostiles: new creatures, not elite, at levels up to the one the field is judged by (or the bot's),
+        // in the field's nine cells
+        for (std::size_t f = 0; f < ranking.fields.size() && f < 3; ++f)
+        {
+            Ranked const& field = ranking.fields[f];
+            std::uint64_t const centre = field.offer.centre;
+            int const top = std::clamp(
+                static_cast<int>(std::floor(static_cast<float>(level) + field.offer.risk.levelsAbove)), 1, 250);
+            std::vector<FieldSpawn> more = w.spawns;
+            for (int k = gen.Int(1, 12); k > 0; --k)
+            {
+                float const x = (static_cast<float>(FieldCellXOf(centre) + gen.Int(-1, 1)) + gen.Real(0.01f, 0.99f)) *
+                                FIELD_CELL_YARDS;
+                float const y = (static_cast<float>(FieldCellYOf(centre) + gen.Int(-1, 1)) + gen.Real(0.01f, 0.99f)) *
+                                FIELD_CELL_YARDS;
+                std::uint8_t const low = static_cast<std::uint8_t>(gen.Int(1, top));
+                more.push_back(MakeSpawn(FieldKind::Creature, FIRST_ORDINARY + static_cast<std::uint32_t>(k),
+                                         FieldMapOf(centre), x, y, low, static_cast<std::uint8_t>(low + gen.Int(0, 3)),
+                                         true, static_cast<std::uint32_t>(gen.Int(30, 900))));
+            }
+            FieldMap const bigger = FieldMap::Build(more);
+            Offer const after = FieldOffer(bigger, needs, centre, w.ask);
+            float const was = Weighted(field.offer.risk, w.ask);
+            float const now = Weighted(after.risk, w.ask);
+            ordinary.Note(now <= was + SLACK && now <= Goals::RISK_REFUSE &&
+                              FindField(TopFields(bigger, needs, w.ask), centre) != nullptr,
+                          logIndex, "field " + std::to_string(centre));
+            ++grownCount;
+        }
+    }
+    std::printf("steps seed=%u logs=%zu takes=%zu refused takes=%zu needs at places=%zu grown fields=%zu\n", seed, LOGS,
+                takeCount, refusedCount, placedCount, grownCount);
+    for (Invariant const* inv : {&sums, &handIn, &takeLog, &takeRule, &noGap, &ordinary})
+    {
+        std::printf("  %s: %u checks\n", inv->name, inv->checked);
+        std::string what = std::string(inv->name) + ": " + std::to_string(inv->checked) + " checks";
+        if (inv->broken)
+            what += ", " + std::to_string(inv->broken) + " broken, first at log " + std::to_string(inv->firstLog) +
+                    " of seed " + std::to_string(seed) + " (" + inv->firstWhat + ")";
+        Check(inv->checked > 0 && !inv->broken, what);
+    }
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -953,6 +1301,10 @@ int main(int argc, char** argv)
     TooHigh();
     Kinds();
     GeneratedLogs(seed);
+    Steps();
+    LoneRare();
+    PlacesAndTakes();
+    GeneratedSteps(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
