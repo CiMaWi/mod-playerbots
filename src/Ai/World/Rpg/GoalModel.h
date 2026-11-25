@@ -547,6 +547,9 @@ struct Ranked
     std::uint32_t considered{0};
     std::vector<Option> options;  // the best RANK_KEEP, best first
     std::vector<Dropped> dropped;
+    // Made for a sick bot whose due repair recover handed over (NE11): a sickness rest yields to the plan's best
+    // option when that is the due errand (GoalApply::OnFreshPlan)
+    bool sickErrandOpen{false};
 };
 
 struct RiskInput
@@ -696,7 +699,8 @@ private:
     void Add(Option option, RiskInput const& risk)
     {
         ++_ranked.considered;
-        if (Sick())
+        // Resurrection sickness drops every option but the due repair recover handed over (NE11)
+        if (Sick() && !(_bot.sickErrandOpen && option.kind == GoalKind::Errand && option.due))
         {
             Drop(option, SICK_REASON);
             return;
@@ -1109,6 +1113,10 @@ private:
                             UpkeepNeeds::RepairErrandDue(_bot.brokenItems, _bot.lowestDurabilityPercent,
                                                          _bot.repairCheapest, _bot.money) &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
+        // A sick bot's errand is the due repair alone (NE11): full bags name no trip of their own; the trip takes the
+        // other errands on its way
+        if (Sick() && !repair)
+            return;
         // The craft queue counts only when the errand rules would take its station stop: its worth in copper above the
         // detour of a trip of its own (WorldTravel::CollectOffers' test; WR14b run 2: a chosen craft errand whose stop
         // the errand plan then refused as detour_not_worth)
@@ -1124,7 +1132,7 @@ private:
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
         option.minutes = bags.vendor.walkMinutes + VISIT_MINUTES;
-        if (_bot.bagSlots && known(bags.vendor))
+        if (!Sick() && _bot.bagSlots && known(bags.vendor))
         {
             std::uint32_t const used = _bot.bagSlots - std::min(_bot.bagFree, _bot.bagSlots);
             std::uint32_t const usedPercent = used * WorldTravel::PERCENT / _bot.bagSlots;
@@ -1236,7 +1244,8 @@ private:
     }
 
     // A sick bot rests until the sickness ends (upkeep §3.5): forced, so it ranks above everything, a bridge goal
-    // too; its worth is the time at the reference rate the sickness would cost in a fight
+    // too; its worth is the time at the reference rate the sickness would cost in a fight. Once recover has handed a
+    // due repair over (NE11) it is not forced: the due errand ranks above it, and the rest stays the plan's fallback
     void AddSickRest()
     {
         Option option;
@@ -1246,8 +1255,9 @@ private:
         option.expected = option.minutes * _ranked.referenceRate;
         option.value = option.expected;
         option.valuePerMinute = _ranked.referenceRate;
-        option.forced = true;
+        option.forced = !_bot.sickErrandOpen;
         option.reason = SICK_REASON;
+        _ranked.sickErrandOpen = _bot.sickErrandOpen;
         ++_ranked.considered;
         _options.push_back(std::move(option));
     }

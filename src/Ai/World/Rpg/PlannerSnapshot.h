@@ -130,9 +130,10 @@ struct Snapshot
     std::optional<TraitRules::BotTraits> traits;
     float runSpeed{0.0f};
     bool mounted{false};
-    std::uint8_t groupSize{0};  // 0 = no group
-    std::uint32_t sickMs{0};    // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
-    Goal currentGoal;           // WT16 fills the goals
+    std::uint8_t groupSize{0};   // 0 = no group
+    std::uint32_t sickMs{0};     // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
+    bool sickErrandOpen{false};  // sick, and recover handed over a due repair (Upkeep::SickErrandOpen, NE11)
+    Goal currentGoal;            // WT16 fills the goals
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
     std::vector<StockItem> stock;  // the backpack and every bag, one entry per item id
     std::uint8_t petDiet{0};       // the hunter pet's diet (bit FoodType - 1); 0 = unknown

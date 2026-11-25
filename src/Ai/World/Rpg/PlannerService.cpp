@@ -1232,9 +1232,14 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
     snapshot.runSpeed = bot->GetSpeed(MOVE_RUN);
     snapshot.mounted = bot->IsMounted();
-    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16)
+    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16), or the due repair recover
+    // handed over (NE11)
     if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    {
         snapshot.sickMs = static_cast<std::uint32_t>(std::max<int32>(sickness->GetDuration(), 0));
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        snapshot.sickErrandOpen = botAI && WorldTravel::SickErrandOpen(botAI);
+    }
     if (Group const* group = bot->GetGroup())
     {
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());

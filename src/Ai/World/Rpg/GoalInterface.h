@@ -1054,7 +1054,8 @@ inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
 
 // What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
 // during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
-// sickness rest, a command, a test's order) and an external goal stay
+// sickness rest, a command, a test's order) and an external goal stay; a sickness rest yields to a plan whose best
+// option is the due repair recover handed over (NE11, Ranked::sickErrandOpen)
 enum class FreshPlan : std::uint8_t
 {
     Keep,
@@ -1069,7 +1070,12 @@ inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
         return FreshPlan::Keep;
     if (current.Is())
         return FreshPlan::Replan;
-    return goals.inFallback && goals.plan && goals.plan->ranked.ok ? FreshPlan::Take : FreshPlan::Keep;
+    if (!goals.plan || !goals.plan->ranked.ok)
+        return FreshPlan::Keep;
+    Goals::Ranked const& ranked = goals.plan->ranked;
+    bool const sickErrand = ranked.sickErrandOpen && !ranked.options.empty() &&
+                            ranked.options.front().kind == Goals::GoalKind::Errand && ranked.options.front().due;
+    return goals.inFallback || sickErrand ? FreshPlan::Take : FreshPlan::Keep;
 }
 
 // The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way

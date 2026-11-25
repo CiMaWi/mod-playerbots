@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 
+#include "AwarenessRules.h"
 #include "ProfessionConfig.h"
 #include "ShareSlot.h"
 #include "UpkeepRules.h"
@@ -144,6 +145,7 @@ constexpr StatusRow STATUS_ROWS[] = {
     {6, "flight", false, false, false},     {7, "rest", false, true, true},
     {8, "outdoor_pvp", true, false, false}, {9, "do_gather", true, false, true},
     {10, "travel", false, false, false},    {11, "errands", false, false, false},
+    {12, "do_fish", false, false, false},
 };
 
 void CheckSickGate()
@@ -178,8 +180,10 @@ void CheckSickRests()
         bool const healthy = Upkeep::StatusPickable(row.status, false, false);
         bool const needsRest = Upkeep::StatusPickable(row.status, false, true);
         bool const sick = Upkeep::StatusPickable(row.status, true, false);
-        bool const ground = Upkeep::SickEndsStatus(row.status, true, false);
-        bool const air = Upkeep::SickEndsStatus(row.status, true, true);
+        bool const ground = Upkeep::SickEndsStatus(row.status, true, false, false);
+        bool const air = Upkeep::SickEndsStatus(row.status, true, true, false);
+        // NE11: an errand that started after the rise stays; for every other status that fact changes nothing
+        bool const sinceRise = Upkeep::SickEndsStatus(row.status, true, false, true);
         std::cout << "  " << row.word << ": " << healthy << " / " << needsRest << " / " << sick << "; " << ground
                   << " / " << air << "\n";
         std::string const word(row.word);
@@ -188,49 +192,97 @@ void CheckSickRests()
         Check(sick == row.sickOpen && !(row.sickOpen && row.fights), word + " picked by a sick bot only if open");
         Check(Upkeep::StatusPickable(row.status, true, true) == row.sickOpen, word + ": sick and needing rest");
         Check(ground == !row.sickOpen, word + (row.sickOpen ? " stays" : " ends") + " while the bot is sick");
-        Check(!air, word + ": a flight in the air lands first");
-        Check(!Upkeep::SickEndsStatus(row.status, false, false), word + " never ends for a healthy bot");
+        Check(!air && !Upkeep::SickEndsStatus(row.status, true, true, true),
+              word + ": a flight in the air lands first");
+        Check(sinceRise == (ground && row.status != 11),
+              word + (row.status == 11 ? ": a sick bot keeps the errand it started after the rise"
+                                       : ": the errand's start time does not keep it"));
+        Check(!Upkeep::SickEndsStatus(row.status, false, false, false) &&
+                  !Upkeep::SickEndsStatus(row.status, false, false, true),
+              word + " never ends for a healthy bot");
     }
     // Rest: its duration ends it, a sick bot's only once the sickness has ended
     Check(Upkeep::RestEnds(true, false) && !Upkeep::RestEnds(false, false), "rest ends after its duration");
     Check(!Upkeep::RestEnds(true, true) && !Upkeep::RestEnds(false, true), "a sick bot's rest does not time out");
     // The WU8b deaths while sick by the bot's status (review of WU8b-fix): the errand (914), go camp and wander npc
     // picks after a 13-35 s rest (168: go camp, killed, healer, go camp), an inn trip kept through death (636, 904)
-    Check(Upkeep::SickEndsStatus(11, true, false), "914: the errand ends at the healer");
+    Check(Upkeep::SickEndsStatus(11, true, false, false), "914: an errand from before the death ends at the healer");
+    Check(!Upkeep::SickEndsStatus(11, true, false, true),
+          "NE11: the errand recover handed over goes on while sick (mutant: it ends at once, errand_sick)");
     Check(!Upkeep::RestEnds(true, true) && !Upkeep::StatusPickable(2, true, false) &&
               !Upkeep::StatusPickable(4, true, false),
           "168: the rest outlasts its 35 s and the pick offers no go camp or wander npc");
-    Check(Upkeep::SickEndsStatus(10, true, false), "636: the inn trip kept from before the death ends");
-    Check(Upkeep::SickEndsStatus(6, true, false) && !Upkeep::SickEndsStatus(6, true, true),
+    Check(Upkeep::SickEndsStatus(10, true, false, false) && Upkeep::SickEndsStatus(10, true, false, true),
+          "636: the inn trip kept from before the death ends");
+    Check(Upkeep::SickEndsStatus(6, true, false, false) && !Upkeep::SickEndsStatus(6, true, true, false),
           "a flight not yet in the air ends, one in the air lands");
     // The sickness over: rest times out and the pick offers every status again, the errand start too
     bool everyStatus = true;
     for (StatusRow const& row : STATUS_ROWS)
         everyStatus = everyStatus && Upkeep::StatusPickable(row.status, false, false);
-    Check(Upkeep::RestEnds(true, false) && everyStatus && Upkeep::ErrandMayStart(7, false),
+    Check(Upkeep::RestEnds(true, false) && everyStatus && Upkeep::ErrandMayStart(7, false, false),
           "the sickness over, the normal pick and the errand start resume");
 }
 
 // The errand trigger's start (WT3b's interruptible statuses and the sick gate; planning 3.19 (3.6): never questing)
 void CheckErrandStart()
 {
-    std::cout << "Errand start (status: well / sick):\n";
+    std::cout << "Errand start (status: well / sick / sick with the repair handed over):\n";
     for (StatusRow const& row : STATUS_ROWS)
     {
-        bool const well = Upkeep::ErrandMayStart(row.status, false);
-        bool const sick = Upkeep::ErrandMayStart(row.status, true);
-        std::cout << "  " << row.word << ": " << well << " / " << sick << "\n";
-        Check(well == row.interrupts,
+        bool const well = Upkeep::ErrandMayStart(row.status, false, false);
+        bool const sick = Upkeep::ErrandMayStart(row.status, true, false);
+        bool const open = Upkeep::ErrandMayStart(row.status, true, true);
+        std::cout << "  " << row.word << ": " << well << " / " << sick << " / " << open << "\n";
+        Check(well == row.interrupts && Upkeep::ErrandMayStart(row.status, false, true) == well,
               std::string(row.word) + (row.interrupts ? " may" : " may not") + " be ended by the errand trigger");
-        Check(!sick, std::string(row.word) + ": a sick bot starts no errand");
+        Check(!sick, std::string(row.word) + ": a sick bot starts no errand until recover hands a due repair over");
+        Check(open == row.interrupts,
+              std::string(row.word) + (row.interrupts ? ": the handed-over repair may end it" : ": never ended"));
     }
     // The healer revive in rest, a questing bot (the planner weighs its needs, WT63c), a bot on a planned trip
-    Check(!Upkeep::ErrandMayStart(7, true) && Upkeep::ErrandMayStart(7, false),
-          "revived sick at the healer the bot rests; the errand waits until the sickness ends");
-    Check(!Upkeep::ErrandMayStart(5, false), "the errand trigger never ends questing, a due need neither");
-    Check(!Upkeep::ErrandMayStart(10, false) && !Upkeep::ErrandMayStart(6, false),
+    Check(!Upkeep::ErrandMayStart(7, true, false) && Upkeep::ErrandMayStart(7, false, false),
+          "revived sick at the healer the bot rests; the errand waits for recover's hand-over");
+    Check(Upkeep::ErrandMayStart(7, true, true) && Upkeep::ErrandMayStart(0, true, true),
+          "NE11: the sick rest (and idle) give way to the due repair recover handed over (mutant: open is ignored)");
+    Check(!Upkeep::ErrandMayStart(5, false, false) && !Upkeep::ErrandMayStart(5, true, true),
+          "the errand trigger never ends questing, a due need neither");
+    Check(!Upkeep::ErrandMayStart(10, false, false) && !Upkeep::ErrandMayStart(6, false, false),
           "travel and flights are not ended by an errand");
-    Check(!Upkeep::ErrandMayStart(32, false), "a status out of range is never ended");
+    Check(!Upkeep::ErrandMayStart(32, false, false), "a status out of range is never ended");
+}
+
+// NE11 (NE.3): the hand-over of recover to the due repair. Open only when sick, a repair due, the bot restored (the
+// rule recover waits for, AwarenessRules::Restored) and on a clear point; every other case rests as before, and the
+// rest ends with the sickness (RestEnds), so the wait has its exit
+void CheckSickErrandOpen()
+{
+    AwarenessRules::RecoverFacts facts;
+    facts.sick = true;
+    facts.healthPct = 100;
+    facts.powerPct = 100;
+    facts.usesMana = true;
+    facts.own.clear = true;
+    auto const open = [](AwarenessRules::RecoverFacts const& f, bool repairDue)
+    { return Upkeep::SickErrandOpen(f.sick, repairDue, AwarenessRules::Restored(f), f.own.clear); };
+    Check(open(facts, true), "sick, a repair due, restored on a clear point: the errand opens");
+    AwarenessRules::RecoverFacts well = facts;
+    well.sick = false;
+    Check(!open(well, true), "a bot that is not sick is not this rule's (the errand rules of a healthy bot)");
+    AwarenessRules::RecoverFacts unclear = facts;
+    unclear.own.clear = false;
+    Check(!open(unclear, true) && AwarenessRules::RecoverStep(unclear) == AwarenessRules::RecoverAct::Move,
+          "on a place someone reaches recover moves the bot first; the errand waits");
+    AwarenessRules::RecoverFacts low = facts;
+    low.healthPct = AwarenessRules::RECOVER_HEALTH_PCT - 1;
+    Check(!open(low, true), "health at 79 %: not restored, the bot rests");
+    AwarenessRules::RecoverFacts dry = facts;
+    dry.powerPct = AwarenessRules::RECOVER_POWER_PCT - 1;
+    Check(!open(dry, true), "a mana user at 79 % mana: not restored, the bot rests");
+    Check(!open(facts, false), "nothing due (no repair): the bot rests, no stock or bag errand opens alone");
+    Check(!Upkeep::ErrandMayStart(7, true, open(low, true)) && Upkeep::RestEnds(true, false) &&
+              !Upkeep::RestEnds(true, true),
+          "a closed hand-over leaves the old rule: the sick bot rests until the sickness ends");
 }
 }  // namespace
 
@@ -243,6 +295,7 @@ int main()
     CheckSickGate();
     CheckSickRests();
     CheckErrandStart();
+    CheckSickErrandOpen();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
