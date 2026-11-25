@@ -7,6 +7,7 @@
 #include "CheckMountStateAction.h"
 #include "PlayerbotsDatabase.h"
 #include "AreaDefines.h"
+#include "Awareness.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldMgr.h"
 #include "BattlegroundEY.h"
@@ -22,6 +23,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
+#include "RpgNavMeshSnap.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "Spell.h"
@@ -342,10 +344,13 @@ MountRules::Verdict CheckMountStateAction::AskMountPolicy(Player* bot, Playerbot
                      botAI->GetAiObjectContext()->GetValue<bool>("has available loot")->Get();
     facts.noMount = !TestConstraints::MountsOnItsOwn(botAI->testConstraints);
     // A transport leg (waiting at the dock, boarding, aboard), a tame, a craft visit (a recipe is not cast mounted;
-    // professions WR8) or a fishing trip near its stand (WR16b) keeps the bot on foot
+    // professions WR8), a fishing trip near its stand (WR16b) or the recovery after a rise (AW9: a mounted bot can
+    // neither eat nor drink) keeps the bot on foot
+    AwarenessRules::RecoverFacts recover;
     facts.onFoot = TravelKeepsOnFoot(botAI) ||
                    BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft) ||
-                   NewRpgDoFishAction::KeepsOnFoot(botAI, bot);
+                   NewRpgDoFishAction::KeepsOnFoot(botAI, bot) ||
+                   (Awareness::RecoverFactsOf(botAI, recover) && AwarenessRules::KeepsOnFoot(recover));
     return MountRules::Policy(facts, wanted);
 }
 
@@ -425,7 +430,7 @@ void CheckMountStateAction::LandAndDismount(Player* bot)
     if (bot->IsAlive() && !bot->IsInFlight() && !bot->GetVehicle() && !bot->GetTransport() &&
         !bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && !bot->HasIncreaseMountedFlightSpeedAura() &&
         !bot->HasFlyAura())
-        FallToFloor(bot);
+        FallToFloor(bot, "land");
     ClearStaleFlightFlagsOf(bot);
 }
 
@@ -436,19 +441,38 @@ void CheckMountStateAction::CompleteDismount(Player* bot)
         bot->HasFlyAura() || !bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_DISABLE_GRAVITY))
         return;
 
-    FallToFloor(bot);
+    FallToFloor(bot, "dismount");
     // A completed dismount leaves no flight flags: the core clears only CAN_FLY, and IsFlying() blocks every cast.
     ClearStaleFlightFlagsOf(bot);
 }
 
-void CheckMountStateAction::FallToFloor(Player* bot)
+void CheckMountStateAction::FallToFloor(Player* bot, char const* caller)
 {
     float const x = bot->GetPositionX();
     float const y = bot->GetPositionY();
     float const startZ = bot->GetPositionZ();
 
-    float const groundZ = bot->GetMapHeight(x, y, startZ, true, MAX_FALL_DISTANCE);
-    if (groundZ > INVALID_HEIGHT && startZ - groundZ > 0.1f)
+    float const readZ = bot->GetMapHeight(x, y, startZ, true, MAX_FALL_DISTANCE);
+    bool meshRead = false;
+    Ground::MeshRead mesh;
+    float const groundZ = Ground::FallFloor(startZ, readZ,
+                                            [bot, &meshRead, &mesh]
+                                            {
+                                                meshRead = true;
+                                                mesh = MeshUnder(bot);
+                                                return mesh;
+                                            });
+    // PA72b trace (G338): a fall the reading would make longer than a hover, made or not (the reading against the mesh)
+    if (meshRead && startZ - readZ > TravelLegs::AIRBORNE_YARDS)
+        LOG_INFO("playerbots",
+                 "[Route] {} fall_to_floor {} {} in area {} at ({:.0f}, {:.0f}, {:.1f}): floor read {:.1f}, mesh {} "
+                 "{:.1f}",
+                 bot->GetName(), caller, groundZ < startZ ? "fell" : "stood", bot->GetAreaId(), x, y, startZ, readZ,
+                 mesh.kind == Ground::MeshRead::Kind::Found  ? "found"
+                 : mesh.kind == Ground::MeshRead::Kind::None ? "none"
+                                                             : "unknown",
+                 mesh.z);
+    if (groundZ < startZ)
     {
         bot->GetMotionMaster()->MoveFall();
         MovementInfo fallInfo = bot->m_movementInfo;
@@ -460,6 +484,28 @@ void CheckMountStateAction::FallToFloor(Player* bot)
         bot->SetFallInformation(0, groundZ);
         bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
     }
+}
+
+Ground::MeshRead CheckMountStateAction::MeshUnder(Player* bot)
+{
+    Ground::MeshRead mesh;
+    float x = bot->GetPositionX();
+    float y = bot->GetPositionY();
+    float z = bot->GetPositionZ();
+    switch (NavMeshSnap::Nearest(bot->GetMap(), x, y, z, WorldTravel::OFF_MESH_ACROSS_YARDS,
+                                 WorldTravel::OFF_MESH_VERTICAL_YARDS))
+    {
+        case NavMeshSnap::Result::Found:
+            mesh.kind = Ground::MeshRead::Kind::Found;
+            mesh.z = z;
+            break;
+        case NavMeshSnap::Result::None:
+            mesh.kind = Ground::MeshRead::Kind::None;
+            break;
+        default:
+            break;
+    }
+    return mesh;
 }
 
 bool CheckMountStateAction::TryForms(Player* master, int32 masterMountType, int32 masterSpeed) const

@@ -40,6 +40,7 @@
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
+#include "NewRpgTriggers.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -199,7 +200,9 @@ void FillBags(Player* bot, Snapshot& snapshot)
     snapshot.durabilityPercent = wear.durabilityPercent;
     snapshot.lowestDurabilityPercent = wear.lowestPercent;
     snapshot.brokenItems = wear.broken;
-    snapshot.repairCost = PriceRepair(bot).total;
+    auto const repairPrice = PriceRepair(bot);
+    snapshot.repairCost = repairPrice.total;
+    snapshot.repairCheapest = static_cast<std::uint32_t>(repairPrice.cheapest);
 }
 
 }  // namespace
@@ -932,12 +935,38 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
         return;
     float const reach = WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
     std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
-    situation.inns =
-        Goals::InnInputs(seen, {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
-                         FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime()));
-    if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63d)
-        LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
-                 situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);
+    Place const bind{bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ};
+    FailedAttempts::Record const& record = botAI->GetTravel().Failures();
+    std::vector<FailedAttempts::Entry> const live = FailedAttempts::LiveEntries(record, getMSTime());
+    situation.inns = Goals::InnInputs(seen, bind, live);
+    if (!TestProbe::On(botAI->testConstraints))
+        return;
+    // A test bot's trace (WT63d); per seen inn (NE3, the inn list's causes B and C): usual, the refusing entry's cause,
+    // the nearest live place entry's yards and cause (-1 none) and the record's entry count (full at MAX_ENTRIES)
+    LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
+             situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);
+    for (Goals::InnSeen const& inn : seen)
+    {
+        float nearest = -1.0f;
+        std::string_view nearestCause = "none";
+        for (FailedAttempts::Entry const& entry : live)
+        {
+            if (entry.key.kind != FailedAttempts::Kind::Place || entry.key.from.MapId != inn.place.map)
+                continue;
+            float const yards = std::sqrt((entry.key.from.X - inn.place.x) * (entry.key.from.X - inn.place.x) +
+                                          (entry.key.from.Y - inn.place.y) * (entry.key.from.Y - inn.place.y) +
+                                          (entry.key.from.Z - inn.place.z) * (entry.key.from.Z - inn.place.z));
+            if (nearest < 0.0f || yards < nearest)
+            {
+                nearest = yards;
+                nearestCause = entry.cause;
+            }
+        }
+        FailedAttempts::Entry const* refusal = Goals::InnRefusal(live, inn.place);
+        LOG_INFO("playerbots", "[Probe] {} inn {} usual {} refused {} nearest {:.1f} {} record {}", bot->GetName(),
+                 inn.entry, Goals::UsualInn(bind, inn.place) ? 1 : 0, refusal ? refusal->cause : "none", nearest,
+                 nearestCause, record.count);
+    }
 }
 
 Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
@@ -1207,9 +1236,14 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
     snapshot.runSpeed = bot->GetSpeed(MOVE_RUN);
     snapshot.mounted = bot->IsMounted();
-    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16)
+    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16), or the due repair recover
+    // handed over (NE11)
     if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    {
         snapshot.sickMs = static_cast<std::uint32_t>(std::max<int32>(sickness->GetDuration(), 0));
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        snapshot.sickErrandOpen = botAI && WorldTravel::SickErrandOpen(botAI);
+    }
     if (Group const* group = bot->GetGroup())
     {
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
@@ -1264,8 +1298,12 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
     if (state.goals)
     {
         GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle, note);
-        // The interlude that holds the slot ended: a failure stamps its kind's retry time (3.19 (6))
-        GoalApply::NoteInterludeEnd(*state.goals, state.goals->slot.Query().kind, outcome, getMSTime());
+        // The interlude that holds the slot ended: a failure stamps its kind's retry time (3.19 (6)); an errand that
+        // finished reads whether its repair is still due (the gear once, only at that end)
+        Goals::GoalKind const kind = state.goals->slot.Query().kind;
+        bool const repairDue = kind == Goals::GoalKind::Errand && outcome == StatusEnd::Outcome::Finished &&
+                               WorldTravel::RepairErrandWanted(botAI->GetBot());
+        GoalApply::NoteInterludeEnd(*state.goals, kind, outcome, getMSTime(), repairDue);
     }
 }
 

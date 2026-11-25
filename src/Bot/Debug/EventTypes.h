@@ -69,6 +69,7 @@ enum class EventType : uint8_t
     Resurrect,
     ResumeNotStarted,
     RidingBought,
+    Rise,  // a ghost came back to life: where by the rule of the dead (awareness AW8)
     Sick,
     SkillUp,
     SpellLearn,
@@ -191,6 +192,7 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::Resurrect, "Resurrect", RECORD_ROW},
     {EventType::ResumeNotStarted, "ResumeNotStarted", ROW_ONLY},
     {EventType::RidingBought, "RidingBought", ROW_ONLY},
+    {EventType::Rise, "Rise", ROW_ONLY},
     {EventType::Sick, "Sick", ROW_ONLY},
     {EventType::SkillUp, "SkillUp", RECORD_ROW},
     {EventType::SpellLearn, "SpellLearn", RECORD_ROW},

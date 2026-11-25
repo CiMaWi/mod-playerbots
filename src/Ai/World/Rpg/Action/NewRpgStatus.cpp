@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "Awareness.h"
 #include "BotTravel.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -101,9 +102,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     NewRpgStatus status = info.GetStatus();
     // Resurrection sickness (upkeep §3.5): a sick bot rests until the sickness ends. Any other status ends, an errand
     // and a trip as given up (errand_sick, abort:sick); a flight in the air lands first. The status pick, the errand
-    // start and the travel orders keep it resting
+    // start and the travel orders keep it resting. An errand that started after the last rise goes on (NE11: only the
+    // due repair recover handed over starts one, Upkeep::SickErrandOpen); one from before the death ends
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
-    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight()))
+    Awareness::Store const* aware = botAI->awareness.get();
+    bool const errandSinceRise = sick && status == RPG_ERRANDS && aware && aware->rose &&
+                                 GetMSTimeDiffToNow(info.startT) <= GetMSTimeDiffToNow(aware->roseMs);
+    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight(), errandSinceRise))
     {
         RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "sick", StatusEnd::Outcome::Sick);  // one Status row
         bot->SetStandState(UNIT_STAND_STATE_SIT);
@@ -340,7 +345,15 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 InteractWithNpcOrGameObjectForQuest(data.npcOrGo);
 
             Creature* creature = object->ToCreature();
-            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !Planner::Owns(botAI))
+            bool const stops = TestConstraints::VendorStops(botAI->testConstraints);
+            bool const trades = creature && stops && !botAI->KeepsPossessions();
+            // A test bot's trace (NE2): a vendor the visit met, whether the planner owns the bot (the gate before NE2
+            // traded for every bot it did not own) and whether this visit trades
+            if (creature && botAI->testConstraints && creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR))
+                LOG_INFO("playerbots", "[Route] {} wander vendor {} stops {} owned {} sells {} trades {}",
+                         bot->GetName(), creature->GetEntry(), stops, Planner::Owns(botAI), AI_VALUE(bool, "can sell"),
+                         trades);
+            if (trades)
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))

@@ -119,6 +119,7 @@ struct Snapshot
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
     std::uint32_t repairCost{0};                // copper to repair every worn item, the core's formula, no discount
+    std::uint32_t repairCheapest{0};            // copper for the cheapest worn item (RepairErrandDue's money test)
     std::vector<Skill> skills;                  // riding and the professions the bot has
     std::vector<QuestSlot> quests;
     std::vector<std::uint32_t> rewardedQuests;  // sorted
@@ -129,9 +130,10 @@ struct Snapshot
     std::optional<TraitRules::BotTraits> traits;
     float runSpeed{0.0f};
     bool mounted{false};
-    std::uint8_t groupSize{0};  // 0 = no group
-    std::uint32_t sickMs{0};    // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
-    Goal currentGoal;           // WT16 fills the goals
+    std::uint8_t groupSize{0};   // 0 = no group
+    std::uint32_t sickMs{0};     // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
+    bool sickErrandOpen{false};  // sick, and recover handed over a due repair (Upkeep::SickErrandOpen, NE11)
+    Goal currentGoal;            // WT16 fills the goals
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
     std::vector<StockItem> stock;  // the backpack and every bag, one entry per item id
     std::uint8_t petDiet{0};       // the hunter pet's diet (bit FoodType - 1); 0 = unknown

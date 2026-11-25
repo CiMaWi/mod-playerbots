@@ -69,42 +69,49 @@ struct InnSeen
     std::uint32_t zoneId{0};
 };
 
-// The inns the bind weighs (the planner's AddHearth, the bind entry's pick): each seen inn but a spot where a bind of
-// the bot found no usable innkeeper lately (a not_bound place among the live entries of its record of failed
-// attempts, a plain copy); the usual inn is the one the bot is bound at (its bind lies within INN_REACH_YARDS of the
-// spot: the bind trip binds that close)
+// An inn whose bind would save nothing: the bot's bind is not far from its spot (BindIsFar, NE3), whether the bot
+// bound at this innkeeper, a few yards off his spot, or at another inn of the town
+inline bool UsualInn(Place const& bind, Place const& spot)
+{
+    return !WorldTravel::BindIsFar(bind.map == spot.map, std::hypot(bind.x - spot.x, bind.y - spot.y));
+}
+
+// The live entry of the record of failed attempts that refuses an inn's spot: any place entry within PLACE_YARDS (an
+// inn trip's not_bound, no_route, unreachable_poi, trip_deaths, inn_no_walk end, or another goal's place there).
+// nullptr: none
+inline FailedAttempts::Entry const* InnRefusal(std::vector<FailedAttempts::Entry> const& live, Place const& spot)
+{
+    WorldTravel::SightPoint const point{spot.map, spot.x, spot.y, spot.z};
+    auto const it = std::find_if(live.begin(), live.end(),
+                                 [&point](FailedAttempts::Entry const& entry)
+                                 {
+                                     return entry.key.kind == FailedAttempts::Kind::Place &&
+                                            FailedAttempts::Rules::Near(entry.key.from, point);
+                                 });
+    return it == live.end() ? nullptr : &*it;
+}
+
+// The inns the bind weighs (the planner's AddHearth, the bind entry's pick): each seen inn but one an entry of the
+// record of failed attempts refuses (InnRefusal; live is a plain copy of its live entries), marked usual by UsualInn
 inline std::vector<Inn> InnInputs(std::vector<InnSeen> const& seen, Place const& bind,
-                                  std::vector<FailedAttempts::Entry> const& refused)
+                                  std::vector<FailedAttempts::Entry> const& live)
 {
     std::vector<Inn> inns;
     inns.reserve(seen.size());
     for (InnSeen const& inn : seen)
-    {
-        WorldTravel::SightPoint const spot{inn.place.map, inn.place.x, inn.place.y, inn.place.z};
-        bool const notBound = std::any_of(refused.begin(), refused.end(),
-                                          [&spot](FailedAttempts::Entry const& entry)
-                                          {
-                                              return entry.key.kind == FailedAttempts::Kind::Place &&
-                                                     entry.cause == "not_bound" &&
-                                                     FailedAttempts::Rules::Near(entry.key.from, spot);
-                                          });
-        if (notBound)
-            continue;
-        bool const usual = bind.map == inn.place.map &&
-                           std::hypot(bind.x - inn.place.x, bind.y - inn.place.y) <= WorldTravel::INN_REACH_YARDS;
-        inns.push_back({inn.entry, inn.place, inn.yards, inn.fits, usual});
-    }
+        if (!InnRefusal(live, inn.place))
+            inns.push_back({inn.entry, inn.place, inn.yards, inn.fits, UsualInn(bind, inn.place)});
     return inns;
 }
 
 // The bind entry's inn (planning 3.19 (3.3)): the order's innkeeper when it names one, else the nearest inn; either
-// fitting the level within maxYards. -1: none
+// fitting the level within maxYards, never a usual one. -1: none
 inline int PickBindInn(std::vector<Inn> const& inns, std::uint32_t innkeeper, float maxYards)
 {
     std::vector<WorldTravel::InnCandidate> candidates;
     candidates.reserve(inns.size());
     for (Inn const& inn : inns)
-        candidates.push_back({inn.yards, inn.fits && (!innkeeper || inn.id == innkeeper)});
+        candidates.push_back({inn.yards, !inn.usual && inn.fits && (!innkeeper || inn.id == innkeeper)});
     return WorldTravel::PickInn(candidates, maxYards);
 }
 }  // namespace Planner::Goals

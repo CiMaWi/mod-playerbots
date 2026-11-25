@@ -54,7 +54,7 @@ constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start
 // and its planner is not held by a test (TestConstraints' planner row). Only the planner starts what such a bot does;
 // a bot that keeps no possessions (not persistent, a master at a client) or whose planner a test holds keeps
 // upstream's behaviour. A bot that keeps its possessions is governed (upkeep 3.11): its class quests get the unlock
-// bonus (ClassQuestRules.h), whatever the handout share
+// bonus (ClassQuestRules.h)
 inline bool Owns(bool keepsPossessions, bool plannerFree) { return keepsPossessions && plannerFree; }
 
 enum class Source : std::uint8_t
@@ -722,12 +722,13 @@ inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
     return seen && seen != slots;
 }
 
-// The bind now (Planner::NoteBindFar): true when a bind seen near turned far; the first look records it (the goals'
-// first snapshot weighs the bind as it is)
+// The bind now (Planner::NoteBindFar): true when a bind seen near turned far or one seen far turned near (a plan
+// taken before the bind is then stale); the first look records it (the goals' first snapshot weighs the bind as it is)
 inline bool BindFarChanged(BotGoals& goals, bool bindFar)
 {
-    std::uint8_t const seen = std::exchange(goals.bindSeen, static_cast<std::uint8_t>(bindFar ? 2 : 1));
-    return bindFar && seen == 1;
+    std::uint8_t const now = bindFar ? 2 : 1;
+    std::uint8_t const seen = std::exchange(goals.bindSeen, now);
+    return seen != 0 && seen != now;
 }
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
@@ -857,14 +858,19 @@ inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 // An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
 // waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
 // (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
-// failure (PlannedEnd). A bag trip that finished without its bag (bagBought unset) missed its result
-inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs)
+// failure (PlannedEnd). An interlude that finished without its result missed it, as a failure: a bag trip without its
+// bag (bagBought unset), an errand with the repair still due (repairDue, read at that end: a repairer dead or gone, a
+// stand point off the mesh; the due repair ranks first and would start the same trip again at once)
+inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs,
+                             bool repairDue = false)
 {
     if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
         return;
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
-    bool const noBag = kind == Goals::GoalKind::BuyBag && outcome == StatusEnd::Outcome::Finished && !goals.bagBought;
-    if (!noBag && (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished))
+    bool const finished = outcome == StatusEnd::Outcome::Finished;
+    bool const missed = finished && ((kind == Goals::GoalKind::BuyBag && !goals.bagBought) ||
+                                     (kind == Goals::GoalKind::Errand && repairDue));
+    if (!missed && (outcome == StatusEnd::Outcome::Arrived || finished))
         failed = 0;
     else if (StatusEnd::Judged(outcome))
         failed = std::max<std::uint32_t>(nowMs, 1);
@@ -1050,7 +1056,8 @@ inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
 
 // What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
 // during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
-// sickness rest, a command, a test's order) and an external goal stay
+// sickness rest, a command, a test's order) and an external goal stay; a sickness rest yields to a plan whose best
+// option is the due repair recover handed over (NE11, Ranked::sickErrandOpen)
 enum class FreshPlan : std::uint8_t
 {
     Keep,
@@ -1065,7 +1072,12 @@ inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
         return FreshPlan::Keep;
     if (current.Is())
         return FreshPlan::Replan;
-    return goals.inFallback && goals.plan && goals.plan->ranked.ok ? FreshPlan::Take : FreshPlan::Keep;
+    if (!goals.plan || !goals.plan->ranked.ok)
+        return FreshPlan::Keep;
+    Goals::Ranked const& ranked = goals.plan->ranked;
+    bool const sickErrand = ranked.sickErrandOpen && !ranked.options.empty() &&
+                            ranked.options.front().kind == Goals::GoalKind::Errand && ranked.options.front().due;
+    return goals.inFallback || sickErrand ? FreshPlan::Take : FreshPlan::Keep;
 }
 
 // The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way

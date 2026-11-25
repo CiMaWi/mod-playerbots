@@ -51,8 +51,9 @@ void AddStackRoom(BagSpace& space, Item const* item)
         stack->room += stackMax - item->GetCount();
 }
 
-MailItemIn ReadMailItem(PlayerbotAI* botAI, ObjectGuid::LowType itemGuid, Item const* item, float sellMultiplier)
+MailItemIn ReadMailItem(PlayerbotAI* botAI, ObjectGuid::LowType itemGuid, Item* item, float sellMultiplier)
 {
+    Player* bot = botAI->GetBot();
     ItemTemplate const* proto = item->GetTemplate();
     MailItemIn in;
     in.itemGuid = itemGuid;
@@ -61,6 +62,8 @@ MailItemIn ReadMailItem(PlayerbotAI* botAI, ObjectGuid::LowType itemGuid, Item c
     in.stackMax = std::max<uint32>(proto->GetMaxStackSize(), 1);
     ItemUsage const usage = botAI->GetAiObjectContext()->GetValue<ItemUsage>("item usage", proto->ItemId)->Get();
     in.worth = ItemUsageValue::ItemWorth(proto, usage, in.count, sellMultiplier);
+    // R6: the core's own test (MaxCount, item limit category); the Item* overload excludes the item itself
+    in.untakeable = bot->CanTakeMoreSimilarItems(item) != EQUIP_ERR_OK;
     if (in.worth == WorldTravel::WORTH_PRICELESS)
     {
         // Upgrades, quest and kept items go first; their worth stays finite so the seen worth stays a real number
@@ -101,7 +104,7 @@ std::vector<MailIn> BuildMailIn(PlayerbotAI* botAI)
         bool unresolved = false;
         for (MailItemInfo const& info : mail->items)
         {
-            Item const* item = bot->GetMItem(info.item_guid);
+            Item* item = bot->GetMItem(info.item_guid);
             if (!item)
             {
                 unresolved = true;

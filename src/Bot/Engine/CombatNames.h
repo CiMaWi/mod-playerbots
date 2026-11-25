@@ -192,9 +192,8 @@ void OnEnginesBuilding(Player* bot, PlayerbotAI* botAI);
 // Names already reported by Engine::addStrategy, so a name that does not resolve is logged once
 bool FirstUnknownStrategy(std::string const& name);
 
-// `playerbots combat names [class|shared]` and `playerbots combat selftest`
+// `playerbots combat names [class|shared]`
 bool HandleNamesCommand(ChatHandler* handler, char const* args);
-bool HandleSelftestCommand(ChatHandler* handler, char const* args);
 }  // namespace CombatNames
 
 #endif

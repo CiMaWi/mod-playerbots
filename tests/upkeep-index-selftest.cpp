@@ -181,6 +181,13 @@ void CheckItemRules()
     UpkeepItemFacts drink = Item(2, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE, 1, 1, 1);
     drink.spellCategory = CATEGORY_DRINK;
     Check(StockKinds(drink) == StockBit(UpkeepStock::Water), "water: plain consumables with the drink category too");
+    UpkeepItemFacts wine = drink;  // Bottle of Pinot Noir 2723: the drink category, restores nothing (NE8a)
+    wine.restores = false;
+    UpkeepItemFacts plainFood = Item(8, CLASS_CONSUMABLE, SUBCLASS_FOOD, 1, 1, 1);
+    plainFood.spellCategory = CATEGORY_FOOD;
+    plainFood.restores = false;
+    Check(StockKinds(wine) == 0 && StockKinds(plainFood) == 0,
+          "NE8a: a drink or food that restores nothing (a wine) is no water and no food");
     UpkeepItemFacts potion = Item(3, CLASS_CONSUMABLE, 1, 1, 1, 1);
     potion.spellCategory = CATEGORY_FOOD;
     Check(StockKinds(potion) == 0, "a potion is no stock kind");

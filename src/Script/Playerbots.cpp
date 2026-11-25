@@ -717,13 +717,15 @@ public:
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
-            Planner::StartPlannerIndexes();     // gathers on this thread, builds on a planner worker
-            Planner::StartQuestIndex();         // the same for the quest index
+            Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
+            Planner::StartQuestIndex();      // the same for the quest index
+            // On this thread, from the loaded stores; immutable afterwards. Before the upkeep index, whose gather reads
+            // which food and water restore something (NE8a)
+            ItemUseIndex::Build();
             Planner::StartUpkeepIndex();        // and for the upkeep index
             Planner::StartRecipeIndex();        // and for the recipe index (professions WR3a)
             Planner::StartFishIndex();          // and for the fishing index (professions WR16a)
             Planner::StartFlightMap();          // the flying height maps, read on their own thread
-            ItemUseIndex::Build();              // on this thread, from the loaded stores; immutable afterwards
             PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 

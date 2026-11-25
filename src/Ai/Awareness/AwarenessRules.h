@@ -285,6 +285,10 @@ struct Seen
     Known known = Known::Seen;
     float ageSeconds = 0.0f;      // since it was last seen
     float estimateRadius = 0.0f;  // its place is somewhere within this disc around x, y
+    // A creature on a waypoint path: its velocity in yd/s as the engine has it at the fill; 0 and 0 when it stands
+    // and for every unit not on a path (AW7)
+    float moveX = 0.0f;
+    float moveY = 0.0f;
 };
 
 // The bot itself; it is not in the array, so a link to it is THE_BOT
@@ -733,7 +737,9 @@ inline SceneCounts CountScene(Picture const& picture, std::uint64_t target)
             else
                 ++counts.allies;
         }
+        // An evading creature would not attack now: its reach is the one it has at home (AW7)
         else if (unit.side == Side::Enemy && unit.guid != target && unit.busy != Busy::Dead &&
+                 unit.busy != Busy::Evading &&
                  (Covers(unit, picture.self.x, picture.self.y, 0.0f) ||
                   (slot >= 0 && Covers(unit, picture.units[slot].x, picture.units[slot].y, 0.0f))))
             ++counts.nearby;
@@ -772,6 +778,703 @@ constexpr char const* Word(Helper const& helper)
     if (helper.kind == Kind::Group)
         return "group";
     return helper.kind == Kind::Guard ? "guard" : "ally";
+}
+
+// AW7: the point judgement and the safe-point search (INTERFACE.md §3.2, §3.3). A judgement decides nothing; its
+// caller chooses
+
+// The picture's radius, planar: the fill's sight range, so a rule can say what the picture cannot vouch for
+constexpr float PICTURE_YARDS = 100.0f;
+// Tuning values (§3.2): what a walking creature covers in the picture's 1000 ms, rounded up; the time a risen bot
+// needs to be on its feet; the reach of a creature the picture does not hold (5 levels above, detection range 20)
+constexpr float POINT_MARGIN_YARDS = 3.0f;
+constexpr float PATH_AHEAD_SECONDS = 10.0f;
+constexpr float UNSEEN_REACH_YARDS = 25.0f;
+// The clearance when no unit counts
+constexpr float CLEARANCE_NONE = 1000.0f;
+// Tuning values (§3.3): the rings' step, the room that makes every clear point equally good, the walkable tests of
+// one call, the ground's height against the centre's, and how much longer than the straight line a path may be
+constexpr float RING_STEP_YARDS = 7.75f;
+constexpr float COMFORT_YARDS = 10.0f;
+constexpr std::uint32_t WALK_TESTS_MAX = 8;
+constexpr float WALK_Z_YARDS = 15.0f;
+constexpr float WALK_DETOUR = 2.0f;
+constexpr float WALK_DETOUR_YARDS = 5.0f;
+// The most candidates one search judges: the centre and 6 rings, a radius up to 46.5 yd
+constexpr std::size_t CANDIDATES_MAX = 127;
+
+// Who reaches a point, and how far outside every reach it lies
+struct PointAnswer
+{
+    bool clear = true;                 // no counting unit reaches it
+    std::uint32_t reaching = 0;        // how many reach it
+    std::uint64_t nearest = 0;         // the reaching unit with the smallest over, 0 for none
+    float clearance = CLEARANCE_NONE;  // the smallest over of all counting units; negative inside a reach
+    std::int16_t topLevelDiff = 0;     // the highest level difference among the reaching units
+    Rank topRank = Rank::Normal;       // and the highest rank
+    bool inView = false;               // the picture can vouch for the point
+};
+
+inline bool operator==(PointAnswer const& a, PointAnswer const& b)
+{
+    return a.clear == b.clear && a.reaching == b.reaching && a.nearest == b.nearest && a.clearance == b.clearance &&
+           a.topLevelDiff == b.topLevelDiff && a.topRank == b.topRank && a.inView == b.inView;
+}
+
+// It counts for a point: a living hostile creature that would attack this bot on sight, whatever it is busy with
+constexpr bool CountsForPoint(Seen const& unit)
+{
+    return unit.side == Side::Enemy && unit.type == UnitType::Creature && unit.reachYards > 0.0f &&
+           unit.busy != Busy::Dead;
+}
+
+// The planar distance from a unit's ground to a point: an evading creature's home, the stretch a creature on a path
+// walks in PATH_AHEAD_SECONDS, every other unit's place
+inline float GroundDistance(Seen const& unit, float x, float y)
+{
+    if (unit.busy == Busy::Evading)
+        return PlanarDistance(unit.homeX, unit.homeY, x, y);
+    if (unit.busy != Busy::OnPath || (unit.moveX == 0.0f && unit.moveY == 0.0f))
+        return PlanarDistance(unit.x, unit.y, x, y);
+    double const dx = double(unit.moveX) * PATH_AHEAD_SECONDS;
+    double const dy = double(unit.moveY) * PATH_AHEAD_SECONDS;
+    double const along = ((double(x) - unit.x) * dx + (double(y) - unit.y) * dy) / (dx * dx + dy * dy);
+    // A point behind it measures from its place, exactly as for a unit that stands
+    if (along <= 0.0)
+        return PlanarDistance(unit.x, unit.y, x, y);
+    double const t = std::min(along, 1.0);
+    return static_cast<float>(std::hypot(unit.x + t * dx - x, unit.y + t * dy - y));
+}
+
+// How many yards the point lies outside the unit's reach, measured against its estimate's disc (negative inside)
+inline float OverOf(Seen const& unit, float x, float y)
+{
+    return std::max(0.0f, GroundDistance(unit, x, y) - unit.estimateRadius) - unit.reachYards;
+}
+
+// Who reaches this point (§3.2): every counting unit whose over is at most POINT_MARGIN_YARDS. In view when the
+// bot's distance to the point plus the larger of UNSEEN_REACH_YARDS and the largest counting reach plus the margin
+// stays within what the picture covers: PICTURE_YARDS, or while enemies were left out the farthest kept enemy
+inline PointAnswer JudgePoint(Picture const& picture, float x, float y)
+{
+    PointAnswer answer;
+    float nearestOver = 0.0f;
+    float unseenReach = UNSEEN_REACH_YARDS;
+    float farthestEnemy = 0.0f;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (unit.side == Side::Enemy)
+            farthestEnemy = std::max(farthestEnemy, DistanceToDisc(unit, picture.self.x, picture.self.y));
+        if (!CountsForPoint(unit))
+            continue;
+        unseenReach = std::max(unseenReach, unit.reachYards);
+        float const over = OverOf(unit, x, y);
+        answer.clearance = std::min(answer.clearance, over);
+        if (over > POINT_MARGIN_YARDS)
+            continue;
+        if (!answer.reaching || over < nearestOver || (over == nearestOver && unit.guid < answer.nearest))
+        {
+            nearestOver = over;
+            answer.nearest = unit.guid;
+        }
+        answer.topLevelDiff = answer.reaching ? std::max(answer.topLevelDiff, unit.levelDiff) : unit.levelDiff;
+        answer.topRank = answer.reaching ? std::max(answer.topRank, unit.rank) : unit.rank;
+        ++answer.reaching;
+    }
+    answer.clear = answer.reaching == 0;
+    // The enemies left out are no nearer than the farthest kept one (Admit keeps each side's nearest)
+    float const viewYards = picture.leftOut[static_cast<std::size_t>(Side::Enemy)] > 0
+                                ? std::min(PICTURE_YARDS, farthestEnemy)
+                                : PICTURE_YARDS;
+    answer.inView =
+        PlanarDistance(picture.self.x, picture.self.y, x, y) + unseenReach + POINT_MARGIN_YARDS <= viewYards;
+    return answer;
+}
+
+// One ordinary creature of the bot's level or below reaches the point, in view: the unit 1 of A4 (until AW12)
+constexpr bool Takeable(PointAnswer const& answer)
+{
+    return answer.inView && answer.reaching == 1 && answer.topLevelDiff <= 0 && answer.topRank == Rank::Normal;
+}
+
+// A candidate of the search
+struct Spot
+{
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+// The search's candidates around a centre (§3.3): the centre, then rings every RING_STEP_YARDS out to the radius, ring
+// k holding 6k points at even angles from angle 0; a ring that does not fit into `max` is left out whole
+inline std::size_t RingSpots(float centreX, float centreY, float radius, Spot* out, std::size_t max)
+{
+    if (max == 0)
+        return 0;
+    std::size_t count = 0;
+    out[count++] = Spot{centreX, centreY};
+    for (int k = 1; static_cast<float>(k) * RING_STEP_YARDS <= radius; ++k)
+    {
+        std::size_t const points = static_cast<std::size_t>(6 * k);
+        if (count + points > max)
+            break;
+        float const yards = static_cast<float>(k) * RING_STEP_YARDS;
+        for (std::size_t j = 0; j < points; ++j)
+        {
+            double const angle = 6.283185307179586 * static_cast<double>(j) / static_cast<double>(points);
+            out[count++] = Spot{centreX + static_cast<float>(yards * std::cos(angle)),
+                                centreY + static_cast<float>(yards * std::sin(angle))};
+        }
+    }
+    return count;
+}
+
+// A candidate's walkable test: Unknown when it was not tested and no test was allowed
+enum class Walk : std::uint8_t
+{
+    Unknown,
+    Yes,
+    No
+};
+
+// The answer of the caller's walkable test: whether a new test was made for it, and the ground's height there
+struct WalkAnswer
+{
+    Walk walk = Walk::Unknown;
+    bool tested = false;
+    float z = 0.0f;
+};
+
+// Where within a disc nobody reaches
+struct SafePoint
+{
+    bool found = false;  // a walkable candidate in view
+    bool clear = false;  // and it is clear
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;           // from the walkable test
+    std::int16_t index = -1;  // the winner's candidate index
+    PointAnswer answer;
+    std::uint32_t unseen = 0;  // candidates not in view
+    std::uint32_t tests = 0;   // new walkable tests this call made
+    bool outOfTests = false;   // the call stopped at a candidate it could not test; the next call goes on
+};
+
+// The search's order (§3.3): a clear candidate by the larger clearance capped at COMFORT_YARDS, else the least
+// reached (fewer reaching, lower top level, larger clearance); then the nearer to `from`, then the lower index
+inline bool Safer(PointAnswer const& a, float aYards, std::size_t aIndex, PointAnswer const& b, float bYards,
+                  std::size_t bIndex)
+{
+    if (a.clear != b.clear)
+        return a.clear;
+    if (a.clear)
+    {
+        float const aRoom = std::min(a.clearance, COMFORT_YARDS);
+        float const bRoom = std::min(b.clearance, COMFORT_YARDS);
+        if (aRoom != bRoom)
+            return aRoom > bRoom;
+    }
+    else
+    {
+        if (a.reaching != b.reaching)
+            return a.reaching < b.reaching;
+        if (a.topLevelDiff != b.topLevelDiff)
+            return a.topLevelDiff < b.topLevelDiff;
+        if (a.clearance != b.clearance)
+            return a.clearance > b.clearance;
+    }
+    if (aYards != bYards)
+        return aYards < bYards;
+    return aIndex < bIndex;
+}
+
+// The safe-point search (§3.3) over the given candidates (at most CANDIDATES_MAX): each judged by JudgePoint, one
+// not in view never returned; `walkable(index, mayTest)` asked lazily in winning order until one passes, a new test
+// allowed while fewer than `testsMax` were made; the first candidate it cannot answer ends the call (outOfTests)
+template <typename Walkable>
+SafePoint FindSafePoint(Picture const& picture, float fromX, float fromY, Spot const* candidates, std::size_t count,
+                        Walkable&& walkable, std::uint32_t testsMax = WALK_TESTS_MAX)
+{
+    SafePoint safe;
+    count = std::min(count, CANDIDATES_MAX);
+    std::array<PointAnswer, CANDIDATES_MAX> answers{};
+    std::array<float, CANDIDATES_MAX> yards{};
+    std::array<std::uint8_t, CANDIDATES_MAX> order{};
+    std::size_t inView = 0;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        answers[i] = JudgePoint(picture, candidates[i].x, candidates[i].y);
+        if (!answers[i].inView)
+        {
+            ++safe.unseen;
+            continue;
+        }
+        yards[i] = PlanarDistance(fromX, fromY, candidates[i].x, candidates[i].y);
+        order[inView++] = static_cast<std::uint8_t>(i);
+    }
+    std::sort(order.begin(), order.begin() + inView, [&answers, &yards](std::uint8_t a, std::uint8_t b)
+              { return Safer(answers[a], yards[a], a, answers[b], yards[b], b); });
+    for (std::size_t k = 0; k < inView; ++k)
+    {
+        std::size_t const i = order[k];
+        WalkAnswer const walk = walkable(i, safe.tests < testsMax);
+        if (walk.tested)
+            ++safe.tests;
+        if (walk.walk == Walk::Unknown)
+        {
+            safe.outOfTests = true;
+            break;
+        }
+        if (walk.walk == Walk::No)
+            continue;
+        safe.found = true;
+        safe.clear = answers[i].clear;
+        safe.x = candidates[i].x;
+        safe.y = candidates[i].y;
+        safe.z = walk.z;
+        safe.index = static_cast<std::int16_t>(i);
+        safe.answer = answers[i];
+        break;
+    }
+    return safe;
+}
+
+// AW8: the rule of the dead (INTERFACE.md §3.4). How far from the corpse a leader counts (the core's reclaim radius
+// of 39 yd less 5; less ARRIVE_YARDS the search's radius); tuning values: where a ghost starts to judge, when it
+// stands at a point, the wait without a clear point, the bound of one return, the death in a row that takes the healer
+constexpr float RISE_YARDS = 34.0f;
+constexpr float GHOST_LOOK_YARDS = 60.0f;
+constexpr float ARRIVE_YARDS = 3.0f;
+constexpr std::uint32_t UNCLEAR_WAIT_SECONDS = 30;
+constexpr std::uint32_t GHOST_BOUND_SECONDS = 600;
+constexpr std::uint32_t ROW_HEALER_AT = 3;
+
+// World PvP's answer for a corpse an enemy player stands at (a fact here, AW.12)
+enum class PlayerHold : std::uint8_t
+{
+    None,
+    Wait,
+    Healer
+};
+
+// What the rule knows of a dead bot (INTERFACE.md §3.4, the table of facts)
+struct DeadFacts
+{
+    bool inBattleground = false;
+    bool released = true;            // a ghost, not a body
+    std::uint32_t ghostSeconds = 0;  // the smaller of the seconds since the death and since the login
+    bool corpseHere = true;          // a corpse on the ghost's map
+    float corpseYards = 0.0f;
+    bool reclaimHere = false;       // the core's distance test of a reclaim passes here
+    std::uint32_t deathsInRow = 1;  // 1 for a first death
+    bool ownedByPlayer = false;     // the bot's master is a real player
+    PlayerHold playerHold = PlayerHold::None;
+    bool leaderAtCorpse = false;       // the living leader stands within RISE_YARDS of the corpse
+    bool atLeader = false;             // within spell distance of it
+    bool leaderDown = false;           // the real player leading the bot lies dead near it
+    PointAnswer own;                   // the ghost's own place; filled within GHOST_LOOK_YARDS of the corpse
+    SafePoint best;                    // the search around the corpse; filled within GHOST_LOOK_YARDS
+    bool atBest = false;               // within ARRIVE_YARDS of best
+    std::uint32_t unclearSeconds = 0;  // since the first look without a clear point, 0 for none
+    bool corpseWalkFailed = false;     // the walk to the corpse or the point could not start this tick
+    bool healerChosen = false;         // this death already took the healer's way
+    bool graveKnown = true;
+    bool atGrave = false;
+    bool healerInRange = false;
+    bool graveWalkFailed = false;
+    bool teleportSeen = false;  // a real player would see a teleport to the grave
+};
+
+// The steps: none; the corpse's way; the healer's way; the bound's
+enum class DeadAct : std::uint8_t
+{
+    None,
+    WalkCorpse,
+    WalkPoint,
+    Wait,
+    Rise,
+    WalkGrave,
+    WaitGrave,
+    HealerRevive,
+    TeleportGrave,
+    ReviveGrave,
+    ReviveHere,
+    Count
+};
+
+enum class DeadReason : std::uint8_t
+{
+    None,
+    Clear,
+    ReachedOne,
+    Leader,
+    Player,
+    LeaderDown,
+    NoClearPoint,
+    CorpseAway,
+    CorpseRunsExhausted,
+    CorpseCamped,
+    NoPath,
+    NoGrave,
+    NoHealer,
+    Seen,
+    WaitEnded,
+    Count
+};
+
+struct DeadStep
+{
+    DeadAct act = DeadAct::None;
+    DeadReason reason = DeadReason::None;
+};
+
+constexpr bool operator==(DeadStep const& a, DeadStep const& b) { return a.act == b.act && a.reason == b.reason; }
+
+constexpr char const* Word(DeadAct act)
+{
+    switch (act)
+    {
+        case DeadAct::None:
+            return "none";
+        case DeadAct::WalkCorpse:
+            return "walk_corpse";
+        case DeadAct::WalkPoint:
+            return "walk_point";
+        case DeadAct::Wait:
+            return "wait";
+        case DeadAct::Rise:
+            return "rise";
+        case DeadAct::WalkGrave:
+            return "walk_grave";
+        case DeadAct::WaitGrave:
+            return "wait_grave";
+        case DeadAct::HealerRevive:
+            return "healer_revive";
+        case DeadAct::TeleportGrave:
+            return "teleport_grave";
+        case DeadAct::ReviveGrave:
+            return "revive_grave";
+        case DeadAct::ReviveHere:
+            return "revive_here";
+        default:
+            return "?";
+    }
+}
+
+constexpr char const* Word(DeadReason reason)
+{
+    switch (reason)
+    {
+        case DeadReason::None:
+            return "none";
+        case DeadReason::Clear:
+            return "clear";
+        case DeadReason::ReachedOne:
+            return "reached_one";
+        case DeadReason::Leader:
+            return "leader";
+        case DeadReason::Player:
+            return "player";
+        case DeadReason::LeaderDown:
+            return "leader_down";
+        case DeadReason::NoClearPoint:
+            return "no_clear_point";
+        case DeadReason::CorpseAway:
+            return "corpse_away";
+        case DeadReason::CorpseRunsExhausted:
+            return "corpse_runs_exhausted";
+        case DeadReason::CorpseCamped:
+            return "corpse_camped";
+        case DeadReason::NoPath:
+            return "no_path";
+        case DeadReason::NoGrave:
+            return "no_grave";
+        case DeadReason::NoHealer:
+            return "no_healer";
+        case DeadReason::Seen:
+            return "seen";
+        case DeadReason::WaitEnded:
+            return "wait_ended";
+        default:
+            return "?";
+    }
+}
+
+// A step of the corpse's way; of the healer's way (a step of the bound has the reason wait_ended); a revive
+constexpr bool CorpseWay(DeadAct act)
+{
+    return act == DeadAct::WalkCorpse || act == DeadAct::WalkPoint || act == DeadAct::Wait || act == DeadAct::Rise;
+}
+
+constexpr bool HealerWay(DeadAct act)
+{
+    return act == DeadAct::WalkGrave || act == DeadAct::WaitGrave || act == DeadAct::HealerRevive ||
+           act == DeadAct::TeleportGrave;
+}
+
+constexpr bool Revives(DeadAct act)
+{
+    return act == DeadAct::HealerRevive || act == DeadAct::ReviveGrave || act == DeadAct::ReviveHere;
+}
+
+// The step that sets the memo's healerChosen (rule line 3): a step of the healer's way, not of the bound
+constexpr bool ChoosesHealer(DeadStep const& step)
+{
+    return HealerWay(step.act) && step.reason != DeadReason::WaitEnded;
+}
+
+// The healer's way (rule line 3): wait without a grave; at the grave the healer's revive or a wait for one; else the
+// walk there, the teleport when the walk cannot start, a wait while a player would see the teleport
+inline DeadStep HealerWayStep(DeadFacts const& facts, DeadReason why)
+{
+    if (!facts.graveKnown)
+        return {DeadAct::WaitGrave, DeadReason::NoGrave};
+    if (facts.atGrave)
+        return facts.healerInRange ? DeadStep{DeadAct::HealerRevive, why}
+                                   : DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer};
+    if (!facts.graveWalkFailed)
+        return {DeadAct::WalkGrave, why};
+    if (!facts.teleportSeen)
+        return {DeadAct::TeleportGrave, why};
+    return {DeadAct::WaitGrave, DeadReason::Seen};
+}
+
+// The bound (rule line 2): a revive here without a grave, at the grave the healer's or the grave's, else the teleport
+// there, seen or not
+inline DeadStep BoundStep(DeadFacts const& facts)
+{
+    if (!facts.graveKnown)
+        return {DeadAct::ReviveHere, DeadReason::WaitEnded};
+    if (facts.atGrave)
+        return {facts.healerInRange ? DeadAct::HealerRevive : DeadAct::ReviveGrave, DeadReason::WaitEnded};
+    return {DeadAct::TeleportGrave, DeadReason::WaitEnded};
+}
+
+// A Rise of lines 5, 7 and 8, held while the real player who leads the bot lies dead near it
+inline DeadStep RiseUnlessLeaderDown(DeadFacts const& facts, DeadReason why)
+{
+    return facts.leaderDown ? DeadStep{DeadAct::Wait, DeadReason::LeaderDown} : DeadStep{DeadAct::Rise, why};
+}
+
+// What a dead bot does next (INTERFACE.md §3.4): the first line that matches
+inline DeadStep NextOfDead(DeadFacts const& facts)
+{
+    // 1. Not the rule's: a battleground, a body, a player's ghost whose corpse is on another map
+    if (facts.inBattleground || !facts.released || (facts.ownedByPlayer && !facts.corpseHere))
+        return {};
+    // 2. The bound
+    if (facts.ghostSeconds >= GHOST_BOUND_SECONDS)
+        return BoundStep(facts);
+    // 3. The healer's way, kept once chosen
+    DeadReason healer = DeadReason::None;
+    if (!facts.corpseHere)
+        healer = DeadReason::CorpseAway;
+    else if (facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer)
+        healer = DeadReason::CorpseRunsExhausted;
+    else if (facts.playerHold == PlayerHold::Healer)
+        healer = DeadReason::CorpseCamped;
+    else if (facts.corpseWalkFailed)
+        healer = DeadReason::NoPath;
+    if (facts.healerChosen || healer != DeadReason::None)
+        return HealerWayStep(facts, healer);
+    // 4. An enemy player at the corpse
+    if (facts.playerHold == PlayerHold::Wait)
+        return {DeadAct::Wait, DeadReason::Player};
+    // 5. The leader at the corpse: the group is its support
+    if (facts.leaderAtCorpse)
+        return facts.atLeader && facts.reclaimHere ? RiseUnlessLeaderDown(facts, DeadReason::Leader)
+                                                   : DeadStep{DeadAct::WalkPoint, DeadReason::Leader};
+    // 6. Too far to see what stands at the corpse
+    if (facts.corpseYards > GHOST_LOOK_YARDS)
+        return {DeadAct::WalkCorpse, DeadReason::None};
+    // 7. A clear point: rise at the first place with room to spare on the way, at a place without only at the best
+    if (facts.best.found && facts.best.clear)
+    {
+        bool const rises = facts.reclaimHere && facts.own.clear && facts.own.inView &&
+                           (facts.own.clearance >= COMFORT_YARDS || facts.atBest);
+        return rises ? RiseUnlessLeaderDown(facts, DeadReason::Clear) : DeadStep{DeadAct::WalkPoint, DeadReason::Clear};
+    }
+    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer
+    if (facts.best.unseen > 0 && facts.corpseYards > ARRIVE_YARDS)
+        return {DeadAct::WalkCorpse, DeadReason::NoClearPoint};
+    if (facts.unclearSeconds < UNCLEAR_WAIT_SECONDS)
+        return facts.best.found && !facts.atBest ? DeadStep{DeadAct::WalkPoint, DeadReason::NoClearPoint}
+                                                 : DeadStep{DeadAct::Wait, DeadReason::NoClearPoint};
+    if (facts.best.found && Takeable(facts.best.answer))
+    {
+        bool const ownTaken = (facts.own.clear && facts.own.inView) || Takeable(facts.own);
+        return facts.atBest && facts.reclaimHere && ownTaken ? RiseUnlessLeaderDown(facts, DeadReason::ReachedOne)
+                                                             : DeadStep{DeadAct::WalkPoint, DeadReason::ReachedOne};
+    }
+    if (facts.ownedByPlayer)
+        return {DeadAct::Wait, DeadReason::NoClearPoint};
+    return HealerWayStep(facts, DeadReason::NoClearPoint);
+}
+
+// A rise on record: the seconds as a ghost, how many reach the place, the yards from the corpse, the death's number
+// in a row
+struct RiseRow
+{
+    std::uint32_t ghostSeconds = 0;
+    std::uint32_t reaching = 0;
+    std::uint32_t corpseYards = YARDS_NONE;
+    std::uint32_t deathsInRow = 1;
+};
+
+// Rise amount: ghost s | reaching << 15 | corpse yd << 22 | death in a row << 32 (15, 7, 10, 7 bits)
+constexpr std::uint64_t RiseAmount(RiseRow const& row)
+{
+    return Capped(row.ghostSeconds, ROSE_NONE) | Capped(row.reaching, COUNT_MAX) << 15 |
+           Capped(row.corpseYards, YARDS_NONE) << 22 | Capped(row.deathsInRow, COUNT_MAX) << 32;
+}
+
+// The Rise row's word: for a rise at the corpse the reason of the rule's Rise (clear, reached_one, leader), for one by
+// the spirit healer `healer` or `bound` (a step of the bound); `other` for a rise the rule did not order (a spell, a
+// step older than the caller's limit, a rise at the corpse after a healer's step)
+constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse)
+{
+    if (!ordered)
+        return "other";
+    if (last.act == DeadAct::Rise)
+        return atCorpse ? Word(last.reason) : "other";
+    if (atCorpse || (!HealerWay(last.act) && !Revives(last.act)))
+        return "other";
+    return last.reason == DeadReason::WaitEnded ? "bound" : "healer";
+}
+
+// AW9: the cause a step of the healer's way or of the bound names (the `death` rows and the healer's revive): the
+// bound's own word, else the cause the memo kept when the healer's way was chosen, else the step's reason
+constexpr DeadReason HealerCause(DeadStep const& step, DeadReason healerReason)
+{
+    if (step.reason == DeadReason::WaitEnded)
+        return DeadReason::WaitEnded;
+    return healerReason != DeadReason::None ? healerReason : step.reason;
+}
+
+// AW9, the return's memo (game side Awareness::NextOfDead). The death a return belongs to: the death edge's stamp,
+// else the memo's own once it has one, else the corpse's ghost time, else 1. A corpse that comes onto the ghost's map
+// does not change it, so the healer once chosen stays chosen (P4)
+constexpr std::uint32_t DeathKey(std::uint32_t edge, std::uint32_t memo, std::uint32_t corpse)
+{
+    return edge ? edge : memo ? memo : corpse ? corpse : 1;
+}
+
+// The seconds as a ghost for the bound, before the test's aging: since the corpse's ghost time when the corpse lies on
+// the ghost's map, else since the death edge, else since the memo's first ask of this death; never more than since
+// the login. Negative inputs (a clock that went back) count as 0
+struct GhostClock
+{
+    bool corpse = false;
+    std::int64_t sinceCorpse = 0;
+    bool edge = false;
+    std::int64_t sinceEdge = 0;
+    std::int64_t sinceMemo = 0;
+    std::int64_t sinceLogin = 0;
+};
+
+constexpr std::int64_t GhostSecondsOf(GhostClock const& clock)
+{
+    std::int64_t const since = clock.corpse ? clock.sinceCorpse : clock.edge ? clock.sinceEdge : clock.sinceMemo;
+    return std::max<std::int64_t>(0, std::min(since, clock.sinceLogin));
+}
+
+// The unclear clock: cleared by a look that finds a clear point, started (at now, never 0) by the first look without
+// one; a search that stopped for its walkable tests before it found anything is no look and changes nothing
+constexpr std::uint32_t UnclearStart(std::uint32_t startMs, SafePoint const& best, std::uint32_t nowMs)
+{
+    if (best.found && best.clear)
+        return 0;
+    if (!startMs && (best.found || !best.outOfTests))
+        return nowMs ? nowMs : 1;
+    return startMs;
+}
+
+// The ghost stands at the best point: one was found and it is within ARRIVE_YARDS of it
+inline bool AtBest(SafePoint const& best, float x, float y)
+{
+    return best.found && PlanarDistance(x, y, best.x, best.y) <= ARRIVE_YARDS;
+}
+
+// A walk under way goes on while the rule names the same step and its point moved at most ARRIVE_YARDS; otherwise a
+// new walk starts towards where the step points now (AW8's review, item 1)
+constexpr bool WalkGoesOn(bool moving, DeadStep const& before, DeadStep const& now, float pointMovedYards)
+{
+    return moving && before == now && pointMovedYards <= ARRIVE_YARDS;
+}
+
+// AW9: deaths in a row (INTERFACE.md §3.5). A death within ROW_SECONDS of the bot's last rise, on its map and within
+// ROW_YARDS of the rise's place is in a row with the one before it; tuning values
+constexpr std::uint32_t ROW_SECONDS = 300;
+constexpr float ROW_YARDS = 40.0f;
+
+// A death against the bot's last rise: whether it rose since the login, the seconds since that rise, the same map,
+// the planar yards from its place
+struct RowDeath
+{
+    bool rose = false;
+    std::uint32_t sinceRiseSeconds = 0;
+    bool sameMap = false;
+    float riseYards = 0.0f;
+};
+
+// The count after this death: one more inside the three limits, else 1. Nothing else is input: a kill, experience, a
+// repair or the spirit healer between two deaths changes nothing
+constexpr std::uint32_t RowAfterDeath(std::uint32_t row, RowDeath const& death)
+{
+    bool const inRow =
+        death.rose && death.sinceRiseSeconds < ROW_SECONDS && death.sameMap && death.riseYards <= ROW_YARDS;
+    return inRow ? row + 1 : 1;
+}
+
+// The count a rise leaves: a rise follows a death, which counts 1 at least (a bot dead at login has no death edge)
+constexpr std::uint32_t RowAtRise(std::uint32_t row) { return std::max<std::uint32_t>(row, 1); }
+
+// AW9: after the rise (INTERFACE.md §3.6). Restored at these shares of health and of a mana user's mana; the bound of
+// the recovery after the rise; tuning values
+constexpr std::uint32_t RECOVER_HEALTH_PCT = 80;
+constexpr std::uint32_t RECOVER_POWER_PCT = 80;
+constexpr std::uint32_t RECOVER_BOUND_SECONDS = 60;
+
+struct RecoverFacts
+{
+    std::uint32_t sinceRiseSeconds = 0;
+    std::uint32_t healthPct = 100;
+    std::uint32_t powerPct = 100;
+    bool usesMana = false;
+    bool sick = false;  // resurrection sickness
+    PointAnswer own;    // the bot's own place
+};
+
+enum class RecoverAct : std::uint8_t
+{
+    Done,
+    Move,
+    Rest
+};
+
+constexpr bool Restored(RecoverFacts const& facts)
+{
+    return facts.healthPct >= RECOVER_HEALTH_PCT && (!facts.usesMana || facts.powerPct >= RECOVER_POWER_PCT);
+}
+
+// Recovering: sick, or within the bound of the rise and not restored. The trigger asks only this (no judgement)
+constexpr bool Recovering(RecoverFacts const& facts)
+{
+    return facts.sick || (facts.sinceRiseSeconds < RECOVER_BOUND_SECONDS && !Restored(facts));
+}
+
+// A bot the recovery holds keeps on foot (the mount policy's on-foot fact): mounted it can neither eat nor drink, and
+// the rise's speed change asks for a mount at once (AWL2: every risen bot with a mount rode the recovery's minute out
+// unfed). A sick bot is not held (upkeep's rest), so the sickness alone keeps none on foot
+constexpr bool KeepsOnFoot(RecoverFacts const& facts) { return !facts.sick && Recovering(facts); }
+
+// What a risen bot does next: not recovering `Done`; recovering on a place someone reaches `Move` (to a clear point
+// around it); else `Rest` (stop, eat and drink what it has, sit)
+constexpr RecoverAct RecoverStep(RecoverFacts const& facts)
+{
+    if (!Recovering(facts))
+        return RecoverAct::Done;
+    return facts.own.clear ? RecoverAct::Rest : RecoverAct::Move;
 }
 }  // namespace AwarenessRules
 

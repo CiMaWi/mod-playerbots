@@ -150,7 +150,7 @@ bool CreateSoulShardAction::Execute(Event /*event*/)
 }
 
 // Checks if the bot has less than 6 soul shards, allowing the creation of a new one. A shard from nothing is a
-// handout: a warlock not granted Reagent (a persistent bot outside the handout share) drains its shards instead
+// handout: a warlock not granted Reagent (a persistent bot) drains its shards instead
 bool CreateSoulShardAction::isUseful()
 {
     Player* bot = botAI->GetBot();

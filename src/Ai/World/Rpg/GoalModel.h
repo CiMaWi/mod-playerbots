@@ -23,6 +23,7 @@
 #include "ItemWorthRules.h"
 #include "QuestCircuit.h"
 #include "TraitRules.h"
+#include "UpkeepNeedRules.h"
 #include "WorldTravelRules.h"
 
 // The planner's value model (travel plan WT14, 3.10): every goal a bot could follow now gets a value per minute,
@@ -90,9 +91,8 @@ constexpr float NEAR_VENDOR_MINUTES = 2.0f;
 constexpr float VISIT_MINUTES = 1.0f;
 constexpr std::uint32_t ORDER_PRESSURE_PERCENT = 15;  // an orderly bot sells this much earlier, an untidy one later
 constexpr std::uint32_t PRESSURE_MIN_PERCENT = 50;
-// The repair option's worth: the minutes a bot below this durability would lose to broken gear (the errands' repair
-// need is UpkeepNeeds::RepairDue)
-constexpr std::uint8_t REPAIR_PERCENT = 20;
+// The repair option's worth: the minutes a bot with broken or badly worn gear would lose (its rule is upkeep's
+// UpkeepNeeds::RepairErrandDue; the due option ranks first, whatever its worth)
 constexpr float REPAIR_MINUTES_SAVED = 10.0f;
 constexpr std::uint32_t BAG_BUDGET_PERCENT = 50;
 
@@ -417,7 +417,7 @@ struct Inn
     Place place;
     float yards{0.0f};
     bool fits{false};   // its zone fits the bot's level
-    bool usual{false};  // where the bot bound before
+    bool usual{false};  // the bind is not far from it: a bind there saves nothing (InterludeInputs.h UsualInn)
 };
 
 // A carried quest's turn-in at another hub or map (CircuitPlan::carried): its reward over the journey
@@ -506,6 +506,7 @@ struct Option : Goal
     float steadyPerMinute{0.0f};  // valuePerMinute without the one-off part: a rate the bot keeps up
     float bonus{0.0f};   // the class-quest unlock bonus in valuePerMinute (AddClassQuests); the stay test takes it off
     bool forced{false};  // ranks above everything and replaces any goal: a sick bot's rest (AddSickRest)
+    bool due{false};     // ranks right after forced and replaces any goal but itself: a due repair (NE.3, AddErrand)
     std::vector<std::string> traitNotes;
 };
 
@@ -546,6 +547,9 @@ struct Ranked
     std::uint32_t considered{0};
     std::vector<Option> options;  // the best RANK_KEEP, best first
     std::vector<Dropped> dropped;
+    // Made for a sick bot whose due repair recover handed over (NE11): a sickness rest yields to the plan's best
+    // option when that is the due errand (GoalApply::OnFreshPlan)
+    bool sickErrandOpen{false};
 };
 
 struct RiskInput
@@ -573,6 +577,8 @@ inline bool RankBefore(Option const& a, Option const& b)
 {
     if (a.forced != b.forced)
         return a.forced;
+    if (a.due != b.due)
+        return a.due;
     if (a.valuePerMinute != b.valuePerMinute)
         return a.valuePerMinute > b.valuePerMinute;
     if (a.kind != b.kind)
@@ -693,7 +699,8 @@ private:
     void Add(Option option, RiskInput const& risk)
     {
         ++_ranked.considered;
-        if (Sick())
+        // Resurrection sickness drops every option but the due repair recover handed over (NE11)
+        if (Sick() && !(_bot.sickErrandOpen && option.kind == GoalKind::Errand && option.due))
         {
             Drop(option, SICK_REASON);
             return;
@@ -729,12 +736,13 @@ private:
         _options.push_back(std::move(option));
     }
 
-    // The money a spot or node earns drives it more than the rest: the bot goes there for the gold
+    // The money a spot or node earns drives it more than the rest while the bot is short of its reserve; a bot that
+    // is not short keeps the option's kind (it still gathers to sell, weighed by the lowered need factor)
     GoalKind MoneyOr(GoalKind kind, Option const& option) const
     {
         float const money = option.copper * _model.need.factor;
         float const rest = option.xp + option.itemWorth * _model.need.exchange + option.expected;
-        return money > 0.0f && money >= rest ? GoalKind::Money : kind;
+        return _model.need.shortOfReserve && money > 0.0f && money >= rest ? GoalKind::Money : kind;
     }
 
     float BandRate() const { return BAND_XP_PER_MINUTE[_model.band]; }
@@ -987,7 +995,7 @@ private:
             if (option.kind == GoalKind::Money)
             {
                 option.targetType = TargetType::Spot;
-                option.reason = _model.need.shortOfReserve ? "gold_short" : "gold";
+                option.reason = "gold_short";
             }
             else
                 option.reason = greyMobs ? "grey_mobs" : "xp";
@@ -1034,7 +1042,7 @@ private:
             if (option.kind == GoalKind::Money)
             {
                 option.targetType = TargetType::Node;
-                option.reason = _model.need.shortOfReserve ? "gold_short" : "gold";
+                option.reason = "gold_short";
             }
             else
                 option.reason = skillUp ? "skill_up" : "node";
@@ -1101,8 +1109,14 @@ private:
         auto const known = [](Vendor const& vendor)
         { return vendor.walkMinutes >= 0.0f && std::isfinite(vendor.walkMinutes); };
         Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
-        bool const repair = known(repairer) && repairer.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
+        bool const repair = known(repairer) && repairer.repairs &&
+                            UpkeepNeeds::RepairErrandDue(_bot.brokenItems, _bot.lowestDurabilityPercent,
+                                                         _bot.repairCheapest, _bot.money) &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
+        // A sick bot's errand is the due repair alone (NE11): full bags name no trip of their own; the trip takes the
+        // other errands on its way
+        if (Sick() && !repair)
+            return;
         // The craft queue counts only when the errand rules would take its station stop: its worth in copper above the
         // detour of a trip of its own (WorldTravel::CollectOffers' test; WR14b run 2: a chosen craft errand whose stop
         // the errand plan then refused as detour_not_worth)
@@ -1118,7 +1132,7 @@ private:
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
         option.minutes = bags.vendor.walkMinutes + VISIT_MINUTES;
-        if (_bot.bagSlots && known(bags.vendor))
+        if (!Sick() && _bot.bagSlots && known(bags.vendor))
         {
             std::uint32_t const used = _bot.bagSlots - std::min(_bot.bagFree, _bot.bagSlots);
             std::uint32_t const usedPercent = used * WorldTravel::PERCENT / _bot.bagSlots;
@@ -1140,8 +1154,8 @@ private:
         }
         if (repair)
         {
-            float const broken = static_cast<float>(REPAIR_PERCENT - _bot.durabilityPercent) / REPAIR_PERCENT;
-            option.expected += broken * REPAIR_MINUTES_SAVED * _ranked.referenceRate;
+            option.expected += REPAIR_MINUTES_SAVED * _ranked.referenceRate;
+            option.due = true;
             if (option.reason.empty())
             {
                 option.reason = "repair";
@@ -1230,7 +1244,8 @@ private:
     }
 
     // A sick bot rests until the sickness ends (upkeep §3.5): forced, so it ranks above everything, a bridge goal
-    // too; its worth is the time at the reference rate the sickness would cost in a fight
+    // too; its worth is the time at the reference rate the sickness would cost in a fight. Once recover has handed a
+    // due repair over (NE11) it is not forced: the due errand ranks above it, and the rest stays the plan's fallback
     void AddSickRest()
     {
         Option option;
@@ -1240,8 +1255,9 @@ private:
         option.expected = option.minutes * _ranked.referenceRate;
         option.value = option.expected;
         option.valuePerMinute = _ranked.referenceRate;
-        option.forced = true;
+        option.forced = !_bot.sickErrandOpen;
         option.reason = SICK_REASON;
+        _ranked.sickErrandOpen = _bot.sickErrandOpen;
         ++_ranked.considered;
         _options.push_back(std::move(option));
     }
@@ -1821,6 +1837,7 @@ inline Replan DecideReplan(ReplanInput const& in)
     // fails the margin must not hide a stop worth more than the current goal
     float currentRate = std::isfinite(current.valuePerMinute) ? std::max(current.valuePerMinute, 0.0f) : 0.0f;
     bool currentForced = false;
+    bool currentDue = false;
     std::size_t const none = options.size();
     std::size_t best = none;
     std::size_t goal = none;
@@ -1831,6 +1848,7 @@ inline Replan DecideReplan(ReplanInput const& in)
         {
             currentRate = options[i].valuePerMinute;
             currentForced = options[i].forced;
+            currentDue = options[i].due;
             continue;
         }
         best = std::min(best, i);
@@ -1849,8 +1867,18 @@ inline Replan DecideReplan(ReplanInput const& in)
         return replan;
     }
 
-    // A forced goal stays until it ends: it counts as the best activity's rate, so only a stop worth more breaks in
-    if (currentForced)
+    // A due repair replaces any goal but itself (it is the only due option, so a due current is it)
+    if (best != none && options[best].due)
+    {
+        replan.verdict = ReplanVerdict::Switch;
+        replan.reason = options[best].reason;
+        replan.chosen = options[best];
+        return replan;
+    }
+
+    // A forced goal (or a due repair already running) stays until it ends: it counts as the best activity's rate, so
+    // only a stop worth more breaks in
+    if (currentForced || currentDue)
         currentRate = std::max(currentRate, in.fresh->referenceRate);
 
     bool const stopWorth = stop != none && options[stop].valuePerMinute > currentRate;
@@ -1867,7 +1895,7 @@ inline Replan DecideReplan(ReplanInput const& in)
         return pickUp(options[stop]);
 
     // Hysteresis: a clear margin plus the cost of breaking off, so near-equal goals never flap
-    if (goal != none && !currentForced)
+    if (goal != none && !currentForced && !currentDue)
     {
         Option const& next = options[goal];
         float margin = ReplanMargin(in.weights);

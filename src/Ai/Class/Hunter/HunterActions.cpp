@@ -92,9 +92,9 @@ Item* FindPetFood(Player* bot, Pet* pet)
 }
 }  // namespace
 
-// A bot granted Food keeps the old shortcut (happiness set to the maximum, no food). A persistent bot outside the
-// handout share feeds its pet as a player does: Feed Pet on food from its bags that matches the pet's diet (upkeep
-// WU7b); without such food the pet stays unhappy (less damage) until the bot buys some
+// A bot granted Food keeps the old shortcut (happiness set to the maximum, no food). A persistent bot feeds its pet
+// as a player does: Feed Pet on food from its bags that matches the pet's diet (upkeep WU7b); without such food the pet
+// stays unhappy (less damage) until the bot buys some
 bool FeedPetAction::isUseful()
 {
     if (Upkeep::Granted(bot, UpkeepKind::Food))

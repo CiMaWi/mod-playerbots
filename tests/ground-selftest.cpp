@@ -12,6 +12,8 @@
 // surface without a flying mount or flags does not fall (G229: a floor far below a ledge's edge dropped it through a
 // city), one 10 yd over a slope whose polygon only touches the walk's start box does (G233); the bound waits while the
 // fall's spline runs, so no route request cuts it (G236).
+// PA72b: the engine's fall itself (FallToFloor, Ground::FallFloor) makes no fall for a bot standing on the navmesh
+// (G338: a dismount on Dalaran's floor dropped the bot onto the ground under the city).
 // Run by tools/selftests.js (tests/selftests.json).
 
 #include <cstdint>
@@ -226,6 +228,7 @@ void CheckAboveTheFloor()
     Check(boxFloor.Ask(At(0.0f, false), Origin::Pick, 1000).act == Act::None,
           "on its floor with a polygon in the start box (4.5 yd off): a walk starts there, no none row");
     Run hover;
+    hover.meshDepth = 3.0f;  // the polygon at the floor read 3 yd below
     Ground::Step const a2 = hover.Ask(At(3.0f, true, true), Origin::Pick, 1000);
     Check(a2.act == Act::Land && a2.row,
           "A2: on the flyer 3 yd over the floor (hearth refused: flying): it lands, one row");
@@ -245,6 +248,7 @@ void CheckAboveTheFloor()
 void CheckLandingIsInstant()
 {
     Run hover;
+    hover.meshDepth = 3.0f;  // the polygon at the floor read 3 yd below
     Ground::Step const first = hover.Ask(At(3.0f, true, true), Origin::Route, 1000);
     Check(first.act == Act::Land && first.row && hover.memo.fell,
           "G225: 3 yd up on the flyer: lands, one row, the bound waits only for the fall's spline");
@@ -328,6 +332,89 @@ void CheckOffMesh()
     Check(lost.act == Act::Stay && lost.row, "no floor found below: no move, row none");
 }
 
+// G338 (PA72b): the fixture places a bot on Dalaran's floor near a static portal (571, 5703, 730, 641.7) and dismounts
+// it with its flying flags; CompleteDismount's fall read the floor under the city (z 463.4, the world-model floor
+// missed) and dropped it there, with no row. The fall reads the mesh: the city floor's polygon 0.2 yd under its feet
+void CheckFallFloor()
+{
+    float const placed = 641.7f;
+    float const under = 463.4f;
+    int reads = 0;
+    auto const cityFloor = [&reads]
+    {
+        ++reads;
+        return Ground::MeshRead{Ground::MeshRead::Kind::Found, 641.5f};
+    };
+    Check(Ground::FallFloor(placed, under, cityFloor) == placed && reads == 1,
+          "G338: a dismount on Dalaran's floor, the reading 178 yd below: no fall, one mesh read");
+    // Mutant: the fall before PA72b (the reading alone)
+    auto const readingOnly = [](float botZ, float groundZ)
+    { return groundZ > TravelLegs::FLY_NO_GROUND && botZ - groundZ > 0.1f ? groundZ : botZ; };
+    Check(readingOnly(placed, under) == under &&
+              Ground::FallFloor(placed, under, cityFloor) != readingOnly(placed, under),
+          "G338: the reading alone dropped the bot under the city; mutant killed");
+    auto const noPolygon = [] { return Ground::MeshRead{Ground::MeshRead::Kind::None, 0.0f}; };
+    Check(Ground::FallFloor(placed, under, noPolygon) == under,
+          "G338: off the mesh (no polygon in the box) the fall lands on the reading, as before");
+    auto const unknown = [] { return Ground::MeshRead{}; };
+    Check(Ground::FallFloor(placed, under, unknown) == under, "G338: no tile: the fall lands on the reading");
+    auto const deck = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 630.0f}; };
+    Check(Ground::FallFloor(placed, under, deck) == under,
+          "G338: a polygon 11.7 yd below the feet is no standing: the fall is made");
+    reads = 0;
+    Check(Ground::FallFloor(placed, placed - 0.05f, cityFloor) == placed && reads == 0,
+          "G338: on the floor read (less than FALL_MIN_YARDS above it): no fall, no mesh read");
+    Check(Ground::FallFloor(placed, NONE, cityFloor) == placed && reads == 0,
+          "G338: no floor found below: no fall, no mesh read");
+    Check(Ground::FallFloor(90.0f + 19.0f, 90.0f, noPolygon) == 90.0f,
+          "G229: flying flags left 19 yd over the terrain off the mesh: the fall lands on the terrain");
+
+    // G395 (PA72 landing start, stranded a1o-571-3): a flyer landed 2.1 yd over the terrain (the reading), the
+    // polygon 0.3 yd over the reading. PA72b's rule (on the mesh: no fall) left it hovering, and every route request
+    // landed it again (26 `grounded (landed:route)` rows, no trip start, abort:stalled). The polygon is the reading's
+    // floor: the fall is made (the engine's fall lands on the reading)
+    float const hoverZ = 289.6f;
+    float const terrainZ = 287.5f;
+    auto const terrainPolygon = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 287.8f}; };
+    float const landedZ = Ground::FallFloor(hoverZ, terrainZ, terrainPolygon);
+    auto const nextRead = [terrainZ](float botZ)
+    {
+        Ground::State state;
+        state.flyingMount = true;  // the flyer again at the next request
+        state.bot = {571, 5254.0f, -2461.0f, botZ};
+        state.groundZ = terrainZ;
+        Run run;
+        run.meshDepth = botZ - 287.8f;  // the terrain's polygon
+        return run.Ask(state, Origin::Route, 1000).act;
+    };
+    Check(landedZ == terrainZ && nextRead(landedZ) == Act::None,
+          "G395: a landing 2.1 yd over the terrain falls to it; the next route request plans on");
+    auto const ledge = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 290.0f}; };
+    Check(Ground::FallFloor(hoverZ, terrainZ, ledge) == hoverZ,
+          "G338: a polygon 2.5 yd over the reading at the feet: a floor the reading misses, no fall");
+    // Mutant: PA72b's rule (on the mesh: no fall) leaves the bot 2.1 yd up, and the next request lands it again
+    auto const noFallOnMesh = [](float botZ, float groundZ, Ground::MeshRead const& mesh)
+    { return Ground::StandsOn(mesh, botZ) ? botZ : groundZ; };
+    Check(nextRead(noFallOnMesh(hoverZ, terrainZ, terrainPolygon())) == Act::Land,
+          "G395: no fall on the mesh hovers and lands again at every request; mutant killed");
+    // G395 (air baelguns, area 3996): a flyer 3 yd over the reading and 0.5 yd over a polygon 2.5 yd over it (a floor
+    // the reading misses): FallFloor makes no fall there, so a Land repeated at every route request (24-28 rows,
+    // abort:stalled). Decide's Land gives way on that floor; a polygon at the reading still lands it (A2)
+    auto const platformPolygon = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 92.5f}; };
+    Run platform;
+    platform.meshDepth = 0.5f;
+    Check(Ground::MissedFloor(platformPolygon(), 93.0f, 90.0f) &&
+              Ground::FallFloor(93.0f, 90.0f, platformPolygon) == 93.0f &&
+              platform.Ask(At(3.0f, true, true), Origin::Route, 1000).act == Act::None,
+          "G395: on the flyer on a floor the reading misses: no fall and no Land, it plans on");
+    // Mutant: StandsExempt alone (the rule before) keeps Land there, so the bot landed at every request
+    Check(!Ground::StandsExempt(Act::Land, true) && !Ground::StandsExempt(Act::Land, false),
+          "G395: StandsExempt alone keeps Land; the floor test is what lets the bot plan on");
+    auto const belowReading = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 287.0f}; };
+    Check(Ground::FallFloor(hoverZ - 0.6f, terrainZ, belowReading) == terrainZ,
+          "G395: a polygon under the reading: the fall lands on the reading");
+}
+
 void CheckBounds()
 {
     // Every wait ends: a landing that outlives LANDING_MS is judged afresh, with a new row
@@ -371,6 +458,7 @@ int main()
     CheckFallWaits();
     CheckInFall();
     CheckOffMesh();
+    CheckFallFloor();
     CheckBounds();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

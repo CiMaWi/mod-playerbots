@@ -87,8 +87,8 @@ void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
-// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind seen near that turned far
-// (GoalApply::BindFarChanged) is a changed situation; the planner weighs the bind at an inn. O(1)
+// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind that turned far or near
+// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. O(1)
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
@@ -253,6 +253,11 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
 // The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
 // cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
 void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);
+// The bot's thread (NE8a): the upkeep kinds (StockMask bits) an item counts in for the use measure, as the visit's
+// stock levels count them; 0 before the first sample. Read while the item is in the bags; NoteNonUse then takes the
+// units that left without use (destroyed for loot room, deposited) off those kinds' noted stock
+std::uint16_t NonUseKindsOf(PlayerbotAI* botAI, ItemTemplate const* proto);
+void NoteNonUse(PlayerbotAI* botAI, std::uint16_t kinds, std::uint32_t units);
 // The bot's thread: ComputeNeeds with the bot's rates, timed into the PerfMonitor row "errand needs computed" (calls =
 // computations, WU27). The errand files' sites call it; the planner's own paths do not. The caller includes
 // UpkeepNeedRules.h.

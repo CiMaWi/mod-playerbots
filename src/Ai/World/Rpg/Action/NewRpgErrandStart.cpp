@@ -189,11 +189,12 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     Player* bot = botAI->GetBot();
     AiObjectContext* context = botAI->GetAiObjectContext();
     // A held errand row refuses the trigger's trip, also one fired before the hold was taken (WU15a); an order passes
-    // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart)
-    if (order.order
-            ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
-               bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())
-            : !TestConstraints::ErrandAllowed(botAI->testConstraints))
+    // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart); a sick
+    // bot's order passes only with the due repair recover handed over (NE11)
+    if (order.order ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+                       (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) && !WorldTravel::SickErrandOpen(botAI)) ||
+                       bot->GetGroup() || bot->GetMap()->Instanceable())
+                    : !TestConstraints::ErrandAllowed(botAI->testConstraints))
         return false;
 
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
@@ -685,13 +686,16 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
                                         FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), now))
             : std::vector<Planner::Goals::Inn>{};
     int const pick = Planner::Goals::PickBindInn(inns, order.innkeeper, maxYards);
-    // The world log's decision row: the three nearest other inns in walk seconds (inn_unfit: not for the bot's level)
+    // The world log's decision row: the three nearest other inns in walk seconds (inn_usual: the bind is not far from
+    // it, no bind target; inn_unfit: not for the bot's level)
     WorldLogFormat::Alternatives others;
     if (WorldLog::Active())
         for (size_t i = 0; i < inns.size(); ++i)
             if (static_cast<int>(i) != pick)
-                others.Offer({inns[i].fits ? "inn" : "inn_unfit", WorldLogFormat::WalkSeconds(inns[i].yards, runSpeed)},
-                             true);
+            {
+                char const* word = inns[i].usual ? "inn_usual" : (inns[i].fits ? "inn" : "inn_unfit");
+                others.Offer({word, WorldLogFormat::WalkSeconds(inns[i].yards, runSpeed)}, true);
+            }
     if (pick < 0)
     {
         probe("no_inn");

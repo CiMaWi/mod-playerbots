@@ -320,8 +320,6 @@ public:
 
     bool GetReachableRandomPointOnGround(Player* bot, float radius, bool randomRange = true);
 
-    uint32 getUnitsAggro(GuidVector& units, Player* bot);
-
     // Creatures
     std::vector<CreatureData const*> getCreaturesNear(float radius = 0, uint32 entry = 0);
 
@@ -843,6 +841,9 @@ public:
         uint32        taxiNodeId;      // DBC taxi node nearest to this flight master
         uint32        templateEntry;   // creature template ID (for ObjectGuid construction)
         uint32        dbGuid;          // DB spawn GUID (for ObjectGuid construction)
+        uint32        areaId;          // the spawn's area (zoneId is its zone)
+        uint32        phaseMask;       // the spawn's phase mask
+        bool          phased;          // out of the normal phase or under an area's phase rows (SeesFlightMaster)
     };
 
     static TravelMgr& instance()
@@ -855,7 +856,11 @@ public:
     // Navigation
     void Init();
 
+    // The nearest master on the bot's map that the bot sees (SeesFlightMaster)
     FlightMasterInfo const* GetNearestFlightMasterInfo(Player* bot) const;
+    // PA69 (G196): the bot's phase at the master's spawn (its area's phase rows that fit the bot's quest state) sees
+    // the spawn (FlightChoice::MasterSeen); a master in a quest phase the bot is not in is no candidate
+    bool SeesFlightMaster(Player const* bot, FlightMasterInfo const& info) const;
     std::vector<std::vector<uint32>> GetOptimalFlightDestinations(Player* bot);
     const std::vector<WorldLocation> GetTeleportLocations(Player* bot);
     const std::vector<WorldLocation> GetTeleportLocations(Player* bot, uint32 level);

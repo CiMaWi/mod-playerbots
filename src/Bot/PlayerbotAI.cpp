@@ -35,6 +35,7 @@
 #include "ClassQuestCompletion.h"
 #include "CombatNames.h"
 #include "CombatRecord.h"
+#include "CombatTrace.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -601,6 +602,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G0e: the natural tracer's pre-gate point, on its own clock (one relaxed load while nothing is traced)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
+
+    // The fight tally's running part every 50 minutes, at the bot's update also while no combat-engine tick runs
+    // (CF.32)
+    if (fightTally.IsOpen())
+        CombatTally::OnUpdate(this);
 
     // casttrace: the combat record's sample rows once a second of an open fight, also through a cast (one relaxed
     // load while nothing is traced)

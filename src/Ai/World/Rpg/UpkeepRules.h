@@ -12,11 +12,10 @@
 #include <cstdint>
 
 #include "../../../Bot/Debug/EventTypes.h"
-#include "../ShareSlot.h"
 
-// Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who keeps every
-// handout (the handout share). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept out of
-// PlayerbotAIConfig.h so that flipping a kind rebuilds only the handout sites.
+// Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who still gets
+// them (a bot that keeps no possessions). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept
+// out of PlayerbotAIConfig.h so that flipping a kind rebuilds only the handout sites.
 enum class UpkeepKind : uint8_t
 {
     Food,
@@ -45,8 +44,8 @@ enum class UpkeepKind : uint8_t
 namespace Upkeep
 {
 // word: the kind's honesty row is Honesty<word> (EventTypes.h) and the kind's name in NeedShort events. Every kind is
-// honest since upkeep WU40 (the class quests are the completion's, ClassQuestCompletion.h): a handout is off for a
-// persistent bot outside the handout share (Granted)
+// honest since upkeep WU40 (the class quests are the completion's, ClassQuestCompletion.h): a handout is off for every
+// bot that keeps its possessions (Granted)
 struct KindRule
 {
     EventLog::HonestyKind kind;
@@ -100,19 +99,9 @@ constexpr char const* KindWord(UpkeepKind kind)
     return index < KIND_COUNT ? EventLog::HonestyKindWord(KIND_RULES[index].kind).data() : "Other";
 }
 
-// The handout share (Playerbots.Upkeep.HandoutShare): the guid mix of ShareSlot.h, which world PvP's start-cost
-// share uses too, so SQL names the same bots
-using BotShare::InShare;
-using BotShare::SHARE_MIX;
-using BotShare::SHARE_PERCENT_MAX;
-using BotShare::SHARE_SHIFT;
-using BotShare::ShareSlot;
-
-// A bot gets a handout unless it keeps its possessions and is outside the share
-constexpr bool Granted(bool keepsPossessions, uint32_t guidCounter, uint32_t sharePercent)
-{
-    return !keepsPossessions || InShare(guidCounter, sharePercent);
-}
+// A bot gets a handout only when it keeps no possessions (not persistent, or a master at a game client leads it):
+// every persistent bot pays its own way (needs-and-errands NE.2)
+constexpr bool Granted(bool keepsPossessions) { return !keepsPossessions; }
 
 // Resurrection sickness, which the core's spirit healer path casts (Player::ResurrectPlayer): while it lasts a bot
 // rests (upkeep plan §3.5; the status pick, the status update and the errand start until WU16 gives the planner "sick
@@ -156,11 +145,12 @@ constexpr bool StatusPickable(uint32_t status, bool sick, bool needsRest)
     return StatusAllowed(status, sick) && !(needsRest && StatusFights(status));
 }
 
-// The status update ends every status a sick bot may not stay in (an errand or a trip as given up), except a flight in
-// the air: the bot lands, goes idle and then rests
-constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight)
+// The status update ends every status a sick bot may not stay in, except a flight in the air (the bot lands, goes
+// idle and then rests) and an errand that started after the bot's last rise (NE11: SickErrandOpen let it start; it
+// runs to its end). An errand from before the death ends as given up, as a trip and every other status do (WU8b)
+constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight, bool errandSinceRise)
 {
-    return !inFlight && !StatusAllowed(status, sick);
+    return !inFlight && !StatusAllowed(status, sick) && !(status == RPG_STATUS_ERRANDS && errandSinceRise);
 }
 
 // Rest ends after its duration (persisted), a sick bot's rest only once the sickness has ended
@@ -168,16 +158,26 @@ constexpr bool RestEnds(bool persisted, bool sick) { return persisted && !sick; 
 
 // The RPG statuses the errand trigger may interrupt (WT3b): those without a goal of their own, never questing
 // (planning 3.19 (3.6): a planner bot's planner weighs a due need against its quest; a questing bot the planner does
-// not lead destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts no errand
+// not lead destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts one only for a due repair
+// recover has handed over (SickErrandOpen)
 constexpr uint32_t RPG_STATUS_ERRAND_INTERRUPTS_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_GO_GRIND) |
                                                        (1u << RPG_STATUS_GO_CAMP) | (1u << RPG_STATUS_WANDER_RANDOM) |
                                                        (1u << RPG_STATUS_WANDER_NPC) | (1u << RPG_STATUS_REST) |
                                                        (1u << RPG_STATUS_DO_GATHER);
 
-constexpr bool ErrandMayStart(uint32_t status, bool sick)
+// NE11 (NE.3): a sick bot goes on an errand only for a due repair (UpkeepNeeds::RepairErrandDue), and only once
+// awareness's recover is done with it: it stands on a clear point and its health and mana are restored
+// (AwarenessRules::Restored, what recover waits for in a bot that is not sick). Otherwise it rests as before; the trip
+// takes the other errands due on the way (the errand plan's stops)
+constexpr bool SickErrandOpen(bool sick, bool repairDue, bool restored, bool clear)
+{
+    return sick && repairDue && restored && clear;
+}
+
+constexpr bool ErrandMayStart(uint32_t status, bool sick, bool sickErrandOpen)
 {
     bool const interrupts = status < 32 && ((RPG_STATUS_ERRAND_INTERRUPTS_MASK >> status) & 1u) != 0;
-    return interrupts && StatusAllowed(RPG_STATUS_ERRANDS, sick);
+    return interrupts && (StatusAllowed(RPG_STATUS_ERRANDS, sick) || sickErrandOpen);
 }
 
 // Event types of honest upkeep (.claude/docs/world-log.md in the hub): Sick (src spirit_healer, id the spell, amount
