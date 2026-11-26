@@ -37,6 +37,7 @@
 #include "StandRules.h"
 #include "TestConstraintStates.h"
 #include "Timer.h"
+#include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "TravelProgress.h"
 #include "WorldLog.h"
@@ -49,6 +50,8 @@
 // by another move, and nothing here names a status kind or a place: the holder passes its place and its reach.
 // An approach (WT64g) is the same walk to an object's stand point at any distance, with no trip: a stand point the mesh
 // does not carry, or no stand point (pathing PA47: the stand rule's, StandRules.h), ends no_path
+
+static_assert(::GoTo::ARRIVED_YARDS == TravelLegs::GOAL_YARDS, "an arrival holds within the follower's reach");
 
 namespace
 {
@@ -253,7 +256,6 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         walk.place = at;
         walk.progress = {};
         walk.ordered = false;
-        walk.arrived = false;
     }
     walk.spent = true;
 
@@ -416,7 +418,6 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     switch (decision.step)
     {
         case Step::There:
-            walk.arrived = false;
             localEnded();
             return Answer::There;
         case Step::Refused:
@@ -424,10 +425,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             return FailGoTo(walk, endsStatus, decision.word, decision.outcome);
         case Step::EndRead:
             if (decision.answer == Answer::There)
-            {
-                walk.arrived = true;
                 return Answer::There;
-            }
             return failed(decision.word, decision.outcome, false);
         case Step::Local:
         {
@@ -485,11 +483,11 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
                 walk.spent = NewRpgTravelAction(botAI).Execute(Event());
                 return Answer::Going;
             }
+            // No second trip to a place a trip arrived at (GoToRules.h): its Stuck row and the record's entry
+            if (decision.answer == Answer::Failed)
+                return failed(decision.word, decision.outcome, true);
             if (decision.askTrip)
             {
-                // A trip arrived here and the mesh does not carry the last yards: no second trip to the same place
-                if (walk.arrived)
-                    return failed("unreachable_poi", StatusEnd::Outcome::Abandoned, true);
                 // Another holder's trip is held: an end with its word and no wait (GoToRules.h AfterBegin). No Stuck
                 // row and no refusal of the place, which is not at fault
                 ::GoTo::Decision const begun =
@@ -507,9 +505,12 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::TaxiWalk(WorldPosition const& to, 
     return Away(to, reach).value_or(true) ? TaxiStart::Moving : TaxiStart::Stalled;
 }
 
-std::optional<bool> NewRpgBaseAction::Away(WorldPosition const& place, float reach)
+std::optional<bool> NewRpgBaseAction::Away(WorldPosition const& place, float reach, ::GoTo::Answer* answer)
 {
-    if (GoTo(place, reach) == ::GoTo::Answer::There)
+    ::GoTo::Answer const walked = GoTo(place, reach);
+    if (answer)
+        *answer = walked;
+    if (walked == ::GoTo::Answer::There)
         return std::nullopt;
     return goTo->spent;
 }

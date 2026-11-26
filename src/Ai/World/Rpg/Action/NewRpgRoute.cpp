@@ -619,23 +619,15 @@ void NoteTravelShares(PlayerbotAI* botAI, Player* bot, TravelRoute::LegType type
 
 bool TravelKeepsOnFoot(PlayerbotAI* botAI)
 {
-    // An errand stop's tame goes on foot (Tame Beast is not cast mounted; WU21b-2), and so does its stable visit (a
-    // mounted hunter's pet is away, WU21c run 1: a remount after each dismount kept the visit waiting)
-    if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
-        return errands->arrived && errands->stop < errands->stops.size() &&
-               (errands->stops[errands->stop].tameEntry || errands->stops[errands->stop].stableEntry);
-    // A get-off goes on foot, the trip-less one too (PA39b: a mount cast on every check held its deck walk and
-    // crossing, the bot rode on to stuck_aboard)
-    if (botAI->GetTravel().VesselOff().trip.offFirst.sinceMs)
-        return true;
+    // The engine's facts for TravelLegs::KeepsOnFoot (G411: one rule for every status)
+    auto const* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    TravelLegs::OnFootFacts facts;
+    facts.errandVisit = errands && errands->arrived && errands->stop < errands->stops.size() &&
+                        (errands->stops[errands->stop].tameEntry || errands->stops[errands->stop].stableEntry);
+    facts.vesselOff = botAI->GetTravel().VesselOff().trip.offFirst.sinceMs != 0;
     auto const* const data = botAI->GetTravel().Trip();
-    if (!data)
-        return false;
-    TravelLegs::Trip const& trip = data->trip;
-    if (trip.offFirst.sinceMs)
-        return true;
-    // A transport leg goes on foot from its dock on (WT54-7: also while it waits there, KeepOnFootAtTransport)
-    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
+    facts.trip = data ? &data->trip : nullptr;
+    return TravelLegs::KeepsOnFoot(facts);
 }
 
 bool NewRpgTravelAction::ConsumeScheduledWork(PlayerbotAI* botAI)

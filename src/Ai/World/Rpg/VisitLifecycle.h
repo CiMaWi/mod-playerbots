@@ -16,8 +16,9 @@
 // How a mailbox, bank or craft visit ends (bank-mail plan; the craft visit: professions WR7): pure rules, std only,
 // so the lifecycle harness (VisitLifecycleSelftest.h) checks the functions the live code calls (BankMailState.cpp,
 // MailVisit.cpp, BankVisit.cpp, CraftVisit.cpp, PlayerbotAI.cpp). Invariant: whatever happens, a started visit ends
-// within its deadline plus one AI update with exactly one row and one counter, so started = done + timeout + no spot
-// + unreached + the craft's own ends + interrupted; a bot runs one visit at a time.
+// within its limit plus one AI update with exactly one row and one counter, so started = done + timeout + no spot
+// + unreached + the craft's own ends + interrupted; a bot runs one visit at a time. The limit is one deadline from the
+// start; the auction visit renews it at every step the core answered (RenewedLimitMs).
 namespace BankMail
 {
 // The GM visit commands take the nearest mailbox or banker only within this reach (WB.12: getting farther is the
@@ -63,7 +64,7 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
     }
 }
 
-// The end of a visit whose last walk to the object failed (the object is there; pathing's fault, not a missing one)
+// The end of a visit whose walk to the object failed (the object is there; pathing's fault, not a missing one)
 inline VisitEnd ApproachFailedEnd() { return VisitEnd::Unreached; }
 
 // An end the visit did not reach by itself
@@ -100,6 +101,7 @@ struct VisitWatchIn
     bool onSpotMap = true;
     uint32_t elapsedMs = 0;
     uint32_t limitMs = 0;
+    bool reached = true;  // false: the visit never came into reach of its object (only the auction visit tells)
 };
 
 // Every AI update while a visit runs, whatever engine runs, and at each step of the visit: the end it meets now
@@ -110,9 +112,12 @@ inline std::optional<VisitEnd> WatchVisit(VisitWatchIn const& in)
     if (!in.onSpotMap)
         return VisitEnd::MapChange;
     if (in.elapsedMs >= in.limitMs)
-        return in.inCombat ? VisitEnd::Combat : VisitEnd::Timeout;
+        return in.inCombat ? VisitEnd::Combat : in.reached ? VisitEnd::Timeout : VisitEnd::Unreached;
     return std::nullopt;
 }
+
+// The limit after an answered step (AH.9): one step's time from now, counted from the visit's start, which stays
+inline uint32_t RenewedLimitMs(uint32_t elapsedMs, uint32_t stepMs) { return elapsedMs + stepMs; }
 }  // namespace BankMail
 
 #endif
