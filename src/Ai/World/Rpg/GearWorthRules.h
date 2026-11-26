@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 #include "AuctionBuyList.h"
 #include "ItemWorthRules.h"
@@ -43,6 +45,27 @@ struct WorthInput
     float earnCopperPerMinute{0.0f};  // the band's e (WorldTravel::SlotRates)
     float hoursPerLevel{0.0f};        // the band's play hours per level
 };
+
+// The band's play hours per level below the cap, as night lab5-20261125-175728 measured them (report.txt
+// "leveling"); 0 at the cap, which has its own horizon. 70-79's value is beyond the cap's horizon by itself
+inline float HoursPerLevel(std::uint32_t level)
+{
+    if (level >= LEVEL_CAP)
+        return 0.0f;
+    if (level >= 70)
+        return 353.0f;
+    if (level >= 60)
+        return 11.86f;
+    if (level >= 50)
+        return 6.97f;
+    if (level >= 40)
+        return 5.34f;
+    if (level >= 30)
+        return 4.30f;
+    if (level >= 20)
+        return 3.34f;
+    return 1.44f;
+}
 
 inline bool Usable(float value) { return std::isfinite(value) && value > 0.0f; }
 
@@ -103,6 +126,93 @@ inline std::uint32_t CeilingOf(std::uint32_t worthCopper, std::uint32_t vendorCo
     return static_cast<std::uint32_t>(
         std::min<std::uint64_t>(AuctionRules::CeilingOf(GearLine(0, worthCopper, vendorCopper, weight)),
                                 std::numeric_limits<std::uint32_t>::max()));
+}
+
+// Which rule decides a vendor item's purchase (gear WG5, PLAN 3.2 "At a vendor")
+enum class Route : std::uint8_t
+{
+    Old,      // the buy action's own budget and score comparison
+    ByWorth,  // a candidate of the worth rule
+    Never     // gear the upgrade rule does not wear, or that costs more than gold: not bought
+};
+
+struct RouteInput
+{
+    bool keeper{false};      // a vendor visit of a bot that keeps its possessions
+    bool gear{false};        // a weapon or armour item
+    bool equipUsage{false};  // "item usage" is one of the equip usages
+    bool upgrade{false};     // "item upgrade" is EQUIP or REPLACE (R4)
+    bool goldPrice{false};   // no extended cost
+};
+
+inline Route RouteOf(RouteInput const& in)
+{
+    if (!in.keeper || !in.gear || !in.equipUsage)
+        return Route::Old;
+    return in.upgrade && in.goldPrice ? Route::ByWorth : Route::Never;
+}
+
+// A vendor item the upgrade rule would wear, with its worth to the bot
+struct Offer
+{
+    std::uint32_t item{0};   // entry
+    std::uint8_t slot{0};    // the equipment slot it replaces
+    std::uint32_t slots{0};  // one bit per equipment slot the purchase fills
+    std::uint32_t worth{0};  // copper, as are the price and the ceiling
+    std::uint32_t price{0};
+    std::uint32_t ceiling{0};
+};
+
+constexpr std::size_t NO_OFFER = std::numeric_limits<std::size_t>::max();
+
+// What the offer is worth above its price; below 0 for one dearer than its worth
+inline std::int64_t Surplus(Offer const& offer)
+{
+    return static_cast<std::int64_t>(offer.worth) - static_cast<std::int64_t>(offer.price);
+}
+
+// The offer to buy next: of those whose slots are unfilled, within their ceiling and the spendable gold, the one
+// worth most above its price (the first of equals); NO_OFFER when there is none
+inline std::size_t BestBuy(std::vector<Offer> const& offers, std::uint32_t filled, std::uint64_t spendable)
+{
+    std::size_t best = NO_OFFER;
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        Offer const& offer = offers[i];
+        if ((offer.slots & filled) || offer.price > offer.ceiling || offer.price > spendable)
+            continue;
+        if (best == NO_OFFER || Surplus(offer) > Surplus(offers[best]))
+            best = i;
+    }
+    return best;
+}
+
+struct Refusal
+{
+    std::size_t offer{NO_OFFER};
+    bool noGold{false};  // within its ceiling, so only the gold is missing; else dearer than the ceiling
+};
+
+// Once BestBuy finds none: one refusal per replaced slot that is neither filled nor refused yet (a bit per slot). It
+// names the best offer within its ceiling (no gold), else the best offer (over its worth)
+inline std::vector<Refusal> Refusals(std::vector<Offer> const& offers, std::uint32_t filled, std::uint32_t refused)
+{
+    std::vector<Refusal> out;
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        Offer const& offer = offers[i];
+        if ((offer.slots & filled) || (refused & (1u << offer.slot)))
+            continue;
+
+        bool const noGold = offer.price <= offer.ceiling;
+        auto const same = std::find_if(
+            out.begin(), out.end(), [&](Refusal const& refusal) { return offers[refusal.offer].slot == offer.slot; });
+        if (same == out.end())
+            out.push_back({i, noGold});
+        else if (noGold != same->noGold ? noGold : Surplus(offer) > Surplus(offers[same->offer]))
+            *same = {i, noGold};
+    }
+    return out;
 }
 }  // namespace GearWorth
 

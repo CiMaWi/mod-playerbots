@@ -529,12 +529,104 @@ void PrintLadder()
 }
 }  // namespace
 
+void CheckHoursPerLevel()
+{
+    constexpr std::array<std::array<std::uint32_t, 2>, 7> BANDS = {
+        {{1, 19}, {20, 29}, {30, 39}, {40, 49}, {50, 59}, {60, 69}, {70, 79}}};
+    for (std::size_t i = 0; i < BANDS.size(); ++i)
+    {
+        float const hours = LADDER_BANDS[i].hoursPerLevel;
+        Check(GearWorth::HoursPerLevel(BANDS[i][0]) == hours, "hours: the band's bottom");
+        Check(GearWorth::HoursPerLevel(BANDS[i][1]) == hours, "hours: the band's top");
+    }
+    Check(GearWorth::HoursPerLevel(80) == 0.0f, "hours: none at the cap");
+    Check(GearWorth::HoursPerLevel(81) == 0.0f, "hours: none above the cap");
+}
+
+// Which vendor items the worth rule decides; a bot that does not keep its possessions buys as before
+void CheckRoute()
+{
+    using GearWorth::Route;
+    using GearWorth::RouteOf;
+
+    for (unsigned bits = 0; bits < 32; ++bits)
+    {
+        GearWorth::RouteInput const in{(bits & 1) != 0, (bits & 2) != 0, (bits & 4) != 0, (bits & 8) != 0,
+                                       (bits & 16) != 0};
+        Route const expected = !in.keeper || !in.gear || !in.equipUsage ? Route::Old
+                               : in.upgrade && in.goldPrice             ? Route::ByWorth
+                                                                        : Route::Never;
+        Check(RouteOf(in) == expected, "route: " + std::to_string(bits));
+    }
+    Check(RouteOf({false, true, true, true, true}) == Route::Old, "route: not a keeper, an upgrade");
+    Check(RouteOf({false, true, true, false, true}) == Route::Old, "route: not a keeper, no upgrade");
+    Check(RouteOf({true, true, true, false, true}) == Route::Never, "route: a keeper never buys a non-upgrade");
+}
+
+void CheckChoice()
+{
+    using GearWorth::BestBuy;
+    using GearWorth::NO_OFFER;
+    using GearWorth::Offer;
+    using GearWorth::Refusals;
+
+    constexpr std::uint8_t HEAD = 0;
+    constexpr std::uint8_t MAIN = 15;
+    constexpr std::uint8_t OFF = 16;
+    auto const make = [](std::uint32_t item, std::uint8_t slot, std::uint32_t worth, std::uint32_t price,
+                         std::uint32_t ceiling) { return Offer{item, slot, 1u << slot, worth, price, ceiling}; };
+
+    std::vector<Offer> const one = {make(1, HEAD, 1000, 400, 1000)};
+    Check(BestBuy(one, 0, 400) == 0, "choice: bought with exactly the price spendable");
+    Check(BestBuy(one, 0, 399) == NO_OFFER, "choice: one copper short");
+    Check(Refusals(one, 0, 0).size() == 1 && Refusals(one, 0, 0)[0].noGold, "choice: short of gold is no_gold");
+    Check(BestBuy(one, 1u << HEAD, 400) == NO_OFFER, "choice: the slot is filled");
+    Check(Refusals(one, 1u << HEAD, 0).empty(), "choice: a filled slot has no refusal");
+    Check(Refusals(one, 0, 1u << HEAD).empty(), "choice: a slot is refused once");
+
+    std::vector<Offer> const dear = {make(1, HEAD, 1000, 1001, 1000)};
+    Check(BestBuy(dear, 0, 1000000) == NO_OFFER, "choice: above the ceiling");
+    Check(Refusals(dear, 0, 0).size() == 1 && !Refusals(dear, 0, 0)[0].noGold, "choice: dearer is over_worth");
+
+    std::vector<Offer> const flush = {make(1, HEAD, 1000, 1500, 2000)};
+    Check(BestBuy(flush, 0, 1500) == 0, "choice: above the worth, within the ceiling");
+
+    std::vector<Offer> const worthless = {make(1, HEAD, 0, 10, 0)};
+    Check(BestBuy(worthless, 0, 1000) == NO_OFFER, "choice: worth 0 is not bought");
+    Check(Refusals(worthless, 0, 0).size() == 1 && !Refusals(worthless, 0, 0)[0].noGold,
+          "choice: worth 0 is over_worth");
+
+    // The better surplus is unaffordable, the cheaper second is bought
+    std::vector<Offer> const two = {make(1, HEAD, 5000, 2000, 5000), make(2, HEAD, 900, 500, 900)};
+    Check(BestBuy(two, 0, 2000) == 0, "choice: the best surplus");
+    Check(BestBuy(two, 0, 600) == 1, "choice: the cheaper second");
+
+    // One refusal per slot: an offer within its ceiling before a dearer one of any surplus
+    std::vector<Offer> const mixed = {make(1, HEAD, 3000, 3100, 3000), make(2, HEAD, 900, 800, 900),
+                                      make(3, HEAD, 2000, 1000, 2000), make(4, MAIN, 10, 500, 10),
+                                      make(5, MAIN, 400, 500, 400)};
+    auto const refusals = Refusals(mixed, 0, 0);
+    Check(refusals.size() == 2, "choice: one refusal per slot");
+    Check(refusals.size() == 2 && refusals[0].offer == 2 && refusals[0].noGold, "choice: no_gold names the best");
+    Check(refusals.size() == 2 && refusals[1].offer == 4 && !refusals[1].noGold, "choice: over_worth names the best");
+
+    // A two-hander fills both hands: not bought once either is filled
+    std::vector<Offer> const hands = {{7, MAIN, (1u << MAIN) | (1u << OFF), 1000, 100, 1000}};
+    Check(BestBuy(hands, 1u << OFF, 1000) == NO_OFFER, "choice: a filled off hand blocks a two-hander");
+    Check(BestBuy(hands, 1u << HEAD, 1000) == 0, "choice: another slot blocks nothing");
+
+    Check(BestBuy({}, 0, 1000) == NO_OFFER && Refusals({}, 0, 0).empty(), "choice: nothing offered");
+}
+
 int main()
 {
     CheckZero();
     CheckGrid();
     CheckCases();
     CheckCeiling();
+    CheckHoursPerLevel();
+    CheckRoute();
+    CheckChoice();
     PrintLadder();
 
     std::cout << "\ngear-worth: " << passed << " passed, " << failed << " failed\n";
