@@ -43,6 +43,14 @@ struct Situation;
 void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Materials::Rates const& rates,
                        PathData const& data, std::uint32_t competing, bool shortOfGold, Goals::Situation& situation);
 
+// The tool category a gather skill's node cast asks for (WPC8): the base-rank Mining spell's (a pick); 0 for a skill
+// whose node cast asks for none
+std::uint32_t GatherToolCategory(std::uint16_t skill);
+
+// Whether one of the held tools (item ids, Snapshot::toolsHeld) covers the skill's tool category; true when the skill
+// asks for none
+bool HoldsGatherTool(std::vector<std::uint32_t> const& toolsHeld, std::uint16_t skill);
+
 // The bot's map thread (FillSnapshot, WR13d): a herbalist's or miner's view of its zone's spawn points, the snapshot's
 // gatherUp and gatherDown: those within its sight (the map's visibility range, a loaded grid) up or empty, and the
 // points its respawn memory holds. Once per snapshot, over the zone's spawns

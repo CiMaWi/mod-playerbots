@@ -6,11 +6,13 @@
 
 #include "NewRpgDoGather.h"
 
+#include <cmath>
 #include <mutex>
 #include <unordered_map>
 
 #include "Creature.h"
 #include "GameObject.h"
+#include "GatherLive.h"
 #include "GatherNodeMgr.h"
 #include "GatherRules.h"
 #include "LootObjectStack.h"
@@ -53,6 +55,28 @@ constexpr char const* STOP_TIMED_OUT = GatherStopWords::TIMED_OUT;
 // The bot walked toward the stop Gather::WALK_STALL_MS without moving (a fight or another pause does not count): the
 // stop resolves and the status ends stuck, so the planner picks again (a trip it holds can't be dropped otherwise)
 constexpr char const* STOP_UNREACHED = GatherStopWords::UNREACHED;
+// The loot pipeline's reach for a node: its height check (LootObject::IsLootPossible) and the close approach here
+constexpr float NODE_REACH = INTERACTION_DISTANCE - 2.0f;
+
+// Why a stop at a live node timed out (WPC8, its trace row's reason), the first that holds of what the bot read at the
+// write-off: its skill below the node's; no tool for the cast; the node open to another looter; the node more than
+// NODE_REACH above or below it, or out of that reach; an autorepeat spell running (it stops the loot pipeline's
+// open); its own harvest cast went at the spawn and the node stands; the loot pipeline aimed elsewhere; mounted;
+// refused by the loot pipeline for another reason; none of these, and no cast
+namespace TimedOutWords
+{
+constexpr char const* SKILL_LOW = "skill_low";
+constexpr char const* NO_TOOL = "no_tool";
+constexpr char const* IN_USE = "in_use";
+constexpr char const* HEIGHT = "height";
+constexpr char const* OUT_OF_REACH = "out_of_reach";
+constexpr char const* AUTOREPEAT = "autorepeat";
+constexpr char const* CAST_NO_TAKE = "cast_no_take";
+constexpr char const* OTHER_TARGET = "other_target";
+constexpr char const* MOUNTED = "mounted";
+constexpr char const* REFUSED = "refused";
+constexpr char const* NO_CAST = "no_cast";
+}  // namespace TimedOutWords
 
 namespace
 {
@@ -74,6 +98,43 @@ struct StopEnd
     bool taken{false};
     std::string_view cause;
 };
+// Whether the bot's own gather cast went at the spawn since it reached the stop (the record NoteHarvestCast keeps)
+bool OwnCastSince(Player* bot, ObjectGuid::LowType spawnId, uint32 reachMs)
+{
+    std::lock_guard<std::mutex> lock(harvestNotesMutex);
+    auto const note = harvestNotes.find(spawnId);
+    return note != harvestNotes.end() && note->second.bot == bot->GetGUID().GetCounter() &&
+           GetMSTimeDiffToNow(note->second.ms) <= GetMSTimeDiffToNow(reachMs);
+}
+
+std::string_view TimedOutCause(Player* bot, GameObject* go, LootObject& lootObj, bool ownCast, bool targeted)
+{
+    using namespace TimedOutWords;
+    GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(go->GetSpawnId());
+    uint16 const skill = spawn ? static_cast<uint16>(spawn->skillId) : 0;
+    if (skill && (!bot->HasSkill(skill) || bot->GetSkillValue(skill) < spawn->reqSkillValue))
+        return SKILL_LOW;
+    if (uint32 const tool = Planner::GatherToolCategory(skill); tool && !bot->HasItemTotemCategory(tool))
+        return NO_TOOL;
+    if (go->getLootState() != GO_READY)
+        return IN_USE;
+    if (std::abs(go->GetPositionZ() - bot->GetPositionZ()) > NODE_REACH)
+        return HEIGHT;
+    if (bot->GetDistance(go) > NODE_REACH)
+        return OUT_OF_REACH;
+    if (bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+        return AUTOREPEAT;
+    if (ownCast)
+        return CAST_NO_TAKE;
+    if (!targeted)
+        return OTHER_TARGET;
+    if (bot->IsMounted())
+        return MOUNTED;
+    if (!lootObj.IsLootPossible(bot))
+        return REFUSED;
+    return NO_CAST;
+}
+
 StopEnd DownStop(Player* bot, ObjectGuid::LowType spawnId, uint32 statusStartMs)
 {
     Gather::DownFacts facts;
@@ -242,6 +303,21 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     bool timedOut = GetMSTimeDiffToNow(data.lastReach) > nodeStayTime;
     if (lootObj.IsEmpty() || timedOut)
     {
+        // The trace (WPC8): beside the stop row, what the bot read at the write-off. Value its height above the node
+        // (yd), alternatives its flat distance (yd), its own cast since it reached the stop and the loot target on
+        // the node (1 or 0)
+        if (!lootObj.IsEmpty())
+        {
+            bool const ownCast = OwnCastSince(bot, data.nodeSpawnId, data.lastReach);
+            bool const targeted = AI_VALUE(LootObject, "loot target").guid == go->GetGUID();
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::TimedOut),
+                TimedOutCause(bot, go, lootObj, ownCast, targeted), bot->GetPositionZ() - go->GetPositionZ(),
+                {{"flat", bot->GetExactDist2d(go)},
+                 {"cast", ownCast ? 1.0f : 0.0f},
+                 {"target", targeted ? 1.0f : 0.0f}},
+                data.nodeSpawnId);
+        }
         ResolveStop(data, false, true, lootObj.IsEmpty() ? STOP_NO_LOOT : STOP_TIMED_OUT);
         return true;
     }
@@ -266,7 +342,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // descends and routes around geometry to the node. This only runs when
     // the pipeline's higher-relevance approach already failed to move this
     // tick; a node with no reachable path is retired by the timeout above.
-    if (!lootObj.IsLootPossible(bot) || bot->GetDistance(go) > INTERACTION_DISTANCE - 2.0f)
+    if (!lootObj.IsLootPossible(bot) || bot->GetDistance(go) > NODE_REACH)
     {
         if (bot->isMoving())
             return false;
