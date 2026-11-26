@@ -108,6 +108,8 @@ constexpr float DEATH_MINUTES = 5.0f;  // a corpse run
 constexpr float REST_MINUTES = 0.5f;
 constexpr float MINUTE_MS = 60000.0f;
 constexpr char const* SICK_REASON = "sick";  // a sick bot rests; every other option is dropped (upkeep §3.5, WU16)
+// The questing test's setting (Playerbots.Test.QuestingOnly, questing WQ37): an option that does not serve levelling
+constexpr char const* QUESTING_ONLY_REASON = "questing_only";
 
 constexpr float HEARTH_USES = 1.0f;
 constexpr float BIND_MINUTES = 0.5f;
@@ -473,6 +475,10 @@ struct Situation
     float gatherRefusedLevels{0.0f};     // the least levels those creatures are above the bot
     bool questsHeld{false};              // a test's noquest (TestConstraints): no quest goal is offered
     bool fightsHeld{false};              // a test's nofight (TestConstraints): no creature stop is offered
+    // The questing test's setting (questing WQ37, WQ.50 item 5), copied from the config on the map thread: only the
+    // options that serve levelling are kept (GoalBuilder::Add)
+    bool questingOnly{false};
+    bool trainingUnpayable{false};  // a due trainer spell the gold cannot pay (NeedBridge): money may be earned
     Bags bags;
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
@@ -737,6 +743,31 @@ private:
         _ranked.dropped.push_back({option.kind, option.target, reason});
     }
 
+    // The questing test's keep list (questing WQ37, WQ.50 item 5): quests, a move to another zone or hub, rest, the
+    // hearthstone, a bag, an errand for full bags or a repair; money only while a due repair or training is beyond
+    // the gold. A grind, a gather, a fishing trip, a craft trip and travel elsewhere are not kept. O(1)
+    bool ServesLevelling(Option const& option) const
+    {
+        switch (option.kind)
+        {
+            case GoalKind::Quest:
+            case GoalKind::MoveZone:
+            case GoalKind::Rest:
+            case GoalKind::Hearth:
+            case GoalKind::BuyBag:
+                return true;
+            case GoalKind::Errand:
+                return option.reason == "bags_full" || option.reason == "bags_full_vendor_near" ||
+                       option.reason == "repair";
+            case GoalKind::Money:
+                return _situation.trainingUnpayable ||
+                       (UpkeepNeeds::RepairDue(_bot.brokenItems, _bot.lowestDurabilityPercent) &&
+                        _bot.repairCheapest > _bot.money);
+            default:
+                return false;
+        }
+    }
+
     // Values the option and keeps it, or drops it for bad input or too much risk
     void Add(Option option, RiskInput const& risk)
     {
@@ -744,6 +775,11 @@ private:
         if (_situation.questsHeld && option.kind == GoalKind::Quest)
         {
             Drop(option, "noquest");
+            return;
+        }
+        if (_situation.questingOnly && !ServesLevelling(option))
+        {
+            Drop(option, QUESTING_ONLY_REASON);
             return;
         }
         // Resurrection sickness drops every option but the due repair recover handed over (NE11)

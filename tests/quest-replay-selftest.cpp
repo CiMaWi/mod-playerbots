@@ -654,7 +654,7 @@ std::vector<Need> RouteNeeds(Fixture const& f, RouteWorld const& rw, Moment cons
         QuestSlot slot;
         slot.quest = id;
         slot.state = Circuit::SLOT_COMPLETE;
-        for (Need& need : Needs(rw.index, std::span<QuestSlot const>(&slot, 1), 0, rw.pricing))
+        for (Need& need : Needs(rw.index, std::span<QuestSlot const>(&slot, 1), 0, rw.pricing, 1))
             needs.push_back(std::move(need));
         ++ready;
     }

@@ -24,6 +24,7 @@
 #include "FieldMap.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
+#include "QuestFailRows.h"
 #include "QuestLogRules.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -385,9 +386,12 @@ constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
     StatusEnd::STATUS_REST,       StatusEnd::STATUS_OUTDOOR_PVP, StatusEnd::STATUS_DO_GATHER};
 
 // The fallback list; past the no-option bound (moving, WN4) without rest, so the bot walks on instead of resting at
-// the same spot again
-inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving)
+// the same spot again. With the questing test's setting (questing WQ37) a planner bot's fallback is a rest, past the
+// bound too: a wander serves no levelling, and the time it rests counts as the plan's fault
+inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving, bool questingOnly = false)
 {
+    if (fallback && questingOnly)
+        return {StatusEnd::STATUS_REST};
     std::vector<std::uint32_t> list =
         fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
                  : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());
@@ -797,6 +801,7 @@ struct BotGoals
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
+    QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
     std::uint32_t pathMs{0};  // its snapshot's time

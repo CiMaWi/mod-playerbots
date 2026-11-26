@@ -44,6 +44,11 @@ struct BuyLine;
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
+namespace QuestFailRows
+{
+struct Sums;  // QuestFailRows.h
+}
+
 class FieldMap;
 class PlannerIndexes;
 class PlannerPool;
@@ -90,6 +95,9 @@ void SituationChanged(PlayerbotAI* botAI);
 // (giverStillOffers: one still offers something). Once its round of pickups is due (QuestLog::PlanDue: no giver offers
 // more, or 30 s after the round's first accept) the situation changed. Nothing for a bot the planner does not own. O(1)
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
+// Questing WQ38: the bot's stall sums (QuestFailRows.h), kept with its goals so that they outlive an order (the goals
+// are made on first use, as for every reader of them). Map thread only. O(1)
+QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);

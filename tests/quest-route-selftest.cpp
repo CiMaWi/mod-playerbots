@@ -373,7 +373,7 @@ World Generate(Gen& gen)
     }
 
     Pricing const pricing{};
-    w.needs = Needs(w.index, w.log, team, pricing);
+    w.needs = Needs(w.index, w.log, team, pricing, 5);  // WQ38: as a party asks, every need of the log
 
     // The bot: anywhere, or at the spawn of a ready quest's ender (register row G344)
     Route::Ask& ask = w.ask;
@@ -789,7 +789,7 @@ Fixed WolvesAndBoars(bool wolvesInLog)
     std::vector<QuestSlot> log;
     if (wolvesInLog)
         log.push_back({90, 0, {}});
-    f.needs = Needs(f.index, log, 0, Pricing{});
+    f.needs = Needs(f.index, log, 0, Pricing{}, 1);
     if (std::optional<Need> take = TakeNeed(f.index, f.index.quests[1], 0, Pricing{}, MAP_A))
         f.needs.push_back(std::move(*take));
     f.ask.mapId = MAP_A;
@@ -894,7 +894,7 @@ void HandInHere()
     index.quests = {small, MakeQuest(93, 2000, {MakeObjective(ObjectiveKind::Kill, WOLF, 10, 0)})};
     index.places.push_back(MakePlace(CLERK, MAP_A, 0, 0));
     std::vector<QuestSlot> const log = {{92, Circuit::SLOT_COMPLETE, {1, 0, 0, 0}}, {93, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, 1);
     Route::Ask ask;
     ask.mapId = MAP_A;
     ask.x = Mid(0);
@@ -1078,7 +1078,7 @@ void FarField()
     QuestIndex index;
     index.quests = {MakeQuest(90, 1000, {MakeObjective(ObjectiveKind::Kill, WOLF, 2, 0)})};
     std::vector<QuestSlot> const log = {{90, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, 1);
     Route::Ask ask;
     ask.mapId = MAP_A;
     ask.x = Mid(9);
@@ -1239,7 +1239,7 @@ void GoalRoutes(std::uint32_t seed)
 
         // The same route from the needs as this test states them
         Pricing const pricing{context.weights, {}};
-        std::vector<Need> needs = Needs(w.index, w.log, bot.team, pricing);
+        std::vector<Need> needs = Needs(w.index, w.log, bot.team, pricing, bot.groupSize);
         std::vector<std::uint32_t> inLog;
         for (QuestSlot const& slot : w.log)
             inLog.push_back(slot.quest);
@@ -1383,9 +1383,9 @@ void GoalRouteTakes()
     fieldAsk.level = low.level;
     fieldAsk.stayMinutes = Route::STAY_MINUTES;
     fieldAsk.runSpeed = Goals::Prepare(low, situation).runSpeed;
-    Offer const offer =
-        wolvesFirst ? FieldOffer(*map, Needs(index, low.quests, 0, Pricing{}), lowPlan.route.orders[0].cell, fieldAsk)
-                    : Offer{};
+    Offer const offer = wolvesFirst ? FieldOffer(*map, Needs(index, low.quests, 0, Pricing{}, 1),
+                                                 lowPlan.route.orders[0].cell, fieldAsk)
+                                    : Offer{};
     Goals::RiskInput const& risk = lowPlan.route.risk;
     Check(wolvesFirst && offer.risk.levelsAbove > 0.0f && risk.levelsAbove == offer.risk.levelsAbove &&
               risk.eliteShare == offer.risk.eliteShare && risk.enemyShare == offer.risk.enemyShare &&

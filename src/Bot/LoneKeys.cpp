@@ -55,6 +55,10 @@ constexpr std::array<LoneRow, 1> TestMissLogRows = {{
     {"", &LoneKeys::TestMissLog, 0, 0, ConfigKind::Test},
 }};
 
+constexpr std::array<LoneRow, 1> TestQuestingOnlyRows = {{
+    {"", &LoneKeys::TestQuestingOnly, 0, 0, ConfigKind::Test},
+}};
+
 }  // namespace
 
 // One family per key: the prefix is the whole key and the row's key is empty (like a retired switch)
@@ -67,6 +71,7 @@ ConfigFamily<LoneKeys> const TestNamePrefixFamily{"Playerbots.RandomBotTestNameP
                                                   &NormalizeTestNamePrefix};
 ConfigFamily<LoneKeys> const DebugThreadChecksFamily{"Playerbots.DebugThreadChecks", DebugThreadChecksRows};
 ConfigFamily<LoneKeys> const TestMissLogFamily{"Playerbots.Test.MissLog", TestMissLogRows};
+ConfigFamily<LoneKeys> const TestQuestingOnlyFamily{"Playerbots.Test.QuestingOnly", TestQuestingOnlyRows};
 
 LoneKeys& LoneKeysStorage()
 {
