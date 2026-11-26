@@ -16,7 +16,7 @@
 
 #include "Define.h"
 #include "GatherMemoryState.h"
-#include "GatherRateRules.h"
+#include "GatherRateTypes.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"

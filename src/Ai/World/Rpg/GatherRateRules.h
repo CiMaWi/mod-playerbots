@@ -13,6 +13,8 @@
 #include <memory>
 #include <unordered_map>
 
+#include "GatherRateTypes.h"
+
 // Minutes per take as bots get them (professions plan WPC13b, DECISIONS WPC.13 = B). Per zone and way (herbalism,
 // mining, creatures) the minutes and takes of every circuit span that ran, one without a take too; a span cut at once
 // (part 4's rule: at most CUT_MS with no stop resolved) and one of mixed ways are none. Observations fade, so a zone
@@ -23,16 +25,6 @@
 // empty View is the static rule.
 namespace GatherRate
 {
-enum class Way : std::uint8_t
-{
-    Herbalism,
-    Mining,
-    Creatures,
-    None  // mixed ways, no circuit or another skill: never observed, always the prior
-};
-
-constexpr std::size_t WAYS = 3;
-
 // Tuning values [E]
 constexpr double PRIOR_TAKES = 10.0;              // the static prior's weight in takes, and the observed threshold
 constexpr double FADE_HALF_LIFE_MINUTES = 120.0;  // an observation's weight halves in this time
@@ -74,17 +66,6 @@ inline Way WayOfSkill(std::uint16_t skill)
 {
     return skill == SKILL_HERBALISM ? Way::Herbalism : skill == SKILL_MINING ? Way::Mining : Way::None;
 }
-
-// One circuit span as it ended: its zone at the start, its way, how long it ran, its takes and the stops it resolved
-// (a take or a no_source)
-struct Span
-{
-    std::uint32_t zone{0};
-    Way way{Way::None};
-    std::uint32_t milliseconds{0};
-    std::uint32_t takes{0};
-    std::uint32_t resolved{0};
-};
 
 inline bool CutAtOnce(Span const& span) { return span.milliseconds <= CUT_MS && !span.resolved; }
 
