@@ -11,9 +11,13 @@
 // expiries), the same seed must give the same run, and each negative control (a fault in the model's glue: a cut not
 // paid, a ceiling ignored, an expiry skipped) must be caught by its own invariant. A preset runs one market under the
 // invariants and prints it as markdown for the user. The default run also runs the preset night under the invariants
-// and the path control (a fed sale makes a path line a bot buys).
-// Usage: auction-market-selftest <repo> [--preset hand|night] [--hours H] [--seed S] [--print]. Exit code 1 on a
-// failed check. The night's print: `<exe> <repo> --preset night --print` (server-tools.md, Market simulation).
+// and the path control (a fed sale makes a path line a bot buys), and checks in the hand market that the run feeds the
+// sale chance's records and that a line taken up later buys nothing before its hour. The presets gear-no-buyer (the
+// night, its gear per hour) and gear-buyers-arrive (the same, with assumed gear buyers from a later model hour on)
+// run only when asked.
+// Usage: auction-market-selftest <repo> [--preset hand|night|gear-no-buyer|gear-buyers-arrive] [--hours H] [--seed S]
+// [--print]. Exit code 1 on a failed check. A preset's print: `<exe> <repo> --preset night --print` (server-tools.md,
+// Market simulation).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -123,9 +127,9 @@ MarketSim::Market HandMarket(std::uint32_t seed)
     MarketSim::Market market;
     market.seed = seed;
     market.hours = 30.0;
-    market.goods = {{HAND_BIG_BAG, 1, 1, 2500, 12000}, {HAND_SMALL_BAG, 1, 1, 625, 2000},
-                    {HAND_CLOTH, 7, 1, 50, 150},       {HAND_WEAPON, 2, 2, 3000, 9000},
-                    {HAND_GREY, 4, 0, 40, 40},         {HAND_RECIPE, 9, 2, 1000, 5000}};
+    market.goods = {{HAND_BIG_BAG, 1, 1, 2500, 12000, 0, 15}, {HAND_SMALL_BAG, 1, 1, 625, 2000, 0, 10},
+                    {HAND_CLOTH, 7, 1, 50, 150, 0, 10},       {HAND_WEAPON, 2, 2, 3000, 9000, 20, 25},
+                    {HAND_GREY, 4, 0, 40, 40, 0, 5},          {HAND_RECIPE, 9, 2, 1000, 5000, 0, 20}};
     market.ladder = {{HAND_BIG_BAG, 10, 10000}, {HAND_SMALL_BAG, 8, 2500}};
     Band& band = market.bands[0];
     band.slots = WorldTravel::DEFAULT_SLOT_BANDS[0];
@@ -191,14 +195,17 @@ MarketSim::Market RandomMarket(std::uint32_t seed)
         std::uint32_t const slots = 6 + 2 * dice.Range(0, 5);
         std::uint32_t const buy = dice.Range(500, 40000);
         market.ladder.push_back({item, slots, buy});
-        market.goods.push_back({item, 1, 1, buy / 4, static_cast<std::uint64_t>(buy * dice.Real(0.3, 2.0))});
+        market.goods.push_back(
+            {item, 1, 1, buy / 4, static_cast<std::uint64_t>(buy * dice.Real(0.3, 2.0)), 0, dice.Range(1, 80)});
     }
     std::array<std::uint32_t, 6> const classes = {0, 2, 4, 7, 7, 15};
     for (std::uint32_t good = dice.Range(3, 8); good; --good)
     {
         std::uint32_t const sell = dice.Pick(10) ? 0 : dice.Range(1, 4000);
         std::uint64_t const reference = dice.Pick(10) ? 0 : sell + dice.Range(0, 6 * sell + 300);
-        market.goods.push_back({next++, classes[dice.Range(0, 5)], dice.Range(0, 4), sell, reference});
+        std::uint32_t const required = dice.Pick(30) ? 0 : dice.Range(1, 80);
+        market.goods.push_back(
+            {next++, classes[dice.Range(0, 5)], dice.Range(0, 4), sell, reference, required, dice.Range(1, 200)});
     }
     std::uint32_t const firstBand = dice.Range(0, 2);
     std::uint32_t const lastBand = firstBand + dice.Range(0, 2);
@@ -290,6 +297,26 @@ void CheckHand()
                                                             std::to_string(skips));
     Check(Digest(Sim(market).Run()) == Digest(result), "hand market: the same seed gives the same run");
     Check(Digest(Sim(HandMarket(8)).Run()) != Digest(result), "hand market: another seed gives another run");
+    Check(std::any_of(result.endRecords.begin(), result.endRecords.end(),
+                      [](auto const& kind) { return kind.second.sales > 0.0 && kind.second.hours > 0.0; }),
+          "hand market: a kind's record holds sales and listing hours");
+    // The recipe has one buyer, the last bot: its line taken up after the run buys nothing, from hour 10 on it does
+    auto const recipeSales = [&market](double from)
+    {
+        MarketSim::Market later = market;
+        BotSetup& bidder = later.bots.back();
+        bidder.laterLines = std::move(bidder.lines);
+        bidder.lines.clear();
+        bidder.laterFromHours = from;
+        Result const ran = Sim(later).Run();
+        CheckClean(ran, "hand market, a line taken up later");
+        auto const found = ran.items.find(HAND_RECIPE);
+        return found == ran.items.end() ? std::uint64_t{0} : found->second.sales;
+    };
+    std::uint64_t const never = recipeSales(market.hours);
+    std::uint64_t const tenth = recipeSales(10.0);
+    Check(!never && tenth, "hand market: a line from the run's end sells " + std::to_string(never) +
+                               " recipes, from hour 10 " + std::to_string(tenth));
 }
 
 void Search()
@@ -386,6 +413,124 @@ std::string Gold(std::uint64_t copper)
     return text.str();
 }
 
+// A kind of the sale chance in words, from its code (AuctionIndex::KindOf)
+std::string LevelKindWord(std::uint32_t code)
+{
+    if (!code)
+        return "unknown";
+    std::uint32_t const low = (code & AuctionIndex::KIND_BAND_MAX) * AuctionIndex::KIND_BAND_LEVELS;
+    std::ostringstream text;
+    text << KindWord((code >> 16) & 0xFF) << " q" << ((code >> 8) & 0xFF)
+         << (code & AuctionIndex::KIND_BY_ITEM_LEVEL ? " ilvl " : " req ") << low << '-'
+         << low + AuctionIndex::KIND_BAND_LEVELS - 1;
+    return text.str();
+}
+
+// A model hour's row label; the run's last hour may be a part of one
+std::string HourWord(MarketSim::Market const& market, std::size_t hour)
+{
+    std::ostringstream text;
+    text << hour;
+    double const part = market.hours - static_cast<double>(hour);
+    if (part < 0.999)
+        text << " (" << std::fixed << std::setprecision(1) << part << " h)";
+    return text.str();
+}
+
+void PrintLevelKinds(std::ostream& out, MarketSim::Market const& market, Result const& result)
+{
+    std::map<std::uint32_t, LevelKindTally> run;  // listings and sales over the run
+    for (HourTally const& hour : result.hours)
+        for (auto const& [kind, tally] : hour.levelKinds)
+        {
+            run[kind].listings += tally.listings;
+            run[kind].sales += tally.sales;
+        }
+    auto const sold = std::count_if(run.begin(), run.end(), [](auto const& kind) { return kind.second.sales > 0; });
+    out << "\n## Kinds of the sale chance (class, quality, level band) per model hour\n\n";
+    out << run.size() << " kinds, " << sold << " with a sale in the run, " << run.size() - sold << " without.\n\n";
+    out << "| hour | without a sale: listings | lots standing | vendored | with a sale: listings | sales | lots "
+           "standing | vendored |\n|---|---|---|---|---|---|---|---|\n";
+    for (std::size_t hour = 0; hour < result.hours.size(); ++hour)
+    {
+        std::array<LevelKindTally, 2> sums;  // without a sale, with one
+        for (auto const& [kind, tally] : result.hours[hour].levelKinds)
+        {
+            LevelKindTally& sum = sums[run[kind].sales ? 1 : 0];
+            sum.listings += tally.listings;
+            sum.sales += tally.sales;
+            sum.standing += tally.standing;
+            sum.vendored += tally.vendored;
+        }
+        out << "| " << HourWord(market, hour) << " | " << sums[0].listings << " | " << sums[0].standing << " | "
+            << sums[0].vendored << " | " << sums[1].listings << " | " << sums[1].sales << " | " << sums[1].standing
+            << " | " << sums[1].vendored << " |\n";
+    }
+    out << "\n### Listings per model hour by kind (listings, or listings/sales in an hour with a sale)\n\n| kind |";
+    for (std::size_t hour = 0; hour < result.hours.size(); ++hour)
+        out << ' ' << hour << " |";
+    out << " listings | sales |\n|---|";
+    for (std::size_t column = 0; column < result.hours.size() + 2; ++column)
+        out << "---|";
+    out << '\n';
+    for (auto const& [kind, total] : run)
+    {
+        if (!total.listings && !total.sales)
+            continue;
+        out << "| " << LevelKindWord(kind) << " |";
+        for (HourTally const& hour : result.hours)
+        {
+            auto const found = hour.levelKinds.find(kind);
+            LevelKindTally const tally = found == hour.levelKinds.end() ? LevelKindTally{} : found->second;
+            out << ' ' << tally.listings;
+            if (tally.sales)
+                out << '/' << tally.sales;
+            out << " |";
+        }
+        out << ' ' << total.listings << " | " << total.sales << " |\n";
+    }
+    out << "\n### Listed at the end, by kind and ask over vendor price\n\n"
+           "Ask over vendor price: a standing lot's buyout / (the template's sell price x units). The record is the "
+           "kind's in the last publication; the chance is what that record gives an item without a record of its own, "
+           "listed for the first duration.\n\n";
+    out << "| kind | lots | lowest | q1 | median | q3 | highest | no vendor price | sales in the run | record: lots "
+           "sold | record: lot hours | chance |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> standing;  // lots, kind
+    for (auto const& [kind, total] : run)
+    {
+        auto const priced = result.endAsks.find(kind);
+        auto const unpriced = result.endUnpriced.find(kind);
+        std::uint64_t const lots = (priced == result.endAsks.end() ? 0 : priced->second.size()) +
+                                   (unpriced == result.endUnpriced.end() ? 0 : unpriced->second);
+        if (lots)
+            standing.emplace_back(lots, kind);
+    }
+    std::sort(standing.rbegin(), standing.rend());
+    double const listedHours = static_cast<double>(AuctionRules::ExpirySeconds(
+                                   market.fees, AuctionRules::DurationHours(market.config.FirstDurationHours))) /
+                               static_cast<double>(AuctionRules::SECONDS_PER_HOUR);
+    for (auto const& [lots, kind] : standing)
+    {
+        auto const priced = result.endAsks.find(kind);
+        std::vector<double> asks = priced == result.endAsks.end() ? std::vector<double>{} : priced->second;
+        std::sort(asks.begin(), asks.end());
+        out << "| " << LevelKindWord(kind) << " | " << lots << " |" << std::fixed << std::setprecision(2);
+        for (std::size_t quarter = 0; quarter <= 4; ++quarter)
+            if (asks.empty())
+                out << " - |";
+            else
+                out << ' ' << asks[(asks.size() - 1) * quarter / 4] << " |";
+        auto const unpriced = result.endUnpriced.find(kind);
+        auto const found = result.endRecords.find(kind);
+        AuctionIndex::Record const record = found == result.endRecords.end() ? AuctionIndex::Record{} : found->second;
+        out << ' ' << (unpriced == result.endUnpriced.end() ? 0 : unpriced->second) << " | " << run[kind].sales << " | "
+            << record.sales << " | " << std::setprecision(0) << record.hours << " | " << std::setprecision(4)
+            << AuctionRules::SaleChance({}, record, listedHours, market.config) << " |\n";
+    }
+    out.unsetf(std::ios::floatfield);
+    out << std::setprecision(6);
+}
+
 void Print(std::ostream& out, std::string_view name, MarketSim::Market const& market, Result const& result, double ms)
 {
     out << "\n<!-- market -->\n# Market simulation: preset " << name << "\n\n";
@@ -433,6 +578,7 @@ void Print(std::ostream& out, std::string_view name, MarketSim::Market const& ma
         moved += tally.gold;
     }
     out << "\nGold moved through the house: " << Gold(moved) << ".\n";
+    PrintLevelKinds(out, market, result);
 }
 
 // ---- the night (AH1's fixture tests/fixtures/auction-market-night.txt; PLAN 3.2, AH.3) ----
@@ -1142,7 +1288,9 @@ Built NightPreset(std::string const& repo, std::uint32_t seed)
         market.goods.push_back({item, found == templates.end() ? UNKNOWN_CLASS : found->second.classId,
                                 found == templates.end() ? 0 : found->second.quality,
                                 found == templates.end() ? 0 : found->second.sellPrice,
-                                reference ? reference->copper : 0});
+                                reference ? reference->copper : 0,
+                                found == templates.end() ? 0 : found->second.requiredLevel,
+                                found == templates.end() ? 0 : found->second.itemLevel});
     }
     auto const paths = std::make_shared<NightPaths>(index, std::move(sell), market.fees, market.config, *night);
     market.paths = paths;
@@ -1159,8 +1307,137 @@ Built NightPreset(std::string const& repo, std::uint32_t seed)
     return built;
 }
 
-std::array<Preset, 2> const PRESETS = {{{"hand", "the selftest's hand market", &HandPreset},
-                                        {"night", "lab5's night of 2026-11-25 (AH1's fixture)", &NightPreset}}};
+// ---- the gear presets (PLAN 3.2, AH5) ----
+// gear-no-buyer is the night as it is: it has no gear line. gear-buyers-arrive adds gear buyers from a later model
+// hour on; all of what they are is assumed, and the print says so
+constexpr std::uint32_t ITEM_CLASS_WEAPON = 2;
+constexpr std::uint32_t ITEM_CLASS_ARMOR = 4;
+constexpr std::size_t GEAR_LINES = 17;   // assumed: as many as the equipment slots; the draw ignores slots
+constexpr double GEAR_FROM_HOUR = 7.0;   // assumed: the first full model hour after the night's 6.7
+constexpr double GEAR_RUN_HOURS = 48.0;  // assumed: the longest listing duration, so the house turns over
+
+bool IsGear(std::uint32_t classId) { return classId == ITEM_CLASS_WEAPON || classId == ITEM_CLASS_ARMOR; }
+
+// Gear per model hour; with buyers, what they are and when sales and listings came back
+void PrintGear(std::ostream& out, MarketSim::Market const& market, Result const& result, bool buyers)
+{
+    std::set<std::uint32_t> soldKinds;  // gear kinds with a sale in the run
+    for (HourTally const& hour : result.hours)
+        for (auto const& [kind, tally] : hour.levelKinds)
+            if (tally.sales && IsGear((kind >> 16) & 0xFF))
+                soldKinds.insert(kind);
+    struct GearHour
+    {
+        std::uint64_t listings{0};
+        std::uint64_t sales{0};
+        std::uint64_t standing{0};
+        std::uint64_t vendored{0};
+        std::uint64_t soldKindListings{0};
+    };
+    std::vector<GearHour> rows(result.hours.size());
+    for (std::size_t hour = 0; hour < result.hours.size(); ++hour)
+    {
+        for (auto const& [classId, tally] : result.hours[hour].kinds)
+            if (IsGear(classId))
+            {
+                rows[hour].listings += tally.posts + tally.relists;
+                rows[hour].sales += tally.sales;
+                rows[hour].standing += tally.standing;
+                rows[hour].vendored += tally.vendored;
+            }
+        for (auto const& [kind, tally] : result.hours[hour].levelKinds)
+            if (soldKinds.count(kind))
+                rows[hour].soldKindListings += tally.listings;
+    }
+    out << "\n## Gear (weapons and armor) per model hour\n\n";
+    if (buyers)
+        out << "- Assumed buyers: each of the " << market.bots.size() << " model bots takes up " << GEAR_LINES
+            << " gear lines (a count; the draw ignores slots) at its first visit from model hour " << GEAR_FROM_HOUR
+            << " on. A line is one unit of one item, drawn without replacement from the gear of its band's lot stream "
+               "by the lots' weights (items with a reference value); worth = the item's reference value, no other way "
+               "of getting it (AuctionRules::LineOf, owner gear). A bought line goes, so the demand is finite; money, "
+               "visits, lots and income stay the night's. Units wanted "
+            << result.gearUnitsWanted << ", unbought at the end " << result.gearUnitsLeft << ".\n";
+    else
+        out << "- No bot holds a gear line (the night as it is): units wanted " << result.gearUnitsWanted << ".\n";
+    out << "- Gear kinds with a sale in the run: " << soldKinds.size() << ".\n\n";
+    out << "| hour | listings | sales | lots standing | vendored | listings of the gear kinds with a sale |\n"
+           "|---|---|---|---|---|---|\n";
+    for (std::size_t hour = 0; hour < rows.size(); ++hour)
+        out << "| " << HourWord(market, hour) << " | " << rows[hour].listings << " | " << rows[hour].sales << " | "
+            << rows[hour].standing << " | " << rows[hour].vendored << " | " << rows[hour].soldKindListings << " |\n";
+    constexpr std::size_t from = static_cast<std::size_t>(GEAR_FROM_HOUR);
+    if (!buyers || rows.size() <= from)
+        return;
+    auto const first = [&rows](auto const& holds)
+    {
+        for (std::size_t hour = from; hour < rows.size(); ++hour)
+            if (holds(rows[hour]))
+                return "hour " + std::to_string(hour) + " (model hour " + std::to_string(hour - from + 1) +
+                       " after the buyers arrive)";
+        return std::string("no hour of the run");
+    };
+    GearHour const before = rows[from - 1];
+    out << "\n- First hour with a gear sale: " << first([](GearHour const& row) { return row.sales > 0; }) << ".\n";
+    out << "- First hour with more gear listings than hour " << from - 1 << " (" << before.listings
+        << "): " << first([&before](GearHour const& row) { return row.listings > before.listings; }) << ".\n";
+    out << "- First hour with more listings of the gear kinds with a sale than hour " << from - 1 << " ("
+        << before.soldKindListings
+        << "): " << first([&before](GearHour const& row) { return row.soldKindListings > before.soldKindListings; })
+        << ".\n";
+}
+
+Built GearPreset(std::string const& repo, std::uint32_t seed, bool buyers)
+{
+    Built built = NightPreset(repo, seed);
+    MarketSim::Market& market = built.market;
+    if (buyers)
+    {
+        market.hours = GEAR_RUN_HOURS;
+        std::unordered_map<std::uint32_t, Goods> goods;
+        for (Goods const& each : market.goods)
+            goods[each.item] = each;
+        // A generator of their own: the night's bots stay as they are
+        std::mt19937 rng(seed ^ 0x9e3779b9u);
+        for (BotSetup& bot : market.bots)
+        {
+            std::vector<std::pair<double, std::uint32_t>> drawn;  // key, item: the smallest keys are the draw
+            for (Arrival const& arrival : market.bands[bot.band].mix)
+            {
+                Goods const& each = goods[arrival.item];
+                if (IsGear(each.classId) && each.reference && arrival.weight > 0.0)
+                    drawn.emplace_back(-std::log(Unit(rng)) / arrival.weight, arrival.item);
+            }
+            std::size_t const count = std::min(GEAR_LINES, drawn.size());
+            std::partial_sort(drawn.begin(), drawn.begin() + count, drawn.end());
+            for (std::size_t at = 0; at < count; ++at)
+            {
+                Goods const& each = goods[drawn[at].second];
+                bot.laterLines.push_back(AuctionRules::LineOf(
+                    LineOwner::Gear, each.item, 1, static_cast<double>(each.reference), -1.0, 1.0f, each.sellPrice));
+            }
+            bot.laterFromHours = GEAR_FROM_HOUR;
+        }
+    }
+    built.after = [buyers](MarketSim::Market const& ran, Result const& result, bool print)
+    {
+        if (buyers && ran.hours > GEAR_FROM_HOUR)
+            Check(result.gearUnitsWanted > 0, "gear buyers: the bots took up gear lines");
+        if (print)
+            PrintGear(std::cout, ran, result, buyers);
+    };
+    return built;
+}
+
+Built GearNoBuyerPreset(std::string const& repo, std::uint32_t seed) { return GearPreset(repo, seed, false); }
+
+Built GearBuyersPreset(std::string const& repo, std::uint32_t seed) { return GearPreset(repo, seed, true); }
+
+std::array<Preset, 4> const PRESETS = {
+    {{"hand", "the selftest's hand market", &HandPreset},
+     {"night", "lab5's night of 2026-11-25 (AH1's fixture)", &NightPreset},
+     {"gear-no-buyer", "the night, its gear per hour", &GearNoBuyerPreset},
+     {"gear-buyers-arrive", "the night, with assumed gear buyers from a later hour on", &GearBuyersPreset}}};
 
 void RunPreset(std::string const& repo, std::string const& name, double hours, std::uint32_t seed, bool print)
 {
