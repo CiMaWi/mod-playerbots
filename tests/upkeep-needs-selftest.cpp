@@ -2147,6 +2147,23 @@ void UseNeeds()
     Check(use && use->funded == std::min<std::uint64_t>(use->copper, above),
           "the use need is funded from the gold above the reserve");
 
+    // NR4 (item 17): the use need is no part of the reserve, so it never names the shortfall
+    Snapshot broke = bot;
+    broke.money = 0;
+    NeedRates large = plain;
+    large.useWants.push_back({{ITEM_SUPER_HEALING}, 1000, 1000, 0});
+    NeedList const wanting = ComputeNeeds(broke, index, large);
+    Need const* wanted = Find(wanting, NeedOrder::Use);
+    std::uint64_t dearest = 0;
+    for (Planner::NeedBridge::ReservePart const& part : Planner::NeedBridge::PartsOf(wanting))
+        dearest = std::max<std::uint64_t>(dearest, Scaled(wanting, part.copper));
+    Planner::NeedBridge::NeedInputs const named = Planner::NeedBridge::InputsOf(wanting);
+    std::cout << "   broke, wants 1000 potions: " << named.shortText << "\n";
+    Check(wanted && wanted->copper > dearest && named.shortfallCopper > 0 &&
+              named.shortText.find("for use") == std::string::npos &&
+              named.shortText.find("the reserve") == std::string::npos,
+          "a broke bot with a large use want names its shortfall by a reserve part, not use");
+
     std::cout << "   at the apothecary, the alchemist (the weaker potion only), the mana vendor and the inn:\n";
     std::vector<ShopLine> const apothecary = PlanShopping(with, index, bot, VENDOR_APOTHECARY);
     std::vector<ShopLine> const alchemist = PlanShopping(with, index, bot, VENDOR_ALCHEMIST);
@@ -2227,14 +2244,15 @@ std::uint64_t FundedOf(NeedList const& list, NeedOrder order)
 }
 
 // The reserve's parts as PartsOf counted them before the market (its control): every need with copper but repair,
-// training, riding and professions, and the four reserve sums
+// training, riding, pet, use and professions, and the four reserve sums
 std::size_t PartsBeforeMarket(NeedList const& list)
 {
     std::size_t parts = (list.reserveRepair ? 1 : 0) + (list.reserveTraining ? 1 : 0) + (list.reserveRiding ? 1 : 0) +
                         (list.reserveProfession ? 1 : 0);
     for (Need const& need : list.needs)
         parts += need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
-                         need.order != NeedOrder::Riding && need.order != NeedOrder::Profession
+                         need.order != NeedOrder::Riding && need.order != NeedOrder::Pet &&
+                         need.order != NeedOrder::Use && need.order != NeedOrder::Profession
                      ? 1
                      : 0;
     return parts;

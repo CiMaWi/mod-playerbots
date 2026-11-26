@@ -1169,6 +1169,111 @@ inline void RestAndHearth(std::vector<Check>& checks)
         Summary(after));
 }
 
+// NR.5: the bind waits for a stay near the inn. Two inns 1426 yd apart and a work spot more than 1000 yd from both
+// (NR2's back and forth, in Tanaris)
+inline void HearthStays(std::vector<Check>& checks)
+{
+    constexpr std::uint32_t first = 7733;
+    constexpr std::uint32_t second = 18542;
+    constexpr std::uint32_t minute = 60000;
+    constexpr std::uint32_t dwell = 15 * minute;
+    Place const atFirst{1, -7159.0f, -3842.0f, 9.0f};
+    Place const atSecond{1, -8159.0f, -4859.0f, -25.0f};
+    Place const work{1, -7021.0f, -4873.0f, -3.5f};
+
+    auto const seenFrom = [&](Place const& at)
+    {
+        auto const yards = [&at](Place const& to) { return std::hypot(to.x - at.x, to.y - at.y); };
+        return std::vector<InnSeen>{{first, atFirst, yards(atFirst), true, 0},
+                                    {second, atSecond, yards(atSecond), true, 0}};
+    };
+
+    // The stay rule
+    std::vector<InnStay> stays;
+    NoteInnStays(stays, seenFrom(atFirst), atFirst, minute);
+    NoteInnStays(stays, seenFrom(atFirst), atFirst, 5 * minute);
+    bool const entered = stays.size() == 1 && stays.front().entry == first && stays.front().sinceMs == minute;
+    std::vector<Inn> inns = InnInputs(seenFrom(atFirst), work, {});
+    MarkUnstayed(inns, stays, minute + dwell - 1, dwell);
+    bool const waits = inns[0].unstayed && inns[1].unstayed;
+    MarkUnstayed(inns, stays, minute + dwell, dwell);
+    bool const stayed = !inns[0].unstayed && inns[1].unstayed;
+    MarkUnstayed(inns, stays, minute, 0);
+    bool const noDwell = !inns[0].unstayed && !inns[1].unstayed && !StayRipened(stays, minute, 0);
+    bool const early = StayRipened(stays, minute + dwell - 1, dwell);
+    bool const due = StayRipened(stays, minute + dwell, dwell);
+    bool const again = StayRipened(stays, minute + 2 * dwell, dwell);
+    DropLeftStays(stays, work);
+    bool const left = stays.empty();
+    NoteInnStays(stays, seenFrom(atFirst), atFirst, minute);
+    DropLeftStays(stays, {0, atFirst.x, atFirst.y, atFirst.z});
+    Add(checks,
+        "inn stay: starts in range, counts from the first look, reaches the dwell once, ends out of range and on "
+        "another map; dwell 0 marks no inn",
+        entered && waits && stayed && noDwell && !early && due && !again && left && stays.empty(), "stays");
+
+    stays.clear();
+    auto const rankAt =
+        [&](Place const& at, Place const& bind, std::uint32_t nowMs, std::uint32_t dwellMs, Situation situation)
+    {
+        std::vector<InnSeen> const seen = seenFrom(at);
+        NoteInnStays(stays, seen, at, nowMs);
+        Snapshot bot = Bot(45, FLUSH);
+        bot.position = at;
+        bot.hearth = bind;
+        situation.inns = InnInputs(seen, bind, {});
+        MarkUnstayed(situation.inns, stays, nowMs, dwellMs);
+        return Rank(bot, situation);
+    };
+    auto const orders = [](Ranked const& ranked, std::uint32_t inn)
+    { return Find(ranked, GoalKind::Hearth, inn) != nullptr; };
+
+    Ranked const control = rankAt(work, atFirst, minute, 0, Base(45));
+    Add(checks, "inn stay (control): without a dwell the work spot orders the other inn at once",
+        orders(control, second), Summary(control));
+    stays.clear();
+    Ranked const atWork = rankAt(work, atFirst, minute, dwell, Base(45));
+    Add(checks, "inn stay (NR2): bound at one inn, at work far from both: no inn is ordered",
+        !Has(atWork, GoalKind::Hearth), Summary(atWork));
+    rankAt(atSecond, atFirst, 2 * minute, dwell, Base(45));
+    Ranked const shortStay = rankAt(atSecond, atFirst, 4 * minute, dwell, Base(45));
+    Ranked const settled = rankAt(atSecond, atFirst, 2 * minute + dwell, dwell, Base(45));
+    Add(checks, "inn stay: near a new inn the order waits for the dwell, then comes",
+        !Has(shortStay, GoalKind::Hearth) && orders(settled, second), Summary(shortStay) + " | " + Summary(settled));
+    // Bound at the second inn now: back at the first for two minutes, at work, back again
+    Ranked const back = rankAt(atFirst, atSecond, 20 * minute, dwell, Base(45));
+    Ranked const stillBack = rankAt(atFirst, atSecond, 22 * minute, dwell, Base(45));
+    Ranked const workAgain = rankAt(work, atSecond, 30 * minute, dwell, Base(45));
+    Ranked const returned = rankAt(atFirst, atSecond, 40 * minute, dwell, Base(45));
+    Add(checks,
+        "inn stay (NR2): a short stay back near the first inn, at work, back again: no second order of the first",
+        !Has(back, GoalKind::Hearth) && !Has(stillBack, GoalKind::Hearth) && !Has(workAgain, GoalKind::Hearth) &&
+            !Has(returned, GoalKind::Hearth),
+        Summary(back) + " | " + Summary(workAgain) + " | " + Summary(returned));
+
+    RoutePlan route;
+    QuestOrder order;
+    order.mapId = atSecond.map;
+    order.x = atSecond.x;
+    order.y = atSecond.y;
+    route.orders = {order};
+    Situation routed = Base(45);
+    routed.onCircuit = false;
+    routed.route = &route;
+    stays.clear();
+    Ranked const nextRoute = rankAt(work, atFirst, minute, dwell, routed);
+    CircuitPlan moving;
+    moving.moveOn.reason = MoveReason::Bracket;
+    moving.moveOn.camp = 1;
+    moving.moveOn.place = atSecond;
+    Situation moves = Base(45);
+    moves.circuit = &moving;
+    stays.clear();
+    Ranked const nextMove = rankAt(work, atFirst, minute, dwell, moves);
+    Add(checks, "inn stay: an inn that holds the next planned goal (route order, circuit move) needs no stay",
+        orders(nextRoute, second) && orders(nextMove, second), Summary(nextRoute) + " | " + Summary(nextMove));
+}
+
 // WR13b: the planner's gather circuit (GatherRules.h CircuitOption) from a herbalist's place
 inline Gather::Node HerbAt(std::uint32_t id, float dx, float dy, std::uint32_t required, std::uint32_t pathCopper,
                            std::uint32_t respawnSecs = 300)
@@ -2179,6 +2284,7 @@ inline std::vector<Check> SyntheticChecks()
     Outlevelled(checks);
     Busy(checks);
     RestAndHearth(checks);
+    HearthStays(checks);
     Gathering(checks);
     Fishing(checks);
     Robust(checks);

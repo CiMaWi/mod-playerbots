@@ -91,6 +91,59 @@ inline FailedAttempts::Entry const* InnRefusal(std::vector<FailedAttempts::Entry
     return it == live.end() ? nullptr : &*it;
 }
 
+// NR.5: an inn the bot is near (within INN_BIND_FAR_YARDS, as UsualInn reads it) and since when, without a break
+struct InnStay
+{
+    std::uint32_t entry{0};
+    Place place;
+    std::uint32_t sinceMs{0};
+    bool told{false};  // its reaching the dwell was told to the planner (StayRipened)
+};
+
+// A stay ends when the bot is farther from the inn, or on another map
+inline void DropLeftStays(std::vector<InnStay>& stays, Place const& at)
+{
+    std::erase_if(stays, [&at](InnStay const& stay) { return !UsualInn(at, stay.place); });
+}
+
+inline InnStay const* FindStay(std::vector<InnStay> const& stays, std::uint32_t entry)
+{
+    auto const it =
+        std::find_if(stays.begin(), stays.end(), [entry](InnStay const& stay) { return stay.entry == entry; });
+    return it == stays.end() ? nullptr : &*it;
+}
+
+// The stays at the bot's place now: the left ones end, a seen inn that came near starts one
+inline void NoteInnStays(std::vector<InnStay>& stays, std::vector<InnSeen> const& seen, Place const& at,
+                         std::uint32_t nowMs)
+{
+    DropLeftStays(stays, at);
+    for (InnSeen const& inn : seen)
+        if (UsualInn(at, inn.place) && !FindStay(stays, inn.entry))
+            stays.push_back({inn.entry, inn.place, nowMs});
+}
+
+// Marks the inns the bot has not stayed near for the dwell (0: no dwell, none is marked)
+inline void MarkUnstayed(std::vector<Inn>& inns, std::vector<InnStay> const& stays, std::uint32_t nowMs,
+                         std::uint32_t dwellMs)
+{
+    for (Inn& inn : inns)
+    {
+        InnStay const* stay = FindStay(stays, inn.id);
+        inn.unstayed = dwellMs && (!stay || nowMs - stay->sinceMs < dwellMs);
+    }
+}
+
+// True when a stay reached the dwell since the last look: once per stay
+inline bool StayRipened(std::vector<InnStay>& stays, std::uint32_t nowMs, std::uint32_t dwellMs)
+{
+    bool ripened = false;
+    for (InnStay& stay : stays)
+        if (dwellMs && !stay.told && nowMs - stay.sinceMs >= dwellMs)
+            ripened = stay.told = true;
+    return ripened;
+}
+
 // The inns the bind weighs (the planner's AddHearth, the bind entry's pick): each seen inn but one an entry of the
 // record of failed attempts refuses (InnRefusal; live is a plain copy of its live entries), marked usual by UsualInn
 inline std::vector<Inn> InnInputs(std::vector<InnSeen> const& seen, Place const& bind,

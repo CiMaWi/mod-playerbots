@@ -132,6 +132,9 @@ Limits ConfiguredLimits()
 // How long a planner goal's key stays blocked (GoalApply::BlockKey, questing WQ6b)
 uint32 BlockMs() { return sPlayerbotAIConfig.WorldTravel.PlannerBlockMinutes * MINUTE * IN_MILLISECONDS; }
 
+// How long a bot stays near an inn before the planner binds it there (NR.5); 0 = no dwell
+uint32 InnDwellMs() { return sPlayerbotAIConfig.WorldTravel.InnDwellMinutes * MINUTE * IN_MILLISECONDS; }
+
 Place PlaceOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}; }
 
 // What Player::DurabilityRepair would charge for the item, without repairing it (DurabilityRepairAll(false, ...)
@@ -1022,19 +1025,30 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
 }
 
 // The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the
-// model weighs a bind at an inn only then (GoalModel AddHearth)
+// model weighs a bind at an inn only then (GoalModel AddHearth). The stays near inns (NR.5) are noted either way
 void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
 {
     bool const sameMap = bot->m_homebindMapId == bot->GetMapId();
     float const yards = sameMap ? bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) : 0.0f;
-    if (!WorldTravel::BindIsFar(sameMap, yards))
+    bool const bindFar = WorldTravel::BindIsFar(sameMap, yards);
+    GoalApply::BotGoals* const goals = botAI->planner.goals.get();
+    if (!bindFar && (!goals || !InnDwellMs()))
         return;
-    float const reach = WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float const reach = bindFar ? WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f)
+                                : WorldTravel::INN_BIND_FAR_YARDS;
     std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
+    uint32 const now = getMSTime();
+    if (goals)
+        Goals::NoteInnStays(goals->innStays, seen, PlaceOf(bot), now);
+    if (!bindFar)
+        return;
     Place const bind{bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ};
     FailedAttempts::Record const& record = botAI->GetTravel().Failures();
-    std::vector<FailedAttempts::Entry> const live = FailedAttempts::LiveEntries(record, getMSTime());
+    std::vector<FailedAttempts::Entry> const live = FailedAttempts::LiveEntries(record, now);
     situation.inns = Goals::InnInputs(seen, bind, live);
+    std::vector<Goals::InnStay> const none;
+    std::vector<Goals::InnStay> const& stays = goals ? goals->innStays : none;
+    Goals::MarkUnstayed(situation.inns, stays, now, InnDwellMs());
     if (!TestProbe::On(botAI->testConstraints))
         return;
     // A test bot's trace (WT63d); per seen inn (NE3, the inn list's causes B and C): usual, the refusing entry's cause,
@@ -1059,9 +1073,11 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
             }
         }
         FailedAttempts::Entry const* refusal = Goals::InnRefusal(live, inn.place);
-        LOG_INFO("playerbots", "[Probe] {} inn {} usual {} refused {} nearest {:.1f} {} record {}", bot->GetName(),
-                 inn.entry, Goals::UsualInn(bind, inn.place) ? 1 : 0, refusal ? refusal->cause : "none", nearest,
-                 nearestCause, record.count);
+        Goals::InnStay const* stay = Goals::FindStay(stays, inn.entry);
+        LOG_INFO("playerbots", "[Probe] {} inn {} usual {} refused {} nearest {:.1f} {} record {} stayS {}",
+                 bot->GetName(), inn.entry, Goals::UsualInn(bind, inn.place) ? 1 : 0, refusal ? refusal->cause : "none",
+                 nearest, nearestCause, record.count,
+                 stay ? static_cast<int32>((now - stay->sinceMs) / IN_MILLISECONDS) : -1);
     }
 }
 
@@ -1486,7 +1502,13 @@ void NoteBindFar(PlayerbotAI* botAI, bool bindFar)
     if (TestProbe::On(botAI->testConstraints) && seen != state.goals->bindSeen)  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} bind seen {} -> {} edge {}", botAI->GetBot()->GetName(), seen,
                  state.goals->bindSeen, changed);
-    if (changed)
+    // Snapshots can be minutes apart, so a stay the bot left ends here too, and one that reached the dwell under a far
+    // bind is a changed situation: the planner may now bind there (NR.5)
+    Goals::DropLeftStays(state.goals->innStays, PlaceOf(botAI->GetBot()));
+    bool const ripened = bindFar && Goals::StayRipened(state.goals->innStays, getMSTime(), InnDwellMs());
+    if (ripened && TestProbe::On(botAI->testConstraints))
+        LOG_INFO("playerbots", "[Probe] {} inn stay reached the dwell", botAI->GetBot()->GetName());
+    if (changed || ripened)
         SituationChanged(botAI);
 }
 

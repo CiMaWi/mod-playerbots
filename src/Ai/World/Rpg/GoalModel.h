@@ -425,8 +425,9 @@ struct Inn
     std::uint32_t id{0};
     Place place;
     float yards{0.0f};
-    bool fits{false};   // its zone fits the bot's level
-    bool usual{false};  // the bind is not far from it: a bind there saves nothing (InterludeInputs.h UsualInn)
+    bool fits{false};      // its zone fits the bot's level
+    bool usual{false};     // the bind is not far from it: a bind there saves nothing (InterludeInputs.h UsualInn)
+    bool unstayed{false};  // the bot has not stayed near it for the dwell (InterludeInputs.h MarkUnstayed, NR.5)
 };
 
 // A carried quest's turn-in at another hub or map (CircuitPlan::carried): its reward over the journey
@@ -1342,6 +1343,27 @@ private:
         _options.push_back(std::move(option));
     }
 
+    // Where the next planned goal lies: the route's first order, else where the circuit moves on
+    std::optional<Place> NextPlannedPlace()
+    {
+        RoutePlan const* route = _situation.onCircuit ? nullptr : _situation.route;
+        if (route && !route->orders.empty())
+        {
+            QuestOrder const& first = route->orders.front();
+            return Place{first.mapId, first.x, first.y, 0.0f};
+        }
+        if (!_situation.circuit)
+            return std::nullopt;
+        CircuitMove const& move = _situation.circuit->moveOn;
+        if (move.reason == MoveReason::None || move.reason == MoveReason::Nowhere)
+            return std::nullopt;
+        if (HubOption const* known = move.hub != NO_HUB ? FindHub(move.hub) : nullptr)
+            return known->place;
+        if (move.camp == NO_CAMP)
+            return std::nullopt;
+        return move.place;
+    }
+
     // Binding at an inn when the bind is far (WT9's rule): worth the way back it saves on the next hearth. The inn
     // the bot is bound at saves nothing (WN1c: a bot 1010 yd from its bind was sent to bind there again)
     void AddHearth()
@@ -1355,11 +1377,19 @@ private:
             return;
 
         float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * _model.runSpeed;
+        std::optional<Place> const next = NextPlannedPlace();
         std::vector<WorldTravel::InnCandidate> candidates;
         candidates.reserve(_situation.inns.size());
         for (Inn const& inn : _situation.inns)
+        {
+            // NR.5: no bind at an inn the bot has neither stayed near nor goes to next
+            bool const settles =
+                !inn.unstayed ||
+                (next && !WorldTravel::BindIsFar(next->map == inn.place.map,
+                                                 std::hypot(next->x - inn.place.x, next->y - inn.place.y)));
             candidates.push_back(
-                {inn.yards, !inn.usual && inn.fits && std::isfinite(inn.yards) && inn.yards <= maxYards});
+                {inn.yards, settles && !inn.usual && inn.fits && std::isfinite(inn.yards) && inn.yards <= maxYards});
+        }
         int const pick = WorldTravel::PickInn(candidates, std::numeric_limits<float>::max());
         if (pick < 0)
             return;

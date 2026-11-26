@@ -21,6 +21,8 @@ struct WorldTravelConfig
     uint32 SightYards = 300;
     // Seconds a destination given up after a Stuck event is not walked to again
     uint32 StuckAvoidSeconds = 600;
+    // NR.5: minutes a bot stays near a new inn before the planner binds it there; 0 = no dwell
+    uint32 InnDwellMinutes = 15;
     // Route search (RouteRules.h): worker threads and the cost factor of an edge flagged by a Stuck event
     uint32 RouteThreads = 1;
     uint32 StuckPenalty = 5;

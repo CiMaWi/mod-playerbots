@@ -24,6 +24,7 @@
 #include "FieldMap.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
+#include "InterludeInputs.h"
 #include "QuestLogRules.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -794,6 +795,7 @@ struct BotGoals
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
     std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
     std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
+    std::vector<Goals::InnStay> innStays;  // the inns the bot is near and since when (NR.5)
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written

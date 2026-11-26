@@ -94,7 +94,8 @@ void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
 // The inn trigger's edge for a bot with planner goals (planning WT63d): a bind that turned far or near
-// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. O(1)
+// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. So is
+// a stay near an inn that reached its dwell under a far bind (NR.5); the stays the bot left end here. O(1): a few inns
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
