@@ -17,7 +17,8 @@ class ChatHandler;
 // - bid <bot> <item> <price>, buyout <bot> <item>: queue CMSG_AUCTION_PLACE_BID (buyout: at the auction's buyout).
 // - cancel <bot> <item>: queues CMSG_AUCTION_REMOVE_ITEM.
 // - end <bot> <item>: ends the auction now, by the core's own end path.
-// - standin post|bid|buyout <bot> <item> ..: the same acts of a stand-in player.
+// - standin post|bid|buyout <bot> <item> ..: the same acts of a stand-in player; standin post takes an optional
+//   property id after the hours (> 0 a random property, < 0 a suffix; none: the core's random one).
 // - check <bot> <item> [offers N] [sales N] [expiries N] [unit C] [basis none|sales|offers] [bid C]
 //   [bidder none|bot|standin] [itemsales L] [itemhours H] [kindsales L] [kindhours H] [p12 P] [p24 P] [p48 P]:
 //   compares the index entry after a forced publish; the records' lots and lot hours within 0.01 and 0.1, the sale

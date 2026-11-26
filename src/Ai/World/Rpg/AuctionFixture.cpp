@@ -257,10 +257,13 @@ bool End(ChatHandler* handler, Scene const& scene)
 bool StandInPost(ChatHandler* handler, Scene const& scene, std::vector<uint32> const& n)
 {
     if (n.size() < 4)
-        return Fail(handler, scene, "usage: standin post <bot> <item> <count> <bid> <buyout> <hours 12|24|48>");
+        return Fail(handler, scene,
+                    "usage: standin post <bot> <item> <count> <bid> <buyout> <hours 12|24|48> [property, < 0 suffix]");
     AuctionHouseEntry const* houseEntry =
         AuctionHouseMgr::GetAuctionHouseEntryFromFactionTemplate(scene.auctioneer->GetFaction());
-    Item* item = Item::CreateItem(scene.item, n[0]);
+    // The optional property id (gear WG7): the core's item creation takes it in place of a random one, so the index
+    // reads it at the add. strtoul wrapped a negative word (a suffix) and int32 restores it (long is 32 bits here)
+    Item* item = Item::CreateItem(scene.item, n[0], nullptr, false, n.size() > 4 ? n[4] : 0);
     if (!houseEntry || !item)
         return Fail(handler, scene, "no item or house entry");
     item->SetOwnerGUID(StandIn());

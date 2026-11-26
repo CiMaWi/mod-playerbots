@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "BankMailTypes.h"
 #include "Define.h"
 #include "ObjectGuid.h"
@@ -128,10 +129,14 @@ struct AuctionVisitData
     uint32 deposits{0};  // copper the listings cost
     // The buy step (WA4b)
     bool buying{false};
-    uint32 only{0};               // the GM command's line (a test's filter); 0 = every line
-    uint64 kept{0};               // copper the market leaves in the purse (UpkeepNeeds::MarketKept), read once
-    uint32 openBids{0};           // the index's open bids of the bot at the first buy step, plus those placed since
-    bool bagTaken{false};         // one bag per visit
+    std::vector<uint32> only;  // the GM command's entries (a test's filter of lines and gear); empty = every one
+    uint64 kept{0};            // copper the market leaves in the purse (UpkeepNeeds::MarketKept), read once
+    uint32 openBids{0};        // the index's open bids of the bot at the first buy step, plus those placed since
+    bool bagTaken{false};      // one bag per visit
+    // Gear (WG7): the gear lines, built once after the buy list's lines (GearWorth::LinesAt); one purchase per visit
+    std::vector<AuctionRules::BuyLine> gearLines;
+    bool gearBuilt{false};
+    bool gearTaken{false};
     std::vector<uint64> decided;  // the lines decided on this visit (AuctionRules::DecidedKey)
     uint32 awaitAuction{0};       // the awaited bid or buyout's auction id; 0 = none (awaitingEntry: its item)
     uint32 awaitPrice{0};         // its price, copper
@@ -142,6 +147,7 @@ struct AuctionVisitData
     uint8 awaitReason{0};         // AuctionWords::Reason of a bid: why not the buyout
     uint32 awaitFactor{0};        // the line's need factor against the exchange, percent (the factor row, AH9)
     bool awaitBag{false};
+    bool awaitGear{false};
     uint32 bought{0};  // buyouts the core took
     uint32 bids{0};    // bids the core took
     uint32 spent{0};   // copper they cost
