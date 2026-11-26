@@ -1044,6 +1044,8 @@ void CreatureCases()
         Check(herbCircuit.stops.size() == 3 && Near(herbOption.takes, 2.5 * laps) &&
                   Near(herbOption.units, 5.0 * laps) && herbOption.fightMinutes == 0.0f,
               "estimate: herbs of share 1, 0.5 and 1 give 2.5 takes and 2 units a take, over the laps, no fight");
+        Check(herbOption.herbStops == 3 && option.herbStops == 0,
+              "row's way: three herb stops of the herb circuit, none of the beasts'");
     }
     Check(beastCircuit.once && beastCircuit.laps == 1, "respawn: a short lap of 10-minute spawns is walked once");
     for (Node& node : beasts)

@@ -374,6 +374,7 @@ struct GatherNode
     std::uint32_t competingBots{0};
     bool explored{true};
     std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
+    std::uint32_t herbStops{0};        // of those, the herb nodes (professions WPC13a: the circuit row's way)
     std::uint32_t laps{1};
     float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
     float xpWorth{0.0f};          // a circuit of creature stops (WR20b): its kills' XP, none for grey
@@ -1420,10 +1421,10 @@ struct GoalPlan
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
     std::vector<ClassQuests::Due> classFailed;  // failed doable class quests: the map thread completes them (WU21a)
     RoutePlan route;  // the quest route (questing WQ18a); without an order the circuit is the plan
-    // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
+    // The gather circuit offered (professions WR13b): its stops in walk order, herb stops among them and laps
     std::vector<std::uint32_t> gatherStops;
+    std::uint32_t gatherHerbStops{0};
     std::uint32_t gatherLaps{1};
-    float gatherLapMinutes{0.0f};
     std::uint32_t gatherRefusedItem{0};  // Situation::gatherRefusedItem: the map thread's skip row (WR20c)
     float gatherRefusedLevels{0.0f};
     std::uint32_t gatherBagsFull{0};  // Situation::gatherBagsFull: the map thread's skip row (WPC9)
@@ -1785,8 +1786,8 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
         if (!node.stops.empty())
         {
             plan.gatherStops = node.stops;
+            plan.gatherHerbStops = node.herbStops;
             plan.gatherLaps = std::max<std::uint32_t>(node.laps, 1);
-            plan.gatherLapMinutes = node.gatherMinutes / static_cast<float>(plan.gatherLaps);
             break;
         }
     plan.gatherRefusedItem = situation.gatherRefusedItem;

@@ -46,7 +46,8 @@ constexpr float SKIN_MINUTES = Materials::SKIN_SECONDS / Planner::Goals::SECONDS
 constexpr float LOOT_MINUTES = Materials::LOOT_SECONDS / Planner::Goals::SECONDS_PER_MINUTE;  // one corpse's loot
 constexpr float MIN_RUN_SPEED = 1.0f;  // yards per second, the floor of a bot's pace
 constexpr double PER_MILLE = 1000.0;
-constexpr std::uint16_t SKINNING = 393;  // SKILL_SKINNING
+constexpr std::uint16_t HERBALISM = 182;  // SKILL_HERBALISM
+constexpr std::uint16_t SKINNING = 393;   // SKILL_SKINNING
 constexpr std::size_t NO_PICK = std::numeric_limits<std::size_t>::max();
 constexpr double REFUSED = std::numeric_limits<double>::lowest();
 
@@ -802,6 +803,9 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     {
         auto const at =
             std::find_if(nodes.begin(), nodes.end(), [stop](Node const& node) { return Key(node) == stop; });
+        // The row's way of the circuit (professions WPC13a): every herb stop, whatever the bot may use
+        if (at != nodes.end() && at->kind != StopKind::Creature && at->skill == HERBALISM)
+            ++option.herbStops;
         if (at == nodes.end() || !Usable(*at, bot))
             continue;
         Node const& node = *at;

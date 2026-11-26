@@ -609,7 +609,7 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
                     bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Gather),
                     Professions::ReasonWord(Professions::Reason::Circuit), static_cast<float>(plan->gatherStops.size()),
                     {{"laps", static_cast<float>(std::max<uint32>(plan->gatherLaps, 1))},
-                     {"lap_minutes", plan->gatherLapMinutes},
+                     {"herbs", static_cast<float>(plan->gatherHerbStops)},
                      {"creatures", static_cast<float>(std::count_if(plan->gatherStops.begin(), plan->gatherStops.end(),
                                                                     Gather::IsCreatureStop))}},
                     goal.target);
