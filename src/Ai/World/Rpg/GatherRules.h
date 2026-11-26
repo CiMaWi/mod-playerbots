@@ -17,7 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "FailedAttemptRules.h"
 #include "GatherMemoryState.h"
+#include "GatherRateRules.h"
 #include "ItemWorthRules.h"
 #include "SkillPathRules.h"
 
@@ -45,7 +47,8 @@ constexpr float SKIN_MINUTES = Materials::SKIN_SECONDS / Planner::Goals::SECONDS
 constexpr float LOOT_MINUTES = Materials::LOOT_SECONDS / Planner::Goals::SECONDS_PER_MINUTE;  // one corpse's loot
 constexpr float MIN_RUN_SPEED = 1.0f;  // yards per second, the floor of a bot's pace
 constexpr double PER_MILLE = 1000.0;
-constexpr std::uint16_t SKINNING = 393;  // SKILL_SKINNING
+constexpr std::uint16_t HERBALISM = 182;  // SKILL_HERBALISM
+constexpr std::uint16_t SKINNING = 393;   // SKILL_SKINNING
 constexpr std::size_t NO_PICK = std::numeric_limits<std::size_t>::max();
 constexpr double REFUSED = std::numeric_limits<double>::lowest();
 
@@ -109,6 +112,8 @@ struct Gatherer
     std::uint32_t level{0};                    // the fight estimate's and the grey level's; 0 counts as 1
     std::uint8_t side{Materials::BOTH_SIDES};  // its side's bit (Materials::SideBit); both: not known
     bool shortOfGold{false};                   // the planner's need: money below the reserve
+    std::uint32_t zone{0};                     // where the circuit is planned: the observed rate's zone (WPC13b)
+    GatherRate::View gatherRates;              // the observed minutes per take; empty: the static rule
 
     [[nodiscard]] SkillValue const* Find(std::uint16_t skill) const
     {
@@ -177,7 +182,22 @@ struct Circuit
     std::uint32_t laps{0};  // in a session; 1 when walked once
     bool once{true};        // the lap is shorter than its longest respawn: walked once and left
     double worthPerLap{0.0};
+    // The observed rate (WPC13b): the expected takes per lap by way, the lap's factor over the static rule and
+    // whether every way's estimate was observed
+    std::array<double, GatherRate::WAYS> wayTakes{};
+    float rateFactor{1.0f};
+    bool observed{false};
 };
+
+// A test's nofight bot kills nothing, and a bot with no weapon in its main hand is planned no creature stop
+// (professions WPC10, DECISIONS WPC.15). Returns how many stops the missing weapon refused.
+inline std::uint32_t DropCreatureStops(std::vector<Node>& stops, bool fightsHeld, bool unarmed)
+{
+    if (!fightsHeld && !unarmed)
+        return 0;
+    auto const dropped = std::erase_if(stops, [](Node const& node) { return node.kind == StopKind::Creature; });
+    return unarmed ? static_cast<std::uint32_t>(dropped) : 0;
+}
 
 // A creature the bot may fight (WR20b): not friendly to its side and not refused by the fight estimate (its top level
 // more than Materials::FIGHT_LEVELS_ABOVE above the bot, or an elite near its level for a bot alone)
@@ -470,11 +490,20 @@ inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, s
     return {take, take ? PassCause::None : PassCause::NotWorthIt, net};
 }
 
+// A gather status's stop is taken (professions WPC13b) when the bot's own gather cast went at its spawn within the
+// spawn's respawn and since the status began, whether before the status targeted the stop (the loot pipeline harvests
+// a node in reach before the status's first tick, or one further on the way) or after. Ages in ms, from now; a cast
+// older than the status is an earlier take (DOWN_OWN_TAKE), one older than the respawn an earlier lap's
+inline bool OwnTakeInStatus(std::uint32_t castAgeMs, std::uint32_t statusAgeMs, std::uint32_t respawnMs)
+{
+    return castAgeMs < respawnMs && castAgeMs <= statusAgeMs;
+}
+
 // Why a circuit stop found no live node at its spawn point (WR13d, the diagnosis): the facts the bot could read at
 // that moment
 struct DownFacts
 {
-    bool ownTake{false};    // the bot's own gather cast went at the spawn within the spawn's respawn
+    bool ownTake{false};    // the bot's own gather cast went at the spawn within the spawn's respawn, before the status
     bool otherTake{false};  // another bot's did
     bool pooled{false};     // the spawn is a pool member
     bool held{false};       // in a pool: the pool holds its node at this point; outside one: an object of the spawn
@@ -514,6 +543,44 @@ inline void ApplySight(std::vector<Node>& nodes, std::vector<std::uint32_t> cons
             node.share = 1.0f;
         else if (std::binary_search(down.begin(), down.end(), Key(node)))
             node.share = 0.0f;
+}
+
+// The bag fill above which gathering ends (the loot pipeline stores nothing above it, StoreLootAction) and no circuit
+// is planned (professions WPC9, DECISIONS WPC.12)
+constexpr std::uint32_t BAG_LIMIT_PERCENT = 80;
+
+// The used share of the general slots, truncated as the "bag space" value gives it; 0 without slots
+inline std::uint32_t BagUsedPercent(std::uint32_t slots, std::uint32_t free)
+{
+    if (!slots)
+        return 0;
+    return static_cast<std::uint32_t>(static_cast<float>(slots - std::min(free, slots)) / slots * 100);
+}
+
+constexpr bool BagsTooFull(std::uint32_t usedPercent) { return usedPercent > BAG_LIMIT_PERCENT; }
+
+// The places of the record's live place entries: a plain copy for the planner's snapshot (professions WPC9)
+inline std::vector<WorldTravel::SightPoint> RefusedPlaces(FailedAttempts::Record const& record, std::uint32_t nowMs)
+{
+    std::vector<WorldTravel::SightPoint> places;
+    for (FailedAttempts::Entry const& entry : FailedAttempts::LiveEntries(record, nowMs))
+        if (entry.key.kind == FailedAttempts::Kind::Place)
+            places.push_back(entry.key.from);
+    return places;
+}
+
+// No stop within PLACE_YARDS of a refused place on this map is planned, whatever refused it (a walk's own no_walk
+// entry there keeps its cause when gather_no_walk follows); what the bot sees there does not bring it back
+inline void DropRefused(std::vector<Node>& nodes, std::uint32_t map,
+                        std::vector<WorldTravel::SightPoint> const& refused)
+{
+    std::erase_if(nodes,
+                  [map, &refused](Node const& node)
+                  {
+                      WorldTravel::SightPoint const at{map, node.at.x, node.at.y, node.at.z};
+                      return std::any_of(refused.begin(), refused.end(), [&at](WorldTravel::SightPoint const& place)
+                                         { return FailedAttempts::Rules::Near(place, at); });
+                  });
 }
 
 struct PassEntry
@@ -589,11 +656,28 @@ struct Passes
 // (worth x share), the worst such stop leaves. A lap shorter than its longest respawn (a creature's as a node's) is
 // walked once; else it laps as often as the session holds, so no spawn is visited again before it is back. Creature
 // stops stay only for a bot short of gold or when one of those kept gives a material it wants (GivesWanted, WR.24);
-// else the circuit is built again from the nodes alone, whatever the creatures' XP
+// else the circuit is built again from the nodes alone, whatever the creatures' XP. Minutes per take as bots get them
+// (WPC13b): the circuit built at the static rule gives the prior (its lap's minutes per expected take); each way's
+// factor is its zone's estimate over that prior; the circuit is built once more with every stop's walk and minutes in
+// the pruning times its way's factor and the lap's minutes times the factors' mean over the expected takes, so a
+// one-way circuit that keeps its stops takes the estimate's minutes per take
 namespace Detail
 {
+using Factors = std::array<double, GatherRate::WAYS>;
+constexpr Factors UNSCALED{1.0, 1.0, 1.0};
+
+inline GatherRate::Way WayOfStop(Node const& node)
+{
+    return node.kind == StopKind::Creature ? GatherRate::Way::Creatures : GatherRate::WayOfSkill(node.skill);
+}
+
+inline double FactorOf(Factors const& factors, GatherRate::Way way)
+{
+    return way == GatherRate::Way::None ? 1.0 : factors[static_cast<std::size_t>(way)];
+}
+
 inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> const& nodes, Gatherer const& bot,
-                    float radius, float sessionMinutes, bool creatures, bool& wanted)
+                    float radius, float sessionMinutes, bool creatures, bool& wanted, Factors const& factors)
 {
     struct Candidate
     {
@@ -602,6 +686,8 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
         double expected;
         double minuteCost;
         double stopMinutes;  // a gathering's or a kill's, times the share
+        double take;         // the share: the take a visit expects
+        double factor;       // its way's observed factor
     };
     std::vector<Candidate> candidates;
     for (std::size_t at = 0; at < nodes.size(); ++at)
@@ -614,7 +700,8 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
         double const share = std::clamp(node.share, 0.0f, 1.0f);
         double const expected = NodeWorth(node, bot) * share;
         if (yards <= radius && minuteCost >= 0.0 && expected > 0.0)
-            candidates.push_back({at, yards, expected, minuteCost, StopMinutes(node, bot) * share});
+            candidates.push_back({at, yards, expected, minuteCost, StopMinutes(node, bot) * share, share,
+                                  FactorOf(factors, WayOfStop(node))});
     }
     auto const nearer = [&nodes](Candidate const& a, Candidate const& b)
     { return a.yards != b.yards ? a.yards < b.yards : Key(nodes[a.at]) < Key(nodes[b.at]); };
@@ -646,8 +733,8 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
             Planner::Circuit::Point const& here = nodes[walk[i].at].at;
             float const saving = Planner::Circuit::Yards(before, here) + Planner::Circuit::Yards(here, after) -
                                  Planner::Circuit::Yards(before, after);
-            double const net =
-                walk[i].expected - (WalkMinutes(saving, bot.rates) + walk[i].stopMinutes) * walk[i].minuteCost;
+            double const net = walk[i].expected - (WalkMinutes(saving, bot.rates) + walk[i].stopMinutes) *
+                                                      walk[i].factor * walk[i].minuteCost;
             if (net < worstNet || (net == worstNet && worst < walk.size() && net < 0.0 &&
                                    Key(nodes[walk[i].at]) < Key(nodes[walk[worst].at])))
             {
@@ -668,6 +755,8 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
     std::vector<Planner::Circuit::Point> points;
     std::vector<std::uint32_t> order;
     double stopping = 0.0;
+    double takes = 0.0;
+    double scaledTakes = 0.0;
     for (Candidate const& candidate : walk)
     {
         Node const& node = nodes[candidate.at];
@@ -678,14 +767,43 @@ inline Circuit Loop(Planner::Circuit::Point const& anchor, std::vector<Node> con
         circuit.worthPerLap += candidate.expected;
         stopping += candidate.stopMinutes;
         wanted = wanted || (node.kind == StopKind::Creature && GivesWanted(node, bot));
+        takes += candidate.take;
+        scaledTakes += candidate.take * candidate.factor;
+        if (GatherRate::Way const way = WayOfStop(node); way != GatherRate::Way::None)
+            circuit.wayTakes[static_cast<std::size_t>(way)] += candidate.take;
     }
+    circuit.rateFactor = static_cast<float>(takes > 0.0 ? scaledTakes / takes : 1.0);
     circuit.lapYards = Planner::Circuit::PathYards(anchor, points, order, anchor);
-    circuit.lapMinutes = static_cast<float>(WalkMinutes(circuit.lapYards, bot.rates) + stopping);
+    circuit.lapMinutes = static_cast<float>((WalkMinutes(circuit.lapYards, bot.rates) + stopping) * circuit.rateFactor);
     circuit.once = !(circuit.lapMinutes > 0.0f) || circuit.lapMinutes * Planner::Goals::SECONDS_PER_MINUTE <
                                                        static_cast<float>(circuit.longestRespawnSecs);
     circuit.laps =
         circuit.once ? 1u : std::max(1u, static_cast<std::uint32_t>(std::floor(sessionMinutes / circuit.lapMinutes)));
     return circuit;
+}
+
+// Each way's estimate over the static circuit's prior (its lap's minutes per expected take); observed: every way of
+// its stops read an observed estimate
+inline Factors FactorsOf(Circuit const& circuit, Gatherer const& bot, bool& observed)
+{
+    Factors factors = UNSCALED;
+    observed = false;
+    double takes = 0.0;
+    for (double const wayTakes : circuit.wayTakes)
+        takes += wayTakes;
+    if (!bot.gatherRates.snapshot || !(takes > 0.0) || !(circuit.lapMinutes > 0.0f))
+        return factors;
+    double const prior = circuit.lapMinutes / takes;
+    observed = true;
+    for (std::size_t way = 0; way < GatherRate::WAYS; ++way)
+        if (circuit.wayTakes[way] > 0.0)
+        {
+            GatherRate::Estimate const estimate =
+                bot.gatherRates.Of(bot.zone, static_cast<GatherRate::Way>(way), prior);
+            factors[way] = estimate.minutes / prior;
+            observed = observed && estimate.observed;
+        }
+    return factors;
 }
 }  // namespace Detail
 
@@ -693,10 +811,22 @@ inline Circuit BuildCircuit(Planner::Circuit::Point const& anchor, std::vector<N
                             float radius = CIRCUIT_YARDS, float sessionMinutes = SESSION_MINUTES)
 {
     bool wanted = false;
-    Circuit circuit = Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, true, wanted);
-    if (wanted || bot.shortOfGold || std::none_of(circuit.stops.begin(), circuit.stops.end(), IsCreatureStop))
-        return circuit;
-    return Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, false, wanted);
+    bool creatures = true;
+    Circuit circuit = Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, true, wanted, Detail::UNSCALED);
+    if (!wanted && !bot.shortOfGold && std::any_of(circuit.stops.begin(), circuit.stops.end(), IsCreatureStop))
+    {
+        creatures = false;
+        circuit = Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, false, wanted, Detail::UNSCALED);
+    }
+    bool observed = false;
+    Detail::Factors const factors = Detail::FactorsOf(circuit, bot, observed);
+    if (factors != Detail::UNSCALED)
+    {
+        bool unused = false;
+        circuit = Detail::Loop(anchor, nodes, bot, radius, sessionMinutes, creatures, unused, factors);
+    }
+    circuit.observed = observed && !circuit.stops.empty();
+    return circuit;
 }
 
 // The planner's gather option of a circuit (WR13b, WR20b): the first stop its target, the laps' minutes, the stops'
@@ -753,6 +883,9 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     {
         auto const at =
             std::find_if(nodes.begin(), nodes.end(), [stop](Node const& node) { return Key(node) == stop; });
+        // The row's way of the circuit (professions WPC13a): every herb stop, whatever the bot may use
+        if (at != nodes.end() && at->kind != StopKind::Creature && at->skill == HERBALISM)
+            ++option.herbStops;
         if (at == nodes.end() || !Usable(*at, bot))
             continue;
         Node const& node = *at;
@@ -803,6 +936,7 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     option.takes = static_cast<float>(takes * laps);
     option.units = static_cast<float>(units * laps);
     option.fightMinutes = static_cast<float>(fight * laps);
+    option.observed = circuit.observed;
     return option;
 }
 

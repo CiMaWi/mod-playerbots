@@ -247,7 +247,7 @@ inline std::vector<QuestFields::Need> NeedsOf(QuestIndex const& index, Ask const
     QuestSlot slot;
     slot.quest = quest;
     slot.state = ready ? Circuit::SLOT_COMPLETE : 0;
-    return QuestFields::Needs(index, std::span<QuestSlot const>(&slot, 1), ask.team, ask.pricing);
+    return QuestFields::Needs(index, std::span<QuestSlot const>(&slot, 1), ask.team, ask.pricing, ask.groupSize);
 }
 
 // Register row G344: the best candidate around the bot's own cell that hands in a ready quest whose ender stands in

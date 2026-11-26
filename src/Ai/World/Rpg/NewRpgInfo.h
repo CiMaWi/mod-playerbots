@@ -16,6 +16,7 @@
 
 #include "Define.h"
 #include "GatherMemoryState.h"
+#include "GatherRateTypes.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
@@ -139,8 +140,10 @@ struct NewRpgInfo
         std::vector<ObjectGuid::LowType> circuit;
         uint32 laps{1};
         uint32 lap{0};
-        uint32 next{0};           // the stop targeted or due
-        bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
+        uint32 next{0};  // the stop targeted or due
+        // A creature stop: the bot's skin cast went at its kill (NoteHarvestCast). A node stop's take is read from
+        // the record of harvest casts instead (Gather::OwnTakeInStatus), whichever came first, cast or target
+        bool harvestCast{false};
         // The walk to the target and its watch (GatherRules.h Gather::WalkStalled), reset with the target
         std::array<float, 3> walkAnchor{};
         uint32 walkStalledMs{0};
@@ -151,6 +154,10 @@ struct NewRpgInfo
         ObjectGuid targetGuid;
         uint32 killedMs{0};
         uint32 skinSeenMs{0};
+        // The observed rate's span (professions WPC13b): a planned circuit's start (0: none, not observed), its zone
+        // and way then, the stops it took and resolved; the status's end enters it in the tally
+        uint32 spanStartMs{0};
+        GatherRate::Span span;
     };
     // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
     // probed there and the water it faces, what the pole replaced, the casts so far
@@ -249,6 +256,7 @@ struct NewRpgInfo
         uint8 stop{0};           // the stop the bot walks to or works at
         bool arrived{false};     // the bot reached the current stop
         bool vendorDone{false};  // the current stop's vendor part is done (or its vendor is gone)
+        uint8 awayTraced{0};     // the walk's answer last traced at the current stop (NR1 group D): 0 none, 1 + answer
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
         uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)

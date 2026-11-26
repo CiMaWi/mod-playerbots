@@ -163,6 +163,9 @@ void NewRpgDoGatherAction::ResolveFarmStop(NewRpgInfo::DoGather& data, bool kill
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, ChoiceWord(Choice::Gather),
                        ReasonWord(killed ? Reason::Supply : Reason::NoSource),
                        planned ? static_cast<float>(data.next + 1) : 0.0f, alternatives, spawnId);
+    ++data.span.resolved;  // the observed rate's span counts the rows part 4 counts (WPC13b)
+    if (killed)
+        ++data.span.takes;
     // The respawn memory: killed, seen down or written off, the bot comes back after the respawn at the earliest
     CreatureData const* spawn = sObjectMgr->GetCreatureData(spawnId);
     botAI->rpgInfo.gatherMemory.Note(data.nodeSpawnId, getMSTime(), spawn ? spawn->spawntimesecs * IN_MILLISECONDS : 0);

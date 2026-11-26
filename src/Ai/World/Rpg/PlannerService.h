@@ -39,11 +39,22 @@ struct NeedList;
 namespace AuctionRules
 {
 struct BuyLine;
+struct CopperWeight;
 }  // namespace AuctionRules
+
+namespace Upkeep
+{
+struct SafeAreas;
+}  // namespace Upkeep
 
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
+namespace QuestFailRows
+{
+struct Sums;  // QuestFailRows.h
+}
+
 class FieldMap;
 class PlannerIndexes;
 class PlannerPool;
@@ -90,12 +101,25 @@ void SituationChanged(PlayerbotAI* botAI);
 // (giverStillOffers: one still offers something). Once its round of pickups is due (QuestLog::PlanDue: no giver offers
 // more, or 30 s after the round's first accept) the situation changed. Nothing for a bot the planner does not own. O(1)
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
+// Questing WQ38: the bot's stall sums (QuestFailRows.h), kept with its goals so that they outlive an order (the goals
+// are made on first use, as for every reader of them). Map thread only. O(1)
+QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
 // The inn trigger's edge for a bot with planner goals (planning WT63d): a bind that turned far or near
-// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. O(1)
+// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. So is
+// a stay near an inn that reached its dwell under a far bind (NR.5); the stays the bot left end here. O(1): a few inns
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
+// The errand trigger's edge for a sick planner bot (NR3): recover's hand-over that turned open
+// (GoalApply::SickOpenChanged) is a changed situation, the plan that rested until then goes; its upkeep row sick_area
+// names the safe area the bot stands in (Upkeep::SafeAreaWord). O(1) but at the edge
+void NoteSickOpen(PlayerbotAI* botAI, bool open);
+// NR3 (NR.4), map thread: the safe areas a sick bot stands in, and whether its walk to a place stays in one of them
+// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start
+Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes);
+bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,
+                float y, float z);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
 // (NoteBagBought) 0, so the trip's later stops buy no second one (WT63e). O(1)
@@ -269,9 +293,12 @@ bool CastsWithoutReagent(Player* bot, SpellInfo const* info);
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
 // The bot's thread: its buy list (auction house WA4b, AuctionBuyList.h): item use's lines a vendor sells (demand's
 // buyEntry and units, its worth to the bot, the vendor's price) and, for a bag slot empty or holding a smaller bag, the
-// generic bags the auction index knows, each by the slots it adds (ItemWorthRules.h BagWorth). Empty for a bot that
-// keeps no possessions (WA.12). The caller includes AuctionBuyList.h
+// generic bags the auction index knows, each by the slots it adds (ItemWorthRules.h BagWorth), all at the bot's
+// CopperWeightOf (AH.5). Empty for a bot that keeps no possessions (WA.12). The caller includes AuctionBuyList.h
 std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI);
+// The bot's thread: the copper weight its purchases are paid at (auction house AH9): its newest plan's need at the
+// money it holds now (Goals::NeedAt); {} without a plan (the reserve's share). The caller includes AuctionBuyList.h
+AuctionRules::CopperWeight CopperWeightOf(PlayerbotAI* botAI);
 // The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
 // cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
 void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);

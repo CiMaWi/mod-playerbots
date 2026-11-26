@@ -314,7 +314,8 @@ void TestAuctionWalk()
     Check(LoadConfigFamily(AuctionFamily, config, empty, warn) == 0 && warnings.empty(), "Auction: no key, no warning");
     Check(config.PublishSeconds == 60 && config.SaveSeconds == 300 && config.HistoryDays == 7 &&
               config.OpenBidsMax == 3 && config.UndercutPercent == 3 && config.RelistStepPercent == 10 &&
-              config.RelistLimit == 3 && config.FirstDurationHours == 24 && config.RelistDurationHours == 48,
+              config.RelistLimit == 3 && config.FirstDurationHours == 24 && config.RelistDurationHours == 48 &&
+              config.ChanceEvenHours == 24 && config.ChanceKindPriorHours == 48 && config.ChanceItemPriorHours == 48,
           "Auction: the walk resets to the initializers");
 
     FakeReader probe;
@@ -322,8 +323,10 @@ void TestAuctionWalk()
     Check(LoadConfigFamily(AuctionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.OpenBidsMax == 5 && config.FirstDurationHours == 48,
           "Auction: a value in range kept, one above its bound clamped with a warning");
-    Check(AuctionFamily.Rows.size() == 9, "Auction: nine rows");
+    Check(AuctionFamily.Rows.size() == 13, "Auction: thirteen rows");
     Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Chance) == "chance" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Factor) == "factor" &&
               AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
           "Auction: the decision words");
 }
@@ -555,7 +558,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
-        visit(WorldTravelFamily, 19, "World travel");
+        visit(WorldTravelFamily, 20, "World travel");
         visit(PvpGearFamily, 8, "PvP gear");
         visit(ArenaRecruitFamily, 8, "Arena recruit");
         visit(ArenaTeamFamily, 28, "Arena team");
@@ -1096,8 +1099,9 @@ void TestWorldFamilies()
                        got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
                        got.BagHorizonHours == want.BagHorizonHours;
     }
-    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 1,
-          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit is listed");
+    Check(
+        defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 2,
+        "travel: the default texts parse to DEFAULT_SLOT_BANDS; only InnDwellMinutes and Traits.AllowEdit are listed");
     FakeReader travelReader;
     travelReader.values = {{"Playerbots.WorldTravel.Slots.TripMinutes", "1,2,3,4,5"},
                            {"Playerbots.WorldTravel.Bags.HorizonHours", "1,2,3"},

@@ -130,6 +130,9 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
                      "SELECT `QuestId`, `PoiIdx`, `PointIdx`, `Rank`, `Z`, `Confidence`, `NavmeshOk`, `MapId`, "
                      "`Evidence` FROM `playerbots_quest_poi_z` ORDER BY `QuestId`, `PoiIdx`, `Rank`",
                      CONNECTION_SYNCH);
+    // Questing WQ38: the quests known to be impossible, read once at startup with the quest index
+    PrepareStatement(PLAYERBOTS_SEL_QUEST_IMPOSSIBLE, "SELECT `Quest`, `Cause` FROM `playerbots_quest_impossible`",
+                     CONNECTION_SYNCH);
     // WA1d: the auction index's trade history, read once at startup, rewritten by the world thread's asynchronous save
     PrepareStatement(PLAYERBOTS_SEL_AUCTION_HISTORY,
                      "SELECT `Item`, `Kind`, `Time`, `UnitPrice`, `Count`, `AuctionId` "
@@ -143,6 +146,17 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
                      "`AuctionId`) VALUES (?, ?, ?, ?, ?, ?)",
                      CONNECTION_BOTH);
     PrepareStatement(PLAYERBOTS_DEL_AUCTION_HISTORY, "DELETE FROM `playerbots_auction_history`", CONNECTION_BOTH);
+    // AH6: the auction index's sale records, read once at startup, rewritten with the history
+    PrepareStatement(PLAYERBOTS_SEL_AUCTION_RECORD,
+                     "SELECT `Scope`, `Id`, `Sales`, `Hours`, `Time` FROM `playerbots_auction_record`",
+                     CONNECTION_SYNCH);
+    PrepareStatement(PLAYERBOTS_SEL_AUCTION_RECORD_COUNT, "SELECT COUNT(*) FROM `playerbots_auction_record`",
+                     CONNECTION_SYNCH);
+    PrepareStatement(PLAYERBOTS_INS_AUCTION_RECORD,
+                     "INSERT INTO `playerbots_auction_record` (`Scope`, `Id`, `Sales`, `Hours`, `Time`) "
+                     "VALUES (?, ?, ?, ?, ?)",
+                     CONNECTION_BOTH);
+    PrepareStatement(PLAYERBOTS_DEL_AUCTION_RECORD, "DELETE FROM `playerbots_auction_record`", CONNECTION_BOTH);
 
     PrepareStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL, "SELECT guid, pvp_skill, percentile FROM playerbots_bot_profile",
                      CONNECTION_SYNCH);

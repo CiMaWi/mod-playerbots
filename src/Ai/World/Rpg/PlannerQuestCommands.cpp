@@ -840,6 +840,8 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
         id, proto ? proto->GetTitle() : "?", quest->level, quest->minLevel, quest->maxLevel, quest->type,
         quest->suggestedPlayers, FlagText(*quest), quest->raceMask, quest->classMask, zone, quest->xpBase,
         quest->copperReward);
+    if (Listed(*quest))  // WQ38: on the list of quests known to be impossible: no need, no take
+        handler->PSendSysMessage("  impossible: {} (playerbots_quest_impossible: no need, no take)", quest->impossible);
     handler->PSendSysMessage(
         "  chain: prev {}, next {}, next in chain {}, exclusive group {}, breadcrumb for {}; "
         "unlocks {}",
@@ -1679,8 +1681,9 @@ std::string CensusObjective(QuestFields::Need const& need)
 std::vector<QuestFields::Need> CensusNeeds(QuestIndex const& quests, QuestRecord const& quest, std::uint8_t side)
 {
     QuestFields::Pricing const pricing{};  // neutral weights: the census counts needs and reads no worth
+    constexpr uint32 PARTY = 5;            // WQ38: as a party sees them, an elite or group quest's objectives too
     std::array<QuestSlot, 2> const log = {QuestSlot{quest.id, 0, {}}, QuestSlot{quest.id, Circuit::SLOT_COMPLETE, {}}};
-    std::vector<QuestFields::Need> needs = QuestFields::Needs(quests, log, side, pricing);
+    std::vector<QuestFields::Need> needs = QuestFields::Needs(quests, log, side, pricing, PARTY);
     if (std::optional<QuestFields::Need> take = QuestFields::TakeNeed(quests, quest, side, pricing))
         needs.push_back(std::move(*take));
     return needs;

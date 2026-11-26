@@ -369,8 +369,16 @@ private:
         in.vendorPayout = keep.vendorPayout;
         if (AuctionRules::ItemReference const* row = _reference->Find(proto->ItemId))
             in.reference = row->copper;
-        if (AuctionIndex::ItemEntry const* entry = _index ? _index->Find(proto->ItemId) : nullptr)
-            in.typical = entry->typical;
+        if (_index)
+        {
+            // R1: away from the auctioneer, never the cheapest standing buyout
+            AuctionIndex::Evidence const evidence = _index->EvidenceOf(
+                proto->ItemId,
+                AuctionIndex::KindOf(proto->Class, proto->Quality, proto->RequiredLevel, proto->ItemLevel));
+            in.typical = evidence.typical;
+            in.itemRecord = evidence.item;
+            in.kindRecord = evidence.kind;
+        }
         in.fees = _fees;
         // WA3b: the seller's expiry memory; an item expired past the relist limit is held, so it is no stock any more
         AuctionMemory::ItemMemory const memory =

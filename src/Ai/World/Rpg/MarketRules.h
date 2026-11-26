@@ -19,8 +19,10 @@
 // The market a decision away from the auctioneer sees (auction house plan WA7a, PLAN 3.7, WA.4): per item the index's
 // typical price, which a bot knows anywhere, never the current offers, which only the auction visit reads. A path,
 // gathering or second-profession computation takes one view when its inputs are built (the published snapshot's
-// shared pointer, read on any thread) and asks it per item. No view, or an item without a typical price, is no market:
-// the decision is then the vendor-only one (the reference value is not a price anyone paid and is not read here).
+// shared pointer, read on any thread) and asks it per item. The typical price is recent sales, else the standing price
+// (AH.2): an item nobody sold or listed long enough to be seen in the window, or no view, is no market; the decision is
+// then the vendor-only one (the reference value is not a price anyone paid and is not read here). A standing price
+// nobody buys at fetches little: ProceedsEach weighs it by the sale chance, which its unsold hours lower.
 // Pure and std only: the selftests build views from their own snapshots.
 namespace Market
 {
@@ -28,10 +30,11 @@ constexpr std::uint32_t MAX_LOT = 20;  // [E] the units a bot lists at once at m
 
 // What one unit is expected to fetch when the bot lists a lot of `lot` units at the typical price (PLAN 3.4, WA.17):
 // the ask's expected value, the cut and the deposit taken off and the vendor's price after an expiry counted, over the
-// units (AuctionRules::StockWorth on the evidence alone: no current offers, no expiries of the bot's own). 0 without
-// a typical price, or when such a listing is not worth more than the vendor: the vendor is then the outlet, so a
-// caller takes the larger of this and the vendor's price
-inline double ProceedsEach(AuctionIndex::TypicalPrice const& typical, std::uint32_t sellPrice, std::uint32_t lot,
+// units (AuctionRules::StockWorth on the evidence alone: the sale chance from the item's and its kind's records, no
+// current offers, no expiries of the bot's own). 0 without a typical price, or when such a listing is not worth more
+// than the vendor: the vendor is then the outlet, so a caller takes the larger of this and the vendor's price
+inline double ProceedsEach(AuctionIndex::TypicalPrice const& typical, AuctionIndex::Record const& itemRecord,
+                           AuctionIndex::Record const& kindRecord, std::uint32_t sellPrice, std::uint32_t lot,
                            AuctionRules::Fees const& fees, AuctionConfig const& config)
 {
     if (!typical.unitPrice)
@@ -41,6 +44,8 @@ inline double ProceedsEach(AuctionIndex::TypicalPrice const& typical, std::uint3
     in.sellPrice = sellPrice;
     in.vendorPayout = static_cast<std::uint64_t>(sellPrice) * in.count;
     in.typical = typical;
+    in.itemRecord = itemRecord;
+    in.kindRecord = kindRecord;
     in.fees = fees;
     return static_cast<double>(AuctionRules::StockWorth(in, config)) / in.count;
 }
@@ -78,10 +83,12 @@ struct View
     // as Gather::Yield::otherCopper, the disenchant outlet as its other buyer's price
     [[nodiscard]] double ProceedsOf(std::uint32_t item, std::uint32_t sellPrice) const
     {
-        if (Empty())
+        AuctionIndex::ItemEntry const* entry = Empty() ? nullptr : snapshot->Find(item);
+        if (!entry)
             return 0.0;
         std::uint32_t const lot = lotOf ? std::clamp<std::uint32_t>(lotOf(item), 1, MAX_LOT) : 1;
-        return ProceedsEach(Typical(item), sellPrice, lot, fees, config);
+        return ProceedsEach(entry->typical, entry->record, snapshot->KindRecord(entry->kind), sellPrice, lot, fees,
+                            config);
     }
 
     // What one unit fetches at best: the vendor's price or a listing's proceeds (the skill path's income term)

@@ -9,6 +9,9 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
+
+#include "GatherRateRules.h"
 
 class ChatHandler;
 class Player;
@@ -49,6 +52,21 @@ void FillGatherSight(Player* bot, Snapshot& snapshot);
 // zone's spawn points nearest first (respawn, pool share, worth, net at the detour), the node it would pass by for,
 // and the circuit the rules build from where it stands
 bool HandleNodesCommand(ChatHandler* handler, std::string name);
+
+// The observed minutes per take (professions WPC13b, DECISIONS WPC.13): the map thread whose planned circuit ended
+// (a status change, or a reset that drops it) adds its span, started at startMs (0: no planned circuit), to the tally
+void NoteGatherSpan(GatherRate::Span span, std::uint32_t startMs);
+
+// World thread (WorldHook GatherRates): a timer add; every RATE_PUBLISH_MS the tally fades by the time passed and is
+// published for the planner
+void UpdateGatherRates(std::uint32_t diff);
+
+// Any thread: the newest published tally; empty before the first publication, the static rule
+GatherRate::View GatherRatesNow();
+
+// World thread: `playerbots professions rates [zone]`, the tally per zone and way; `rates set <zone> <way> <minutes>
+// <takes>` (game master or console, a test's fixture) sets one tally and publishes at once
+bool HandleRatesCommand(ChatHandler* handler, std::vector<std::string> const& args);
 }  // namespace Planner
 
 #endif

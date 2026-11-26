@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "ItemWorthRules.h"
 #include "MailRules.h"
 
@@ -284,8 +285,9 @@ struct ErrandSnapshot
     uint32_t BagHorizonHours = 0;
     uint32_t FreeSlots = 0;
     uint32_t SellableSlots = 0;
-    float MinutesToNextStop = 0.0f;  // until the bot passes a vendor anyway
-    uint64_t Reserve = 0;            // ShouldBuyBag's reserve
+    float MinutesToNextStop = 0.0f;     // until the bot passes a vendor anyway
+    uint64_t Reserve = 0;               // ShouldBuyBag's reserve
+    AuctionRules::CopperWeight Weight;  // the need factor a bag's price is paid at (AH.5); {} unknown: the reserve's
     uint32_t ThriftPercent = PERCENT;
     uint32_t BagBudgetPercent = PERCENT;
     std::vector<ServiceStop> Stops;
@@ -544,7 +546,9 @@ inline void ProvideBags(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
 
         BagBuyInput in;
         in.Price = bag.Price;
-        in.Worth = BagWorth(snapshot.Rates, snapshot.FreeSlots, bag.Slots, bag.ReplacedSlots, snapshot.BagHorizonHours);
+        in.Worth = AuctionRules::BagCeiling(
+            BagWorth(snapshot.Rates, snapshot.FreeSlots, bag.Slots, bag.ReplacedSlots, snapshot.BagHorizonHours), 0,
+            snapshot.Weight);
         in.Gold = snapshot.Money;
         in.Reserve = snapshot.Reserve;
         in.ThriftPercent = snapshot.ThriftPercent;
@@ -713,6 +717,24 @@ inline std::vector<ErrandOffer> CollectOffers(ErrandSnapshot const& snapshot, st
     for (ProviderRow const& row : rows)
         row.Provide(snapshot, offers);
     return offers;
+}
+
+// NR3 (NR.4): the errands that start a fight: the tame (it clears the site and fights the beast through the channel)
+// and the stable's swap (it tames the wanted pet after storing the old one)
+constexpr bool ErrandStartsFight(ErrandKind kind) { return kind == ErrandKind::Tame || kind == ErrandKind::Stable; }
+
+// A sick bot's trip (NR.4): no errand that starts a fight, no service stop and no placed errand outside the safe area
+// the bot stands in. `safeAt(place)` answers whether the walk from the bot to the place stays in that area
+// (Upkeep::SafeLeg on foot); the healthy bot's trip never calls this
+template <typename SafeAt>
+inline void KeepSickErrands(std::vector<ServiceStop>& stops, std::vector<ErrandOffer>& offers, SafeAt const& safeAt)
+{
+    stops.erase(
+        std::remove_if(stops.begin(), stops.end(), [&safeAt](ServiceStop const& stop) { return !safeAt(stop.Place); }),
+        stops.end());
+    offers.erase(std::remove_if(offers.begin(), offers.end(), [&safeAt](ErrandOffer const& offer)
+                                { return ErrandStartsFight(offer.Kind) || (offer.Placed && !safeAt(offer.Place)); }),
+                 offers.end());
 }
 
 struct TripStop

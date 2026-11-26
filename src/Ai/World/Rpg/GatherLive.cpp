@@ -7,10 +7,13 @@
 #include "GatherLive.h"
 
 #include <algorithm>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
+#include "BotTravel.h"
 #include "Chat.h"
 #include "DBCStores.h"
 #include "Formulas.h"
@@ -19,15 +22,19 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
+#include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "SkillPathBridge.h"
 #include "SkillPathLive.h"
+#include "StringConvert.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
+#include "WorldSession.h"
 
 namespace Planner
 {
@@ -39,6 +46,37 @@ constexpr float PASS_BY_YARDS = 100.0f;  // the nodes the command offers the pas
 constexpr float DETOUR_FACTOR = 2.0f;
 constexpr uint32 OUTLAND_MAP = 530;  // the content band of a kill's XP (Acore::XP::BaseGain)
 constexpr uint32 NORTHREND_MAP = 571;
+constexpr uint32 RATE_PUBLISH_MS = 15000;  // the observed rate's publication, a few times a minute (WPC13b)
+
+// The observed rate's tally (WPC13b): the map threads add spans, the world thread fades and publishes it
+std::mutex rateMutex;
+GatherRate::Book rateBook;  // under rateMutex
+uint64 rateSpans = 0;       // under rateMutex: spans observed since the start
+uint64 rateSkipped = 0;     // under rateMutex: ended circuits that were no observation (mixed ways, cut at once)
+SharedSlot<GatherRate::Snapshot> rateSlot;  // any thread
+uint32 rateTimer = 0;                       // world thread only
+uint32 ratePublishedMs = 0;                 // world thread only: the last publication's time
+
+char const* WayWord(GatherRate::Way way)
+{
+    switch (way)
+    {
+        case GatherRate::Way::Herbalism:
+            return "herbalism";
+        case GatherRate::Way::Mining:
+            return "mining";
+        case GatherRate::Way::Creatures:
+            return "creatures";
+        default:
+            return "none";
+    }
+}
+
+void PublishRates(std::shared_ptr<GatherRate::Snapshot const> snapshot)
+{
+    ratePublishedMs = getMSTime();
+    rateSlot.Publish(std::move(snapshot));
+}
 
 uint32 SellCopper(uint32 item)
 {
@@ -97,9 +135,11 @@ std::vector<Gather::Node> NodesOf(std::vector<GatherNodeSpawn> const& spawns, ui
     return nodes;
 }
 
-Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
+Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates, GatherRate::View const& gatherRates)
 {
     Gather::Gatherer gatherer;
+    gatherer.zone = bot->GetZoneId();
+    gatherer.gatherRates = gatherRates;
     for (uint16 const skill : {SKILL_HERBALISM, SKILL_MINING, SKILL_SKINNING})
         gatherer.skills.push_back({skill, bot->GetSkillValue(skill), bot->GetMaxSkillValue(skill)});
     gatherer.rates = rates;
@@ -240,8 +280,8 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
     UpkeepNeeds::NeedList needs;
     std::shared_ptr<SkillPath::Path const> const path =
         NeedsWithPath(snapshot, *upkeep, BotNeedRates(botAI, snapshot), PathInputsOf(botAI), data, needs);
-    Gather::Gatherer const gatherer =
-        GathererOf(bot, SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)));
+    Gather::Gatherer const gatherer = GathererOf(
+        bot, SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)), data.gatherRates);
 
     uint32 const mapId = bot->GetMapId();
     uint32 const zone = bot->GetZoneId();
@@ -332,6 +372,8 @@ void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Ma
     gatherer.level = snapshot.level;
     gatherer.side = Materials::SideBit(snapshot.team);
     gatherer.shortOfGold = shortOfGold;
+    gatherer.zone = snapshot.zone;
+    gatherer.gatherRates = data.gatherRates;
     gatherer.rates = rates;
     if (snapshot.runSpeed > 0.0f)
         gatherer.rates.runSpeed = snapshot.runSpeed;
@@ -341,15 +383,22 @@ void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Ma
         if (std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone))
             nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
     CreatureStops creatures = CreatureStopsOf(snapshot, path, data, gatherer);
-    // A test's nofight bot kills nothing (Situation::fightsHeld): no creature stop; a refusal is still named
-    if (situation.fightsHeld)
-        creatures.stops.clear();
+    // No creature stop for a test's nofight bot or one without a weapon; a refusal is still named
+    situation.gatherUnarmed = Gather::DropCreatureStops(creatures.stops, situation.fightsHeld, snapshot.unarmed);
     situation.gatherRefusedItem = creatures.refusedItem;
     situation.gatherRefusedLevels = creatures.refusedLevels;
     nodes.insert(nodes.end(), std::make_move_iterator(creatures.stops.begin()),
                  std::make_move_iterator(creatures.stops.end()));
     if (nodes.empty())
         return;
+    // Above the status's bag limit the circuit would end at once: none is planned and the refusal is named (WPC9)
+    if (std::uint32_t const used = Gather::BagUsedPercent(snapshot.bagSlots, snapshot.bagFree);
+        Gather::BagsTooFull(used))
+    {
+        situation.gatherBagsFull = used;
+        return;
+    }
+    Gather::DropRefused(nodes, snapshot.position.map, snapshot.gatherRefused);
     Gather::ApplySight(nodes, snapshot.gatherUp, snapshot.gatherDown);
     Planner::Circuit::Point const here{snapshot.position.x, snapshot.position.y, snapshot.position.z};
     Gather::Circuit const circuit = Gather::BuildCircuit(here, nodes, gatherer);
@@ -371,6 +420,7 @@ void FillGatherSight(Player* bot, Snapshot& snapshot)
     if (!botAI)
         return;
     uint32 const now = getMSTime();
+    snapshot.gatherRefused = Gather::RefusedPlaces(botAI->GetTravel().Failures(), now);
     for (Gather::Memory::Entry const& entry : botAI->rpgInfo.gatherMemory.ring)
         if (botAI->rpgInfo.gatherMemory.Away(entry.spawn, now))
             snapshot.gatherDown.push_back(entry.spawn);
@@ -391,5 +441,108 @@ void FillGatherSight(Player* bot, Snapshot& snapshot)
     std::sort(snapshot.gatherDown.begin(), snapshot.gatherDown.end());
     snapshot.gatherDown.erase(std::unique(snapshot.gatherDown.begin(), snapshot.gatherDown.end()),
                               snapshot.gatherDown.end());
+}
+
+void NoteGatherSpan(GatherRate::Span span, uint32 startMs)
+{
+    if (!startMs)
+        return;
+    span.milliseconds = getMSTimeDiff(startMs, getMSTime());
+    std::lock_guard<std::mutex> lock(rateMutex);
+    ++(rateBook.Observe(span) ? rateSpans : rateSkipped);
+}
+
+void UpdateGatherRates(uint32 diff)
+{
+    rateTimer += diff;
+    if (rateTimer < RATE_PUBLISH_MS)
+        return;
+    PLAYERBOT_CHECK_WORLD_THREAD("UpdateGatherRates");
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "gather rates");
+    std::shared_ptr<GatherRate::Snapshot const> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(rateMutex);
+        rateBook.Fade(rateTimer / GatherRate::MS_PER_MINUTE);
+        snapshot = rateBook.Publish();
+    }
+    rateTimer = 0;
+    PublishRates(std::move(snapshot));
+    if (pmo)
+        pmo->finish();
+}
+
+GatherRate::View GatherRatesNow() { return {rateSlot.Current()}; }
+
+bool HandleRatesCommand(ChatHandler* handler, std::vector<std::string> const& args)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("professions rates");
+    if (!args.empty() && args[0] == "set")
+    {
+        WorldSession* const session = handler->GetSession();
+        Optional<uint32> const zone = args.size() > 1 ? Acore::StringTo<uint32>(args[1]) : Optional<uint32>();
+        GatherRate::Way way = GatherRate::Way::None;
+        for (GatherRate::Way const each :
+             {GatherRate::Way::Herbalism, GatherRate::Way::Mining, GatherRate::Way::Creatures})
+            if (args.size() > 2 && args[2] == WayWord(each))
+                way = each;
+        Optional<double> const minutes = args.size() > 3 ? Acore::StringTo<double>(args[3]) : Optional<double>();
+        Optional<double> const takes = args.size() > 4 ? Acore::StringTo<double>(args[4]) : Optional<double>();
+        if ((session && session->GetSecurity() < SEC_GAMEMASTER) || !zone || !*zone || way == GatherRate::Way::None ||
+            !minutes || !takes || *minutes < 0.0 || *takes < 0.0)
+        {
+            handler->SendErrorMessage(
+                "Usage: playerbots professions rates set <zone> herbalism|mining|creatures "
+                "<minutes> <takes> (a game master's test fixture)");
+            return false;
+        }
+        std::shared_ptr<GatherRate::Snapshot const> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(rateMutex);
+            rateBook.tallies[GatherRate::KeyOf(*zone, way)] = {*minutes, *takes};
+            snapshot = rateBook.Publish();
+        }
+        PublishRates(std::move(snapshot));
+        handler->PSendSysMessage("Gather rates: zone {} {} set to {:.2f} min, {:.2f} takes, published", *zone,
+                                 WayWord(way), *minutes, *takes);
+        return true;
+    }
+    Optional<uint32> const only = args.empty() ? Optional<uint32>() : Acore::StringTo<uint32>(args[0]);
+    if (!args.empty() && !only)
+    {
+        handler->SendErrorMessage("Usage: playerbots professions rates [zone]");
+        return false;
+    }
+    std::map<uint64, GatherRate::Tally> tallies;
+    uint64 spans = 0;
+    uint64 skipped = 0;
+    {
+        std::lock_guard<std::mutex> lock(rateMutex);
+        tallies.insert(rateBook.tallies.begin(), rateBook.tallies.end());
+        spans = rateSpans;
+        skipped = rateSkipped;
+    }
+    std::shared_ptr<GatherRate::Snapshot const> const published = rateSlot.Current();
+    handler->PSendSysMessage(
+        "Gather rates (WPC13b): {} spans observed since the start, {} not (mixed ways, cut at once or no zone); {} "
+        "tallies, published {}; prior weight {:.0f} takes (observed from as many), half-life {:.0f} min",
+        spans, skipped, tallies.size(),
+        published ? Acore::StringFormat("{} s ago with {} tallies", getMSTimeDiff(ratePublishedMs, getMSTime()) / 1000,
+                                        published->tallies.size())
+                  : std::string("never (the static rule)"),
+        GatherRate::PRIOR_TAKES, GatherRate::FADE_HALF_LIFE_MINUTES);
+    for (auto const& [key, tally] : tallies)
+    {
+        uint32 const zone = static_cast<uint32>(key >> 8);
+        if (only && *only != zone)
+            continue;
+        AreaTableEntry const* area = sAreaTableStore.LookupEntry(zone);
+        handler->PSendSysMessage(
+            "  zone {} {}: {}, {:.1f} min, {:.2f} takes, {} min per take, {}", zone,
+            area ? area->area_name[handler->GetSessionDbcLocale()] : "unknown",
+            WayWord(static_cast<GatherRate::Way>(key & 0xFF)), tally.minutes, tally.takes,
+            tally.takes > 0.0 ? Acore::StringFormat("{:.2f}", tally.minutes / tally.takes) : std::string("-"),
+            tally.takes >= GatherRate::PRIOR_TAKES ? "observed" : "prior");
+    }
+    return true;
 }
 }  // namespace Planner

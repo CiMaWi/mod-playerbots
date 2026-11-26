@@ -135,7 +135,8 @@ constexpr Row ROWS[] = {
     {"novendor", Kind::Other, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
     {"noplan", Kind::Other, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::Other, FREERIDE, "route request: every ride of a transport link costs no time"},
-    {"shortgiveup", Kind::Other, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
+    {"shortgiveup", Kind::Other, SHORTGIVEUP,
+     "quest executor: the give-up limit and the stall row's limit are two minutes without progress"},
     {"walkflush", Kind::Other, WALKFLUSH,
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::Other, CASTTRACE,
@@ -333,7 +334,8 @@ inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }
 // every answer counts as failed, so the idle step falls back (fallback_failed); route release keeps it
 inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 // shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
-// sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
+// sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases; and by
+// the stall sum (QuestFailRows.h LimitMs, questing WQ38): an order's QuestStall row after two minutes, not ten
 inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
 // anypath, read where the skill path's inputs are copied (SkillPathLive.cpp PathInputsOf; nothing to apply or undo): a
 // test's craft from skill 1 has a chosen stretch and a queue whatever the bot's gold, traits and uses make of its worth
