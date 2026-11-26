@@ -16,6 +16,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -51,6 +52,7 @@ struct AuctionFacts
     std::int64_t endTime = 0;
     std::uint64_t bidder = 0;  // raw guid, 0 = none
     std::uint8_t houseId = 0;  // the core's AuctionHouseId as stored
+    std::int64_t added = 0;    // game time the book took it (a hook, the startup walk); 0 = long ago
 };
 using OfferLine = AuctionFacts;
 
@@ -70,16 +72,27 @@ struct ExpiryRecord
     std::uint32_t auctionId = 0;
 };
 
+// The standing price (AH8, PLAN 3.4): the lowest unit buyout among an item's offers that had stood the standing time,
+// as of the last publication that saw one; it leaves with the window as a sale does
+struct StandingPrice
+{
+    std::uint32_t unitPrice = 0;  // 0 = none
+    std::int64_t time = 0;
+};
+
 struct ItemHistory
 {
     std::vector<SaleRecord> sales;
     std::vector<ExpiryRecord> expiries;
+    StandingPrice standing;
 };
 
 // One stored record of an item's history (WA1d), a row of playerbots_auction_history: the records themselves, not a
-// summary, so a load puts the book where it was and the median keeps re-weighting as time passes
+// summary, so a load puts the book where it was and the median keeps re-weighting as time passes. A standing price
+// (AH8) is one row per item: Count 1, AuctionId 0
 constexpr std::uint8_t HISTORY_SALE = 0;
 constexpr std::uint8_t HISTORY_EXPIRY = 1;
+constexpr std::uint8_t HISTORY_STANDING = 2;
 
 struct HistoryRow
 {
@@ -96,16 +109,40 @@ struct HistoryCounts
 {
     std::uint64_t sales = 0;
     std::uint64_t expiries = 0;
+    std::uint32_t standing = 0;
     std::uint32_t items = 0;
 };
 
-// View 1 (WA.4), read anywhere: an item's typical unit price, the recency-weighted median of its sales in the window
+// Where a typical price comes from (AH.2): recent sales, else the standing price, else there is none
+enum class PriceBasis : std::uint8_t
+{
+    None,
+    Sales,
+    Offers
+};
+
+inline std::string_view BasisWord(PriceBasis basis)
+{
+    switch (basis)
+    {
+        case PriceBasis::Sales:
+            return "sales";
+        case PriceBasis::Offers:
+            return "offers";
+        default:
+            return "none";
+    }
+}
+
+// View 1 (WA.4, AH.2), read anywhere: an item's typical unit price, the recency-weighted median of its sales in the
+// window, else its standing price in the window
 struct TypicalPrice
 {
-    std::uint32_t unitPrice = 0;  // 0 = no sale in the window
+    std::uint32_t unitPrice = 0;  // 0 = neither a sale nor a standing price in the window
     std::uint32_t sample = 0;     // sales in the window
     double weight = 0.0;          // their summed recency weights (1 = one sale of now)
     std::uint32_t expiries = 0;   // expiries in the window
+    PriceBasis basis = PriceBasis::None;
 };
 
 // What the house saw of an item or a kind selling (PLAN 3.3, AH.4): lots sold and lot hours listed, each weighed by
@@ -352,6 +389,42 @@ public:
         _recordsDirty = true;
     }
 
+    // At a publish, after the refresh (AH8, PLAN 3.4): each item's standing price is the lowest unit buyout among its
+    // offers that have stood at least standingSeconds, a price a visitor would have seen and not a lot that flashed by;
+    // it takes this publication's time. With none standing the last one stays with its time
+    void TakeStanding(std::int64_t now, std::int64_t standingSeconds)
+    {
+        for (auto& [item, book] : _items)
+        {
+            std::uint32_t lowest = 0;
+            for (auto const& [id, line] : book.offers)
+            {
+                if (!line.buyout || now - line.added < standingSeconds)
+                    continue;
+                std::uint32_t const unit = UnitPrice(line.buyout, line.count);
+                if (!lowest || unit < lowest)
+                    lowest = unit;
+            }
+            StandingPrice& standing = book.history.standing;
+            if (!lowest || (standing.unitPrice == lowest && standing.time == now))
+                continue;
+            standing = {lowest, now};
+            _historyDirty = true;
+        }
+    }
+
+    // The test seam (AuctionFixture `stood`, AH8): the item's offers taken that many seconds earlier, so a case need
+    // not wait out the standing time. The offers moved
+    std::size_t Backdate(std::uint32_t item, std::int64_t seconds)
+    {
+        auto const it = _items.find(item);
+        if (it == _items.end())
+            return 0;
+        for (auto& [id, line] : it->second.offers)
+            line.added -= seconds;
+        return it->second.offers.size();
+    }
+
     // History older than the window goes, then items with nothing left (no offer, no history, a forgotten record) and
     // forgotten kinds; an outcome whose Remove never came is forgotten (the core removes right after the outcome hook,
     // so none is pending between two publications)
@@ -366,10 +439,15 @@ public:
                 std::erase_if(history.sales, [oldest](SaleRecord const& sale) { return sale.time < oldest; });
             erased +=
                 std::erase_if(history.expiries, [oldest](ExpiryRecord const& expiry) { return expiry.time < oldest; });
+            if (history.standing.unitPrice && history.standing.time < oldest)
+            {
+                history.standing = {};
+                ++erased;
+            }
             if (erased)
                 _historyDirty = true;
             if (it->second.offers.empty() && history.sales.empty() && history.expiries.empty() &&
-                Forgotten(it->second.record, now, _recordHalfLife))
+                !history.standing.unitPrice && Forgotten(it->second.record, now, _recordHalfLife))
                 it = _items.erase(it);
             else
                 ++it;
@@ -393,7 +471,7 @@ public:
         {
             ItemEntry& entry = out.items[item];
             FillOffers(entry.offers, book.offers);
-            FillTypical(entry.typical, book.history, now, windowSeconds);
+            FillTypical(entry.typical, book.history, now, windowSeconds);  // the standing price taken before
             entry.record = WeighedAt(book.record, now, halfLife);
             entry.kind = book.kind;
         }
@@ -480,6 +558,9 @@ public:
                 rows.push_back({item, HISTORY_SALE, sale.time, sale.unitPrice, sale.count, sale.auctionId});
             for (ExpiryRecord const& expiry : book.history.expiries)
                 rows.push_back({item, HISTORY_EXPIRY, expiry.time, 0, expiry.count, expiry.auctionId});
+            StandingPrice const& standing = book.history.standing;
+            if (standing.unitPrice)
+                rows.push_back({item, HISTORY_STANDING, standing.time, standing.unitPrice, 1, 0});
         }
         return rows;
     }
@@ -491,13 +572,15 @@ public:
         {
             counts.sales += book.history.sales.size();
             counts.expiries += book.history.expiries.size();
-            if (!book.history.sales.empty() || !book.history.expiries.empty())
+            bool const standing = book.history.standing.unitPrice != 0;
+            counts.standing += standing ? 1 : 0;
+            if (!book.history.sales.empty() || !book.history.expiries.empty() || standing)
                 ++counts.items;
         }
         return counts;
     }
 
-    // A sale, an expiry or a prune that dropped records changed the history since the last save
+    // A sale, an expiry, a standing price taken or a prune that dropped records changed the history since the last save
     bool HistoryDirty() const { return _historyDirty; }
     // A sale, an accrual or a credit fed a record, or a load corrected one, since the last save (AH6)
     bool RecordsDirty() const { return _recordsDirty; }
@@ -633,7 +716,8 @@ private:
     }
 
     // Each sale weighs 2^(-age / half the window): a sale half the window old counts half a fresh one. The median is
-    // the lowest price at which the sorted weights reach half the total; ties sort by time and auction id.
+    // the lowest price at which the sorted weights reach half the total; ties sort by time and auction id. Without a
+    // sale in the window the standing price in the window is the price (AH.2)
     static void FillTypical(TypicalPrice& typical, ItemHistory const& history, std::int64_t now,
                             std::int64_t windowSeconds)
     {
@@ -655,7 +739,15 @@ private:
                 ++typical.expiries;
         typical.sample = static_cast<std::uint32_t>(weighted.size());
         if (weighted.empty())
+        {
+            if (history.standing.unitPrice && history.standing.time >= oldest)
+            {
+                typical.unitPrice = history.standing.unitPrice;
+                typical.basis = PriceBasis::Offers;
+            }
             return;
+        }
+        typical.basis = PriceBasis::Sales;
         std::sort(weighted.begin(), weighted.end(),
                   [](auto const& a, auto const& b)
                   {
@@ -694,15 +786,25 @@ private:
         return true;
     }
 
-    // A stored record into the history unless the list holds the same (time, auction id); false when the row was
-    // skipped, set to now, or the cap dropped a record
+    // A stored record into the history unless the list holds the same (time, auction id); a standing price unless the
+    // item holds a later one. False when the row was skipped, set to now, or the cap dropped a record
     bool LoadRow(HistoryRow const& row, std::int64_t now)
     {
-        if (row.kind != HISTORY_SALE && row.kind != HISTORY_EXPIRY)
+        if (row.kind != HISTORY_SALE && row.kind != HISTORY_EXPIRY && row.kind != HISTORY_STANDING)
+            return false;
+        if (row.kind == HISTORY_STANDING && !row.unitPrice)
             return false;
         bool const future = row.time > now;
         std::int64_t const time = future ? now : row.time;
         ItemHistory& history = _items[row.item].history;
+        if (row.kind == HISTORY_STANDING)
+        {
+            if (history.standing.unitPrice && history.standing.time >= time)
+                return false;
+            bool const replaced = history.standing.unitPrice != 0;
+            history.standing = {row.unitPrice, time};
+            return !replaced && !future;
+        }
         if (row.kind == HISTORY_SALE)
         {
             SaleRecord record;
@@ -770,7 +872,7 @@ inline std::string Dump(Snapshot const& snapshot)
         out << item << ": offers " << entry->offers.auctions << " units " << entry->offers.units << " cheapest "
             << entry->offers.cheapestUnitBuyout << " typical " << entry->typical.unitPrice << " sample "
             << entry->typical.sample << " weight " << entry->typical.weight << " expiries " << entry->typical.expiries
-            << "\n";
+            << " basis " << BasisWord(entry->typical.basis) << "\n";
         for (OfferLine const& line : entry->offers.cheapest)
             out << "  " << line.id << " x" << line.count << " bid " << line.bid << "/" << line.startBid << " buyout "
                 << line.buyout << " end " << line.endTime << " bidder " << line.bidder << " house "

@@ -390,9 +390,10 @@ bool Check(ChatHandler* handler, Scene const& scene, std::vector<std::string> co
 
     std::ostringstream have;
     have << "offers " << entry.offers.auctions << " sales " << entry.typical.sample << " expiries "
-         << entry.typical.expiries << " unit " << entry.typical.unitPrice << " bid " << bid << " bidder " << bidder
-         << " (seq " << snapshot->sequence << ", since start " << snapshot->sales << " sales " << snapshot->expiries
-         << " expiries " << snapshot->cancels << " cancels)" << std::fixed << std::setprecision(3) << "; records item "
+         << entry.typical.expiries << " unit " << entry.typical.unitPrice << " basis "
+         << AuctionIndex::BasisWord(entry.typical.basis) << " bid " << bid << " bidder " << bidder << " (seq "
+         << snapshot->sequence << ", since start " << snapshot->sales << " sales " << snapshot->expiries << " expiries "
+         << snapshot->cancels << " cancels)" << std::fixed << std::setprecision(3) << "; records item "
          << evidence.item.sales << " sales " << evidence.item.hours << " hours, kind " << evidence.kind.sales
          << " sales " << evidence.kind.hours << " hours; p12 "
          << 1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 12.0, config) << " p24 "
@@ -427,6 +428,8 @@ bool Check(ChatHandler* handler, Scene const& scene, std::vector<std::string> co
             got = std::to_string(entry.typical.expiries);
         else if (key == "unit")
             got = std::to_string(entry.typical.unitPrice);
+        else if (key == "basis")
+            got = std::string(AuctionIndex::BasisWord(entry.typical.basis));
         else if (key == "bid")
             got = std::to_string(bid);
         else if (key == "bidder")
@@ -434,8 +437,8 @@ bool Check(ChatHandler* handler, Scene const& scene, std::vector<std::string> co
         else
             return Fail(handler, scene,
                         "no key '" + key +
-                            "' (offers, sales, expiries, unit, bid, bidder, itemsales, itemhours, kindsales, "
-                            "kindhours, p12, p24, p48)");
+                            "' (offers, sales, expiries, unit, basis, bid, bidder, itemsales, itemhours, "
+                            "kindsales, kindhours, p12, p24, p48)");
         if (got != want)
             differs += (differs.empty() ? "" : "; ") + key + " " + got + " not " + want;
     }
@@ -563,7 +566,7 @@ bool HandleCommand(ChatHandler* handler, char const* args)
     if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot))
         return Fail(handler, scene,
                     "no bot online by that name; usage: playerbots auction fixture post|bid|buyout|"
-                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow|listed <bot> <item> ..");
+                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow|listed|stood <bot> <item> ..");
     scene.bot = bot;
     if (!sObjectMgr->GetItemTemplate(scene.item))
         return Fail(handler, scene, "no item " + itemWord);
@@ -583,6 +586,18 @@ bool HandleCommand(ChatHandler* handler, char const* args)
         if (!AuctionIndex::CreditListing(scene.item, hours))
             return Fail(handler, scene, "the item has no kind");
         return Ok(handler, scene, "credited " + words[0] + " listing hours to the item's record and its kind's");
+    }
+    if (scene.verb == "stood")
+    {
+        long long const seconds = words.empty() ? 0 : std::strtoll(words[0].c_str(), nullptr, 10);
+        if (seconds <= 0)
+            return Fail(handler, scene, "no seconds; usage: stood <bot> <item> <seconds>");
+        std::size_t const moved = AuctionIndex::Backdate(scene.item, static_cast<std::int64_t>(seconds));
+        if (!moved)
+            return Fail(handler, scene, "the item has no offer listed");
+        return Ok(handler, scene,
+                  std::to_string(moved) + " offers taken " + words[0] + " s earlier, published; standing time " +
+                      std::to_string(sPlayerbotAIConfig.Auction.StandingSeconds) + " s");
     }
     scene.auctioneer = NearestAuctioneer(bot);
     if (!scene.auctioneer)

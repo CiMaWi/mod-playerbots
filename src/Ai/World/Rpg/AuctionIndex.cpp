@@ -65,6 +65,7 @@ AuctionFacts FactsOf(AuctionEntry const* entry)
     facts.endTime = static_cast<std::int64_t>(entry->expire_time);
     facts.bidder = entry->bidder.GetRawValue();
     facts.houseId = static_cast<std::uint8_t>(entry->houseId);
+    facts.added = GameNow();  // the startup walk's too: the core keeps no start time, so its offers stand anew
     return facts;
 }
 }  // namespace
@@ -100,6 +101,7 @@ void Publish()
         });
     std::int64_t const now = GameNow();
     std::int64_t const window = WindowSeconds();
+    book.TakeStanding(now, static_cast<std::int64_t>(sPlayerbotAIConfig.Auction.StandingSeconds));
     // The seconds since the last accrual, not PublishSeconds: the fixture's PublishNow publishes between two timers
     book.AccrueListingHours(now, now - accruedAt, window);
     accruedAt = now;
@@ -189,9 +191,9 @@ void LoadHistory()
     }
     HistoryCounts const counts = book.LoadHistory(rows, GameNow(), WindowSeconds());
     LOG_INFO("server.loading",
-             "Auction index: history loaded {} sales, {} expiries of {} items ({} rows read), {} records of {} rows "
-             "read ({} ms)",
-             counts.sales, counts.expiries, counts.items, rows.size(), recordsTaken, recordRows.size(),
+             "Auction index: history loaded {} sales, {} expiries, {} standing prices of {} items ({} rows read), {} "
+             "records of {} rows read ({} ms)",
+             counts.sales, counts.expiries, counts.standing, counts.items, rows.size(), recordsTaken, recordRows.size(),
              GetMSTimeDiffToNow(start));
 }
 
@@ -403,6 +405,14 @@ bool CreditListing(std::uint32_t item, double hours)
     return true;
 }
 
+std::size_t Backdate(std::uint32_t item, std::int64_t seconds)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex::Backdate");
+    std::size_t const moved = book.Backdate(item, seconds);
+    Publish();
+    return moved;
+}
+
 bool HandleIndexCommand(ChatHandler* handler, char const* args)
 {
     std::string text = args ? args : "";
@@ -433,12 +443,13 @@ bool HandleIndexCommand(ChatHandler* handler, char const* args)
     static ItemEntry const EMPTY;
     ItemEntry const* found = snapshot->Find(itemId);
     ItemEntry const& entry = found ? *found : EMPTY;
-    std::string const typical = entry.typical.sample ? std::to_string(entry.typical.unitPrice) : std::string("none");
+    std::string const typical = entry.typical.unitPrice ? std::to_string(entry.typical.unitPrice) : std::string("none");
     handler->PSendSysMessage(
-        "AUCTION index {} {}: offers {} (units {}, cheapest unit buyout {}), typical {} (sample {}, weight {:.2f}), "
-        "sales {}, expiries {}",
+        "AUCTION index {} {}: offers {} (units {}, cheapest unit buyout {}), typical {} (basis {}, sample {}, weight "
+        "{:.2f}), sales {}, expiries {}",
         itemId, proto->Name1, entry.offers.auctions, entry.offers.units, entry.offers.cheapestUnitBuyout, typical,
-        entry.typical.sample, entry.typical.weight, entry.typical.sample, entry.typical.expiries);
+        BasisWord(entry.typical.basis), entry.typical.sample, entry.typical.weight, entry.typical.sample,
+        entry.typical.expiries);
     // The records (AH.4) through the one sale chance rule; the kind from the template, so an unseen item shows its
     // kind's
     KindKey const kind = KindOfEntry(itemId);

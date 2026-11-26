@@ -19,8 +19,10 @@
 // The market a decision away from the auctioneer sees (auction house plan WA7a, PLAN 3.7, WA.4): per item the index's
 // typical price, which a bot knows anywhere, never the current offers, which only the auction visit reads. A path,
 // gathering or second-profession computation takes one view when its inputs are built (the published snapshot's
-// shared pointer, read on any thread) and asks it per item. No view, or an item without a typical price, is no market:
-// the decision is then the vendor-only one (the reference value is not a price anyone paid and is not read here).
+// shared pointer, read on any thread) and asks it per item. The typical price is recent sales, else the standing price
+// (AH.2): an item nobody sold or listed long enough to be seen in the window, or no view, is no market; the decision is
+// then the vendor-only one (the reference value is not a price anyone paid and is not read here). A standing price
+// nobody buys at fetches little: ProceedsEach weighs it by the sale chance, which its unsold hours lower.
 // Pure and std only: the selftests build views from their own snapshots.
 namespace Market
 {

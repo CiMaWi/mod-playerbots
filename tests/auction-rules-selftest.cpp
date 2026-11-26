@@ -34,6 +34,7 @@
 #include "AuctionMemory.h"
 #include "AuctionPricing.h"
 #include "AuctionRules.h"
+#include "MarketRules.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
 
@@ -932,6 +933,50 @@ void CheckStockWorth()
     Check(lifted.kind == AskResult::Kind::List && lifted.ask > 311 && lifted.expected > 260.0 && atHalf == 0,
           "stock: control: Ask lists the p = 1/2 lot at its floor above the evidence, worth more than the vendor; "
           "stock asks the evidence (caught)");
+}
+
+// AH8: a standing price nobody buys at fetches little. Linen whose only price is its lot of 311 that stood unsold
+// through 500 listing hours, its kind's too, is worth no more listed than the vendor's 260 (the sale chance near 0),
+// through the snapshot and the view a path reads; control: the same standing price with a record of 20 sales in 24
+// listing hours is worth listing
+void CheckStandingProceeds()
+{
+    AuctionConfig const config;
+    std::int64_t const now = 1800000000;
+    std::int64_t const window = static_cast<std::int64_t>(config.HistoryDays) * AuctionIndex::SECONDS_PER_DAY;
+    AuctionIndex::KindKey const kind = AuctionIndex::KindOf(7, 1, 0, 5);  // a trade good, common, item level 5
+    AuctionIndex::AuctionFacts facts;
+    facts.id = 1;
+    facts.item = LINEN;
+    facts.count = 1;
+    facts.startBid = 200;
+    facts.buyout = 311;
+    facts.endTime = now + AuctionIndex::SECONDS_PER_DAY;
+    facts.added = now - static_cast<std::int64_t>(config.StandingSeconds);
+    AuctionIndex::Book book;
+    book.Add(facts, kind);
+    book.CreditListing(LINEN, kind, 500.0, now, window);
+    book.TakeStanding(now, config.StandingSeconds);
+    book.Prune(now, window);
+    auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+    book.Fill(*snapshot, now, window);
+    Market::View view;
+    view.snapshot = snapshot;
+    view.fees = FACTION_FEES;
+    view.config = config;
+    AuctionIndex::ItemEntry const* entry = snapshot->Find(LINEN);
+    Check(entry && entry->typical.unitPrice == 311 && entry->typical.basis == AuctionIndex::PriceBasis::Offers,
+          "standing proceeds: the lot's 311 is linen's typical price, basis offers");
+    if (!entry)
+        return;
+    double const unsold = view.ProceedsOf(LINEN, 260);
+    double const sold =
+        Market::ProceedsEach(entry->typical, {20.0, 24.0}, snapshot->KindRecord(kind), 260, 1, FACTION_FEES, config);
+    std::cout << "standing proceeds of linen at 311 (vendor 260): 500 unsold hours " << unsold << ", 20 sales " << sold
+              << "\n";
+    Check(unsold <= 260.0 && view.SaleOf(LINEN, 260.0) == 260.0,
+          "standing proceeds: a standing price nobody buys at fetches no more than the vendor's 260");
+    Check(sold > 260.0, "standing proceeds: control: the same price with sales is worth listing (caught)");
 }
 
 bool Equal(AskResult const& a, AskResult const& b)
@@ -2551,6 +2596,7 @@ int main(int argc, char** argv)
     Search();
     CheckCases();
     CheckStockWorth();
+    CheckStandingProceeds();
     CheckMemory();
     CheckPricingHand();
     SearchPricing();

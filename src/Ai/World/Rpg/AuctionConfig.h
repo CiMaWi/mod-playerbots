@@ -29,6 +29,10 @@ struct AuctionConfig
     std::uint32_t SaveSeconds = 300;
     // Market.HistoryDays (1-60): days of sales and expiries an item's price history keeps
     std::uint32_t HistoryDays = 7;
+    // Market.StandingSeconds (60-86400): seconds an offer stands before its unit buyout is an item's standing price,
+    // the typical price of an item without a recent sale (AH8): a price a visitor would have seen, not a lot that
+    // flashed by
+    std::uint32_t StandingSeconds = 3600;
     // Bid.OpenMax (0-20): bids a bot holds at once on auctions it does not lead to buy out
     std::uint32_t OpenBidsMax = 3;
     // Post.UndercutPercent (0-50): percent a bot's ask lies below the cheapest competing buyout of the same item

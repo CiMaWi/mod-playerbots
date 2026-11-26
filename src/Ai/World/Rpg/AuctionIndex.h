@@ -43,6 +43,10 @@ KindKey KindOfEntry(std::uint32_t item);
 // its kind's, then publishes; false for an item without a kind or no hours
 bool CreditListing(std::uint32_t item, double hours);
 
+// World thread, the auction fixture's `stood` seam (AH8, test only): the item's offers taken that many seconds earlier,
+// then publishes, so their standing price is known without waiting; the offers moved
+std::size_t Backdate(std::uint32_t item, std::int64_t seconds);
+
 // playerbots auction index <item id or link>: prints an item's entry from the snapshot (read only) and its records with
 // the sale chance at 12, 24 and 48 h
 bool HandleIndexCommand(ChatHandler* handler, char const* args);

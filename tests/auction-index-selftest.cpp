@@ -315,7 +315,8 @@ bool SameTypical(Snapshot const& a, Snapshot const& b, std::uint32_t item)
     ItemEntry const* x = a.Find(item);
     ItemEntry const* y = b.Find(item);
     return x && y && x->typical.unitPrice == y->typical.unitPrice && x->typical.sample == y->typical.sample &&
-           x->typical.weight == y->typical.weight && x->typical.expiries == y->typical.expiries;
+           x->typical.weight == y->typical.weight && x->typical.expiries == y->typical.expiries &&
+           x->typical.basis == y->typical.basis;
 }
 
 bool SameRows(std::vector<HistoryRow> const& a, std::vector<HistoryRow> const& b)
@@ -899,6 +900,137 @@ void CheckLotFrontier()
     Check(BestPerUnit(unitFive, 4) != BestPerUnit(all, 4),
           "control: the cheapest five by unit miss the 4-stack a need of 4 buys for 72 (caught)");
 }
+// AH8 (PLAN 3.4): the standing price, the typical price of an item without a recent sale
+constexpr std::int64_t STANDING = 3600;
+
+AuctionFacts ListedAt(AuctionFacts facts, std::int64_t added)
+{
+    facts.added = added;
+    return facts;
+}
+
+// A publication as the server's: the standing pass, the window, the fill
+Snapshot Publish(Book& book, std::int64_t now)
+{
+    book.TakeStanding(now, STANDING);
+    return Take(book, now);
+}
+
+TypicalPrice TypicalOf(Snapshot const& snapshot, std::uint32_t item)
+{
+    ItemEntry const* entry = snapshot.Find(item);
+    return entry ? entry->typical : TypicalPrice{};
+}
+
+void CheckStanding()
+{
+    // After the standing time and not before: the stack's unit buyout; a lot without a buyout sets none
+    Book book;
+    book.Add(ListedAt(Auction(1, 1000, 4, 100, 400), NOW));  // unit 100
+    book.Add(ListedAt(Auction(2, 1000, 1, 10, 0), NOW - DAY));
+    TypicalPrice t = TypicalOf(Take(book, NOW + STANDING), 1000);
+    Check(t.unitPrice == 0 && t.basis == PriceBasis::None, "standing: without the pass no price (the older tests)");
+    t = TypicalOf(Publish(book, NOW + STANDING - 1), 1000);
+    Check(t.unitPrice == 0 && t.basis == PriceBasis::None,
+          "standing: a second short of the standing time no price; a lot without a buyout sets none");
+    t = TypicalOf(Publish(book, NOW + STANDING), 1000);
+    Check(t.unitPrice == 100 && t.basis == PriceBasis::Offers && t.sample == 0 && t.weight == 0.0,
+          "standing: at the standing time the stack's unit buyout 100, basis offers, no sale counted");
+
+    // A cheaper lot not yet stood leaves the price; a lot that came and went inside the standing time leaves none;
+    // control: the same lot kept takes over once it stood
+    book.Add(ListedAt(Auction(3, 1000, 1, 10, 60), NOW + STANDING));
+    t = TypicalOf(Publish(book, NOW + STANDING + 60), 1000);
+    Check(t.unitPrice == 100, "standing: a cheaper lot not yet stood leaves the price at 100");
+    Book flash;
+    flash.Add(ListedAt(Auction(10, 1001, 1, 10, 60), NOW));
+    flash.Add(ListedAt(Auction(11, 1002, 1, 10, 60), NOW));
+    for (std::int64_t at = NOW; at <= NOW + 2 * STANDING; at += 60)
+    {
+        if (at == NOW + STANDING - 60)
+            flash.Remove(10);
+        Publish(flash, at);
+    }
+    Snapshot const flashed = Take(flash, NOW + 2 * STANDING);
+    Check(TypicalOf(flashed, 1001).unitPrice == 0 && !flash.History(1001),
+          "standing: a lot that came and went inside the standing time leaves no price");
+    Check(TypicalOf(flashed, 1002).unitPrice == 60 && TypicalOf(flashed, 1002).basis == PriceBasis::Offers,
+          "standing: control: the same lot kept has its price (caught)");
+    t = TypicalOf(Publish(book, NOW + 2 * STANDING), 1000);
+    Check(t.unitPrice == 60, "standing: the cheaper lot takes over once it stood");
+
+    // The price outlives its offers by the window and no longer; control: a lot still standing renews it
+    Book gone;
+    Book stays;
+    for (Book* each : {&gone, &stays})
+    {
+        each->Add(ListedAt(Auction(20, 1003, 1, 10, 250), NOW));
+        Publish(*each, NOW + STANDING);
+    }
+    gone.Remove(20);
+    std::int64_t const seen = NOW + STANDING;
+    t = TypicalOf(Publish(gone, seen + DAY), 1003);
+    Check(t.unitPrice == 250 && t.basis == PriceBasis::Offers, "standing: the price stays after its offer went");
+    t = TypicalOf(Publish(gone, seen + WINDOW), 1003);
+    Check(t.unitPrice == 250 && gone.History(1003) && gone.History(1003)->standing.time == seen,
+          "standing: at the window's edge the price stays with the time it was last seen");
+    t = TypicalOf(Publish(gone, seen + WINDOW + 1), 1003);
+    Check(t.unitPrice == 0 && t.basis == PriceBasis::None && !gone.History(1003),
+          "standing: a second past the window the price and the item are gone");
+    t = TypicalOf(Publish(stays, seen + WINDOW + 1), 1003);
+    Check(t.unitPrice == 250, "standing: control: a lot still standing keeps the price past the window (caught)");
+
+    // Sales come first; once they leave the window the standing price is back
+    Book both;
+    both.Add(ListedAt(Auction(30, 1004, 1, 10, 300), NOW));
+    Publish(both, NOW + STANDING);
+    both.Sale(Bought(Auction(31, 1004, 1, 10, 500), 9), NOW + STANDING);
+    both.Remove(31);
+    t = TypicalOf(Publish(both, NOW + STANDING + 60), 1004);
+    Check(t.unitPrice == 500 && t.basis == PriceBasis::Sales && t.sample == 1, "standing: a recent sale comes first");
+    t = TypicalOf(Publish(both, NOW + STANDING + WINDOW + 1), 1004);
+    Check(t.unitPrice == 300 && t.basis == PriceBasis::Offers && t.sample == 0,
+          "standing: the sale gone from the window, the standing price is back");
+
+    // Save and load keep it: one row per item, Count 1, AuctionId 0
+    Book saved;
+    saved.Add(ListedAt(Auction(40, 1005, 5, 10, 1000), NOW));
+    Publish(saved, NOW + STANDING);
+    std::vector<HistoryRow> const rows = saved.ExportHistory();
+    Check(rows.size() == 1 && rows[0].item == 1005 && rows[0].kind == HISTORY_STANDING &&
+              rows[0].time == NOW + STANDING && rows[0].unitPrice == 200 && rows[0].count == 1 &&
+              rows[0].auctionId == 0,
+          "standing store: the export writes one standing row");
+    Book loaded;
+    HistoryCounts const counts = loaded.LoadHistory(rows, NOW + STANDING + 60, WINDOW);
+    Check(counts.standing == 1 && counts.items == 1 && counts.sales == 0 && !loaded.HistoryDirty(),
+          "standing store: the load counts it, the table clean");
+    Check(SameTypical(Take(saved, NOW + STANDING + 60), Take(loaded, NOW + STANDING + 60), 1005) &&
+              TypicalOf(Take(loaded, NOW + STANDING + 60), 1005).basis == PriceBasis::Offers &&
+              SameRows(rows, loaded.ExportHistory()),
+          "standing store: the round trip gives the same typical price and rows");
+
+    // An expired row is dropped, the edge kept, the later of two rows wins in any order, a future one is set to now, a
+    // row of no known kind or no price is skipped; each leaves the table due a rewrite
+    std::vector<HistoryRow> const stored = {
+        {1010, HISTORY_STANDING, NOW - WINDOW - 1, 70, 1, 0},
+        {1011, HISTORY_STANDING, NOW - WINDOW, 80, 1, 0},
+        {1012, HISTORY_STANDING, NOW - 50, 95, 1, 0},
+        {1012, HISTORY_STANDING, NOW - 100, 90, 1, 0},
+        {1013, HISTORY_STANDING, NOW + 500, 99, 1, 0},
+        {1014, 3, NOW, 5, 1, 0},
+        {1015, HISTORY_STANDING, NOW, 0, 1, 0},
+    };
+    Book odd;
+    HistoryCounts const oddCounts = odd.LoadHistory(stored, NOW, WINDOW);
+    Snapshot const oddSnapshot = Take(odd, NOW);
+    Check(!odd.History(1010) && TypicalOf(oddSnapshot, 1011).unitPrice == 80,
+          "standing store: older than the window dropped, the edge kept");
+    Check(TypicalOf(oddSnapshot, 1012).unitPrice == 95 && odd.History(1013) &&
+              odd.History(1013)->standing.time == NOW && !odd.History(1014) && !odd.History(1015),
+          "standing store: the later row wins, a future row set to now, unknown kind and no price skipped");
+    Check(oddCounts.standing == 3 && odd.HistoryDirty(), "standing store: three kept, the table due a rewrite");
+}
 }  // namespace
 
 int main()
@@ -913,6 +1045,7 @@ int main()
     CheckRecords();
     CheckRecordStore();
     CheckLotFrontier();
+    CheckStanding();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

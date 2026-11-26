@@ -656,6 +656,7 @@ private:
         facts.buyout = Copper32(ask.ask);
         facts.endTime = now + AuctionRules::ExpirySeconds(_market.fees, ask.hours);
         facts.houseId = _market.houseId;
+        facts.added = now;
         bool const relist = bot.memory.Of(lot.item).expiredSteps != 0;
         bot.money -= ask.deposit;
         _house[facts.id] = {facts, index, ask.deposit, ask};
@@ -899,8 +900,9 @@ private:
         }
     }
 
-    // AuctionIndex.cpp Publish: the alive auctions' bid and bidder, the history's window, a new snapshot; and the
-    // listing hours of the lots standing for the model time since the last publication (the server's own from AH6)
+    // AuctionIndex.cpp Publish: the alive auctions' bid and bidder, the standing prices (AH8), the history's window, a
+    // new snapshot; and the listing hours of the lots standing for the model time since the last publication (the
+    // server's own from AH6)
     void Publish(std::int64_t now)
     {
         _book.Refresh(
@@ -915,6 +917,7 @@ private:
             });
         std::int64_t const window =
             static_cast<std::int64_t>(_market.config.HistoryDays) * AuctionIndex::SECONDS_PER_DAY;
+        _book.TakeStanding(now, static_cast<std::int64_t>(_market.config.StandingSeconds));
         _book.Prune(now, window);
         _book.AccrueListingHours(now, now - _publishedAt, window);
         _publishedAt = now;

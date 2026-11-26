@@ -323,7 +323,7 @@ void TestAuctionWalk()
     Check(LoadConfigFamily(AuctionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.OpenBidsMax == 5 && config.FirstDurationHours == 48,
           "Auction: a value in range kept, one above its bound clamped with a warning");
-    Check(AuctionFamily.Rows.size() == 12, "Auction: twelve rows");
+    Check(AuctionFamily.Rows.size() == 13, "Auction: thirteen rows");
     Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
               AuctionWords::ChoiceWord(AuctionWords::Choice::Chance) == "chance" &&
               AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
