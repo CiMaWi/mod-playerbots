@@ -1553,7 +1553,7 @@ void MarketSearch()
             Node copy = node;
             for (std::size_t at = 0; at < copy.yields.size(); ++at)
                 copy.yields[at].otherCopper = static_cast<std::uint32_t>(
-                    Market::ProceedsEach(prices[at], copy.yields[at].vendorCopper, Market::MAX_LOT, {}, {}));
+                    Market::ProceedsEach(prices[at], {}, {}, copy.yields[at].vendorCopper, Market::MAX_LOT, {}, {}));
             return copy;
         };
         Node const none = priced(std::vector<AuctionIndex::TypicalPrice>(count));

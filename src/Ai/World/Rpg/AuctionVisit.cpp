@@ -291,8 +291,8 @@ uint32 ListUnits(PlayerbotAI* botAI, Item const* item)
     return StockUnits(keep);
 }
 
-// The ask for the stack's listed units at this house (PLAN 3.4): its fees, the cheapest competing buyout the index
-// saw, the seller's expiry memory
+// The ask for the stack's listed units at this house (PLAN 3.4): its fees, the index's evidence (the cheapest competing
+// buyout it saw, the item's and its kind's records), the seller's expiry memory
 AuctionRules::AskResult AskFor(Player* bot, Item const* item, uint32 units, uint8 houseId)
 {
     ItemTemplate const* proto = item->GetTemplate();
@@ -304,11 +304,14 @@ AuctionRules::AskResult AskFor(Player* bot, Item const* item, uint32 units, uint
         if (AuctionRules::ItemReference const* row = reference->Find(proto->ItemId))
             in.reference = row->copper;
     if (std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current())
-        if (AuctionIndex::ItemEntry const* entry = index->Find(proto->ItemId))
-        {
-            in.typical = entry->typical;
-            in.cheapestUnitBuyout = entry->offers.cheapestUnitBuyout;
-        }
+    {
+        AuctionIndex::Evidence const evidence = index->EvidenceOf(
+            proto->ItemId, AuctionIndex::KindOf(proto->Class, proto->Quality, proto->RequiredLevel, proto->ItemLevel));
+        in.typical = evidence.typical;
+        in.cheapestUnitBuyout = evidence.cheapestUnitBuyout;
+        in.itemRecord = evidence.item;
+        in.kindRecord = evidence.kind;
+    }
     AuctionMemory::ItemMemory const memory = AuctionMemory::Of(bot->GetGUID().GetCounter(), proto->ItemId);
     in.expiredSteps = memory.expiredSteps;
     in.quickSale = memory.quickSale;

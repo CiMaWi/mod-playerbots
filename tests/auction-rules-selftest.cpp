@@ -886,33 +886,46 @@ void CheckCases()
     std::cout << "cases: " << met << " of " << std::size(CASES) << " economy reference values met\n";
 }
 
+// An item record (sales, no listing hours) whose 24 h chance is p beside an empty kind: its rate is -ln(1 - p) / hours,
+// its kind's the starting rate for the item's first prior hours. For p at or above the start
+AuctionIndex::Record ChanceRecord(double p, double hours, AuctionConfig const& config)
+{
+    double const rate = -std::log(1.0 - p) / hours;
+    double const prior = static_cast<double>(config.ChanceItemPriorHours);
+    return {prior * (rate - StartRate(config)), 0.0};
+}
+
 // WA3a: what listing a lot as stock is worth. The case sale_expiry_threshold's lot terms follow from its sell total, so
-// one unit that sells for 260 with a typical price of 311 is its 20 linen; p from the history, (sales + 1) / (sales +
-// expiries + 2): 2 sales give 3/4, none 1/2, 24 sales and 8 expiries 25/34
+// one unit that sells for 260 with a typical price of 311 is its 20 linen, worth 160 + 136 p listed for 24 h (sold:
+// 311 less the cut 15; unsold: the vendor's 260 less the deposit 100): above the vendor's 260 from the break-even
+// p = 25/34. p from the records (AH5): none gives 1/2, two recent sales of the item lift it above the break-even, a
+// record planted at the break-even gives it
 void CheckStockWorth()
 {
     AuctionConfig const config;
-    auto lot = [](std::uint32_t sales, std::uint32_t expiries)
+    auto lot = [](AuctionIndex::Record const& item)
     {
         AskInput in = Lot(1, 260);
         in.typical.unitPrice = 311;
-        in.typical.sample = sales;
-        in.typical.weight = static_cast<double>(sales);
-        in.typical.expiries = expiries;
+        in.typical.sample = 2;
+        in.typical.weight = 2.0;
+        in.itemRecord = item;
         return in;
     };
-    AskInput const threeQuarters = lot(2, 0);
-    AskInput const half = lot(0, 0);
-    AskInput const parity = lot(24, 8);
-    Check(SaleChance(threeQuarters.typical) == 0.75 && SaleChance(half.typical) == 0.5 &&
-              Near(SaleChance(parity.typical), 25.0 / 34.0),
-          "stock: the planted histories give p = 3/4, 1/2 and 25/34");
-    std::uint32_t const atThreeQuarters = StockWorth(threeQuarters, config);
+    AskInput const sold = lot({2.0, 0.0});
+    AskInput const half = lot({});
+    AskInput const parity = lot(ChanceRecord(25.0 / 34.0, 24.0, config));
+    double const soldP = ListingChance(sold, config, 24);
+    Check(soldP > 25.0 / 34.0 && ListingChance(half, config, 24) == 0.5 &&
+              Near(ListingChance(parity, config, 24), 25.0 / 34.0),
+          "stock: the records give p = " + std::to_string(soldP) + " (2 sales), 1/2 (none) and 25/34 (planted)");
+    std::uint32_t const atSold = StockWorth(sold, config);
     std::uint32_t const atHalf = StockWorth(half, config);
     std::uint32_t const atParity = StockWorth(parity, config);
-    std::cout << "stock worth of the case's lot (vendor 260): p 3/4 " << atThreeQuarters << ", p 1/2 " << atHalf
+    std::cout << "stock worth of the case's lot (vendor 260): 2 sales " << atSold << ", no record " << atHalf
               << ", p 25/34 " << atParity << "\n";
-    Check(atThreeQuarters == 262, "stock: case sale_expiry_threshold at p = 3/4 is worth 262, above the vendor's 260");
+    Check(atSold > 260 && atSold == static_cast<std::uint32_t>(std::floor(ListingValue(soldP, 311, 15, 100, 260))),
+          "stock: case sale_expiry_threshold with 2 recent sales is worth its expected value, above the vendor's 260");
     Check(atHalf <= 260 && atParity <= 260,
           "stock: at p = 1/2 and at the break-even p = 25/34 the lot is worth no more than the vendor's 260");
     AskResult const lifted = Ask(half, config);
@@ -942,11 +955,13 @@ void CheckPricingHand()
     Check(Deposit(FACTION_FEES, 0, 20, SECONDS_24H) == 100 && Deposit(FACTION_FEES, 0, 1, SECONDS_48H) == 100,
           "no sell price: the minimum at any duration");
     Check(ExpirySeconds(FACTION_FEES, 24) == SECONDS_24H, "rate 1: a listing runs its nominal time");
-    Check(Near(SaleChance({}), 0.5), "no history: the sale chance 1/2");
-    AuctionIndex::TypicalPrice history;
-    history.sample = 5;
-    history.expiries = 1;
-    Check(Near(SaleChance(history), 0.75), "5 sales, 1 expiry: the sale chance 3/4");
+    Check(SaleChance({}, {}, 24.0, config) == 0.5 && SaleChance({}, {}, 48.0, config) == 0.75 &&
+              Near(SaleChance({}, {}, 12.0, config), 1.0 - std::sqrt(0.5)),
+          "no record: the starting rate, 1/2 at 24 h, 3/4 at 48 h, 0.29 at 12 h");
+    AuctionIndex::Record const unsold{0.0, 96.0};
+    Check(SaleChance(unsold, {}, 24.0, config) < 0.5 && SaleChance({}, unsold, 24.0, config) < 0.5 &&
+              SaleChance({1.0, 0.0}, {}, 24.0, config) > 0.5,
+          "unsold hours of the item or its kind lower the chance at 24 h below 1/2, a sale raises it");
 
     // The case's linen: worth listing at 3/4, not at 0.7 (planted beside the case)
     Check(WorthListing(0.75, 311, 15, 100, 260), "linen at 311: worth listing at p 3/4");
@@ -992,12 +1007,14 @@ void CheckPricingHand()
     ore.reference = 5;
     AskResult const atFloor = Ask(ore, config);
     ore.expiredSteps = 1;
-    ore.typical.expiries = 1;
+    ore.itemRecord.hours = 24.0;
+    ore.kindRecord.hours = 24.0;
     AskResult const afterExpiry = Ask(ore, config);
     Check(atFloor.kind == AskResult::Kind::List && atFloor.ask == atFloor.floor &&
               afterExpiry.kind == AskResult::Kind::Hold && afterExpiry.reason == Reason::BelowFloor &&
               afterExpiry.floor > atFloor.floor,
-          "a lot listed at the floor expired: the index's expiry lifts the floor, so it is held, not listed higher");
+          "a lot listed at the floor expired: its unsold hours in the records lift the floor, so it is held, not "
+          "listed higher");
     linen.expiredSteps = config.RelistLimit + 1;
     AskResult const spent = Ask(linen, config);
     Check(spent.kind == AskResult::Kind::Hold && spent.reason == Reason::Expired,
@@ -1088,6 +1105,15 @@ AuctionConfig RandomConfig(Dice& dice)
     return config;
 }
 
+// A record as the book weighs it: none, hours without a sale, or both
+AuctionIndex::Record RandomRecord(Dice& dice)
+{
+    if (dice.Pick(30))
+        return {};
+    double const sales = dice.Pick(40) ? 0.0 : dice.Real(0.01, 30.0);
+    return {sales, dice.Pick(10) ? 0.0 : dice.Real(0.01, 3000.0)};
+}
+
 AskInput RandomAsk(Dice& dice)
 {
     AskInput in;
@@ -1104,6 +1130,8 @@ AskInput RandomAsk(Dice& dice)
         in.typical.sample = dice.Range(1, 20);
     }
     in.typical.expiries = dice.Range(0, 12);
+    in.itemRecord = RandomRecord(dice);
+    in.kindRecord = RandomRecord(dice);
     if (dice.Pick(50))
         in.cheapestUnitBuyout = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(base * dice.Real(0.2, 2.0)));
     in.expiredSteps = dice.Pick(60) ? 0 : dice.Range(1, 5);
@@ -1125,8 +1153,7 @@ enum class AskFault
 
 AskResult AskVariant(AskInput const& in, AuctionConfig const& config, AskFault fault, std::uint32_t item = 0)
 {
-    double const p = SaleChance(in.typical);
-    std::uint64_t floor = AskFloor(in, config, p);
+    std::uint64_t floor = AskFloor(in, config);
     if (fault == AskFault::VendorFloor)
         floor = std::max({in.vendorPayout + 1, in.keepWorth, SellTotal(in)});
     std::uint64_t const lowest = floor == NEVER_LISTS ? SellTotal(in) : floor;
@@ -1153,7 +1180,7 @@ AskResult AskVariant(AskInput const& in, AuctionConfig const& config, AskFault f
         ask += item % 97 + 1;
     if (fault != AskFault::NoClamp)
         ask = std::max(ask, lowest);
-    return ListingTerms(in, config, p, floor, ask, below);
+    return ListingTerms(in, config, floor, ask, below);
 }
 
 // Invariant 2, recomputed here: a listing beats the vendor at its own terms
@@ -1427,8 +1454,8 @@ void SearchAsk(Dice& dice, PriceTally& rule, PriceTally& control, PriceCoverage&
     AskResult const vendorFloor = AskVariant(in, config, AskFault::VendorFloor);
     control.notWorth += vendorFloor.kind == AskResult::Kind::List && !ListsWorth(vendorFloor, in) ? 1 : 0;
 
-    // 6: after an expiry a lot is never listed higher, nor listed when it was held; the index counts the bot's own
-    // expiry too (the sale chance falls and the floor rises), or it lies outside the window
+    // 6: after an expiry a lot is never listed higher, nor listed when it was held; the records count the expired
+    // listing's unsold hours too (the sale chance falls and the floor rises), or they have decayed
     auto raised = [](AskResult const& before, AskResult const& after)
     { return after.kind == AskResult::Kind::List && (before.kind != AskResult::Kind::List || after.ask > before.ask); };
     for (std::uint32_t n = 0; n < 4; ++n)
@@ -1438,7 +1465,9 @@ void SearchAsk(Dice& dice, PriceTally& rule, PriceTally& control, PriceCoverage&
             now.expiredSteps = n;
             AskInput after = now;
             after.expiredSteps = n + 1;
-            after.typical.expiries += counted ? 1 : 0;
+            double const unsold = counted ? static_cast<double>(ListingHours(config, n)) : 0.0;
+            after.itemRecord.hours += unsold;
+            after.kindRecord.hours += unsold;
             rule.expiryRaises += raised(Ask(now, config), Ask(after, config)) ? 1 : 0;
             control.expiryRaises +=
                 raised(AskVariant(now, config, AskFault::StepUp), AskVariant(after, config, AskFault::StepUp)) ? 1 : 0;
@@ -1518,6 +1547,155 @@ void SearchMarket(Dice& dice, PriceTally& rule, PriceTally& control, PriceCovera
                     ? 1
                     : 0;
     }
+}
+
+// AH5: the sale chance from the records (AuctionPricing.h SaleChance) recomposed, and broken variants for the controls
+enum class ChanceFault
+{
+    None,
+    NoCurve,      // the rate times the hours, unbounded
+    HoursCount,   // listing hours read as demand
+    SaleAsHours,  // a sale read as unsold listing hours
+    ShortRuns,    // a longer listing given a shorter time to sell
+    KindIgnored,  // an item without a record at the starting rate, not its kind's
+    KindLiteral   // the kind's sales per listing hour without the starting rate as prior: it never drifts back
+};
+
+double ChanceVariant(AuctionIndex::Record item, AuctionIndex::Record kind, double hours, AuctionConfig const& config,
+                     ChanceFault fault)
+{
+    double const even = static_cast<double>(std::max<std::uint32_t>(config.ChanceEvenHours, 1));
+    if (fault == ChanceFault::SaleAsHours)
+    {
+        item = {0.0, item.hours + item.sales * even};
+        kind = {0.0, kind.hours + kind.sales * even};
+    }
+    if (fault == ChanceFault::KindIgnored && item.Empty())
+        kind = {};
+    if (fault == ChanceFault::ShortRuns)
+        hours = 2304.0 / hours;
+    if (!(hours > 0.0))
+        return 0.0;
+    if (item.Empty() && kind.Empty())
+        return 1.0 - std::exp2(-hours / even);
+    double kindRate = KindRate(kind, config);
+    if (fault == ChanceFault::KindLiteral && kind.hours > 0.0)
+        kindRate = kind.sales / kind.hours;
+    double const prior = static_cast<double>(std::max<std::uint32_t>(config.ChanceItemPriorHours, 1));
+    double rate = item.Empty() ? kindRate : (item.sales + prior * kindRate) / (item.hours + prior);
+    if (fault == ChanceFault::HoursCount)
+        rate += (item.hours + kind.hours) * 1e-4;
+    if (fault == ChanceFault::NoCurve)
+        return rate * hours;
+    return 1.0 - std::exp(-rate * hours);
+}
+
+struct ChanceTally
+{
+    int outside{0};     // C1: below 0 or above 1
+    int hoursRaise{0};  // C2: unsold listing hours raised it
+    int saleLowers{0};  // C3: a sale lowered it
+    int hoursFall{0};   // C4: a longer listing got less
+    int notKind{0};     // C5: an item without a record off its kind's chance
+    int noDrift{0};     // C6: a kind left alone did not return to the start as it decays
+};
+
+void SearchChanceOnce(Dice& dice, ChanceTally& rule, ChanceTally& control, int& recomposed)
+{
+    using AuctionIndex::Record;
+    AuctionConfig config;
+    config.ChanceEvenHours = dice.Range(6, 96);
+    config.ChanceKindPriorHours = dice.Range(1, 500);
+    config.ChanceItemPriorHours = dice.Range(1, 500);
+    Record const item = RandomRecord(dice);
+    Record const kind = RandomRecord(dice);
+    double const hours = dice.Real(0.5, 96.0);
+    double const longer = hours + dice.Real(0.1, 96.0);
+    double const unsold = dice.Real(0.5, 500.0);
+    recomposed +=
+        SaleChance(item, kind, hours, config) == ChanceVariant(item, kind, hours, config, ChanceFault::None) ? 0 : 1;
+    auto tally = [&](ChanceTally& into, ChanceFault outsideFault, ChanceFault hoursFault, ChanceFault saleFault,
+                     ChanceFault fallFault, ChanceFault kindFault, ChanceFault driftFault)
+    {
+        auto p = [&](Record const& i, Record const& k, double h, ChanceFault f)
+        { return ChanceVariant(i, k, h, config, f); };
+        double const at = p(item, kind, hours, outsideFault);
+        into.outside += at < 0.0 || at > 1.0 ? 1 : 0;
+        Record const itemUnsold{item.sales, item.hours + unsold};
+        Record const kindUnsold{kind.sales, kind.hours + unsold};
+        double const base = p(item, kind, hours, hoursFault);
+        into.hoursRaise += p(itemUnsold, kindUnsold, hours, hoursFault) > base ||
+                                   p(itemUnsold, kind, hours, hoursFault) > base ||
+                                   p(item, kindUnsold, hours, hoursFault) > base
+                               ? 1
+                               : 0;
+        Record const itemSold{item.sales + 1.0, item.hours};
+        Record const kindSold{kind.sales + 1.0, kind.hours};
+        double const before = p(item, kind, hours, saleFault);
+        into.saleLowers += p(itemSold, kindSold, hours, saleFault) < before ||
+                                   p(itemSold, kind, hours, saleFault) < before ||
+                                   p(item, kindSold, hours, saleFault) < before
+                               ? 1
+                               : 0;
+        into.hoursFall += p(item, kind, longer, fallFault) < p(item, kind, hours, fallFault) ? 1 : 0;
+        double const kindChance = kind.Empty() ? 1.0 - std::exp2(-hours / config.ChanceEvenHours)
+                                               : 1.0 - std::exp(-KindRate(kind, config) * hours);
+        into.notKind += std::abs(p({}, kind, hours, kindFault) - kindChance) > 1e-12 ? 1 : 0;
+        // A kind with hours and no further listings, weighed by 2^-k: never farther from the start than before, and
+        // at it once forgotten all but 2^-40
+        if (kind.hours > 0.0)
+        {
+            double const start = p({}, {}, hours, driftFault);
+            double last = 2.0;
+            bool drifts = true;
+            for (int k = 0; k <= 40; k += 4)
+            {
+                double const weight = std::exp2(-k);
+                double const away =
+                    std::abs(p({}, {kind.sales * weight, kind.hours * weight}, hours, driftFault) - start);
+                drifts = drifts && away <= last + 1e-15;
+                last = away;
+            }
+            into.noDrift += drifts && last < 1e-6 ? 0 : 1;
+        }
+    };
+    tally(rule, ChanceFault::None, ChanceFault::None, ChanceFault::None, ChanceFault::None, ChanceFault::None,
+          ChanceFault::None);
+    tally(control, ChanceFault::NoCurve, ChanceFault::HoursCount, ChanceFault::SaleAsHours, ChanceFault::ShortRuns,
+          ChanceFault::KindIgnored, ChanceFault::KindLiteral);
+}
+
+void SearchChance()
+{
+    ChanceTally rule;
+    ChanceTally control;
+    int recomposed = 0;
+    int draws = 0;
+    for (std::uint32_t const seed : SEEDS)
+    {
+        std::mt19937 rng(seed + 5);
+        Dice dice{rng};
+        for (int n = 0; n < 2000; ++n, ++draws)
+            SearchChanceOnce(dice, rule, control, recomposed);
+    }
+    std::cout << "sale chance search: " << draws << " draws; counterexamples (rule / control): bounds " << rule.outside
+              << "/" << control.outside << ", hours " << rule.hoursRaise << "/" << control.hoursRaise << ", sale "
+              << rule.saleLowers << "/" << control.saleLowers << ", longer " << rule.hoursFall << "/"
+              << control.hoursFall << ", kind " << rule.notKind << "/" << control.notKind << ", drift " << rule.noDrift
+              << "/" << control.noDrift << "; recomposed off " << recomposed << '\n';
+    Check(recomposed == 0, "the harness's sale chance equals SaleChance");
+    Check(rule.outside == 0, "C1. the sale chance lies within 0..1");
+    Check(control.outside > 0, "C1. control: the rate times the hours (caught)");
+    Check(rule.hoursRaise == 0, "C2. listing hours without a sale never raise the chance");
+    Check(control.hoursRaise > 0, "C2. control: listing hours read as demand (caught)");
+    Check(rule.saleLowers == 0, "C3. a sale never lowers the chance");
+    Check(control.saleLowers > 0, "C3. control: a sale read as unsold hours (caught)");
+    Check(rule.hoursFall == 0, "C4. the chance never falls with the listing's hours");
+    Check(control.hoursFall > 0, "C4. control: a longer listing given less time (caught)");
+    Check(rule.notKind == 0, "C5. an item without a record has its kind's chance");
+    Check(control.notKind > 0, "C5. control: an item without a record at the starting rate (caught)");
+    Check(rule.noDrift == 0, "C6. a kind with no further listings returns toward the start as its record decays");
+    Check(control.noDrift > 0, "C6. control: the kind's rate without the starting rate as prior (caught)");
 }
 
 void SearchPricing()
@@ -2087,7 +2265,8 @@ struct SampleItem
 void PrintAsks(std::vector<SampleItem> const& items, AuctionConfig const& config)
 {
     std::cout << "## Asks\n\nSituations: *reference* (no trades, not at the auctioneer) and *market* (typical price "
-                 "1.2 x reference from 5 sales and 1 expiry, cheapest buyout seen 1.1 x reference).\n\n";
+                 "1.2 x reference from 5 sales; the item's and its kind's records 5 sales in 144 listing hours; "
+                 "cheapest buyout seen 1.1 x reference).\n\n";
     std::cout << "| item | count | house | situation | V | reference/u | typical/u | cheapest/u | p | floor | ask | "
                  "start bid | hours | deposit | cut | net if sold | expected | decision | reason |\n";
     std::cout << "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
@@ -2102,7 +2281,8 @@ void PrintAsks(std::vector<SampleItem> const& items, AuctionConfig const& config
                     in.typical.unitPrice =
                         static_cast<std::uint32_t>(std::max<std::uint64_t>(item.reference * 6 / 5, 1));
                     in.typical.sample = 5;
-                    in.typical.expiries = 1;
+                    in.itemRecord = {5.0, 144.0};
+                    in.kindRecord = {5.0, 144.0};
                     in.cheapestUnitBuyout =
                         static_cast<std::uint32_t>(std::max<std::uint64_t>(item.reference * 11 / 10, 1));
                 }
@@ -2201,9 +2381,12 @@ void Decisions(Table const& table)
                  "configs); the goblin row (7) as the client data has it, deposit 25 % cut 15 %, for contrast. With "
                  "AllowTwoSide.Interaction.Auction every auctioneer uses row 7, which WA1a's world SQL makes 5/5 "
                  "once applied (WA3b). The core's formulas in binary32, the 100-copper minimum deposit.\n";
-    std::cout << "- [E] Sale chance p = (sales + 1) / (sales + expiries + 2) in the history window: 1/2 with no "
-                 "history. Undercut "
-              << config.UndercutPercent << " % under the cheapest buyout seen (only at the auctioneer); an expiry "
+    std::cout << "- [E] Sale chance p = 1 - e^(-rate x hours) over the listing's real hours; rate = the item's sales "
+                 "per listing hour, its kind's rate standing in for its first "
+              << config.ChanceItemPriorHours << " hours; the kind's, a starting rate (even odds at "
+              << config.ChanceEvenHours << " h) standing in for its first " << config.ChanceKindPriorHours
+              << " hours; records weighed by recency: 1/2 at 24 h without a record. Undercut " << config.UndercutPercent
+              << " % under the cheapest buyout seen (only at the auctioneer); an expiry "
               << "lowers the next ask " << config.RelistStepPercent << " %, a quick sale raises it as much; relist "
               << "limit " << config.RelistLimit << "; durations " << config.FirstDurationHours << " h first, "
               << config.RelistDurationHours << " h after an expiry (the shorter when the ask does not cover the "
@@ -2371,6 +2554,7 @@ int main(int argc, char** argv)
     CheckMemory();
     CheckPricingHand();
     SearchPricing();
+    SearchChance();
     SearchBuying();
     Tables(argc > 1 ? argv[1] : ".");
     std::cout << "auction-rules: " << passed << " passed, " << failed << " failed\n";

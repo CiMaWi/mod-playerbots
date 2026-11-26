@@ -189,12 +189,44 @@ inline std::uint64_t ListFloor(Fees const& fees, double p, std::uint32_t sellPri
 constexpr std::uint32_t START_BID_PERCENT = 80;  // [E] the start bid's share of the buyout, never below the floor
 constexpr std::uint32_t OUTCOME_STEPS_MAX = 64;  // expiries counted for the step down; more change nothing
 
-// [E] The chance a listing sells, from the item's sales and expiries in the window with one pseudo-observation of
-// each: no history gives 1/2
-inline double SaleChance(AuctionIndex::TypicalPrice const& typical)
+// ---- the sale chance (PLAN 3.3, AH.4) ----
+// Rates are sales (lots) per lot hour listed. A kind never listed sells at the starting rate, chosen so that a listing
+// of Chance.EvenHours sells at even odds
+inline double StartRate(AuctionConfig const& config)
 {
-    return (static_cast<double>(typical.sample) + 1.0) /
-           (static_cast<double>(typical.sample) + static_cast<double>(typical.expiries) + 2.0);
+    return std::log(2.0) / static_cast<double>(std::max<std::uint32_t>(config.ChanceEvenHours, 1));
+}
+
+// The kind's sales per listing hour, the starting rate standing in for its first Chance.KindPriorHours: a kind nobody
+// buys falls, and drifts back to the start as its record decays
+inline double KindRate(AuctionIndex::Record const& kind, AuctionConfig const& config)
+{
+    if (kind.Empty())
+        return StartRate(config);
+    double const prior = static_cast<double>(std::max<std::uint32_t>(config.ChanceKindPriorHours, 1));
+    return (kind.sales + prior * StartRate(config)) / (kind.hours + prior);
+}
+
+// The item's, its kind's rate standing in for its first Chance.ItemPriorHours: an item with a long record of its own
+// is judged by it, one without by its kind
+inline double ItemRate(AuctionIndex::Record const& item, AuctionIndex::Record const& kind, AuctionConfig const& config)
+{
+    if (item.Empty())
+        return KindRate(kind, config);
+    double const prior = static_cast<double>(std::max<std::uint32_t>(config.ChanceItemPriorHours, 1));
+    return (item.sales + prior * KindRate(kind, config)) / (item.hours + prior);
+}
+
+// The chance a listing standing `hours` (its real hours, ExpirySeconds) sells: 1 - e^(-rate x hours). Without any
+// record, 1 - 2^(-hours / even hours) in exact steps: 1/2 at 24 h, 3/4 at 48 h
+inline double SaleChance(AuctionIndex::Record const& item, AuctionIndex::Record const& kind, double hours,
+                         AuctionConfig const& config)
+{
+    if (!(hours > 0.0))
+        return 0.0;
+    if (item.Empty() && kind.Empty())
+        return 1.0 - std::exp2(-hours / static_cast<double>(std::max<std::uint32_t>(config.ChanceEvenHours, 1)));
+    return 1.0 - std::exp(-ItemRate(item, kind, config) * hours);
 }
 
 struct AskInput
@@ -205,6 +237,8 @@ struct AskInput
     std::uint64_t keepWorth{0};     // the lot, to the bot
     std::uint64_t reference{0};     // per unit, ItemReference::copper; 0 none
     AuctionIndex::TypicalPrice typical;
+    AuctionIndex::Record itemRecord;      // the sale chance's evidence (Snapshot::EvidenceOf)
+    AuctionIndex::Record kindRecord;      // the item's kind's
     std::uint32_t cheapestUnitBuyout{0};  // at the auctioneer only; 0 none seen
     std::uint32_t expiredSteps{0};        // the bot's expiries of this item since its last sale
     bool quickSale{false};                // its last listing of the item sold quickly
@@ -248,13 +282,22 @@ inline std::uint32_t ShorterHours(AuctionConfig const& config)
     return std::min(DurationHours(config.FirstDurationHours), DurationHours(config.RelistDurationHours));
 }
 
-// The floor holds at the shorter of the two durations (the smaller deposit), so an expiry never lifts it; it reads
-// no offers, so offers never lift it either. A listing runs the shorter duration when its ask is not worth the
-// longer one's deposit
-inline std::uint64_t AskFloor(AskInput const& in, AuctionConfig const& config, double p)
+// The lot's sale chance listed for `hours` (a duration the client offers), at the real hours the core lets it stand
+inline double ListingChance(AskInput const& in, AuctionConfig const& config, std::uint32_t hours)
 {
+    return SaleChance(in.itemRecord, in.kindRecord,
+                      static_cast<double>(ExpirySeconds(in.fees, hours)) / static_cast<double>(SECONDS_PER_HOUR),
+                      config);
+}
+
+// The floor holds at the shorter of the two durations, its chance and deposit, whatever the bot's expiries, so its
+// own expiries never lift it; it reads no offers, so offers never lift it either. A listing runs the shorter duration
+// when its ask is not worth the longer one's deposit
+inline std::uint64_t AskFloor(AskInput const& in, AuctionConfig const& config)
+{
+    std::uint32_t const hours = ShorterHours(config);
     std::uint64_t const listing =
-        ListFloor(in.fees, p, in.sellPrice, Units(in.count), in.vendorPayout, ShorterHours(config));
+        ListFloor(in.fees, ListingChance(in, config, hours), in.sellPrice, Units(in.count), in.vendorPayout, hours);
     if (listing == NEVER_LISTS)
         return NEVER_LISTS;
     return std::max({listing, in.keepWorth, SellTotal(in)});
@@ -286,23 +329,24 @@ inline std::uint64_t UndercutAsk(std::uint32_t cheapestUnitBuyout, std::uint32_t
     return lot * (100 - std::min<std::uint32_t>(percent, 100)) / 100;
 }
 
-// The terms of a decided ask: duration, deposit, cut, start bid and the expected value; it lists unless the price
-// or the offers sit below the floor, no ask is worth listing or the item expired more often than the relist limit
-inline AskResult ListingTerms(AskInput const& in, AuctionConfig const& config, double p, std::uint64_t floor,
-                              std::uint64_t ask, bool belowFloor)
+// The terms of a decided ask: duration, its sale chance, deposit, cut, start bid and the expected value; it lists
+// unless the price or the offers sit below the floor, no ask is worth listing or the item expired more often than the
+// relist limit
+inline AskResult ListingTerms(AskInput const& in, AuctionConfig const& config, std::uint64_t floor, std::uint64_t ask,
+                              bool belowFloor)
 {
     AskResult result;
-    result.p = p;
     result.floor = floor;
     result.ask = std::min(ask, MAX_LOT_PRICE);
     std::uint32_t const wanted = ListingHours(config, in.expiredSteps);
     std::uint32_t const shorter = ShorterHours(config);
-    bool const wantedPays = wanted == shorter ||
-                            ListFloor(in.fees, p, in.sellPrice, Units(in.count), in.vendorPayout, wanted) <= result.ask;
+    bool const wantedPays = wanted == shorter || ListFloor(in.fees, ListingChance(in, config, wanted), in.sellPrice,
+                                                           Units(in.count), in.vendorPayout, wanted) <= result.ask;
     result.hours = wantedPays ? wanted : shorter;
+    result.p = ListingChance(in, config, result.hours);
     result.deposit = Deposit(in.fees, in.sellPrice, Units(in.count), result.hours * SECONDS_PER_HOUR);
     result.cut = Cut(in.fees, static_cast<std::uint32_t>(result.ask));
-    result.expected = ListingValue(p, result.ask, result.cut, result.deposit, in.vendorPayout);
+    result.expected = ListingValue(result.p, result.ask, result.cut, result.deposit, in.vendorPayout);
     std::uint64_t const share = result.ask * START_BID_PERCENT / 100;
     result.startBid = std::clamp<std::uint64_t>(floor == NEVER_LISTS ? share : std::max(share, floor), 1,
                                                 std::max<std::uint64_t>(result.ask, 1));
@@ -320,12 +364,11 @@ inline AskResult ListingTerms(AskInput const& in, AuctionConfig const& config, d
 
 // What a bot asks for a lot (PLAN 3.4): the evidence, lowered to undercut the cheapest competing buyout seen, never
 // below the floor (worth listing, the keep worth, the vendor sell price); offers below the floor make it hold. After
-// an expiry the lot goes lower by a step down to the floor and is held below it, never lifted to it: the index counts
-// the expiry, which lowers p and lifts the floor, so lifting would raise the next ask (WA2 review)
+// an expiry the lot goes lower by a step down to the floor and is held below it, never lifted to it: the records count
+// the unsold listing hours, which lower p and lift the floor, so lifting would raise the next ask (WA2 review)
 inline AskResult Ask(AskInput const& in, AuctionConfig const& config)
 {
-    double const p = SaleChance(in.typical);
-    std::uint64_t const floor = AskFloor(in, config, p);
+    std::uint64_t const floor = AskFloor(in, config);
     std::uint64_t const lowest = floor == NEVER_LISTS ? SellTotal(in) : floor;
     std::uint64_t ask = EvidenceAsk(in, config);
     bool belowFloor = false;
@@ -337,7 +380,7 @@ inline AskResult Ask(AskInput const& in, AuctionConfig const& config)
     }
     if (in.expiredSteps && ask < lowest)
         belowFloor = true;
-    return ListingTerms(in, config, p, floor, std::max(ask, lowest), belowFloor);
+    return ListingTerms(in, config, floor, std::max(ask, lowest), belowFloor);
 }
 
 // ---- what a vendor pays and stock (WA3a, WA.17) ----

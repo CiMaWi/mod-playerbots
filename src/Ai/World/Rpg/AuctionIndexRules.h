@@ -108,6 +108,44 @@ struct TypicalPrice
     std::uint32_t expiries = 0;   // expiries in the window
 };
 
+// What the house saw of an item or a kind selling (PLAN 3.3, AH.4): lots sold and lot hours listed, each weighed by
+// recency as the sales' prices are (half the window as half-life); a snapshot's are weighed to its publication.
+// AuctionRules::SaleChance reads them
+struct Record
+{
+    double sales = 0.0;  // lots
+    double hours = 0.0;  // lot hours listed
+
+    [[nodiscard]] bool Empty() const { return !(sales > 0.0) && !(hours > 0.0); }
+};
+
+constexpr std::uint32_t KIND_BAND_LEVELS = 10;         // [E] levels per band
+constexpr std::uint32_t KIND_KNOWN = 1u << 24;         // set in every resolved code
+constexpr std::uint32_t KIND_BY_ITEM_LEVEL = 1u << 7;  // the band is the item level's
+constexpr std::uint32_t KIND_BAND_MAX = KIND_BY_ITEM_LEVEL - 1;
+constexpr double RECORD_FORGET = 0.01;  // a record below this many lots and lot hours is forgotten
+
+// An item's kind (AH.4): class, quality and level band in one code. 0: not resolved, so it feeds no record (the
+// server resolves no offer's kind before AH6)
+struct KindKey
+{
+    std::uint32_t code = 0;
+
+    [[nodiscard]] bool Known() const { return code != 0; }
+    bool operator==(KindKey const&) const = default;
+};
+
+// [E] The band is the required level's ten levels. An item without a required level (trade goods, most consumables,
+// starting gear) is banded by its item level instead, in bands of their own: an item level is no character level
+inline KindKey KindOf(std::uint32_t itemClass, std::uint32_t quality, std::uint32_t requiredLevel,
+                      std::uint32_t itemLevel)
+{
+    bool const byItemLevel = !requiredLevel;
+    std::uint32_t const band = std::min((byItemLevel ? itemLevel : requiredLevel) / KIND_BAND_LEVELS, KIND_BAND_MAX);
+    return {KIND_KNOWN | (std::min<std::uint32_t>(itemClass, 0xFF) << 16) |
+            (std::min<std::uint32_t>(quality, 0xFF) << 8) | (byItemLevel ? KIND_BY_ITEM_LEVEL : 0) | band};
+}
+
 // View 2 (WA.4), for the auction visit only: what the house lists now
 struct CurrentOffers
 {
@@ -121,6 +159,18 @@ struct ItemEntry
 {
     TypicalPrice typical;
     CurrentOffers offers;
+    Record record;  // the item's own
+    KindKey kind;   // its kind as the book resolved it; none before AH6
+};
+
+// An item's evidence for an ask (PLAN 3.3, 3.10): its typical price, the cheapest standing buyout (the auction visit's
+// only, R1), its record and its kind's
+struct Evidence
+{
+    TypicalPrice typical;
+    std::uint32_t cheapestUnitBuyout = 0;
+    Record item;
+    Record kind;
 };
 
 // One publication: immutable once published, read through AuctionIndex::Current() on any thread
@@ -138,24 +188,51 @@ struct Snapshot
     std::uint32_t startupAuctions = 0;
     std::uint32_t startupHouses = 0;
     std::uint32_t walkMs = 0;
+    // The kinds' records, by KindKey::code
+    std::unordered_map<std::uint32_t, Record> kinds;
 
     ItemEntry const* Find(std::uint32_t item) const
     {
         auto const it = items.find(item);
         return it == items.end() ? nullptr : &it->second;
     }
+
+    [[nodiscard]] Record KindRecord(KindKey kind) const
+    {
+        auto const it = kinds.find(kind.code);
+        return it == kinds.end() ? Record{} : it->second;
+    }
+
+    // For a caller holding the item's template values: kind = KindOf(class, quality, required level, item level), so
+    // an item the house never saw still has its kind's record. Two lookups
+    [[nodiscard]] Evidence EvidenceOf(std::uint32_t item, KindKey kind) const
+    {
+        Evidence evidence;
+        if (ItemEntry const* entry = Find(item))
+        {
+            evidence.typical = entry->typical;
+            evidence.cheapestUnitBuyout = entry->offers.cheapestUnitBuyout;
+            evidence.item = entry->record;
+        }
+        evidence.kind = KindRecord(kind);
+        return evidence;
+    }
 };
 
 // The world thread's book: offers keyed by auction id under their item, and each item's history. A Successful or an
 // Expire records the outcome and drops the offer; the Remove that follows it is the same auction's end, a Remove
-// with no outcome before it is a cancel.
+// with no outcome before it is a cancel. The records (PLAN 3.3) are fed only for items added with a known kind: a sale
+// at its hook, listing hours at each publish (AccrueListingHours)
 class Book
 {
 public:
-    void Add(AuctionFacts const& facts)
+    void Add(AuctionFacts const& facts, KindKey kind = {})
     {
         Drop(facts.id);
-        _items[facts.item].offers[facts.id] = facts;
+        ItemBook& book = _items[facts.item];
+        book.offers[facts.id] = facts;
+        if (kind.Known())
+            book.kind = kind;
         _itemOfAuction[facts.id] = facts.item;
     }
 
@@ -167,7 +244,13 @@ public:
         record.unitPrice = UnitPrice(facts.bid ? facts.bid : facts.buyout, facts.count);
         record.count = facts.count;
         record.auctionId = facts.id;
-        InsertCapped(_items[facts.item].history.sales, record, SALES_MAX);
+        ItemBook& book = _items[facts.item];
+        InsertCapped(book.history.sales, record, SALES_MAX);
+        if (book.kind.Known())
+        {
+            Credit(book.record, now, 1.0, 0.0, _recordHalfLife);
+            Credit(_kinds[book.kind.code], now, 1.0, 0.0, _recordHalfLife);
+        }
         _outcomes.push_back(facts.id);
         ++_sales;
         _historyDirty = true;
@@ -220,11 +303,31 @@ public:
         }
     }
 
-    // History older than the window goes, then items with nothing left; an outcome whose Remove never came is
-    // forgotten (the core removes right after the outcome hook, so none is pending between two publications)
+    // At a publish: every lot standing adds the interval's hours to its item's record and its kind's, for items of a
+    // known kind; a lot sold or expired since the last publish adds none. AH6 calls it; the harnesses until then
+    void AccrueListingHours(std::int64_t now, std::int64_t seconds, std::int64_t windowSeconds)
+    {
+        constexpr double secondsPerHour = 3600.0;
+        _recordHalfLife = HalfLife(windowSeconds);
+        if (seconds <= 0)
+            return;
+        for (auto& [item, book] : _items)
+        {
+            if (!book.kind.Known() || book.offers.empty())
+                continue;
+            double const lotHours = static_cast<double>(seconds) / secondsPerHour * book.offers.size();
+            Credit(book.record, now, 0.0, lotHours, _recordHalfLife);
+            Credit(_kinds[book.kind.code], now, 0.0, lotHours, _recordHalfLife);
+        }
+    }
+
+    // History older than the window goes, then items with nothing left (no offer, no history, a forgotten record) and
+    // forgotten kinds; an outcome whose Remove never came is forgotten (the core removes right after the outcome hook,
+    // so none is pending between two publications)
     void Prune(std::int64_t now, std::int64_t windowSeconds)
     {
         std::int64_t const oldest = now - windowSeconds;
+        _recordHalfLife = HalfLife(windowSeconds);
         for (auto it = _items.begin(); it != _items.end();)
         {
             ItemHistory& history = it->second.history;
@@ -234,11 +337,13 @@ public:
                 std::erase_if(history.expiries, [oldest](ExpiryRecord const& expiry) { return expiry.time < oldest; });
             if (erased)
                 _historyDirty = true;
-            if (it->second.offers.empty() && history.sales.empty() && history.expiries.empty())
+            if (it->second.offers.empty() && history.sales.empty() && history.expiries.empty() &&
+                Forgotten(it->second.record, now, _recordHalfLife))
                 it = _items.erase(it);
             else
                 ++it;
         }
+        std::erase_if(_kinds, [this, now](auto const& kind) { return Forgotten(kind.second, now, _recordHalfLife); });
         _outcomes.clear();
     }
 
@@ -252,12 +357,18 @@ public:
         out.expiries = _expiries;
         out.cancels = _cancels;
         out.vanished = _vanished;
+        double const halfLife = HalfLife(windowSeconds);
         for (auto const& [item, book] : _items)
         {
             ItemEntry& entry = out.items[item];
             FillOffers(entry.offers, book.offers);
             FillTypical(entry.typical, book.history, now, windowSeconds);
+            entry.record = WeighedAt(book.record, now, halfLife);
+            entry.kind = book.kind;
         }
+        out.kinds.reserve(_kinds.size());
+        for (auto const& [code, recorded] : _kinds)
+            out.kinds[code] = WeighedAt(recorded, now, halfLife);
     }
 
     ItemHistory const* History(std::uint32_t item) const
@@ -321,11 +432,58 @@ public:
     void MarkHistorySaved() { _historyDirty = false; }
 
 private:
+    // A record weighed to its time
+    struct Recorded
+    {
+        Record record;
+        std::int64_t time = 0;
+    };
+
     struct ItemBook
     {
         std::map<std::uint32_t, OfferLine> offers;  // by auction id
         ItemHistory history;
+        KindKey kind;
+        Recorded record;
     };
+
+    // Half the window, as the typical price weighs its sales
+    static double HalfLife(std::int64_t windowSeconds)
+    {
+        return static_cast<double>(std::max<std::int64_t>(windowSeconds / 2, 1));
+    }
+
+    static double Weight(std::int64_t age, double halfLife)
+    {
+        return std::exp2(-static_cast<double>(std::max<std::int64_t>(age, 0)) / halfLife);
+    }
+
+    static Record WeighedAt(Recorded const& recorded, std::int64_t now, double halfLife)
+    {
+        double const weight = Weight(now - recorded.time, halfLife);
+        return {recorded.record.sales * weight, recorded.record.hours * weight};
+    }
+
+    // Weighs the record to now, then adds; an event older than the record's time (hooks out of order) counts its age
+    static void Credit(Recorded& recorded, std::int64_t now, double sales, double hours, double halfLife)
+    {
+        if (recorded.record.Empty())
+            recorded.time = now;
+        else if (now > recorded.time)
+        {
+            recorded.record = WeighedAt(recorded, now, halfLife);
+            recorded.time = now;
+        }
+        double const weight = Weight(recorded.time - now, halfLife);
+        recorded.record.sales += sales * weight;
+        recorded.record.hours += hours * weight;
+    }
+
+    static bool Forgotten(Recorded const& recorded, std::int64_t now, double halfLife)
+    {
+        Record const record = WeighedAt(recorded, now, halfLife);
+        return record.sales < RECORD_FORGET && record.hours < RECORD_FORGET;
+    }
 
     // Ordered for a deterministic snapshot: cheapest unit buyout first, then by the unit of the next bid, then id
     static std::tuple<bool, std::uint32_t, std::uint32_t> LineKey(OfferLine const& line)
@@ -507,6 +665,8 @@ private:
     std::map<std::uint32_t, ItemBook> _items;
     std::unordered_map<std::uint32_t, std::uint32_t> _itemOfAuction;  // listed auctions only
     std::vector<std::uint32_t> _outcomes;                             // Successful or Expire seen, its Remove not yet
+    std::unordered_map<std::uint32_t, Recorded> _kinds;               // by KindKey::code
+    double _recordHalfLife = HalfLife(7 * SECONDS_PER_DAY);  // the last Prune's or accrual's; the default window's
     std::uint64_t _sales = 0;
     std::uint64_t _expiries = 0;
     std::uint64_t _cancels = 0;

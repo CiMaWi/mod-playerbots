@@ -42,6 +42,13 @@ struct AuctionConfig
     // expiry; the core takes 12, 24 or 48, the poster uses the longest of them not above the value
     std::uint32_t FirstDurationHours = 24;
     std::uint32_t RelistDurationHours = 48;
+    // Chance.EvenHours (1-240): hours a listing of a kind the house never saw stands to sell at even odds: the
+    // starting rate of the sale chance (AuctionRules::StartRate)
+    std::uint32_t ChanceEvenHours = 24;
+    // Chance.KindPriorHours (1-1000): listing hours of a kind the starting rate stands in for
+    std::uint32_t ChanceKindPriorHours = 48;
+    // Chance.ItemPriorHours (1-1000): listing hours of an item its kind's rate stands in for
+    std::uint32_t ChanceItemPriorHours = 48;
 };
 
 extern ConfigFamily<AuctionConfig> const AuctionFamily;

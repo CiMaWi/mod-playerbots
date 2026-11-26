@@ -8,6 +8,7 @@
 // sales, expiries, cancels; stacks of different counts) against the expected offers, unit prices, medians and counts.
 // A seeded search over hook streams checks the invariants against a plain model. Exit code 1 on a failed check.
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -17,6 +18,7 @@
 #include <string>
 
 #include "AuctionIndexRules.h"
+#include "AuctionPricing.h"
 
 namespace
 {
@@ -71,6 +73,8 @@ Snapshot Take(Book& book, std::int64_t now = NOW)
 }
 
 ItemEntry const* Item(Snapshot const& snapshot, std::uint32_t item) { return snapshot.Find(item); }
+
+bool Near(double a, double b) { return std::abs(a - b) <= 1e-9 * std::max(1.0, std::abs(b)); }
 
 void CheckRounding()
 {
@@ -486,7 +490,8 @@ enum class StreamFault
     None,
     SaleAsCancel,  // one sale fed as a bare Remove: "counters"
     LostAdd,       // one listing never reaches the book: "offers"
-    StaleSale      // one sale older than the window, counted by the model: "sample"
+    StaleSale,     // one sale older than the window, counted by the model: "sample"
+    KindedAdd      // one listing given a kind, so its item's sales feed records the hooks must not feed yet: "records"
 };
 
 struct StreamModel
@@ -506,8 +511,10 @@ std::string StreamMismatch(Snapshot const& snapshot, StreamModel const& model)
         ++offersOf[item];
     bool offers = snapshot.auctions == model.live.size();
     bool sample = true;
+    bool records = snapshot.kinds.empty();  // the stream's adds carry no kind, as the server's before AH6
     for (auto const& [item, entry] : snapshot.items)
     {
+        records = records && entry.record.Empty() && !entry.kind.Known();
         auto const listed = offersOf.find(item);
         offers = offers && entry.offers.auctions == (listed == offersOf.end() ? 0u : listed->second);
         for (OfferLine const& line : entry.offers.cheapest)
@@ -522,7 +529,8 @@ std::string StreamMismatch(Snapshot const& snapshot, StreamModel const& model)
         sample = sample && snapshot.Find(item) != nullptr;
     bool const counters =
         snapshot.sales == model.sales && snapshot.expiries == model.expiries && snapshot.cancels == model.cancels;
-    return std::string(offers ? "" : "offers ") + (counters ? "" : "counters ") + (sample ? "" : "sample ");
+    return std::string(offers ? "" : "offers ") + (counters ? "" : "counters ") + (sample ? "" : "sample ") +
+           (records ? "" : "records ");
 }
 
 // The first mismatch of a seeded stream, "" when none; the seed and step say where to replay it
@@ -544,9 +552,11 @@ std::string PlayStream(std::uint32_t seed, StreamFault fault)
             std::uint32_t const count = 1 + rng() % 20;
             std::uint32_t const startBid = 5 + rng() % 50;
             std::uint32_t const buyout = rng() % 4 ? 10 + rng() % 5000 : 0;
-            if (fault != StreamFault::LostAdd || faulted)
+            if (fault == StreamFault::KindedAdd && !faulted)
+                book.Add(Auction(nextId, item, count, startBid, buyout), KindOf(4, 2, 25, 30));
+            else if (fault != StreamFault::LostAdd || faulted)
                 book.Add(Auction(nextId, item, count, startBid, buyout));
-            faulted = faulted || fault == StreamFault::LostAdd;
+            faulted = faulted || fault == StreamFault::LostAdd || fault == StreamFault::KindedAdd;
             model.live[nextId++] = item;
         }
         else
@@ -607,6 +617,101 @@ void CheckSeededStreams()
           "negative control: a listing the book never saw breaks the offers");
     Check(PlayStream(20261125u, StreamFault::StaleSale).find("sample") != std::string::npos,
           "negative control: a sale outside the window breaks the sample");
+    Check(PlayStream(20261125u, StreamFault::KindedAdd).find("records") != std::string::npos,
+          "negative control: a listing given a kind feeds records");
+}
+
+// A book with `items` items of one kind (pooled) or of a kind each, each listed once for 24 h and expired unsold
+Book ListedUnsold(KindKey kind, std::uint32_t items, bool pooled)
+{
+    Book book;
+    for (std::uint32_t i = 0; i < items; ++i)
+        book.Add(Auction(100 + i, 5000 + i, 1, 10, 20), pooled ? kind : KindKey{KIND_KNOWN | (0xFF0000u - i)});
+    for (std::int64_t hour = 1; hour <= 24; ++hour)
+        book.AccrueListingHours(NOW + hour * 3600, 3600, WINDOW);
+    for (std::uint32_t i = 0; i < items; ++i)
+    {
+        book.Expire(Auction(100 + i, 5000 + i, 1, 10, 20), NOW + 24 * 3600);
+        book.Remove(100 + i);
+    }
+    return book;
+}
+
+// AH5: the records (PLAN 3.3). Only offers of a known kind feed them: listing hours at each accrual (lots standing
+// times the interval), a sale at its hook, to the item and its kind. They outlive the history's prune, are weighed with
+// half the window as half-life and forgotten at last. Items of one kind listed and unsold lower the next one's chance
+// (control: a kind per item leaves it at the start), which drifts back to the start as the kind's record decays
+void CheckRecords()
+{
+    AuctionConfig const config;
+    KindKey const green = KindOf(4, 2, 25, 30);
+    Check(green.Known() && green == KindOf(4, 2, 29, 40) && !(green == KindOf(4, 2, 30, 30)) &&
+              !(green == KindOf(4, 3, 25, 30)) && !(green == KindOf(2, 2, 25, 30)) &&
+              !(KindOf(7, 1, 0, 25) == KindOf(7, 1, 25, 25)) && KindOf(7, 1, 0, 25) == KindOf(7, 1, 0, 29),
+          "kind: class, quality and the required level's ten-level band; none required: the item level's, apart");
+
+    Book plain;
+    plain.Add(Auction(1, 100, 1, 10, 20));
+    plain.AccrueListingHours(NOW, 3600, WINDOW);
+    plain.Sale(Bought(Auction(1, 100, 1, 10, 20), 9), NOW);
+    plain.Remove(1);
+    Snapshot s = Take(plain);
+    Check(Item(s, 100) && Item(s, 100)->record.Empty() && s.kinds.empty(),
+          "no kind (the server's hooks before AH6): neither the hours nor the sale feed a record");
+
+    Book book;
+    book.Add(Auction(1, 100, 1, 10, 20), green);
+    book.Add(Auction(2, 100, 1, 10, 20), green);
+    book.AccrueListingHours(NOW, 3600, WINDOW);
+    book.Sale(Bought(Auction(1, 100, 1, 10, 20), 9), NOW);
+    book.Remove(1);
+    s = Take(book);
+    ItemEntry const* e = Item(s, 100);
+    Record const kind = s.KindRecord(green);
+    Check(e && e->kind == green && Near(e->record.hours, 2.0) && Near(e->record.sales, 1.0) && Near(kind.hours, 2.0) &&
+              Near(kind.sales, 1.0),
+          "two lots standing an hour: 2 lot hours, the sale 1 lot, to the item and its kind");
+    double const halfHour = std::exp2(-1800.0 / static_cast<double>(WINDOW / 2));
+    book.AccrueListingHours(NOW + 1800, 1800, WINDOW);
+    s = Take(book, NOW + 1800);
+    e = Item(s, 100);
+    Check(e && Near(e->record.hours, 2.0 * halfHour + 0.5) && Near(e->record.sales, halfHour),
+          "half an hour later: the sold lot adds no hours, the one left half an hour; both weighed by the half-life");
+    book.Expire(Auction(2, 100, 1, 10, 20), NOW + 1800);
+    book.Remove(2);
+    s = Take(book, NOW + 2 * WINDOW);
+    e = Item(s, 100);
+    Check(e && e->typical.sample == 0 && e->typical.expiries == 0 && e->offers.auctions == 0 &&
+              Near(e->record.hours, (2.0 * halfHour + 0.5) * std::exp2(-4.0 + 1800.0 / (WINDOW / 2))),
+          "the record outlives the history's prune, weighed 1/16 two windows on");
+    s = Take(book, NOW + 20 * WINDOW);
+    Check(!Item(s, 100) && s.kinds.empty(), "forgotten 40 half-lives on: the item and its kind go");
+
+    constexpr std::uint32_t ITEMS = 20;
+    std::int64_t const ended = NOW + 24 * 3600;
+    auto nextChance = [&](Book& listed, std::int64_t at)
+    {
+        Evidence const next = Take(listed, at).EvidenceOf(6000, green);
+        return AuctionRules::SaleChance(next.item, next.kind, 24.0, config);
+    };
+    Book pooled = ListedUnsold(green, ITEMS, true);
+    Book perItem = ListedUnsold(green, ITEMS, false);
+    double const lowered = nextChance(pooled, ended);
+    double const atStart = nextChance(perItem, ended);
+    std::cout << "records: after " << ITEMS << " unsold 24 h listings of one kind the next item's chance is " << lowered
+              << " (a kind per item: " << atStart << ")\n";
+    Check(lowered < 0.5, "N items of one kind listed once and unsold lower the next one's chance below 1/2");
+    Check(atStart == 0.5, "control: a kind per item leaves the next one at the start (caught)");
+    double last = lowered;
+    bool rises = true;
+    for (std::int64_t const later : {WINDOW, 3 * WINDOW, 6 * WINDOW})
+    {
+        double const now = nextChance(pooled, ended + later);
+        rises = rises && now > last && now <= 0.5;
+        last = now;
+    }
+    Check(rises && last > 0.49 && nextChance(pooled, ended + 40 * WINDOW) == 0.5,
+          "left alone the kind drifts back toward the start as its record decays, and is at it once forgotten");
 }
 
 // The least line cost per unit of a need among the buyout lines (excess units worth nothing): a fraction cost/covered
@@ -665,6 +770,7 @@ int main()
     CheckDeterminism();
     CheckHistoryStore();
     CheckSeededStreams();
+    CheckRecords();
     CheckLotFrontier();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
