@@ -44,6 +44,7 @@
 
 #include "AuctionMarketSim.h"
 #include "AuctionRules.h"
+#include "GearWorthRules.h"
 #include "MarketRules.h"
 #include "MaterialRules.h"
 #include "PlannerSnapshot.h"
@@ -1485,17 +1486,61 @@ Built NightPreset(std::string const& repo, std::uint32_t seed)
 
 // ---- the gear presets (PLAN 3.2, AH5) ----
 // gear-no-buyer is the night as it is: it has no gear line. gear-buyers-arrive adds gear buyers from a later model
-// hour on; all of what they are is assumed, and the print says so
+// hour on; all of what they are is assumed, and the print says so. gear-buyers-worth (gear WG7) is the same draw with
+// each line's worth from GearWorthRules.h (R3) instead of the item's reference value
 constexpr std::uint32_t ITEM_CLASS_WEAPON = 2;
 constexpr std::uint32_t ITEM_CLASS_ARMOR = 4;
 constexpr std::size_t GEAR_LINES = 17;   // assumed: as many as the equipment slots; the draw ignores slots
 constexpr double GEAR_FROM_HOUR = 7.0;   // assumed: the first full model hour after the night's 6.7
 constexpr double GEAR_RUN_HOURS = 48.0;  // assumed: the longest listing duration, so the house turns over
+// gear-buyers-worth: the share of the bot's gear strength a line adds, drawn per line (gear-worth-selftest's ladder
+// gains); the summed score is any positive number, since the worth reads the share
+constexpr std::array<double, 5> GEAR_GAINS = {0.01, 0.02, 0.03, 0.05, 0.10};
+constexpr float GEAR_SCORE_SUM = 100.0f;
+
+enum class GearBuyers : std::uint8_t
+{
+    None,         // gear-no-buyer
+    ByReference,  // gear-buyers-arrive: worth = the item's reference value
+    ByWorth       // gear-buyers-worth: worth = GearWorth::Worth
+};
 
 bool IsGear(std::uint32_t classId) { return classId == ITEM_CLASS_WEAPON || classId == ITEM_CLASS_ARMOR; }
 
+// The sim's WeightOf (AuctionMarketSim.h) at the bot's starting purse and reserve
+AuctionRules::CopperWeight SetupWeight(BotSetup const& bot)
+{
+    Planner::Snapshot snapshot;
+    snapshot.level = static_cast<std::uint8_t>(WorldTravel::LEVEL_BAND_TOP[bot.band]);
+    snapshot.money =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(bot.money, std::numeric_limits<std::uint32_t>::max()));
+    Planner::Goals::Need const need = Planner::Goals::NeedFor(snapshot, Planner::Goals::Weights{}, bot.reserve);
+    return {need.exchange, need.factor};
+}
+
+// A gear line worth what GearWorthRules.h gives a bot of the item's required level for the drawn gain into an empty
+// slot: the band's configured earn rate (the user's open question on the earn rate changes this input only), the
+// band's hours per level, the item's level; priced as the visit prices it (GearWorth::GearLine, vendor payout as the
+// excess worth)
+AuctionRules::BuyLine WorthLine(Goods const& goods, double gain, AuctionRules::CopperWeight weight)
+{
+    std::uint32_t const level = std::max<std::uint32_t>(1, goods.requiredLevel);
+    GearWorth::WorthInput in;
+    in.itemScore = static_cast<float>(gain) * GEAR_SCORE_SUM;
+    in.wornScore = 0.0f;
+    in.summedScore = GEAR_SCORE_SUM;
+    in.level = level;
+    in.itemLevel = goods.itemLevel;
+    in.earnCopperPerMinute =
+        static_cast<float>(WorldTravel::DEFAULT_SLOT_BANDS[WorldTravel::LevelBand(level)].EarnCopperPerMinute);
+    in.hoursPerLevel = GearWorth::HoursPerLevel(level);
+    AuctionRules::BuyLine line = GearWorth::GearLine(goods.item, GearWorth::Worth(in), 0, weight);
+    line.excessUnitWorth = goods.sellPrice;
+    return line;
+}
+
 // Gear per model hour; with buyers, what they are and when sales and listings came back
-void PrintGear(std::ostream& out, MarketSim::Market const& market, Result const& result, bool buyers)
+void PrintGear(std::ostream& out, MarketSim::Market const& market, Result const& result, GearBuyers buyers)
 {
     std::set<std::uint32_t> soldKinds;  // gear kinds with a sale in the run
     for (HourTally const& hour : result.hours)
@@ -1526,16 +1571,27 @@ void PrintGear(std::ostream& out, MarketSim::Market const& market, Result const&
                 rows[hour].soldKindListings += tally.listings;
     }
     out << "\n## Gear (weapons and armor) per model hour\n\n";
-    if (buyers)
+    if (buyers == GearBuyers::None)
+        out << "- No bot holds a gear line (the night as it is): units wanted " << result.gearUnitsWanted << ".\n";
+    else
+    {
         out << "- Assumed buyers: each of the " << market.bots.size() << " model bots takes up " << GEAR_LINES
             << " gear lines (a count; the draw ignores slots) at its first visit from model hour " << GEAR_FROM_HOUR
             << " on. A line is one unit of one item, drawn without replacement from the gear of its band's lot stream "
-               "by the lots' weights (items with a reference value); worth = the item's reference value, no other way "
-               "of getting it (AuctionRules::LineOf, owner gear). A bought line goes, so the demand is finite; money, "
-               "visits, lots and income stay the night's. Units wanted "
+               "by the lots' weights (items with a reference value). ";
+        if (buyers == GearBuyers::ByReference)
+            out << "Worth = the item's reference value, no other way of getting it (AuctionRules::LineOf, owner "
+                   "gear). ";
+        else
+            out << "Worth = GearWorth::Worth (GearWorthRules.h) of a bot at the item's required level (at least 1) "
+                   "into an empty slot: the gain an assumed share of its gear strength drawn per line from 1, 2, 3, 5 "
+                   "and 10 %, the band's configured earn rate (DEFAULT_SLOT_BANDS), the band's hours per level, the "
+                   "item's level; the line as the visit builds it (GearWorth::GearLine at the bot's weight at its "
+                   "starting purse and reserve, the vendor payout as excess worth). ";
+        out << "A bought line goes, so the demand is finite; money, visits, lots and income stay the night's. Units "
+               "wanted "
             << result.gearUnitsWanted << ", unbought at the end " << result.gearUnitsLeft << ".\n";
-    else
-        out << "- No bot holds a gear line (the night as it is): units wanted " << result.gearUnitsWanted << ".\n";
+    }
     out << "- Gear kinds with a sale in the run: " << soldKinds.size() << ".\n\n";
     out << "| hour | listings | sales | lots standing | vendored | listings of the gear kinds with a sale |\n"
            "|---|---|---|---|---|---|\n";
@@ -1543,7 +1599,7 @@ void PrintGear(std::ostream& out, MarketSim::Market const& market, Result const&
         out << "| " << HourWord(market, hour) << " | " << rows[hour].listings << " | " << rows[hour].sales << " | "
             << rows[hour].standing << " | " << rows[hour].vendored << " | " << rows[hour].soldKindListings << " |\n";
     constexpr std::size_t from = static_cast<std::size_t>(GEAR_FROM_HOUR);
-    if (!buyers || rows.size() <= from)
+    if (buyers == GearBuyers::None || rows.size() <= from)
         return;
     auto const first = [&rows](auto const& holds)
     {
@@ -1563,20 +1619,23 @@ void PrintGear(std::ostream& out, MarketSim::Market const& market, Result const&
         << ".\n";
 }
 
-Built GearPreset(std::string const& repo, std::uint32_t seed, bool buyers)
+Built GearPreset(std::string const& repo, std::uint32_t seed, GearBuyers buyers)
 {
     Built built = NightPreset(repo, seed);
     MarketSim::Market& market = built.market;
-    if (buyers)
+    if (buyers != GearBuyers::None)
     {
         market.hours = GEAR_RUN_HOURS;
         std::unordered_map<std::uint32_t, Goods> goods;
         for (Goods const& each : market.goods)
             goods[each.item] = each;
-        // A generator of their own: the night's bots stay as they are
+        // A generator of their own: the night's bots stay as they are; the gains another, so both presets draw the
+        // same items
         std::mt19937 rng(seed ^ 0x9e3779b9u);
+        std::mt19937 gains(seed ^ 0x51ed270bu);
         for (BotSetup& bot : market.bots)
         {
+            AuctionRules::CopperWeight const weight = SetupWeight(bot);
             std::vector<std::pair<double, std::uint32_t>> drawn;  // key, item: the smallest keys are the draw
             for (Arrival const& arrival : market.bands[bot.band].mix)
             {
@@ -1589,15 +1648,19 @@ Built GearPreset(std::string const& repo, std::uint32_t seed, bool buyers)
             for (std::size_t at = 0; at < count; ++at)
             {
                 Goods const& each = goods[drawn[at].second];
-                bot.laterLines.push_back(AuctionRules::LineOf(
-                    LineOwner::Gear, each.item, 1, static_cast<double>(each.reference), -1.0, 1.0f, each.sellPrice));
+                if (buyers == GearBuyers::ByWorth)
+                    bot.laterLines.push_back(WorthLine(each, GEAR_GAINS[gains() % GEAR_GAINS.size()], weight));
+                else
+                    bot.laterLines.push_back(AuctionRules::LineOf(LineOwner::Gear, each.item, 1,
+                                                                  static_cast<double>(each.reference), -1.0, 1.0f,
+                                                                  each.sellPrice));
             }
             bot.laterFromHours = GEAR_FROM_HOUR;
         }
     }
     built.after = [buyers](MarketSim::Market const& ran, Result const& result, bool print)
     {
-        if (buyers && ran.hours > GEAR_FROM_HOUR)
+        if (buyers != GearBuyers::None && ran.hours > GEAR_FROM_HOUR)
             Check(result.gearUnitsWanted > 0, "gear buyers: the bots took up gear lines");
         if (print)
             PrintGear(std::cout, ran, result, buyers);
@@ -1605,9 +1668,20 @@ Built GearPreset(std::string const& repo, std::uint32_t seed, bool buyers)
     return built;
 }
 
-Built GearNoBuyerPreset(std::string const& repo, std::uint32_t seed) { return GearPreset(repo, seed, false); }
+Built GearNoBuyerPreset(std::string const& repo, std::uint32_t seed)
+{
+    return GearPreset(repo, seed, GearBuyers::None);
+}
 
-Built GearBuyersPreset(std::string const& repo, std::uint32_t seed) { return GearPreset(repo, seed, true); }
+Built GearBuyersPreset(std::string const& repo, std::uint32_t seed)
+{
+    return GearPreset(repo, seed, GearBuyers::ByReference);
+}
+
+Built GearWorthPreset(std::string const& repo, std::uint32_t seed)
+{
+    return GearPreset(repo, seed, GearBuyers::ByWorth);
+}
 
 // ---- the cold start (auction house round 2 AH8, PLAN 3.4) ----
 // An empty history and house. The night's bots sell gathered surplus: every lot that comes by is one of the gathered
@@ -2056,11 +2130,12 @@ Built ColdStartPreset(std::string const& repo, std::uint32_t seed)
     return built;
 }
 
-std::array<Preset, 5> const PRESETS = {
+std::array<Preset, 6> const PRESETS = {
     {{"hand", "the selftest's hand market", &HandPreset},
      {"night", "lab5's night of 2026-11-25 (AH1's fixture)", &NightPreset},
      {"gear-no-buyer", "the night, its gear per hour", &GearNoBuyerPreset},
      {"gear-buyers-arrive", "the night, with assumed gear buyers from a later hour on", &GearBuyersPreset},
+     {"gear-buyers-worth", "gear-buyers-arrive with each line's worth from GearWorthRules.h", &GearWorthPreset},
      {"cold-start", "gathered trade goods in an empty house, with assumed sellers and path buyers", &ColdStartPreset}}};
 
 void RunPreset(std::string const& repo, std::string const& name, double hours, std::uint32_t seed, bool print)
