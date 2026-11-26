@@ -283,6 +283,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "move-to-loot-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Base/Actions"
+            ],
+            "success": "move-to-loot-rules: \\d+ passed, 0 failed"
+        },
+        {
             "file": "flight-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -323,6 +330,15 @@
                 "{repo}/tests/fixtures/gather-rate-night.tsv"
             ],
             "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "gear-worth-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "gear-worth: \\d+ passed, 0 failed"
         },
         {
             "file": "go-to-selftest.cpp",

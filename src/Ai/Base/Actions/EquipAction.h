@@ -7,9 +7,12 @@
 #ifndef PLAYERBOTS_EQUIPACTION_H
 #define PLAYERBOTS_EQUIPACTION_H
 
+#include <vector>
+
 #include "ChatHelper.h"
 #include "InventoryAction.h"
 #include "Item.h"
+#include "ObjectGuid.h"
 
 class FindItemVisitor;
 class Item;
@@ -22,12 +25,20 @@ public:
 
     bool Execute(Event event) override;
     void EquipItems(ItemIds ids);
-    ItemIds SelectInventoryItemsToEquip();
+    // The bag items the upgrade rule judged, each copy by its own suffix, equipped as those copies
+    void EquipItems(std::vector<ObjectGuid> const& guids);
+    std::vector<ObjectGuid> SelectInventoryItemsToEquip();
 
 private:
     void EquipItem(FindItemVisitor* visitor);
     uint8 GetSmallestBagSlot();
     void EquipItem(Item* item);
+    // Whether an item of this score takes the worn item's place: by the upgrade rule's comparison in a pass of
+    // EquipItems(guids), else on any higher score
+    bool Replaces(float score, Item const* worn, float wornScore) const;
+
+    // The candidates of the pass EquipItems(guids) runs, while it runs
+    std::vector<ObjectGuid> const* _passCandidates = nullptr;
 };
 
 class EquipUpgradesPacketAction : public EquipAction

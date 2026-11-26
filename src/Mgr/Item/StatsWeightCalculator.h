@@ -41,6 +41,10 @@ public:
     // overflow penalty, PvP weights for a bot specced for PvP
     void SetUpForEquipCompare();
 
+    // After CalculateItem: some stat of the item serves the spec, or none carries a weight (a plain white piece).
+    // The upgrade rule wears an item scoring 0 or below into an empty slot only then.
+    bool HasUsefulStat() const { return usefulStat_; }
+
     // Read access for diagnostics (e.g. the `calc` chat command)
     StatsCollector const* GetCollector() const { return collector_.get(); }
     float const* GetStatWeights() const { return stats_weights_; }
@@ -73,12 +77,14 @@ private:
     uint8 cls;
     uint8 lvl;
     int tab;
+    uint8 spec_ = 0;  // the row of the weight table GenerateBasicWeights picked
     bool healSpec_;
     bool casterSpec_;
     bool enable_overflow_penalty_;
     bool enable_item_set_bonus_;
 
     float weight_;
+    bool usefulStat_ = false;
     float stats_weights_[STATS_TYPE_MAX];
     bool pvpSpec_ = false;
     bool exclude_resilience_ = false;

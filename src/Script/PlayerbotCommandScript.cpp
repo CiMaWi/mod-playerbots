@@ -44,6 +44,7 @@
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "Fixture.h"
+#include "GearSweep.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -378,6 +379,11 @@ public:
             {"visit", BankMail::HandleAuctionVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Gear WG1: the upgrade rule's answers over real items and its invariant counts (read only)
+        static ChatCommandTable playerbotsGearCommandTable = {
+            {"sweep", GearSweep::HandleSweepCommand, SEC_PLAYER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -399,6 +405,7 @@ public:
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
             {"ladder", playerbotsLadderCommandTable},
+            {"gear", playerbotsGearCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},
             {"tactics", playerbotsTacticsCommandTable},

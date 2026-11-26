@@ -5,6 +5,9 @@
  */
 
 #include "TalkToQuestGiverAction.h"
+
+#include <limits>
+
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "Event.h"
@@ -177,8 +180,9 @@ void TalkToQuestGiverAction::RewardMultipleItem(Quest const* quest, Object* ques
         if (!bestIds.empty())
         {
             StatsWeightCalculator calc(bot);
-            uint32 best = 0;
-            float bestScore = 0;
+            // the best of the chosen rewards, even when every score is 0 or less
+            uint32 best = *bestIds.begin();
+            float bestScore = std::numeric_limits<float>::lowest();
             for (uint32 id : bestIds)
             {
                 uint32 const itemId = quest->RewardChoiceItemId[id];
