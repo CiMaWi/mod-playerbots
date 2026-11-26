@@ -17,15 +17,24 @@
 // never ranks a camp lower; a more dangerous camp never ranks higher; no stop the bot may not fight; a hide never
 // counted without the skill; no stop revisited before its respawn; the same input gives the same circuit. Seven
 // controls (the gate always open, a bot that thinks itself stronger, a pick by key twice, skinning at any level, laps
-// always repeated, a circuit over the input's first half) must be caught. `--decisions` prints the step's decisions.
+// always repeated, a circuit over the input's first half) must be caught. Minutes per take as bots get them (WPC13b,
+// GatherRateRules.h), a third seeded search: no observation leaves every estimate the prior; the estimate stays
+// between the prior and the observed rate and nears the observed as takes grow; a zone's or a way's spans never change
+// another's; a span cut at once changes nothing; a span without a take raises the minutes per take; fading brings an
+// estimate back toward its prior; one control each. The readers (circuit, Gathered, DropCost) by hand; the night's
+// part 4 rows (tests/fixtures/gather-rate-night.tsv, args: the module root, `--night` prints every pair) fed through
+// the rule after 1, 3 and 6 hours. `--decisions` prints the step's decisions.
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1044,6 +1053,8 @@ void CreatureCases()
         Check(herbCircuit.stops.size() == 3 && Near(herbOption.takes, 2.5 * laps) &&
                   Near(herbOption.units, 5.0 * laps) && herbOption.fightMinutes == 0.0f,
               "estimate: herbs of share 1, 0.5 and 1 give 2.5 takes and 2 units a take, over the laps, no fight");
+        Check(herbOption.herbStops == 3 && option.herbStops == 0,
+              "row's way: three herb stops of the herb circuit, none of the beasts'");
     }
     Check(beastCircuit.once && beastCircuit.laps == 1, "respawn: a short lap of 10-minute spawns is walked once");
     for (Node& node : beasts)
@@ -1375,6 +1386,13 @@ void DownCases()
     Check(cause({.held = true}) == "down_unknown", "down: outside a pool, an object respawning, taken unseen");
     Check(cause({.pooled = true, .held = true, .notReady = true}) == "down_not_ready",
           "down: an object held here but not ready");
+    // The stop's take (WPC13b): the cast inside the status counts, whether it went before the status targeted the
+    // stop (scn-261126125954: cast 2 s ago, the status 7 s old, the stop targeted only now) or after; a cast before
+    // the status and an earlier lap's are not this stop's take
+    Check(Gather::OwnTakeInStatus(2000, 7000, 300000), "take: the cast before the stop was targeted counts");
+    Check(Gather::OwnTakeInStatus(0, 0, 300000), "take: a cast in the status's first moment counts");
+    Check(!Gather::OwnTakeInStatus(8000, 7000, 300000), "take: a cast before the status is an earlier take");
+    Check(!Gather::OwnTakeInStatus(310000, 900000, 300000), "take: an earlier lap's cast, past the respawn");
 }
 
 // The respawn memory and the sight on hand cases (WR13d)
@@ -1413,6 +1431,78 @@ void SightCases()
     Circuit const blind = Gather::BuildCircuit(anchor, nodes, bot);
     Check(circuit.worthPerLap > 0.0 && circuit.worthPerLap != blind.worthPerLap,
           "sight: the yield counts what is left");
+}
+
+// WPC9: the bag limit, and the stops the record of failed attempts refuses. Written first: 81 % is over, 80 % is not;
+// a live place entry within 10 yd on the stop's map drops it whatever its cause, the next nearest is taken, and after
+// the entry's expiry the stop returns
+void RefusalCases()
+{
+    Check(!Gather::BagsTooFull(Gather::BagUsedPercent(100, 20)) && Gather::BagsTooFull(Gather::BagUsedPercent(100, 19)),
+          "bags: 80 % passes, 81 % ends gathering");
+    Check(Gather::BagUsedPercent(16, 3) == 81 && Gather::BagUsedPercent(48, 10) == 79 &&
+              Gather::BagUsedPercent(0, 0) == 0 && Gather::BagUsedPercent(16, 20) == 0,
+          "bags: the percent is truncated as the bag space value's");
+
+    constexpr std::uint32_t MAP = 0;
+    Gatherer const bot = BotWith(0, 100, 0);
+    Point const anchor{0.0f, 0.0f, 0.0f};
+    std::vector<Node> const nodes = {NodeAt(20, MINING, 1, 30.0f, 0.0f, 300, 1.0f, 200),
+                                     NodeAt(21, MINING, 1, 70.0f, 0.0f, 300, 1.0f, 200)};
+    auto const planned = [&](FailedAttempts::Record const& record, std::uint32_t nowMs)
+    {
+        std::vector<Node> offered = nodes;
+        Gather::DropRefused(offered, MAP, Gather::RefusedPlaces(record, nowMs));
+        return Gather::BuildCircuit(anchor, offered, bot).stops;
+    };
+    auto const noted = [](char const* word, std::uint32_t map, float x)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.leg = FailedAttempts::Leg::LocalPiece;  // a walk's no_walk keys by leg
+        failure.goal = {map, x, 0.0f, 0.0f};
+        FailedAttempts::NoteFailure(record, word, failure, 1000, 600000);
+        return record;
+    };
+    auto const has = [](auto const& stops, std::uint32_t id)
+    { return std::find(stops.begin(), stops.end(), id) != stops.end(); };
+    for (char const* word : {"gather_no_walk", "no_walk"})
+    {
+        auto const stops = planned(noted(word, MAP, 38.0f), 2000);
+        Check(!has(stops, 20) && has(stops, 21), "refused: a live entry 8 yd off drops the stop, the next is taken");
+    }
+    Check(has(planned(noted("gather_no_walk", MAP, 42.0f), 2000), 20), "refused: an entry 12 yd off drops nothing");
+    Check(has(planned(noted("gather_no_walk", 1, 30.0f), 2000), 20), "refused: another map's entry drops nothing");
+    Check(has(planned(noted("gather_no_walk", MAP, 30.0f), 1000 + 600000), 20), "refused: after expiry it returns");
+
+    // The local piece's no_walk entry comes first: the later note leaves it and its cause
+    FailedAttempts::Record record = noted("no_walk", MAP, 30.0f);
+    FailedAttempts::Failure failure;
+    failure.goal = {MAP, 30.0f, 0.0f, 0.0f};
+    auto const second = FailedAttempts::NoteFailure(record, "gather_no_walk", failure, 1500, 600000);
+    Check(second == FailedAttempts::Noted::AlreadyLive && record.count == 1 && record.entries[0].cause == "no_walk" &&
+              !has(planned(record, 2000), 20),
+          "refused: a live entry keeps its first cause and still drops the stop");
+}
+
+// WPC10: no creature stop without a weapon in the main hand. Written first: unarmed or fights held leaves no
+// creature stop and every node stop; an armed bot that may fight keeps the list; only unarmed refusals are counted
+void UnarmedCases()
+{
+    Node creature = NodeAt(31, MINING, 1, 40.0f, 0.0f, 300, 1.0f, 200);
+    creature.kind = Gather::StopKind::Creature;
+    std::vector<Node> const nodes = {NodeAt(30, MINING, 1, 30.0f, 0.0f, 300, 1.0f, 200), creature};
+    for (bool const fightsHeld : {false, true})
+        for (bool const unarmed : {false, true})
+        {
+            std::vector<Node> stops = nodes;
+            std::uint32_t const refused = Gather::DropCreatureStops(stops, fightsHeld, unarmed);
+            bool const dropped = fightsHeld || unarmed;
+            Check(stops.size() == (dropped ? 1u : 2u) && stops[0].id == 30, "unarmed: only creature stops are dropped");
+            Check(refused == (unarmed ? 1u : 0u), "unarmed: the count is the missing weapon's refusals");
+        }
+    std::vector<Node> only = {nodes[0]};
+    Check(Gather::DropCreatureStops(only, false, true) == 0 && only.size() == 1, "unarmed: nothing to refuse, no row");
 }
 
 // The walk's watch (WR13d-2): movement against an anchor, not the distance to the stop. Ticks of 1 s; `walk` steps
@@ -1581,23 +1671,446 @@ void MarketSearch()
     Check(caught > 0, "control flat maximum: the most copper before weighing lets a dearer price lower a worth");
 }
 
+// ---- minutes per take as bots get them (WPC13b) ----
+using GatherRate::Book;
+using GatherRate::Span;
+using GatherRate::Way;
+
+constexpr std::uint32_t RATE_ZONES = 4;
+constexpr int RATE_WORLDS = 300;
+constexpr int RATE_SPANS = 48;
+constexpr int RATE_FADE_EVERY = 8;
+constexpr double RATE_EPS = 1e-9;
+constexpr double MINUTES_PER_HOUR = 60.0;
+
+struct RateViolations
+{
+    int unobserved{0};  // no observation, yet an estimate other than the prior or read as observed
+    int outside{0};     // outside the prior and the observed rate, or not nearer the observed after more takes
+    int crossTalk{0};   // a span changed another zone's or way's estimate
+    int cutCounted{0};  // a span cut at once, or of mixed ways, changed an estimate
+    int takeless{0};    // a span without a take did not raise its estimate
+    int fadeAway{0};    // a fade moved an estimate away from its prior, or not nearer it
+};
+
+std::size_t RateSlot(std::uint32_t zone, std::size_t way) { return (zone - 1) * GatherRate::WAYS + way; }
+
+std::vector<double> RateEstimates(Book const& book, std::vector<double> const& priors)
+{
+    GatherRate::View const view{book.Publish()};
+    std::vector<double> estimates;
+    for (std::uint32_t zone = 1; zone <= RATE_ZONES; ++zone)
+        for (std::size_t way = 0; way < GatherRate::WAYS; ++way)
+            estimates.push_back(view.Of(zone, static_cast<Way>(way), priors[RateSlot(zone, way)]).minutes);
+    return estimates;
+}
+
+RateViolations RateSearch(GatherRate::Fault fault, std::uint32_t seed)
+{
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    RateViolations v;
+    std::size_t const slots = RATE_ZONES * GatherRate::WAYS;
+    for (int world = 0; world < RATE_WORLDS; ++world)
+    {
+        Book book;
+        book.fault = fault;
+        std::vector<double> priors(slots);
+        for (double& prior : priors)
+            prior = 0.2 + 3.0 * unit(rng);
+        std::vector<GatherRate::Tally> mirror(slots);  // the test's own faded sums of the spans that count
+
+        GatherRate::View const view{book.Publish()};
+        for (std::uint32_t zone = 1; zone <= RATE_ZONES; ++zone)
+            for (std::size_t way = 0; way < GatherRate::WAYS; ++way)
+            {
+                GatherRate::Estimate const estimate = view.Of(zone, static_cast<Way>(way), priors[RateSlot(zone, way)]);
+                v.unobserved += estimate.minutes != priors[RateSlot(zone, way)] || estimate.observed ? 1 : 0;
+            }
+        Check(GatherRate::View{}.Of(1, Way::Mining, 1.5).minutes == 1.5, "an empty view is the static rule");
+
+        for (int step = 0; step < RATE_SPANS; ++step)
+        {
+            std::vector<double> const before = RateEstimates(book, priors);
+            if (step % RATE_FADE_EVERY == RATE_FADE_EVERY - 1)
+            {
+                double const minutes = 10.0 + 230.0 * unit(rng);
+                book.Fade(minutes);
+                double const keep = std::exp2(-minutes / GatherRate::FADE_HALF_LIFE_MINUTES);
+                for (GatherRate::Tally& tally : mirror)
+                    tally = {tally.minutes * keep, tally.takes * keep};
+                std::vector<double> const after = RateEstimates(book, priors);
+                for (std::size_t at = 0; at < slots; ++at)
+                {
+                    double const was = std::abs(before[at] - priors[at]);
+                    double const now = std::abs(after[at] - priors[at]);
+                    v.fadeAway += now > was + RATE_EPS || (was > RATE_EPS && !(now < was)) ? 1 : 0;
+                }
+                continue;
+            }
+            Span span;
+            span.zone = 1 + static_cast<std::uint32_t>(rng() % RATE_ZONES);
+            std::uint32_t const pick = rng() % 10;
+            span.way = pick == 0 ? Way::None : static_cast<Way>(pick % GatherRate::WAYS);
+            bool const quick = rng() % 5 == 0;
+            span.milliseconds = quick ? 1 + rng() % GatherRate::CUT_MS : GatherRate::CUT_MS + 1 + rng() % 2400000;
+            span.takes = rng() % 4 == 0 ? 0 : 1 + rng() % 12;
+            span.resolved = quick && rng() % 2 ? 0 : span.takes + rng() % 3;
+            bool const counts = span.way != Way::None && !GatherRate::CutAtOnce(span);
+            book.Observe(span);
+            std::vector<double> const after = RateEstimates(book, priors);
+            std::size_t const own = counts ? RateSlot(span.zone, static_cast<std::size_t>(span.way)) : slots;
+            if (counts)
+            {
+                GatherRate::Tally& tally = mirror[own];
+                tally.minutes += span.milliseconds / GatherRate::MS_PER_MINUTE;
+                tally.takes += span.takes;
+            }
+            for (std::size_t at = 0; at < slots; ++at)
+            {
+                if (!counts)
+                    v.cutCounted += after[at] != before[at] ? 1 : 0;
+                else if (at != own)
+                    v.crossTalk += after[at] != before[at] ? 1 : 0;
+                else if (!span.takes)
+                    v.takeless += after[at] > before[at] ? 0 : 1;
+                GatherRate::Tally const& tally = mirror[at];
+                if (tally.takes > 0.0)
+                {
+                    double const observed = tally.minutes / tally.takes;
+                    double const low = std::min(priors[at], observed);
+                    double const high = std::max(priors[at], observed);
+                    v.outside += after[at] < low * (1.0 - 1e-9) || after[at] > high * (1.0 + 1e-9) ? 1 : 0;
+                }
+            }
+        }
+
+        // One key fed at a steady rate: every span brings the estimate nearer the observed, never past it
+        Book steady;
+        steady.fault = fault;
+        double const rate = 0.2 + 10.0 * unit(rng);
+        double const prior = priors[0];
+        double last = prior;
+        for (int span = 0; span < 12; ++span)
+        {
+            std::uint32_t const takes = 1 + rng() % 6;
+            steady.Observe({1, Way::Herbalism, static_cast<std::uint32_t>(rate * takes * GatherRate::MS_PER_MINUTE),
+                            takes, takes});
+            double const estimate = GatherRate::View{steady.Publish()}.Of(1, Way::Herbalism, prior).minutes;
+            bool const between = estimate >= std::min(prior, rate) - 1e-6 && estimate <= std::max(prior, rate) + 1e-6;
+            v.outside += !between || std::abs(estimate - rate) > std::abs(last - rate) + 1e-9 ? 1 : 0;
+            last = estimate;
+        }
+    }
+    return v;
+}
+
+void GatherRateSearch()
+{
+    RateViolations const v = RateSearch(GatherRate::Fault::None, 20261126);
+    std::cout << "rate search (seed 20261126, " << RATE_WORLDS << " worlds): counterexamples " << v.unobserved
+              << " unobserved moved, " << v.outside << " outside, " << v.crossTalk << " cross talk, " << v.cutCounted
+              << " cut counted, " << v.takeless << " takeless not raised, " << v.fadeAway << " fade away\n";
+    Check(v.unobserved == 0, "no observation leaves every estimate the prior");
+    Check(v.outside == 0, "the estimate stays between the prior and the observed, nearer the observed with more takes");
+    Check(v.crossTalk == 0, "a zone's or a way's spans never change another's estimate");
+    Check(v.cutCounted == 0, "a span cut at once or of mixed ways changes nothing");
+    Check(v.takeless == 0, "a span without a take raises the minutes per take");
+    Check(v.fadeAway == 0, "fading brings an estimate back toward its prior");
+
+    int const defaultRate = RateSearch(GatherRate::Fault::DefaultRate, 20261126).unobserved;
+    int const takesLeftOut = RateSearch(GatherRate::Fault::TakesLeftOut, 20261126).outside;
+    int const zoneIgnored = RateSearch(GatherRate::Fault::ZoneIgnored, 20261126).crossTalk;
+    int const cutCounted = RateSearch(GatherRate::Fault::CutCounted, 20261126).cutCounted;
+    int const takelessSkipped = RateSearch(GatherRate::Fault::TakelessSkipped, 20261126).takeless;
+    int const noFade = RateSearch(GatherRate::Fault::NoFade, 20261126).fadeAway;
+    std::cout << "rate controls: default rate " << defaultRate << ", takes left out " << takesLeftOut
+              << ", zone ignored " << zoneIgnored << ", cut counted " << cutCounted << ", takeless skipped "
+              << takelessSkipped << ", no fade " << noFade << '\n';
+    Check(defaultRate > 0, "control: a made-up rate for a zone without observations is caught");
+    Check(takesLeftOut > 0, "control: the observed takes left out of the weight are caught");
+    Check(zoneIgnored > 0, "control: one tally per way for every zone is caught");
+    Check(cutCounted > 0, "control: a span cut at once observed is caught");
+    Check(takelessSkipped > 0, "control: a span without a take skipped is caught");
+    Check(noFade > 0, "control: observations that never fade are caught");
+
+    Check(GatherRate::WayOf(4, 0, 4) == Way::Creatures && GatherRate::WayOf(4, 1, 3) == Way::None &&
+              GatherRate::WayOf(4, 4, 0) == Way::Herbalism && GatherRate::WayOf(4, 0, 0) == Way::Mining &&
+              GatherRate::WayOf(4, 2, 0) == Way::None && GatherRate::WayOf(0, 0, 0) == Way::None,
+          "a circuit's way is part 4's: all creatures, all herbs, no herb; a mix is none");
+    Check(GatherRate::CutAtOnce({1, Way::Mining, GatherRate::CUT_MS, 0, 0}) &&
+              !GatherRate::CutAtOnce({1, Way::Mining, GatherRate::CUT_MS, 0, 1}) &&
+              !GatherRate::CutAtOnce({1, Way::Mining, GatherRate::CUT_MS + 1, 0, 0}),
+          "cut at once: at most CUT_MS with no stop resolved");
+    Book book;
+    book.Observe({1, Way::Mining, 30 * 60000, 3, 3});
+    GatherRate::Tally const tally = book.tallies.begin()->second;
+    Check(Near(GatherRate::EstimateOf(tally, 1.0).minutes, (10.0 + 30.0) / 13.0) &&
+              !GatherRate::EstimateOf(tally, 1.0).observed &&
+              GatherRate::EstimateOf({50.0, GatherRate::PRIOR_TAKES}, 1.0).observed,
+          "the estimate: (prior x weight + minutes) / (weight + takes), observed from PRIOR_TAKES takes");
+    book.Fade(GatherRate::FADE_HALF_LIFE_MINUTES);
+    Check(Near(book.tallies.begin()->second.takes, 1.5), "a half-life halves the takes");
+    book.Fade(100.0 * GatherRate::FADE_HALF_LIFE_MINUTES);
+    Check(book.tallies.empty(), "a tally faded to nothing is forgotten");
+}
+
+// The readers by hand: a node row's and a drop row's minutes per unit and a circuit's lap take the estimate over
+// their own static minutes; another zone or way leaves them as they were
+void GatherRateReaders()
+{
+    constexpr std::uint32_t ZONE = 7;
+    constexpr std::uint32_t OTHER_ZONE = 8;
+    Book book;
+    book.Observe({ZONE, Way::Herbalism, 60 * 60000, 12, 12});
+    book.Observe({ZONE, Way::Creatures, 45 * 60000, 9, 9});
+    GatherRate::View const view{book.Publish()};
+    GatherRate::Tally const herbs = book.tallies.at(GatherRate::KeyOf(ZONE, Way::Herbalism));
+    GatherRate::Tally const kills = book.tallies.at(GatherRate::KeyOf(ZONE, Way::Creatures));
+
+    Materials::Bot materials;
+    materials.skills[HERBALISM] = 100;
+    materials.skills[MINING] = 100;
+    materials.rates = BotWith(100, 100, 100).rates;
+    materials.level = 10;
+    Recipes::NodeRow herb{ZONE, HERBALISM, 0, 1617, 5, 120.0f, 765, 2.0};
+    Recipes::NodeRow ore = herb;
+    ore.skill = MINING;
+    Recipes::NodeRow elsewhere = herb;
+    elsewhere.zone = OTHER_ZONE;
+    Materials::Bot observed = materials;
+    observed.gatherRates = view;
+    double const herbPrior = Materials::NodeCost(herb, materials).minutes * herb.perNode;
+    Check(Near(Materials::NodeCost(herb, observed).minutes,
+               GatherRate::EstimateOf(herbs, herbPrior).minutes / herb.perNode) &&
+              Materials::NodeCost(herb, observed).minutes > Materials::NodeCost(herb, materials).minutes,
+          "Gathered: the zone's herbalism estimate over the unit's yield");
+    Check(Materials::NodeCost(ore, observed).minutes == Materials::NodeCost(ore, materials).minutes &&
+              Materials::NodeCost(elsewhere, observed).minutes == Materials::NodeCost(elsewhere, materials).minutes,
+          "Gathered: another way's or zone's observations leave it static");
+
+    Recipes::DropRow row;
+    row.zone = ZONE;
+    row.entry = 525;
+    row.item = 750;
+    row.spawns = 8;
+    row.spacing = 40.0f;
+    row.minLevel = 9;
+    row.maxLevel = 10;
+    row.perKill = 0.5;
+    Recipes::DropRow far = row;
+    far.zone = OTHER_ZONE;
+    Materials::Cost const staticDrop = Materials::DropCost(row, materials);
+    Materials::Cost const ratedDrop = Materials::DropCost(row, observed);
+    Check(!staticDrop.Blocked() &&
+              Near(ratedDrop.minutes,
+                   GatherRate::EstimateOf(kills, staticDrop.minutes * row.perKill).minutes / row.perKill),
+          "DropCost: the zone's creature estimate over the units a kill gives");
+    Check(Materials::DropCost(far, observed).minutes == Materials::DropCost(far, materials).minutes,
+          "DropCost: another zone's observations leave it static");
+
+    // A one-way circuit whose stops all pay at any factor: its lap's minutes per take are the estimate
+    Gatherer bot = BotWith(100, 100, 100);
+    bot.zone = ZONE;
+    std::vector<Node> nodes;
+    for (std::uint32_t i = 0; i < 5; ++i)
+        nodes.push_back(NodeAt(100 + i, HERBALISM, 50, 60.0f * (i + 1), 40.0f * (i % 2), 300, 1.0f, 50000));
+    Point const anchor{0.0f, 0.0f, 0.0f};
+    Circuit const plain = Gather::BuildCircuit(anchor, nodes, bot);
+    bot.gatherRates = view;
+    Circuit const scaled = Gather::BuildCircuit(anchor, nodes, bot);
+    double const takes = static_cast<double>(nodes.size());
+    double const prior = plain.lapMinutes / takes;
+    Check(plain.stops.size() == nodes.size() && scaled.stops == plain.stops &&
+              Near(scaled.lapMinutes / takes, GatherRate::EstimateOf(herbs, prior).minutes) && scaled.observed &&
+              !plain.observed,
+          "circuit: a one-way lap's minutes per take are the zone's estimate, read as observed");
+    Check(scaled.laps == (scaled.once ? 1u
+                                      : std::max(1u, static_cast<std::uint32_t>(
+                                                         std::floor(Gather::SESSION_MINUTES / scaled.lapMinutes)))) &&
+              scaled.laps <= plain.laps,
+          "circuit: the laps follow the longer lap");
+    Gatherer away = bot;
+    away.zone = OTHER_ZONE;
+    Circuit const there = Gather::BuildCircuit(anchor, nodes, away);
+    Check(there.lapMinutes == plain.lapMinutes && !there.observed, "circuit: another zone's observations leave it");
+    Check(
+        Gather::CircuitOption(scaled, nodes, bot, 0).observed && !Gather::CircuitOption(plain, nodes, bot, 0).observed,
+        "the option carries the observed flag");
+
+    // A mixed circuit: each stop's share of the lap by its own way's factor; not every way observed
+    std::vector<Node> mixed = nodes;
+    for (std::uint32_t i = 0; i < 3; ++i)
+        mixed.push_back(NodeAt(200 + i, MINING, 50, 60.0f * (i + 1), -50.0f, 300, 1.0f, 50000));
+    bot.gatherRates = {};
+    Circuit const mixedPlain = Gather::BuildCircuit(anchor, mixed, bot);
+    bot.gatherRates = view;
+    Circuit const mixedScaled = Gather::BuildCircuit(anchor, mixed, bot);
+    double const mixedPrior = mixedPlain.lapMinutes / static_cast<double>(mixed.size());
+    double const factor = GatherRate::EstimateOf(herbs, mixedPrior).minutes / mixedPrior;
+    Check(mixedScaled.stops == mixedPlain.stops &&
+              Near(mixedScaled.lapMinutes, mixedPlain.lapMinutes * (5.0 * factor + 3.0) / 8.0) && !mixedScaled.observed,
+          "circuit: a mixed lap scales each way's share by its factor and is not observed");
+
+    // The pruning by the same factor: at a slow enough observed rate no stop pays
+    Book slow;
+    slow.Observe({ZONE, Way::Herbalism, 4000000000u, 100, 100});  // 666 minutes per take
+    for (Node& node : nodes)
+        node.yields[0].vendorCopper = 50;
+    bot.gatherRates = {};
+    Circuit const cheapPlain = Gather::BuildCircuit(anchor, nodes, bot);
+    bot.gatherRates = {slow.Publish()};
+    Circuit const cheapSlow = Gather::BuildCircuit(anchor, nodes, bot);
+    Check(!cheapPlain.stops.empty() && cheapSlow.stops.size() < cheapPlain.stops.size(),
+          "circuit: a stop that pays at the static rule is pruned at a slow observed rate");
+}
+
+struct NightRow
+{
+    int hour{0};
+    std::uint32_t zone{0};
+    Way way{Way::None};
+    double minutes{0.0};
+    double takes{0.0};
+    double pmin{0.0};
+    double ptakes{0.0};
+};
+
+double Median(std::vector<double> values)
+{
+    if (values.empty())
+        return 0.0;
+    std::sort(values.begin(), values.end());
+    std::size_t const middle = values.size() / 2;
+    return values.size() % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2.0;
+}
+
+// The night's part 4 rows through the rule: each hour's spans observed, an hour's fade between; the prior of a zone
+// and way is the planned minutes per take its rows carried
+void NightTable(std::string const& repo, bool everyPair)
+{
+    std::string const path = repo + "/tests/fixtures/gather-rate-night.tsv";
+    std::ifstream in(path);
+    Check(in.good(), "the night's rows are read: " + path);
+    std::vector<NightRow> rows;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.empty() || line[0] == '#' || line.rfind("hour", 0) == 0)
+            continue;
+        std::istringstream fields(line);
+        NightRow row;
+        std::string way;
+        double spans = 0.0;
+        fields >> row.hour >> row.zone >> way >> spans >> row.minutes >> row.takes >> row.pmin >> row.ptakes;
+        row.way = way == "herbalism" ? Way::Herbalism : way == "mining" ? Way::Mining : Way::Creatures;
+        rows.push_back(row);
+    }
+    Check(rows.size() > 100, "the night holds its rows: " + std::to_string(rows.size()));
+    std::map<std::uint64_t, std::pair<double, double>> planned;  // key -> planned minutes, takes
+    std::map<std::uint64_t, std::pair<double, double>> night;    // key -> observed minutes, takes
+    for (NightRow const& row : rows)
+    {
+        std::uint64_t const key = GatherRate::KeyOf(row.zone, row.way);
+        planned[key].first += row.pmin;
+        planned[key].second += row.ptakes;
+        night[key].first += row.minutes;
+        night[key].second += row.takes;
+    }
+    char const* const names[] = {"herbalism", "mining", "creatures"};
+    std::array<int, 3> const hours = {1, 3, 6};
+    std::map<std::uint64_t, std::array<GatherRate::Estimate, 3>> table;
+    int outside = 0;
+    for (std::size_t at = 0; at < hours.size(); ++at)
+    {
+        Book book;
+        for (int hour = 0; hour < hours[at]; ++hour)
+        {
+            if (hour)
+                book.Fade(MINUTES_PER_HOUR);
+            for (NightRow const& row : rows)
+                if (row.hour == hour)
+                    book.Observe({row.zone, row.way,
+                                  static_cast<std::uint32_t>(std::lround(row.minutes * GatherRate::MS_PER_MINUTE)),
+                                  static_cast<std::uint32_t>(row.takes), 1});
+        }
+        GatherRate::View const view{book.Publish()};
+        std::array<std::vector<double>, 3> ratio;
+        std::array<int, 3> pairs{};
+        std::array<int, 3> observedPairs{};
+        for (auto const& [key, sums] : planned)
+        {
+            if (!(sums.second > 0.0) || !(sums.first > 0.0))
+                continue;
+            std::uint32_t const zone = static_cast<std::uint32_t>(key >> 8);
+            Way const way = static_cast<Way>(key & 0xFF);
+            double const prior = sums.first / sums.second;
+            GatherRate::Estimate const estimate = view.Of(zone, way, prior);
+            table[key][at] = estimate;
+            std::size_t const w = static_cast<std::size_t>(way);
+            ++pairs[w];
+            observedPairs[w] += estimate.observed ? 1 : 0;
+            ratio[w].push_back(estimate.minutes / prior);
+            if (GatherRate::Tally const* tally = view.snapshot->Find(zone, way); tally && tally->takes > 0.0)
+            {
+                double const rate = tally->minutes / tally->takes;
+                outside +=
+                    estimate.minutes < std::min(prior, rate) - 1e-9 || estimate.minutes > std::max(prior, rate) + 1e-9
+                        ? 1
+                        : 0;
+            }
+        }
+        for (std::size_t w = 0; w < 3; ++w)
+            std::cout << "night after " << hours[at] << " h, " << names[w] << ": " << pairs[w] << " pairs, "
+                      << observedPairs[w] << " observed, estimate/prior median " << Fixed(Median(ratio[w]), 2) << '\n';
+    }
+    Check(outside == 0, "the night's estimates stay between prior and observed: " + std::to_string(outside));
+    if (!everyPair)
+        return;
+    std::cout << "zone way prior | estimate (o = observed) after 1 h, 3 h, 6 h | the night's minutes per take, takes\n";
+    for (auto const& [key, estimates] : table)
+    {
+        double const prior = planned[key].first / planned[key].second;
+        std::cout << (key >> 8) << ' ' << names[key & 0xFF] << ' ' << Fixed(prior, 2) << " |";
+        for (GatherRate::Estimate const& estimate : estimates)
+            std::cout << ' ' << Fixed(estimate.minutes, 2) << (estimate.observed ? " o" : " -");
+        auto const& [minutes, takes] = night[key];
+        std::cout << " | " << (takes > 0.0 ? Fixed(minutes / takes, 2) : std::string("-")) << ' ' << takes << '\n';
+    }
+}
+
 int main(int argc, char** argv)
 {
-    if (argc > 1 && std::string(argv[1]) == "--decisions")
+    std::string repo = ".";
+    bool everyPair = false;
+    for (int at = 1; at < argc; ++at)
     {
-        PrintDecisions();
-        return 0;
+        std::string const arg = argv[at];
+        if (arg == "--decisions")
+        {
+            PrintDecisions();
+            return 0;
+        }
+        if (arg == "--night")
+            everyPair = true;
+        else
+            repo = arg;
     }
     HandCases();
     PassCases();
     DownCases();
     SightCases();
+    RefusalCases();
+    UnarmedCases();
     WalkCases();
     Search();
     CreatureCases();
     CreatureSearch();
     RateCases();
     MarketSearch();
+    GatherRateSearch();
+    GatherRateReaders();
+    NightTable(repo, everyPair);
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
     return failed ? 1 : 0;

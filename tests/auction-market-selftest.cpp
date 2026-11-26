@@ -879,12 +879,12 @@ public:
     }
 
     // PathWorld as the skill path selftest builds it (WorldOf): the vendors' sell prices, no lock, no skinnables or
-    // waters, the market view
+    // waters, the market view, no observed gather rates (the static rule)
     SkillPath::PathWorld WorldOf(::Market::View const& market) const
     {
-        return {*_index, {},    [this](std::uint32_t item) { return static_cast<double>(SellOf(item)); },
-                {},      {},    SkillPath::Fault::None,
-                {},      market};
+        return {*_index, {},     [this](std::uint32_t item) { return static_cast<double>(SellOf(item)); },
+                {},      {},     SkillPath::Fault::None,
+                {},      market, {}};
     }
 
     // The path's lines at its bot's copper weight (PlannerUpkeep.cpp BuyListOf: the newest plan's need), at most a

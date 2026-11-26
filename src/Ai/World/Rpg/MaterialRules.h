@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "GatherRateRules.h"
 #include "GoalModel.h"
 #include "RecipeIndex.h"
 
@@ -181,6 +182,9 @@ struct Bot
     // (Market::View::BuyCopperOf, WA7a); empty, or 0 for an item: no auction offer, the vendor-only cost
     std::function<std::uint32_t(std::uint32_t)> auctionCopper;
     Fault fault{Fault::None};
+    // Minutes per take as bots get them per zone and way (professions WPC13b): a node's gathering and a kill take the
+    // estimate over their static minutes, the prior; empty: the static rule
+    GatherRate::View gatherRates;
 
     [[nodiscard]] bool Reaches(std::uint32_t zone) const
     {
@@ -350,9 +354,29 @@ inline Cost DropCost(Recipes::DropRow const& row, Bot const& bot)
     Cost cost;
     cost.kind = Kind::Dropped;
     cost.cause = Cause::None;
-    cost.minutes = kill.minutes / row.perKill;
+    cost.minutes = bot.gatherRates.Of(row.zone, GatherRate::Way::Creatures, kill.minutes).minutes / row.perKill;
     cost.value = cost.minutes * minuteCost;
     cost.via = row.zone;
+    return cost;
+}
+
+// What one unit from a node row costs the bot: the walk to the next node of the kind and the gathering itself (the
+// prior of the zone's observed minutes per take, WPC13b) over a node's yield, at what a minute costs at the place
+inline Cost NodeCost(Recipes::NodeRow const& node, Bot const& bot)
+{
+    if (!node.nodes || node.perNode <= 0.0 || bot.Skill(node.skill) < node.reqSkill)
+        return BlockedBy(Cause::NoSource);
+    double const minuteCost = MinuteCost(bot.RiskOf(node.zone), bot.rates);
+    if (minuteCost < 0.0)
+        return BlockedBy(Cause::TooDangerous);
+    double const walkMinutes = node.spacing / (std::max(bot.rates.runSpeed, 1.0f) * Planner::Goals::SECONDS_PER_MINUTE);
+    double const prior = walkMinutes + Planner::Goals::GATHER_MINUTES;
+    Cost cost;
+    cost.kind = Kind::Gathered;
+    cost.cause = Cause::None;
+    cost.minutes = bot.gatherRates.Of(node.zone, GatherRate::WayOfSkill(node.skill), prior).minutes / node.perNode;
+    cost.value = cost.minutes * minuteCost;
+    cost.via = node.zone;
     return cost;
 }
 
@@ -498,24 +522,7 @@ private:
         return cost;
     }
 
-    // Minutes per unit: the walk to the next node of the kind and the gathering itself, over a node's yield
-    [[nodiscard]] Cost Gathered(Recipes::NodeRow const& node) const
-    {
-        if (!node.nodes || node.perNode <= 0.0 || _bot.Skill(node.skill) < node.reqSkill)
-            return BlockedBy(Cause::NoSource);
-        double const minuteCost = MinuteCost(_bot.RiskOf(node.zone), _bot.rates);
-        if (minuteCost < 0.0)
-            return BlockedBy(Cause::TooDangerous);
-        double const walkMinutes =
-            node.spacing / (std::max(_bot.rates.runSpeed, 1.0f) * Planner::Goals::SECONDS_PER_MINUTE);
-        Cost cost;
-        cost.kind = Kind::Gathered;
-        cost.cause = Cause::None;
-        cost.minutes = (walkMinutes + Planner::Goals::GATHER_MINUTES) / node.perNode;
-        cost.value = cost.minutes * minuteCost;
-        cost.via = node.zone;
-        return cost;
-    }
+    [[nodiscard]] Cost Gathered(Recipes::NodeRow const& node) const { return NodeCost(node, _bot); }
 
     // Its inputs plus its cast, over the items one cast makes; the walk to a station counts as zero here
     [[nodiscard]] Cost Made(Solver& solver, Recipes::Recipe const& recipe, std::uint32_t depth) const

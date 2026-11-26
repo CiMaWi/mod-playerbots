@@ -109,7 +109,8 @@ void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
         "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
-        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | nodes <bot>]",
+        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | nodes <bot> | rates "
+        "[<zone>]]",
         MaxSample);
 }
 
@@ -269,6 +270,9 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     if (target == "nodes")  // read-only: the gather rules on the bot's zone now (WR13a)
         return Planner::HandleNodesCommand(handler, verb);
+
+    if (target == "rates")  // read-only: the observed minutes per take per zone and way (WPC13b); `set` a GM's fixture
+        return Planner::HandleRatesCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
 
     if (target == "visit")  // a GM test: the profession trainer stop's handler on the trainer in reach
     {

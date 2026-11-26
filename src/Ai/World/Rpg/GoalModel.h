@@ -397,6 +397,7 @@ struct GatherNode
     std::uint32_t competingBots{0};
     bool explored{true};
     std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
+    std::uint32_t herbStops{0};        // of those, the herb nodes (professions WPC13a: the circuit row's way)
     std::uint32_t laps{1};
     float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
     float xpWorth{0.0f};          // a circuit of creature stops (WR20b): its kills' XP, none for grey
@@ -405,6 +406,7 @@ struct GatherNode
     float takes{0.0f};
     float units{0.0f};
     float fightMinutes{0.0f};
+    bool observed{false};  // the circuit's minutes per take are an observed estimate (WPC13b), not the static prior
 };
 
 struct Vendor
@@ -499,6 +501,8 @@ struct Situation
     std::vector<GatherNode> waters;      // fishing trips (professions WR16b, Fish::TripOption): id the water's area
     std::uint32_t gatherRefusedItem{0};  // a wanted material only creatures the bot may not fight give (WR20c)
     float gatherRefusedLevels{0.0f};     // the least levels those creatures are above the bot
+    std::uint32_t gatherBagsFull{0};     // the bag fill in percent that refused the gather circuit (WPC9); 0: none
+    std::uint32_t gatherUnarmed{0};      // creature stops a bot without a weapon was not offered (WPC10)
     bool questsHeld{false};              // a test's noquest (TestConstraints): no quest goal is offered
     bool fightsHeld{false};              // a test's nofight (TestConstraints): no creature stop is offered
     // The questing test's setting (questing WQ37, WQ.50 item 5), copied from the config on the map thread: only the
@@ -548,6 +552,7 @@ struct Goal
     float takes{0.0f};  // a gather circuit's or fishing trip's estimate (GatherNode): the row WR25a writes at its start
     float units{0.0f};
     float fightMinutes{0.0f};
+    bool observed{false};  // GatherNode::observed: the estimate's minutes from the observed rate
 };
 
 // A goal with the numbers that rank it
@@ -1181,6 +1186,7 @@ private:
             option.takes = node.takes;
             option.units = node.units;
             option.fightMinutes = node.fightMinutes;
+            option.observed = node.observed;
             // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
             bool const skillUp = skill && skill->value < skill->max && node.skillPoints > 0.0f &&
                                  (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);
@@ -1563,12 +1569,14 @@ struct GoalPlan
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
     std::vector<ClassQuests::Due> classFailed;  // failed doable class quests: the map thread completes them (WU21a)
     RoutePlan route;  // the quest route (questing WQ18a); without an order the circuit is the plan
-    // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
+    // The gather circuit offered (professions WR13b): its stops in walk order, herb stops among them and laps
     std::vector<std::uint32_t> gatherStops;
+    std::uint32_t gatherHerbStops{0};
     std::uint32_t gatherLaps{1};
-    float gatherLapMinutes{0.0f};
     std::uint32_t gatherRefusedItem{0};  // Situation::gatherRefusedItem: the map thread's skip row (WR20c)
     float gatherRefusedLevels{0.0f};
+    std::uint32_t gatherBagsFull{0};  // Situation::gatherBagsFull: the map thread's skip row (WPC9)
+    std::uint32_t gatherUnarmed{0};   // Situation::gatherUnarmed: the map thread's skip row (WPC10)
     RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
 };
 
@@ -1926,12 +1934,14 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
         if (!node.stops.empty())
         {
             plan.gatherStops = node.stops;
+            plan.gatherHerbStops = node.herbStops;
             plan.gatherLaps = std::max<std::uint32_t>(node.laps, 1);
-            plan.gatherLapMinutes = node.gatherMinutes / static_cast<float>(plan.gatherLaps);
             break;
         }
     plan.gatherRefusedItem = situation.gatherRefusedItem;
     plan.gatherRefusedLevels = situation.gatherRefusedLevels;
+    plan.gatherBagsFull = situation.gatherBagsFull;
+    plan.gatherUnarmed = situation.gatherUnarmed;
     return plan;
 }
 
