@@ -40,6 +40,9 @@
 
 namespace
 {
+// ItemLimitCategory.dbc's "Mana Gem": the mage's six conjured mana gems (and the unused 36799), nothing else
+constexpr uint32 MANA_GEM_LIMIT_CATEGORY = 4;
+
 // Slots the stored loot newly takes; merging into a stack takes none
 float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
 {
@@ -82,7 +85,13 @@ bool DestroyForLoot(PlayerbotAI* botAI, AiObjectContext* context, uint32 lootWor
     for (Item* item : visitor.items)
     {
         WorldTravel::SpaceCandidate candidate;
-        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item);
+        // A conjured food, water, healthstone or mana gem the bot can use is kept: worth nothing at a vendor, it
+        // would be the first victim, and its caster conjures it again as soon as a slot is free (NR6); an unusable
+        // one may go. Mana gems carry no conjured flag; their limit category (ItemLimitCategory.dbc 4) holds them all
+        ItemTemplate const* proto = item->GetTemplate();
+        bool const conjured = proto->IsConjuredConsumable() || proto->ItemLimitCategory == MANA_GEM_LIMIT_CATEGORY;
+        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item) ||
+                              (conjured && bot->CanUseItem(proto) == EQUIP_ERR_OK);
         if (!candidate.Protected)
         {
             ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());

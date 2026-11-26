@@ -165,13 +165,18 @@ public:
 };
 
 // Conjure food or water. The cast check ignores the power cost, so the action also needs the mana for the cast:
-// otherwise a mage short of mana would retry a failing cast every trigger interval.
+// otherwise a mage short of mana would retry a failing cast every trigger interval. The rank cast is the highest
+// known one whose item the bot can use (UsableRank).
 class CastConjureConsumableAction : public CastBuffSpellAction
 {
 public:
     CastConjureConsumableAction(PlayerbotAI* botAI, std::string const spell) : CastBuffSpellAction(botAI, spell) {}
 
+    bool Execute(Event event) override;
     bool isPossible() override;
+
+private:
+    uint32 UsableRank();
 };
 
 class CastConjureFoodAction : public CastConjureConsumableAction
