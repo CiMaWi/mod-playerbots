@@ -6,6 +6,7 @@
 
 #include "AuctionFixture.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
 #include "AuctionIndex.h"
@@ -28,6 +30,7 @@
 #include "Creature.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
+#include "GoalInterface.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Item.h"
@@ -35,6 +38,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
@@ -481,6 +485,27 @@ bool ParseSubject(std::string const& subject, uint32& item, uint32& answer)
 
 // The bot's delivered auction mails of the scene's item, by kind (a mail of a kind that carries the item or money
 // counts only with it); `money C` compares the money of the named kinds' mails
+// A test's purse against the bot's own reserve (AH9): money = percent (default 100) of the newest plan's reserve,
+// the one the buy list's need factor reads (PlannerService.h CopperWeightOf); the reply gives the factor it makes.
+// No plan or a reserve of 0 leaves the purse alone: the factor would not follow the money
+bool Reserve(ChatHandler* handler, Scene const& scene, std::vector<std::string> const& words)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(scene.bot);
+    Planner::GoalApply::BotGoals const* goals = botAI ? botAI->planner.goals.get() : nullptr;
+    if (!goals || !goals->plan)
+        return Fail(handler, scene, "no plan yet: the need factor is unknown");
+    uint64 const reserve = goals->plan->ranked.need.reserve;
+    if (!reserve)
+        return Fail(handler, scene, "the plan's reserve is 0: any purse is flush");
+    uint64 const percent = words.empty() ? 100 : std::strtoull(words[0].c_str(), nullptr, 10);
+    uint64 const money = std::min<uint64>(reserve * percent / 100, MAX_MONEY_AMOUNT);
+    scene.bot->SetMoney(static_cast<uint32>(money));
+    float const share = AuctionRules::ShareOf(Planner::CopperWeightOf(botAI));
+    return Ok(handler, scene,
+              "money " + std::to_string(money) + " = " + std::to_string(percent) + " % of the reserve " +
+                  std::to_string(reserve) + ", factor " + std::to_string(std::lround(share * 100.0f)) + " %");
+}
+
 bool MailCount(ChatHandler* handler, Scene const& scene, std::vector<std::string> const& words)
 {
     time_t const now = static_cast<time_t>(GameTime::GetGameTime().count());
@@ -566,7 +591,8 @@ bool HandleCommand(ChatHandler* handler, char const* args)
     if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot))
         return Fail(handler, scene,
                     "no bot online by that name; usage: playerbots auction fixture post|bid|buyout|"
-                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow|listed|stood <bot> <item> ..");
+                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow|listed|stood|reserve "
+                    "<bot> <item> ..");
     scene.bot = bot;
     if (!sObjectMgr->GetItemTemplate(scene.item))
         return Fail(handler, scene, "no item " + itemWord);
@@ -599,6 +625,8 @@ bool HandleCommand(ChatHandler* handler, char const* args)
                   std::to_string(moved) + " offers taken " + words[0] + " s earlier, published; standing time " +
                       std::to_string(sPlayerbotAIConfig.Auction.StandingSeconds) + " s");
     }
+    if (scene.verb == "reserve")
+        return Reserve(handler, scene, words);
     scene.auctioneer = NearestAuctioneer(bot);
     if (!scene.auctioneer)
         return Fail(handler, scene,

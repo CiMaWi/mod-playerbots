@@ -326,6 +326,7 @@ void TestAuctionWalk()
     Check(AuctionFamily.Rows.size() == 13, "Auction: thirteen rows");
     Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
               AuctionWords::ChoiceWord(AuctionWords::Choice::Chance) == "chance" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Factor) == "factor" &&
               AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
           "Auction: the decision words");
 }

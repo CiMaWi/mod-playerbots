@@ -420,6 +420,22 @@ void WriteBuyRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason 
                            entry);
 }
 
+// The `factor` row after a buy, bid or skip (AH9, PLAN 3.9): value = the line's need factor against the exchange in
+// percent (100 at the bot's reserve, more short of it, less above it: 10 flush at neutral greed), the row's reason and
+// item beside it. A line's ceiling factor is that share (AuctionBuyList.h: use, bag and path lines)
+void WriteFactorRow(Player* bot, AuctionWords::Reason reason, uint32 percent, uint32 entry)
+{
+    if (WorldLog::Active())
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Auction,
+                           AuctionWords::ChoiceWord(AuctionWords::Choice::Factor), AuctionWords::ReasonWord(reason),
+                           static_cast<float>(percent), {}, entry);
+}
+
+uint32 FactorPercent(AuctionRules::BuyLine const& line)
+{
+    return static_cast<uint32>(std::lround(std::max(line.ceiling.factor, 0.0f) * 100.0f));
+}
+
 // A listing or a purchase the core took renews the visit's limit
 void RenewLimit(PlayerbotAI* botAI)
 {
@@ -450,9 +466,11 @@ VisitTurn AwaitPurchase(PlayerbotAI* botAI, Player* bot)
             ++visit.openBids;
             EventLog::Emit(bot, EventLog::EventType::AuctionBid, "bid", visit.awaitingEntry, visit.awaitPrice);
         }
-        WriteBuyRow(bot, buyout ? AuctionWords::Choice::Buy : AuctionWords::Choice::Bid,
-                    buyout ? AuctionWords::Reason::UnderCeiling : static_cast<AuctionWords::Reason>(visit.awaitReason),
-                    visit.awaitPrice, visit.awaitCeiling, visit.awaitCost, visit.awaitSpendable, visit.awaitingEntry);
+        AuctionWords::Reason const reason =
+            buyout ? AuctionWords::Reason::UnderCeiling : static_cast<AuctionWords::Reason>(visit.awaitReason);
+        WriteBuyRow(bot, buyout ? AuctionWords::Choice::Buy : AuctionWords::Choice::Bid, reason, visit.awaitPrice,
+                    visit.awaitCeiling, visit.awaitCost, visit.awaitSpendable, visit.awaitingEntry);
+        WriteFactorRow(bot, reason, visit.awaitFactor, visit.awaitingEntry);
     }
     else
     {
@@ -573,6 +591,7 @@ VisitTurn BuyNext(PlayerbotAI* botAI, Player* bot, Creature const* auctioneer, u
         if (choice.kind == AuctionRules::BuyKind::Skip)
         {
             WriteBuyRow(bot, AuctionWords::Choice::Skip, choice.reason, price, ceiling, cost, spendable, line.item);
+            WriteFactorRow(bot, choice.reason, FactorPercent(line), line.item);
             continue;
         }
 
@@ -588,6 +607,7 @@ VisitTurn BuyNext(PlayerbotAI* botAI, Player* bot, Creature const* auctioneer, u
         visit.awaitSpendable = Clamped(spendable);
         visit.awaitKind = static_cast<uint8>(choice.kind);
         visit.awaitReason = static_cast<uint8>(choice.reason);
+        visit.awaitFactor = FactorPercent(line);
         visit.awaitBag = bag;
         visit.moneyBefore = bot->GetMoney();
         visit.stepTick = GameTick();

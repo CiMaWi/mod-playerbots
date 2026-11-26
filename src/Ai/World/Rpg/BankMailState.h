@@ -140,6 +140,7 @@ struct AuctionVisitData
     uint32 awaitSpendable{0};     // the gold the market could spend at the choice
     uint8 awaitKind{0};           // AuctionRules::BuyKind
     uint8 awaitReason{0};         // AuctionWords::Reason of a bid: why not the buyout
+    uint32 awaitFactor{0};        // the line's need factor against the exchange, percent (the factor row, AH9)
     bool awaitBag{false};
     uint32 bought{0};  // buyouts the core took
     uint32 bids{0};    // bids the core took

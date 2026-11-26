@@ -77,11 +77,12 @@ enum class Choice : std::uint8_t
     Buy,
     Bid,
     Skip,
-    Chance  // the second row of a post, relist or hold (AH6): its sale chance in permille, the hours beside it
+    Chance,  // the second row of a post, relist or hold (AH6): its sale chance in permille, the hours beside it
+    Factor   // the second row of a buy, bid or skip (AH9): the line's need factor against the exchange in percent
 };
-constexpr std::size_t CHOICE_COUNT = 7;
+constexpr std::size_t CHOICE_COUNT = 8;
 constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"post", "hold", "relist", "buy",
-                                                                     "bid",  "skip", "chance"};
+                                                                     "bid",  "skip", "chance", "factor"};
 
 enum class Reason : std::uint8_t
 {
@@ -112,7 +113,7 @@ constexpr std::string_view ReasonWord(Reason reason)
     return index < REASON_COUNT ? REASON_WORDS[index] : std::string_view("other");
 }
 
-static_assert(static_cast<std::size_t>(Choice::Chance) + 1 == CHOICE_COUNT, "a word for every auction choice");
+static_assert(static_cast<std::size_t>(Choice::Factor) + 1 == CHOICE_COUNT, "a word for every auction choice");
 static_assert(static_cast<std::size_t>(Reason::UnderCeiling) + 1 == REASON_COUNT, "a word for every auction reason");
 }  // namespace AuctionWords
 
