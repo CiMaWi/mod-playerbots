@@ -320,7 +320,7 @@ Gate GateOf(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto)
     if (!item)
         return Gate::Create;
     uint16 dest = 0;
-    InventoryResult const result = botAI->CanEquipItem(NULL_SLOT, dest, item, true, false);
+    InventoryResult const result = botAI->CanEquipItem(NULL_SLOT, dest, item, true, true);
     item->RemoveFromUpdateQueueOf(bot);
     delete item;
 

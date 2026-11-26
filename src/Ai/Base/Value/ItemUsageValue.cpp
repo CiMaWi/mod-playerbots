@@ -317,10 +317,8 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     if (!pItem)
         return ITEM_USAGE_NONE;
 
-    // Asked as at loading (not_loading false): a state that passes (stunned, in combat, casting, a running Auto Shot,
-    // dead) does not make an item useless; the equip itself still waits for it
     uint16 dest;
-    InventoryResult result = botAI->CanEquipItem(NULL_SLOT, dest, pItem, true, false);
+    InventoryResult result = botAI->CanEquipItem(NULL_SLOT, dest, pItem, true, true);
     pItem->RemoveFromUpdateQueueOf(bot);
     delete pItem;
 
