@@ -22,30 +22,10 @@
 // house's current offers. Pure and std only: tests/auction-rules-selftest.cpp checks it
 namespace AuctionRules
 {
-// Who wants a line; the list is funded in this order. Path (the skill path's materials and recipes, WA7) and Gear
-// (WA.6: no gear at auction yet) are declared for their later owners
-enum class LineOwner : std::uint8_t
-{
-    Use,  // item use's demand (ItemDemandRules.h DemandLine: buyEntry, buyUnits, WorthEachOf)
-    Bag,  // a bag by its worth (ItemWorthRules.h BagWorth)
-    Path,
-    Gear
-};
-
+// The line owners (LineOwner) and the line (BuyLine) are in AuctionLineTypes.h, which a visit's state holds
 constexpr std::array<std::string_view, 4> LINE_OWNER_WORDS = {"use", "bag", "path", "gear"};
 
 inline std::string_view OwnerWord(LineOwner owner) { return LINE_OWNER_WORDS[static_cast<std::size_t>(owner)]; }
-
-// One need line: units of an item, worth and getting per unit in the planner's value units (copper x factor)
-struct BuyLine
-{
-    std::uint32_t item{0};
-    LineOwner owner{LineOwner::Use};
-    std::uint32_t units{0};
-    CeilingInput ceiling;
-    std::uint64_t excessUnitWorth{0};  // copper: a unit beyond the line, its vendor payout or keep worth
-    std::uint32_t auctionId{0};        // the one auction the line takes; 0 = any offer of the entry
-};
 
 inline std::uint64_t CeilingOf(BuyLine const& line) { return Ceiling(line.ceiling); }
 
