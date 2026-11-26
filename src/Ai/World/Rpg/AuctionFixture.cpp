@@ -6,6 +6,7 @@
 
 #include "AuctionFixture.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
@@ -19,6 +20,7 @@
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
 #include "AuctionIndex.h"
+#include "AuctionPricing.h"
 #include "AuctionVisit.h"
 #include "Bag.h"
 #include "CellImpl.h"
@@ -34,6 +36,7 @@
 #include "ObjectMgr.h"
 #include "Opcodes.h"
 #include "Player.h"
+#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ScriptMgr.h"
 #include "ThreadCheck.h"
@@ -343,6 +346,33 @@ std::string BidderWord(uint64 raw, Player const* bot)
     return ObjectGuid(raw).ToString();
 }
 
+// The record and chance keys of `check` (AH6): the value and how far a wanted one may lie from it, since every publish
+// adds the seconds a lot stood and the records decay. Sales in lots, hours in lot hours, p12/p24/p48 the sale chance at
+// that duration in permille through the one rule (AuctionRules::SaleChance)
+bool RecordKey(std::string const& key, AuctionIndex::Evidence const& evidence, double& value, double& tolerance)
+{
+    AuctionConfig const& config = sPlayerbotAIConfig.Auction;
+    if (key == "itemsales" || key == "kindsales")
+    {
+        value = key == "itemsales" ? evidence.item.sales : evidence.kind.sales;
+        tolerance = 0.01;
+    }
+    else if (key == "itemhours" || key == "kindhours")
+    {
+        value = key == "itemhours" ? evidence.item.hours : evidence.kind.hours;
+        tolerance = 0.1;
+    }
+    else if (key == "p12" || key == "p24" || key == "p48")
+    {
+        double const hours = key == "p12" ? 12.0 : key == "p24" ? 24.0 : 48.0;
+        value = 1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, hours, config);
+        tolerance = 1.0;
+    }
+    else
+        return false;
+    return true;
+}
+
 bool Check(ChatHandler* handler, Scene const& scene, std::vector<std::string> const& words)
 {
     AuctionIndex::PublishNow();
@@ -355,17 +385,39 @@ bool Check(ChatHandler* handler, Scene const& scene, std::vector<std::string> co
     AuctionIndex::OfferLine const* first = entry.offers.cheapest.empty() ? nullptr : &entry.offers.cheapest.front();
     std::string const bidder = first ? BidderWord(first->bidder, scene.bot) : std::string("none");
     uint32 const bid = first ? first->bid : 0;
+    AuctionIndex::Evidence const evidence = snapshot->EvidenceOf(scene.item, AuctionIndex::KindOfEntry(scene.item));
+    AuctionConfig const& config = sPlayerbotAIConfig.Auction;
 
     std::ostringstream have;
     have << "offers " << entry.offers.auctions << " sales " << entry.typical.sample << " expiries "
          << entry.typical.expiries << " unit " << entry.typical.unitPrice << " bid " << bid << " bidder " << bidder
          << " (seq " << snapshot->sequence << ", since start " << snapshot->sales << " sales " << snapshot->expiries
-         << " expiries " << snapshot->cancels << " cancels)";
+         << " expiries " << snapshot->cancels << " cancels)" << std::fixed << std::setprecision(3) << "; records item "
+         << evidence.item.sales << " sales " << evidence.item.hours << " hours, kind " << evidence.kind.sales
+         << " sales " << evidence.kind.hours << " hours; p12 "
+         << 1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 12.0, config) << " p24 "
+         << 1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 24.0, config) << " p48 "
+         << 1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 48.0, config);
     std::string differs;
     for (size_t i = 0; i + 1 < words.size(); i += 2)
     {
         std::string const& key = words[i];
         std::string const& want = words[i + 1];
+        double value = 0.0;
+        double tolerance = 0.0;
+        if (RecordKey(key, evidence, value, tolerance))
+        {
+            char* end = nullptr;
+            double const wanted = std::strtod(want.c_str(), &end);
+            if (end == want.c_str() || std::abs(value - wanted) > tolerance)
+            {
+                std::ostringstream off;
+                off << std::fixed << std::setprecision(3) << key << " " << value << " not " << want << " (within "
+                    << tolerance << ")";
+                differs += (differs.empty() ? "" : "; ") + off.str();
+            }
+            continue;
+        }
         std::string got;
         if (key == "offers")
             got = std::to_string(entry.offers.auctions);
@@ -380,7 +432,10 @@ bool Check(ChatHandler* handler, Scene const& scene, std::vector<std::string> co
         else if (key == "bidder")
             got = bidder;
         else
-            return Fail(handler, scene, "no key '" + key + "' (offers, sales, expiries, unit, bid, bidder)");
+            return Fail(handler, scene,
+                        "no key '" + key +
+                            "' (offers, sales, expiries, unit, bid, bidder, itemsales, itemhours, kindsales, "
+                            "kindhours, p12, p24, p48)");
         if (got != want)
             differs += (differs.empty() ? "" : "; ") + key + " " + got + " not " + want;
     }
@@ -508,7 +563,7 @@ bool HandleCommand(ChatHandler* handler, char const* args)
     if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot))
         return Fail(handler, scene,
                     "no bot online by that name; usage: playerbots auction fixture post|bid|buyout|"
-                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow <bot> <item> ..");
+                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow|listed <bot> <item> ..");
     scene.bot = bot;
     if (!sObjectMgr->GetItemTemplate(scene.item))
         return Fail(handler, scene, "no item " + itemWord);
@@ -519,6 +574,15 @@ bool HandleCommand(ChatHandler* handler, char const* args)
             return Fail(handler, scene, "no units; usage: grow <bot> <item> <units>");
         BankMail::ArmAuctionGrow(bot, scene.item, units);
         return Ok(handler, scene, "its next listing grows by " + std::to_string(units) + " units after the packet");
+    }
+    if (scene.verb == "listed")
+    {
+        double const hours = words.empty() ? 0.0 : std::strtod(words[0].c_str(), nullptr);
+        if (!(hours > 0.0))
+            return Fail(handler, scene, "no hours; usage: listed <bot> <item> <hours>");
+        if (!AuctionIndex::CreditListing(scene.item, hours))
+            return Fail(handler, scene, "the item has no kind");
+        return Ok(handler, scene, "credited " + words[0] + " listing hours to the item's record and its kind's");
     }
     scene.auctioneer = NearestAuctioneer(bot);
     if (!scene.auctioneer)

@@ -119,6 +119,20 @@ struct Record
     [[nodiscard]] bool Empty() const { return !(sales > 0.0) && !(hours > 0.0); }
 };
 
+// One stored record (AH6), a row of playerbots_auction_record: an item's or a kind's record as weighed to its time,
+// so a load puts the book's records where they were and they go on decaying from there
+constexpr std::uint8_t RECORD_ITEM = 0;
+constexpr std::uint8_t RECORD_KIND = 1;
+
+struct RecordRow
+{
+    std::uint8_t scope = RECORD_ITEM;
+    std::uint32_t id = 0;  // the item entry, or the kind's KindKey::code
+    double sales = 0.0;
+    double hours = 0.0;
+    std::int64_t time = 0;  // game time the values are weighed to, s
+};
+
 constexpr std::uint32_t KIND_BAND_LEVELS = 10;         // [E] levels per band
 constexpr std::uint32_t KIND_KNOWN = 1u << 24;         // set in every resolved code
 constexpr std::uint32_t KIND_BY_ITEM_LEVEL = 1u << 7;  // the band is the item level's
@@ -126,7 +140,7 @@ constexpr std::uint32_t KIND_BAND_MAX = KIND_BY_ITEM_LEVEL - 1;
 constexpr double RECORD_FORGET = 0.01;  // a record below this many lots and lot hours is forgotten
 
 // An item's kind (AH.4): class, quality and level band in one code. 0: not resolved, so it feeds no record (the
-// server resolves no offer's kind before AH6)
+// server resolves every offer's kind from its template at the add; a plain Add of the harnesses has none)
 struct KindKey
 {
     std::uint32_t code = 0;
@@ -160,7 +174,7 @@ struct ItemEntry
     TypicalPrice typical;
     CurrentOffers offers;
     Record record;  // the item's own
-    KindKey kind;   // its kind as the book resolved it; none before AH6
+    KindKey kind;   // its kind as the book resolved it at an add or a credit; none for an item only loaded
 };
 
 // An item's evidence for an ask (PLAN 3.3, 3.10): its typical price, the cheapest standing buyout (the auction visit's
@@ -250,6 +264,7 @@ public:
         {
             Credit(book.record, now, 1.0, 0.0, _recordHalfLife);
             Credit(_kinds[book.kind.code], now, 1.0, 0.0, _recordHalfLife);
+            _recordsDirty = true;
         }
         _outcomes.push_back(facts.id);
         ++_sales;
@@ -304,7 +319,8 @@ public:
     }
 
     // At a publish: every lot standing adds the interval's hours to its item's record and its kind's, for items of a
-    // known kind; a lot sold or expired since the last publish adds none. AH6 calls it; the harnesses until then
+    // known kind; a lot sold or expired since the last publish adds none. The server's publish passes the seconds since
+    // its last accrual (AH6), so a publish between two timers (the fixture's) counts no second twice
     void AccrueListingHours(std::int64_t now, std::int64_t seconds, std::int64_t windowSeconds)
     {
         constexpr double secondsPerHour = 3600.0;
@@ -318,7 +334,22 @@ public:
             double const lotHours = static_cast<double>(seconds) / secondsPerHour * book.offers.size();
             Credit(book.record, now, 0.0, lotHours, _recordHalfLife);
             Credit(_kinds[book.kind.code], now, 0.0, lotHours, _recordHalfLife);
+            _recordsDirty = true;
         }
+    }
+
+    // The test seam (AuctionFixture `listed`, AH6): hours of listing credited to an item's record and its kind's as if
+    // its lots had stood that long unsold; the item takes the kind even if it was never listed
+    void CreditListing(std::uint32_t item, KindKey kind, double hours, std::int64_t now, std::int64_t windowSeconds)
+    {
+        if (!kind.Known() || !(hours > 0.0))
+            return;
+        _recordHalfLife = HalfLife(windowSeconds);
+        ItemBook& book = _items[item];
+        book.kind = kind;
+        Credit(book.record, now, 0.0, hours, _recordHalfLife);
+        Credit(_kinds[kind.code], now, 0.0, hours, _recordHalfLife);
+        _recordsDirty = true;
     }
 
     // History older than the window goes, then items with nothing left (no offer, no history, a forgotten record) and
@@ -393,8 +424,50 @@ public:
         return CountHistory();
     }
 
-    // The stored history could not be read (WA2a): the session's own records still feed the index, but no save may
-    // overwrite the stored rows it did not read
+    // The stored records (AH6), read once at startup before LoadHistory, whose prune then keeps an item while its
+    // record is not forgotten: a record weighed to a time later than now is set to now (a clock that went back), a row
+    // of no known scope or kind, or with a negative value, is skipped; either leaves the table due a rewrite. The rows
+    // taken
+    std::size_t LoadRecords(std::vector<RecordRow> const& rows, std::int64_t now)
+    {
+        std::size_t taken = 0;
+        for (RecordRow const& row : rows)
+        {
+            bool const known =
+                row.scope == RECORD_ITEM ? row.id != 0 : row.scope == RECORD_KIND && (row.id & KIND_KNOWN);
+            if (!known || !(row.sales >= 0.0) || !(row.hours >= 0.0))
+            {
+                _recordsDirty = true;
+                continue;
+            }
+            Recorded& recorded = row.scope == RECORD_ITEM ? _items[row.id].record : _kinds[row.id];
+            recorded.record = {row.sales, row.hours};
+            recorded.time = std::min(row.time, now);
+            _recordsDirty = _recordsDirty || row.time > now;
+            ++taken;
+        }
+        return taken;
+    }
+
+    // Every record not empty as a row, items in id order, then kinds in code order: the save's full rewrite
+    std::vector<RecordRow> ExportRecords() const
+    {
+        std::vector<RecordRow> rows;
+        for (auto const& [item, book] : _items)
+            if (!book.record.record.Empty())
+                rows.push_back(
+                    {RECORD_ITEM, item, book.record.record.sales, book.record.record.hours, book.record.time});
+        std::map<std::uint32_t, Recorded const*> kinds;
+        for (auto const& [code, recorded] : _kinds)
+            kinds[code] = &recorded;
+        for (auto const& [code, recorded] : kinds)
+            if (!recorded->record.Empty())
+                rows.push_back({RECORD_KIND, code, recorded->record.sales, recorded->record.hours, recorded->time});
+        return rows;
+    }
+
+    // The stored history or records could not be read (WA2a, AH6): the session's own events still feed the index, but
+    // no save may overwrite the stored rows it did not read
     void LoadFailed() { _loadOk = false; }
 
     // Every record as a row, items in id order and each list oldest first: the save's full rewrite
@@ -426,10 +499,16 @@ public:
 
     // A sale, an expiry or a prune that dropped records changed the history since the last save
     bool HistoryDirty() const { return _historyDirty; }
-    // A save is due when the stored rows were read and the history changed since: never before a load or after a
-    // failed one
-    bool SaveDue() const { return _loadOk && _historyDirty; }
-    void MarkHistorySaved() { _historyDirty = false; }
+    // A sale, an accrual or a credit fed a record, or a load corrected one, since the last save (AH6)
+    bool RecordsDirty() const { return _recordsDirty; }
+    // A save is due when the stored rows were read and the history or the records changed since: never before a load
+    // or after a failed one. One save writes both
+    bool SaveDue() const { return _loadOk && (_historyDirty || _recordsDirty); }
+    void MarkHistorySaved()
+    {
+        _historyDirty = false;
+        _recordsDirty = false;
+    }
 
 private:
     // A record weighed to its time
@@ -672,6 +751,7 @@ private:
     std::uint64_t _cancels = 0;
     std::uint64_t _vanished = 0;
     bool _historyDirty = false;  // the history changed since the last save or load
+    bool _recordsDirty = false;  // a record changed since the last save or load
     bool _loadOk = false;        // the stored history was read (LoadHistory), not failed or never tried
 };
 

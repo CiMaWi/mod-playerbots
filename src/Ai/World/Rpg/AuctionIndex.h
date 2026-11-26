@@ -35,7 +35,16 @@ void Update(std::uint32_t diff);
 // an act, WA1c)
 void PublishNow();
 
-// playerbots auction index <item id or link>: prints an item's entry from the snapshot (read only)
+// An item entry's kind from its template (AH.4); none for an entry without one. Any thread (the templates are read
+// only)
+KindKey KindOfEntry(std::uint32_t item);
+
+// World thread, the auction fixture's `listed` seam (AH6, test only): credits hours of listing to the item's record and
+// its kind's, then publishes; false for an item without a kind or no hours
+bool CreditListing(std::uint32_t item, double hours);
+
+// playerbots auction index <item id or link>: prints an item's entry from the snapshot (read only) and its records with
+// the sale chance at 12, 24 and 48 h
 bool HandleIndexCommand(ChatHandler* handler, char const* args);
 }  // namespace AuctionIndex
 

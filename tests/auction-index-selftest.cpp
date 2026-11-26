@@ -511,7 +511,7 @@ std::string StreamMismatch(Snapshot const& snapshot, StreamModel const& model)
         ++offersOf[item];
     bool offers = snapshot.auctions == model.live.size();
     bool sample = true;
-    bool records = snapshot.kinds.empty();  // the stream's adds carry no kind, as the server's before AH6
+    bool records = snapshot.kinds.empty();  // the stream's adds carry no kind (a plain Add)
     for (auto const& [item, entry] : snapshot.items)
     {
         records = records && entry.record.Empty() && !entry.kind.Known();
@@ -657,7 +657,7 @@ void CheckRecords()
     plain.Remove(1);
     Snapshot s = Take(plain);
     Check(Item(s, 100) && Item(s, 100)->record.Empty() && s.kinds.empty(),
-          "no kind (the server's hooks before AH6): neither the hours nor the sale feed a record");
+          "no kind (a plain Add): neither the hours nor the sale feed a record");
 
     Book book;
     book.Add(Auction(1, 100, 1, 10, 20), green);
@@ -712,6 +712,146 @@ void CheckRecords()
     }
     Check(rises && last > 0.49 && nextChance(pooled, ended + 40 * WINDOW) == 0.5,
           "left alone the kind drifts back toward the start as its record decays, and is at it once forgotten");
+}
+
+// The records' store and feed (AH6): a round trip, a clock that went back, rows of no scope, what makes a save due, a
+// failed load, and the wa-index case's numbers (the seam's 48 listing hours and one sale)
+bool SameRecordRows(std::vector<RecordRow> const& a, std::vector<RecordRow> const& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].scope != b[i].scope || a[i].id != b[i].id || a[i].sales != b[i].sales || a[i].hours != b[i].hours ||
+            a[i].time != b[i].time)
+            return false;
+    return true;
+}
+
+void CheckRecordStore()
+{
+    AuctionConfig const config;
+    KindKey const green = KindOf(4, 2, 25, 30);
+    KindKey const grey = KindOf(15, 0, 0, 5);
+
+    // Round trip: a sold item, a listed one, one only credited by the seam, one listed without a kind
+    Book a;
+    a.LoadHistory({}, NOW - DAY, WINDOW);
+    a.Add(Auction(1, 100, 1, 10, 20), green);
+    a.Add(Auction(2, 101, 1, 10, 20), grey);
+    a.Add(Auction(3, 102, 1, 10, 20));
+    a.AccrueListingHours(NOW - DAY, 3600, WINDOW);
+    a.Sale(Bought(Auction(1, 100, 1, 10, 20), 9), NOW - DAY / 2);
+    a.Remove(1);
+    a.CreditListing(103, green, 5.0, NOW - DAY / 4, WINDOW);
+    std::vector<RecordRow> const rows = a.ExportRecords();
+    Check(rows.size() == 5 && rows[0].scope == RECORD_ITEM && rows[0].id == 100 && rows[1].id == 101 &&
+              rows[2].id == 103 && rows[3].scope == RECORD_KIND && rows[3].id == green.code && rows[4].id == grey.code,
+          "export: the three items' records in id order, then the two kinds'; an item without a kind has none");
+    Book b;
+    Check(b.LoadRecords(rows, NOW) == 5, "import: every row taken");
+    b.LoadHistory(a.ExportHistory(), NOW, WINDOW);
+    Snapshot const sa = Take(a);
+    Snapshot const sb = Take(b);
+    bool same = true;
+    for (std::uint32_t const item : {100u, 101u, 103u})
+        same = same && Item(sa, item) && Item(sb, item) &&
+               Near(Item(sa, item)->record.sales, Item(sb, item)->record.sales) &&
+               Near(Item(sa, item)->record.hours, Item(sb, item)->record.hours);
+    for (KindKey const kind : {green, grey})
+        same = same && Near(sa.KindRecord(kind).sales, sb.KindRecord(kind).sales) &&
+               Near(sa.KindRecord(kind).hours, sb.KindRecord(kind).hours);
+    Check(same && Near(Item(sb, 103)->record.hours, 5.0 * std::exp2(-0.25 * DAY / (WINDOW / 2))),
+          "round trip: the same records, weighed on from their times");
+    Check(!Item(sb, 103)->kind.Known() && Item(sb, 103)->offers.auctions == 0,
+          "an item only loaded keeps its record through the history's prune, with no kind until an add");
+    Check(SameRecordRows(rows, b.ExportRecords()) && !b.SaveDue(), "the import exports the same rows and is clean");
+    std::vector<RecordRow> changed = rows;
+    changed[0].hours += 1.0;
+    Book c;
+    c.LoadRecords(changed, NOW);
+    Check(!Near(Take(c).Find(100)->record.hours, Item(sa, 100)->record.hours),
+          "a changed row gives another record (the comparison can fail)");
+
+    // A clock that went back: a record weighed to a later time is set to now, and decays from now on
+    Book future;
+    future.LoadRecords({{RECORD_KIND, green.code, 0.0, 10.0, NOW + DAY}}, NOW);
+    future.LoadHistory({}, NOW, WINDOW);
+    Check(
+        Near(Take(future, NOW + WINDOW / 2).KindRecord(green).hours, 5.0) && future.RecordsDirty() && future.SaveDue(),
+        "a record of a future time: set to now (half of it half a window on), the table due a rewrite");
+    Book bad;
+    Check(bad.LoadRecords({{7, 100, 1.0, 1.0, NOW},
+                           {RECORD_KIND, 12, 1.0, 1.0, NOW},
+                           {RECORD_ITEM, 0, 1.0, 1.0, NOW},
+                           {RECORD_ITEM, 100, 1.0, -1.0, NOW}},
+                          NOW) == 0 &&
+              bad.RecordsDirty() && Take(bad).items.empty() && Take(bad).kinds.empty(),
+          "rows of no scope, no kind, no item or a negative value: skipped, the table due a rewrite");
+
+    // What makes a save due: a record fed, not an offer of no kind; one save clears both
+    Book d;
+    d.LoadHistory({}, NOW, WINDOW);
+    d.Add(Auction(1, 100, 1, 10, 20));
+    d.AccrueListingHours(NOW + 60, 60, WINDOW);
+    Check(!d.SaveDue(), "an accrual over an offer of no kind: nothing to save");
+    d.Add(Auction(2, 101, 1, 10, 20), green);
+    d.AccrueListingHours(NOW + 120, 60, WINDOW);
+    Check(d.SaveDue() && d.RecordsDirty() && !d.HistoryDirty(),
+          "an accrual over a kinded offer: the records due a save");
+    d.MarkHistorySaved();
+    Check(!d.SaveDue(), "saved: nothing due");
+    d.CreditListing(102, green, 1.0, NOW + 180, WINDOW);
+    Check(d.SaveDue() && d.RecordsDirty(), "a credit: due");
+    d.MarkHistorySaved();
+    d.CreditListing(102, KindKey{}, 1.0, NOW + 240, WINDOW);
+    d.CreditListing(102, green, 0.0, NOW + 240, WINDOW);
+    Check(!d.SaveDue(), "a credit without a kind or hours does nothing");
+    d.Sale(Bought(Auction(2, 101, 1, 10, 20), 9), NOW + 300);
+    d.Remove(2);
+    Check(d.SaveDue() && d.RecordsDirty() && d.HistoryDirty(), "a kinded sale: history and records due");
+
+    // A failed load: the session's records still change, nothing is ever due
+    Book f;
+    f.LoadFailed();
+    f.Add(Auction(1, 100, 1, 10, 20), green);
+    f.AccrueListingHours(NOW, 3600, WINDOW);
+    f.CreditListing(101, green, 2.0, NOW, WINDOW);
+    Check(f.RecordsDirty() && !f.SaveDue() && !Take(f).KindRecord(green).Empty(),
+          "a failed load: the records fill, no save may overwrite the stored rows");
+
+    // The wa-index case: 48 listing hours by the seam, then one stand-in buyout, to the item and its kind
+    Book g;
+    g.LoadHistory({}, NOW, WINDOW);
+    g.CreditListing(200, green, 48.0, NOW, WINDOW);
+    g.Add(Auction(10, 200, 1, 10, 20), green);
+    g.Sale(Bought(Auction(10, 200, 1, 10, 20), 9), NOW);
+    g.Remove(10);
+    Evidence const evidence = Take(g).EvidenceOf(200, green);
+    double const start = std::log(2.0) / 24.0;
+    double const kindRate = (1.0 + 48.0 * start) / (48.0 + 48.0);
+    double const itemRate = (1.0 + 48.0 * kindRate) / (48.0 + 48.0);
+    bool closed =
+        config.ChanceEvenHours == 24 && config.ChanceKindPriorHours == 48 && config.ChanceItemPriorHours == 48;
+    std::cout << "records: seam 48 h plus one sale, chance at 12/24/48 h:";
+    for (double const hours : {12.0, 24.0, 48.0})
+    {
+        double const p = AuctionRules::SaleChance(evidence.item, evidence.kind, hours, config);
+        closed = closed && Near(p, 1.0 - std::exp(-itemRate * hours));
+        std::cout << " " << std::lround(p * 1000.0);
+    }
+    std::cout << " permille\n";
+    Check(closed && Near(evidence.item.hours, 48.0) && Near(evidence.item.sales, 1.0) &&
+              Near(evidence.kind.hours, 48.0) &&
+              std::lround(1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 12.0, config)) == 240 &&
+              std::lround(1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 24.0, config)) == 422 &&
+              std::lround(1000.0 * AuctionRules::SaleChance(evidence.item, evidence.kind, 48.0, config)) == 666,
+          "the case's records: 48 h and 1 sale on item and kind, 240 / 422 / 666 permille at 12 / 24 / 48 h");
+    Evidence unsold = evidence;
+    unsold.item.sales = 0.0;
+    unsold.kind.sales = 0.0;
+    Check(AuctionRules::SaleChance(unsold.item, unsold.kind, 24.0, config) <
+              AuctionRules::SaleChance(evidence.item, evidence.kind, 24.0, config),
+          "control: without the sale the chance is lower (caught)");
 }
 
 // The least line cost per unit of a need among the buyout lines (excess units worth nothing): a fraction cost/covered
@@ -771,6 +911,7 @@ int main()
     CheckHistoryStore();
     CheckSeededStreams();
     CheckRecords();
+    CheckRecordStore();
     CheckLotFrontier();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

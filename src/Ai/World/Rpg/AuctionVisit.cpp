@@ -7,6 +7,7 @@
 #include "AuctionVisit.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -334,6 +335,21 @@ void WriteRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason rea
                        AuctionWords::ReasonWord(reason), static_cast<float>(ask), amounts, entry);
 }
 
+// The second `auction` row of a post, relist or hold (AH6): value = the sale chance at the listing's duration in
+// permille, the duration beside it (hours); ref = the item entry. A row holds three alternatives, which the first row's
+// floor, deposit and left take
+void WriteChanceRow(Player* bot, AuctionWords::Reason reason, uint32 permille, uint32 hours, uint32 entry)
+{
+    if (!WorldLog::Active())
+        return;
+    WorldLogFormat::Alternatives const amounts{{"hours", static_cast<float>(hours)}};
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Auction,
+                       AuctionWords::ChoiceWord(AuctionWords::Choice::Chance), AuctionWords::ReasonWord(reason),
+                       static_cast<float>(permille), amounts, entry);
+}
+
+uint32 Permille(double p) { return static_cast<uint32>(std::lround(std::clamp(p, 0.0, 1.0) * 1000.0)); }
+
 uint32 Clamped(uint64 copper)
 {
     return static_cast<uint32>(std::min<uint64>(copper, std::numeric_limits<uint32>::max()));
@@ -467,9 +483,11 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
         uint32 const deposit = visit.moneyBefore > bot->GetMoney() ? visit.moneyBefore - bot->GetMoney() : 0;
         visit.deposits += deposit;
         Item const* const left = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(visit.awaiting));
-        WriteRow(bot, visit.relist ? AuctionWords::Choice::Relist : AuctionWords::Choice::Post,
-                 visit.relist ? AuctionWords::Reason::Expired : AuctionWords::Reason::AboveVendor, visit.ask,
+        AuctionWords::Reason const reason =
+            visit.relist ? AuctionWords::Reason::Expired : AuctionWords::Reason::AboveVendor;
+        WriteRow(bot, visit.relist ? AuctionWords::Choice::Relist : AuctionWords::Choice::Post, reason, visit.ask,
                  visit.floor, deposit, visit.awaitingEntry, left ? ListUnits(botAI, left) : 0);
+        WriteChanceRow(bot, reason, visit.chance, visit.hours, visit.awaitingEntry);
     }
     else
     {
@@ -605,8 +623,9 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
             ++visit.held;
             MarkEntryTried(bot, item->GetEntry(), visit.tried);
             AuctionMemory::Held(bot->GetGUID().GetCounter(), item->GetEntry());
-            WriteRow(bot, AuctionWords::Choice::Hold, lists ? AuctionWords::Reason::Budget : ask.reason, ask.ask,
-                     ask.floor, deposit, item->GetEntry());
+            AuctionWords::Reason const reason = lists ? AuctionWords::Reason::Budget : ask.reason;
+            WriteRow(bot, AuctionWords::Choice::Hold, reason, ask.ask, ask.floor, deposit, item->GetEntry());
+            WriteChanceRow(bot, reason, Permille(ask.p), ask.hours, item->GetEntry());
             continue;
         }
 
@@ -624,6 +643,8 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
         visit.awaitingEntry = item->GetEntry();
         visit.ask = Clamped(ask.ask);
         visit.floor = Clamped(ask.floor);
+        visit.chance = Permille(ask.p);
+        visit.hours = ask.hours;
         visit.relist = ask.reason == AuctionWords::Reason::Expired;
         visit.moneyBefore = bot->GetMoney();
         visit.stepTick = GameTick();

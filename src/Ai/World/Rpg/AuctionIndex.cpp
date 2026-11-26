@@ -14,6 +14,7 @@
 
 #include "AuctionConfig.h"
 #include "AuctionHouseMgr.h"
+#include "AuctionPricing.h"
 #include "AuctionVisit.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
@@ -42,6 +43,7 @@ std::uint64_t sequence = 0;             // world thread only
 std::uint32_t startupAuctions = 0;      // set once by the startup walk
 std::uint32_t startupHouses = 0;
 std::uint32_t walkMs = 0;
+std::int64_t accruedAt = 0;  // world thread only: game time of the last listing hours accrual
 
 std::int64_t GameNow() { return static_cast<std::int64_t>(GameTime::GetGameTime().count()); }
 
@@ -98,6 +100,9 @@ void Publish()
         });
     std::int64_t const now = GameNow();
     std::int64_t const window = WindowSeconds();
+    // The seconds since the last accrual, not PublishSeconds: the fixture's PublishNow publishes between two timers
+    book.AccrueListingHours(now, now - accruedAt, window);
+    accruedAt = now;
     book.Prune(now, window);
 
     auto snapshot = std::make_shared<Snapshot>();
@@ -110,34 +115,68 @@ void Publish()
     current.Publish(std::move(snapshot));
 }
 
-// Startup, world thread, before the first publication: the stored trade history into the book (WA1d)
+// A table's rows read at startup. The pool returns null for a failed query and an empty result alike; the count always
+// has one row when it ran, so a null count, or no rows when it counted some, means the table could not be read (WA2a)
+struct StoredRows
+{
+    PreparedQueryResult result;
+    std::uint64_t stored = 0;
+    bool failed = false;
+};
+
+StoredRows ReadStored(PlayerbotsDatabaseStatements countStatement, PlayerbotsDatabaseStatements rowsStatement)
+{
+    StoredRows rows;
+    PreparedQueryResult const count = PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(countStatement));
+    rows.stored = count ? count->Fetch()[0].Get<uint64>() : 0;
+    if (rows.stored)
+        rows.result = PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(rowsStatement));
+    rows.failed = !count || (rows.stored && !rows.result);
+    return rows;
+}
+
+// Startup, world thread, before the first publication: the stored records and trade history into the book (WA1d,
+// AH6), the records first so the history's prune keeps an item whose record is not forgotten. A table that could not
+// be read leaves both unloaded: the save stays off and the stored rows of both stay as they are
 void LoadHistory()
 {
     std::uint32_t const start = getMSTime();
-    // The pool returns null for a failed query and an empty result alike; the count always has one row when it ran,
-    // so null means the table could not be read: the save stays off and the stored rows stay as they are (WA2a)
-    PreparedQueryResult const count =
-        PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_AUCTION_HISTORY_COUNT));
-    std::uint64_t const stored = count ? count->Fetch()[0].Get<uint64>() : 0;
-    std::vector<HistoryRow> rows;
-    PreparedQueryResult result =
-        stored ? PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_AUCTION_HISTORY))
-               : PreparedQueryResult();
-    if (!count || (stored && !result))
+    StoredRows const history = ReadStored(PLAYERBOTS_SEL_AUCTION_HISTORY_COUNT, PLAYERBOTS_SEL_AUCTION_HISTORY);
+    StoredRows const records = ReadStored(PLAYERBOTS_SEL_AUCTION_RECORD_COUNT, PLAYERBOTS_SEL_AUCTION_RECORD);
+    if (history.failed || records.failed)
     {
         book.LoadFailed();
         LOG_ERROR("playerbots",
-                  "Auction index: history load FAILED ({} stored rows, the {} query returned nothing); saves are off "
-                  "for this session, the stored rows stay as they are",
-                  stored, count ? "row" : "count");
+                  "Auction index: history load FAILED (history {} stored rows {}, records {} stored rows {}); saves "
+                  "are off for this session, the stored rows stay as they are",
+                  history.stored, history.failed ? "unread" : "read", records.stored,
+                  records.failed ? "unread" : "read");
         return;
     }
-    if (result)
+    std::vector<RecordRow> recordRows;
+    if (records.result)
     {
-        rows.reserve(result->GetRowCount());
+        recordRows.reserve(records.result->GetRowCount());
         do
         {
-            Field* fields = result->Fetch();
+            Field* fields = records.result->Fetch();
+            RecordRow row;
+            row.scope = fields[0].Get<uint8>();
+            row.id = fields[1].Get<uint32>();
+            row.sales = fields[2].Get<double>();
+            row.hours = fields[3].Get<double>();
+            row.time = fields[4].Get<int64>();
+            recordRows.push_back(row);
+        } while (records.result->NextRow());
+    }
+    std::size_t const recordsTaken = book.LoadRecords(recordRows, GameNow());
+    std::vector<HistoryRow> rows;
+    if (history.result)
+    {
+        rows.reserve(history.result->GetRowCount());
+        do
+        {
+            Field* fields = history.result->Fetch();
             HistoryRow row;
             row.item = fields[0].Get<uint32>();
             row.kind = fields[1].Get<uint8>();
@@ -146,15 +185,18 @@ void LoadHistory()
             row.count = fields[4].Get<uint32>();
             row.auctionId = fields[5].Get<uint32>();
             rows.push_back(row);
-        } while (result->NextRow());
+        } while (history.result->NextRow());
     }
     HistoryCounts const counts = book.LoadHistory(rows, GameNow(), WindowSeconds());
-    LOG_INFO("server.loading", "Auction index: history loaded {} sales, {} expiries of {} items ({} rows read, {} ms)",
-             counts.sales, counts.expiries, counts.items, rows.size(), GetMSTimeDiffToNow(start));
+    LOG_INFO("server.loading",
+             "Auction index: history loaded {} sales, {} expiries of {} items ({} rows read), {} records of {} rows "
+             "read ({} ms)",
+             counts.sales, counts.expiries, counts.items, rows.size(), recordsTaken, recordRows.size(),
+             GetMSTimeDiffToNow(start));
 }
 
-// World thread: the whole history rewritten in one asynchronous transaction when it changed since the last save;
-// the world thread only builds the statements
+// World thread: the whole history and the records (AH6) rewritten in one asynchronous transaction when either
+// changed since the last save; the world thread only builds the statements
 void SaveHistory(bool atShutdown)
 {
     if (!book.SaveDue())
@@ -174,10 +216,25 @@ void SaveHistory(bool atShutdown)
         stmt->SetData(5, row.auctionId);
         transaction->Append(stmt);
     }
+    std::vector<RecordRow> const records = book.ExportRecords();
+    transaction->Append(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_AUCTION_RECORD));
+    for (RecordRow const& row : records)
+    {
+        PlayerbotsDatabasePreparedStatement* stmt =
+            PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_INS_AUCTION_RECORD);
+        stmt->SetData(0, row.scope);
+        stmt->SetData(1, row.id);
+        // The core binds no double (PreparedStatement.cpp); a float's seven digits are more than a chance needs
+        stmt->SetData(2, static_cast<float>(row.sales));
+        stmt->SetData(3, static_cast<float>(row.hours));
+        stmt->SetData(4, row.time);
+        transaction->Append(stmt);
+    }
     PlayerbotsDatabase.CommitTransaction(transaction);
     book.MarkHistorySaved();
     if (atShutdown)
-        LOG_INFO("playerbots", "Auction index: history saved at shutdown, {} rows", rows.size());
+        LOG_INFO("playerbots", "Auction index: history saved at shutdown, {} rows, {} records", rows.size(),
+                 records.size());
 }
 
 // After World::SetInitialWorldSettings loaded the auctions, which fires no OnAuctionAdd
@@ -193,13 +250,14 @@ void Walk()
         {
             if (!entry)
                 continue;
-            book.Add(FactsOf(entry));
+            book.Add(FactsOf(entry), KindOfEntry(entry->item_template));
             ++found;
         }
     }
     startupAuctions = found;
     startupHouses = static_cast<std::uint32_t>(houses.size());
     walkMs = GetMSTimeDiffToNow(start);
+    accruedAt = GameNow();  // the listing hours count from the walk on: the down time adds none
     LoadHistory();
     Publish();
     std::shared_ptr<Snapshot const> const snapshot = current.Current();
@@ -224,7 +282,7 @@ public:
         PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex add");
         if (!entry)
             return;
-        book.Add(FactsOf(entry));
+        book.Add(FactsOf(entry), KindOfEntry(entry->item_template));
         AuctionMemory::Listed(entry);
     }
 
@@ -328,6 +386,23 @@ void PublishNow()
     Publish();
 }
 
+KindKey KindOfEntry(std::uint32_t item)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    return proto ? KindOf(proto->Class, proto->Quality, proto->RequiredLevel, proto->ItemLevel) : KindKey{};
+}
+
+bool CreditListing(std::uint32_t item, double hours)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex::CreditListing");
+    KindKey const kind = KindOfEntry(item);
+    if (!kind.Known() || !(hours > 0.0))
+        return false;
+    book.CreditListing(item, kind, hours, GameNow(), WindowSeconds());
+    Publish();
+    return true;
+}
+
 bool HandleIndexCommand(ChatHandler* handler, char const* args)
 {
     std::string text = args ? args : "";
@@ -364,6 +439,18 @@ bool HandleIndexCommand(ChatHandler* handler, char const* args)
         "sales {}, expiries {}",
         itemId, proto->Name1, entry.offers.auctions, entry.offers.units, entry.offers.cheapestUnitBuyout, typical,
         entry.typical.sample, entry.typical.weight, entry.typical.sample, entry.typical.expiries);
+    // The records (AH.4) through the one sale chance rule; the kind from the template, so an unseen item shows its
+    // kind's
+    KindKey const kind = KindOfEntry(itemId);
+    Evidence const evidence = snapshot->EvidenceOf(itemId, kind);
+    AuctionConfig const& config = sPlayerbotAIConfig.Auction;
+    handler->PSendSysMessage(
+        "AUCTION record {}: item sales {:.3f} hours {:.3f}; kind {:#x} sales {:.3f} hours {:.3f}; chance at 12 h "
+        "{:.3f}, 24 h {:.3f}, 48 h {:.3f}",
+        itemId, evidence.item.sales, evidence.item.hours, kind.code, evidence.kind.sales, evidence.kind.hours,
+        AuctionRules::SaleChance(evidence.item, evidence.kind, 12.0, config),
+        AuctionRules::SaleChance(evidence.item, evidence.kind, 24.0, config),
+        AuctionRules::SaleChance(evidence.item, evidence.kind, 48.0, config));
     for (OfferLine const& line : entry.offers.cheapest)
         handler->PSendSysMessage("AUCTION offer {}: x{} bid {} (start {}) buyout {} ends in {} s, bidder {}, house {}",
                                  line.id, line.count, line.bid, line.startBid, line.buyout,

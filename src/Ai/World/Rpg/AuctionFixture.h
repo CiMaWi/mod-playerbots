@@ -18,11 +18,14 @@ class ChatHandler;
 // - cancel <bot> <item>: queues CMSG_AUCTION_REMOVE_ITEM.
 // - end <bot> <item>: ends the auction now, by the core's own end path.
 // - standin post|bid|buyout <bot> <item> ..: the same acts of a stand-in player.
-// - check <bot> <item> [offers N] [sales N] [expiries N] [unit C] [bid C] [bidder none|bot|standin]: compares the
-//   index entry after a forced publish.
+// - check <bot> <item> [offers N] [sales N] [expiries N] [unit C] [bid C] [bidder none|bot|standin]
+//   [itemsales L] [itemhours H] [kindsales L] [kindhours H] [p12 P] [p24 P] [p48 P]: compares the index entry after a
+//   forced publish; the records' lots and lot hours within 0.01 and 0.1, the sale chance in permille within 1 (AH6).
 // - mail <bot> <item> <kind> <n>.. [money C]: counts the bot's delivered auction mails by kind.
 // - grow <bot> <item> <units>: the bot's next listing of the item (a bot under a test constraint) finds its stack grown
 //   by the units right after the sell packet is queued (AH3's forced case); needs no auctioneer near.
+// - listed <bot> <item> <hours>: credits the hours of listing, unsold, to the item's record and its kind's (the kind
+//   from its template), then publishes, so a case need not wait hours (AH6); needs no auctioneer near.
 // Each answers one line `AUCTION fixture <verb> <bot> <item>: ok, ..` or `.. error, <why>`.
 namespace AuctionFixture
 {

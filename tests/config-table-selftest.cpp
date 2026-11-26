@@ -325,6 +325,7 @@ void TestAuctionWalk()
           "Auction: a value in range kept, one above its bound clamped with a warning");
     Check(AuctionFamily.Rows.size() == 12, "Auction: twelve rows");
     Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Chance) == "chance" &&
               AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
           "Auction: the decision words");
 }
