@@ -351,7 +351,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
 
     float itemScore = calculator.CalculateItem(itemProto->ItemId, randomPropertyId);
 
-    if (itemScore)
+    if (itemScore > 0)
         shouldEquip = true;
 
     if (itemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(itemProto, bot->getClass()))
