@@ -32,48 +32,7 @@ using ai::spell::HasSpellOrCategoryCooldown;
 CastSpellAction::CastSpellAction(PlayerbotAI* botAI, std::string const spell)
     : Action(botAI, spell), spell(spell), range(botAI->GetRange("spell")) {}
 
-bool CastSpellAction::Execute(Event /*event*/)
-{
-    if (spell == "conjure food" || spell == "conjure water")
-    {
-        // uint32 id = AI_VALUE2(uint32, "spell id", spell);
-        // if (!id)
-        //     return false;
-
-        uint32 castId = 0;
-
-        for (PlayerSpellMap::iterator itr = bot->GetSpellMap().begin(); itr != bot->GetSpellMap().end(); ++itr)
-        {
-            uint32 spellId = itr->first;
-
-            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-            if (!spellInfo)
-                continue;
-
-            std::string const namepart = spellInfo->SpellName[0];
-            std::wstring wnamepart;
-            if (!Utf8toWStr(namepart, wnamepart))
-                return false;
-
-            wstrToLower(wnamepart);
-
-            if (!Utf8FitTo(spell, wnamepart) || spellInfo->Effects[0].Effect != SPELL_EFFECT_CREATE_ITEM)
-                continue;
-
-            uint32 itemId = spellInfo->Effects[0].ItemType;
-            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-            if (!proto || bot->CanUseItem(proto) != EQUIP_ERR_OK)
-                continue;
-
-            if (spellInfo->Id > castId)
-                castId = spellInfo->Id;
-        }
-
-        return botAI->CastSpell(castId, bot);
-    }
-
-    return botAI->CastSpell(spell, GetTarget());
-}
+bool CastSpellAction::Execute(Event /*event*/) { return botAI->CastSpell(spell, GetTarget()); }
 
 bool CastKnockbackSpellAction::IsBlocked(Player* bot, uint32 noKnockbackGlyph)
 {
