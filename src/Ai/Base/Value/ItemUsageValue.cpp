@@ -351,6 +351,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     calculator.SetUpForEquipCompare();
 
     float itemScore = calculator.CalculateItem(itemProto->ItemId, randomPropertyId);
+    bool const usefulStat = calculator.HasUsefulStat();
 
     if (itemScore > 0)
         shouldEquip = true;
@@ -411,13 +412,15 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     {
         Item* oldItem = bot->GetItemByPos(dest + i);
 
-        // No item equipped
+        // No item equipped: an unfit item fills the slot only for a stat that serves the spec, or when no stat
+        // carries a weight (a white chest piece on a naked bot); one of only foreign stats stays in the bag
         if (!oldItem)
         {
             if (shouldEquip)
                 return ITEM_USAGE_EQUIP;
-            else
+            if (usefulStat)
                 return ITEM_USAGE_BAD_EQUIP;
+            return ITEM_USAGE_NONE;
         }
 
         ItemTemplate const* oldItemProto = oldItem->GetTemplate();
