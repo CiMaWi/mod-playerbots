@@ -129,7 +129,11 @@ void WatchVisits(PlayerbotAI* botAI)
     VisitState const& visit = botAI->bankMail.visit;
     if (visit.phase == VisitPhase::None)
         return;
-    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+    VisitWatchIn in = WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs);
+    // An auction visit came into reach once it acted: only its act writes `tried` and `buying`
+    AuctionVisitData const& auction = botAI->bankMail.auctionData;
+    in.reached = visit.kind != VisitKind::Auction || !auction.tried.empty() || auction.buying;
+    if (std::optional<VisitEnd> const end = WatchVisit(in))
         EndVisit(botAI, *end);
 }
 

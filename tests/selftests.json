@@ -8,6 +8,23 @@
             "success": "auction-index: \\d+ passed, 0 failed"
         },
         {
+            "file": "auction-market-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/auction-market-night.txt",
+                "{repo}/tests/fixtures/recipe-index-dump.txt",
+                "{repo}/tests/fixtures/auction-reference-inputs.txt"
+            ],
+            "success": "auction-market: \\d+ passed, 0 failed"
+        },
+        {
             "file": "auction-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
