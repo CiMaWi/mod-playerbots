@@ -715,6 +715,24 @@ inline std::vector<ErrandOffer> CollectOffers(ErrandSnapshot const& snapshot, st
     return offers;
 }
 
+// NR3 (NR.4): the errands that start a fight: the tame (it clears the site and fights the beast through the channel)
+// and the stable's swap (it tames the wanted pet after storing the old one)
+constexpr bool ErrandStartsFight(ErrandKind kind) { return kind == ErrandKind::Tame || kind == ErrandKind::Stable; }
+
+// A sick bot's trip (NR.4): no errand that starts a fight, no service stop and no placed errand outside the safe area
+// the bot stands in. `safeAt(place)` answers whether the walk from the bot to the place stays in that area
+// (Upkeep::SafeLeg on foot); the healthy bot's trip never calls this
+template <typename SafeAt>
+inline void KeepSickErrands(std::vector<ServiceStop>& stops, std::vector<ErrandOffer>& offers, SafeAt const& safeAt)
+{
+    stops.erase(
+        std::remove_if(stops.begin(), stops.end(), [&safeAt](ServiceStop const& stop) { return !safeAt(stop.Place); }),
+        stops.end());
+    offers.erase(std::remove_if(offers.begin(), offers.end(), [&safeAt](ErrandOffer const& offer)
+                                { return ErrandStartsFight(offer.Kind) || (offer.Placed && !safeAt(offer.Place)); }),
+                 offers.end());
+}
+
 struct TripStop
 {
     ErrandPlace Place;

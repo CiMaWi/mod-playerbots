@@ -23,6 +23,7 @@
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
+#include "CheckMountStateAction.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
 #include "InterludeInputs.h"
@@ -30,6 +31,7 @@
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailVisit.h"
+#include "MountRules.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -46,6 +48,9 @@
 #include "QuestDef.h"
 #include "QuestIndex.h"
 #include "SkillPathLive.h"
+#include "Spell.h"
+#include "SpellAuraEffects.h"
+#include "SpellInfo.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "TestProbe.h"
@@ -223,7 +228,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     AiObjectContext* context = botAI->GetAiObjectContext();
     // A held errand row refuses the trigger's trip, also one fired before the hold was taken (WU15a); an order passes
     // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart); a sick
-    // bot's order passes only with the due repair recover handed over (NE11)
+    // bot's order passes only once recover has handed it over (NR3: the goal model's sick gate chose the errand)
     if (order.order ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
                        (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) && !WorldTravel::SickErrandOpen(botAI)) ||
                        bot->GetGroup() || bot->GetMap()->Instanceable())
@@ -526,8 +531,16 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
-    std::vector<WorldTravel::ErrandOffer> const offers =
-        WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
+    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
+    // A sick bot's trip (NR3, NR.4) starts no fight and keeps to the safe area it stands in: the tame and the stable's
+    // swap are left out, and so is every stop its walk would leave that area for
+    if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    {
+        Upkeep::SafeAreas const here = Planner::SafeAreasHere(bot, *indexes);
+        WorldTravel::KeepSickErrands(
+            snapshot.Stops, offers, [bot, &indexes, &here](WorldTravel::ErrandPlace const& place)
+            { return Planner::SafeWalkTo(bot, *indexes, here, place.MapId, place.X, place.Y, place.Z); });
+    }
     WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
@@ -685,6 +698,36 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/) { return StartErrand(bot
 
 bool NewRpgStartInnAction::Execute(Event /*event*/) { return StartBind(botAI, {}); }
 
+bool NewRpgInternal::StartSickHearth(PlayerbotAI* botAI, char const* word)
+{
+    constexpr uint32 HEARTHSTONE_SPELL = 8690;  // the stone's spell (NewRpgBaseAction.cpp's HEARTHSTONE_CAST_SPELL)
+    Player* bot = botAI->GetBot();
+    if (!bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || !TestConstraints::HearthAllowed(botAI->testConstraints) ||
+        !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) || bot->HasSpellCooldown(HEARTHSTONE_SPELL) ||
+        bot->IsInCombat() || bot->IsFlying() || bot->IsInFlight() || bot->IsNonMeleeSpellCast(false) ||
+        bot->GetGroup() || bot->GetMap()->Instanceable() || !WorldTravel::SickErrandOpen(botAI))
+        return false;
+    // The core refuses a mounted cast (as NewRpgBaseAction::CastHearth)
+    Unit::AuraEffectList const& mounts = bot->GetAuraEffectsByType(SPELL_AURA_MOUNTED);
+    uint32 const mountSpell = mounts.empty() ? 0 : mounts.front()->GetId();
+    if (bot->IsMounted())
+        CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
+    bool const cast = botAI->DoSpecificAction("hearthstone", Event(), true);
+    // NR3c's trace (run 1: two paladins' casts ended interrupted:other within 0.1 s): the mount before, what the bot
+    // casts after the use; one line per start
+    Spell const* casting = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    LOG_DEBUG("playerbots", "[NR3] {} sick hearth: use {}, mount spell {}, mounted after {}, stand {}, casting {}",
+              bot->GetName(), cast, mountSpell, bot->IsMounted(), static_cast<uint32>(bot->getStandState()),
+              casting ? casting->GetSpellInfo()->Id : 0);
+    if (!cast)
+        return false;
+    // The cast runs in a rest that ends at the bind (GoalApply::PlannedEnd, hearth_bind); the bot stands while it casts
+    RpgStatus::Start(botAI, NewRpgInfo::Rest{}, word);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "sick_hearth", "cast",
+                       static_cast<float>(bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ)));
+    return true;
+}
+
 bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
 {
     Player* bot = botAI->GetBot();
@@ -693,10 +736,11 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
         if (TestProbe::On(botAI->testConstraints))
             LOG_INFO("playerbots", "[Probe] {} bind start {}", bot->GetName(), word);
     };
-    if (order.order
-            ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
-               bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())
-            : !WorldTravel::ErrandMayStart(botAI))
+    // A sick bot's order passes once recover has handed it over (NR3: the sick gate chose an inn in its safe area)
+    if (order.order ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+                       (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) && !WorldTravel::SickErrandOpen(botAI)) ||
+                       bot->GetGroup() || bot->GetMap()->Instanceable())
+                    : !WorldTravel::ErrandMayStart(botAI))
     {
         probe("refused");
         return false;

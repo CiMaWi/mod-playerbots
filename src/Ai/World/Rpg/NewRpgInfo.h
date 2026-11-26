@@ -249,6 +249,7 @@ struct NewRpgInfo
         uint8 stop{0};           // the stop the bot walks to or works at
         bool arrived{false};     // the bot reached the current stop
         bool vendorDone{false};  // the current stop's vendor part is done (or its vendor is gone)
+        uint8 awayTraced{0};     // the walk's answer last traced at the current stop (NR1 group D): 0 none, 1 + answer
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
         uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)

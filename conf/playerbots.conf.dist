@@ -1861,6 +1861,11 @@ Playerbots.Natural.Path.Walk.Enable = 0
 # tells a full bot looting in the world not to destroy items when a trip is worth it. (Range: 0-1440; 0 = no trip
 # just for selling.) Default: 30
 
+# The inn a persistent bot binds at. The planner binds a bot whose hearthstone is far (over 1000 yd, or another map)
+# at a nearby inn only once the bot has stayed within 1000 yd of that inn for InnDwellMinutes without a break, or its
+# next planned goal lies there; until then it keeps its bind. (Range: 0-1440; 0 = no dwell.) Default: 15
+Playerbots.WorldTravel.InnDwellMinutes = 15
+
 # Every bot has a personality (30 traits and one to three interests, rolled once per bot and stored in
 # playerbots_bot_traits); the GM command `.playerbots traits <bot>` shows it. AllowEdit lets the same command set or
 # reroll a bot's traits (`set <trait> <value>`, `reroll`): a switch for test servers. (Range: 0-1.) Default: 0

@@ -47,7 +47,8 @@ inline std::vector<ReservePart> PartsOf(UpkeepNeeds::NeedList const& list)
         parts.push_back({list.reserveRepair, UpkeepKind::Repair, "repair"});
     for (UpkeepNeeds::Need const& need : list.needs)
         if (need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
-            need.order != NeedOrder::Riding && need.order != NeedOrder::Profession && need.order != NeedOrder::Market)
+            need.order != NeedOrder::Riding && need.order != NeedOrder::Pet && need.order != NeedOrder::Use &&
+            need.order != NeedOrder::Profession && need.order != NeedOrder::Market)
             parts.push_back({need.copper, need.kind, UpkeepNeeds::OrderWord(need.order)});
     if (list.reserveTraining)
         parts.push_back({list.reserveTraining, UpkeepKind::TrainerSpell, "training"});
