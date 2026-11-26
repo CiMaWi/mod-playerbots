@@ -32,8 +32,12 @@ std::optional<AuctioneerSpot> AuctioneerSpotNear(Player* bot, uint32 mapId, floa
 bool BeginAuctionVisit(PlayerbotAI* botAI, AuctioneerSpot const& spot);
 // GM console `playerbots auction visit <bot> [<item>]`: the visit at the nearest auctioneer serving the bot within the
 // command's reach (VISIT_COMMAND_REACH_YARDS); answers `AUCTION visit <bot>: started ..` or `.. refused, <reason>`.
-// An item (a test's filter, WA4b) makes the buy step decide that line alone
+// An item (a test's filter, WA4b) makes the buy step decide that line alone. `far` (a test's start, AH3) starts the
+// visit at any distance the search finds, as an errand's visit starts wherever the stop's spot finds the bot
 bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args);
+// World thread, the fixture's `grow` verb (a test seam, AH3): a bot under a test constraint whose next listing of the
+// item goes out finds its stack grown by the units right after the sell packet is queued
+void ArmAuctionGrow(Player* bot, uint32 entry, uint32 units);
 }  // namespace BankMail
 
 // The sellers' expiry memories (AuctionMemory.h), one per character that listed since the server start
@@ -41,6 +45,8 @@ namespace AuctionMemory
 {
 // Any thread: what the seller remembers of the item
 ItemMemory Of(uint32 sellerLow, uint32 entry);
+// Any thread: the seller's open listings the add hook saw (a test probe's reading, AH3)
+std::size_t OpenListings(uint32 sellerLow);
 // World thread, from the core's auction hooks (AuctionIndex.cpp): a bot's listing, and the sale, expiry or removal
 // of a listing a bot made; each with the seller's event row when it is online (AuctionPost, AuctionSale,
 // AuctionExpire)

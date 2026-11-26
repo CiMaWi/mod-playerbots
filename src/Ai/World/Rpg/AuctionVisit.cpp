@@ -7,6 +7,7 @@
 #include "AuctionVisit.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -51,6 +52,7 @@
 #include "Playerbots.h"
 #include "SkillPathLive.h"
 #include "Timer.h"
+#include "Transport.h"
 #include "UpkeepNeedRules.h"
 #include "VisitLifecycle.h"
 #include "WorldLog.h"
@@ -77,6 +79,13 @@ ItemMemory Of(uint32 sellerLow, uint32 entry)
     std::shared_lock<std::shared_mutex> const guard(sellersLock);
     auto const found = sellers.find(sellerLow);
     return found != sellers.end() ? found->second.Of(entry) : ItemMemory{entry};
+}
+
+std::size_t OpenListings(uint32 sellerLow)
+{
+    std::shared_lock<std::shared_mutex> const guard(sellersLock);
+    auto const found = sellers.find(sellerLow);
+    return found != sellers.end() ? found->second.listings.size() : 0;
 }
 
 // AuctionPost: src post, or relist after an expiry; amount = buyout. Only a bot's listings are remembered
@@ -311,6 +320,79 @@ uint32 Clamped(uint64 copper)
     return static_cast<uint32>(std::min<uint64>(copper, std::numeric_limits<uint32>::max()));
 }
 
+// Test probes and seam (auction house AH3), bots under a test constraint only. The fixture verb `grow` arms a bot's
+// next listing of an item: right after its sell packet is queued the stack grows, as a stack the bot loots into while
+// the packet is out. The world thread arms, the bot's map thread reads: under the lock
+struct ListingProbe
+{
+    uint32 growEntry{0};
+    uint32 growUnits{0};
+    uint32 queuedCount{0};          // the awaited stack's units when its packet was queued
+    std::size_t queuedListings{0};  // the seller's open listings the add hook saw by then
+};
+std::mutex probeLock;
+std::unordered_map<uint32, ListingProbe> probes;
+
+uint32 TransportEntry(Player* bot) { return bot->GetTransport() ? bot->GetTransport()->GetEntry() : 0; }
+
+void ProbeQueued(Player* bot, Item* item)
+{
+    uint32 const low = bot->GetGUID().GetCounter();
+    std::size_t const listings = AuctionMemory::OpenListings(low);
+    std::lock_guard<std::mutex> const guard(probeLock);
+    ListingProbe& probe = probes[low];
+    probe.queuedCount = item->GetCount();
+    probe.queuedListings = listings;
+    if (!probe.growUnits || probe.growEntry != item->GetEntry())
+        return;
+    uint32 const grown = std::min(item->GetCount() + probe.growUnits, item->GetMaxStackCount());
+    LOG_INFO("playerbots", "[Probe] {} auction grow item {} from {} to {} units while its sell packet is out",
+             bot->GetName(), item->GetEntry(), item->GetCount(), grown);
+    item->SetCount(grown);
+    item->SetState(ITEM_CHANGED, bot);
+    probe.growUnits = 0;
+}
+
+// A listing counted refused: the stack's units at the packet and now, and whether the add hook saw a listing since
+void ProbeRefused(Player* bot, uint32 entry, Item const* left)
+{
+    uint32 const low = bot->GetGUID().GetCounter();
+    std::size_t const listings = AuctionMemory::OpenListings(low);
+    ListingProbe probe;
+    {
+        std::lock_guard<std::mutex> const guard(probeLock);
+        if (auto const found = probes.find(low); found != probes.end())
+            probe = found->second;
+    }
+    LOG_INFO("playerbots", "[Probe] {} auction refused item {} units {} -> {}, open listings {} -> {}: {}",
+             bot->GetName(), entry, probe.queuedCount, left->GetCount(), probe.queuedListings, listings,
+             listings > probe.queuedListings ? "the add hook saw a listing" : "no listing seen");
+}
+
+// The phase the visit ended in, and the bot's distance to what it walked to: the auctioneer once found, else the
+// spawn the visit started for; transport = the entry of the transport the bot rides, 0 none
+void ProbeEnd(Player* bot, VisitState const& state, char const* how)
+{
+    Creature const* auctioneer = state.object.IsEmpty() ? nullptr : bot->GetMap()->GetCreature(state.object);
+    char const* phase = "none";
+    if (state.phase == VisitPhase::Walk)
+        phase = state.object.IsEmpty() ? "walk_spot" : "reach";
+    else if (state.phase == VisitPhase::Act)
+        phase = "act";
+    else if (state.phase == VisitPhase::Await)
+        phase = "await";
+    float const x = auctioneer ? auctioneer->GetPositionX() : state.x;
+    float const y = auctioneer ? auctioneer->GetPositionY() : state.y;
+    float const z = auctioneer ? auctioneer->GetPositionZ() : state.z;
+    bool const inReach = auctioneer && bot->GetNPCIfCanInteractWith(state.object, UNIT_NPC_FLAG_AUCTIONEER);
+    LOG_INFO("playerbots",
+             "[Probe] {} auction visit end {} phase {} auctioneer {} yd {:.1f} dz {:.1f} in_reach {} transport {} at "
+             "({:.1f}, {:.1f}, {:.1f}) after {} s",
+             bot->GetName(), how, phase, auctioneer ? auctioneer->GetEntry() : state.entry, bot->GetExactDist(x, y, z),
+             bot->GetPositionZ() - z, inReach ? 1 : 0, TransportEntry(bot), bot->GetPositionX(), bot->GetPositionY(),
+             bot->GetPositionZ(), getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
+}
+
 // The `auction` decision row of a buy-list line (WA4b): value = the price (a skip: its nearest offer's, 0 with none);
 // the ceiling for the units the lot covers, the line cost and the gold the market could spend beside it; ref = the item
 void WriteBuyRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason reason, uint64 price, uint64 ceiling,
@@ -384,6 +466,8 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
         // A refusal steps the expiry memory as a hold does, so a stack the core always refuses stops being stock
         // (RelistLimit) instead of drawing a trip at every plan
         ++visit.refused;
+        if (botAI->testConstraints)
+            ProbeRefused(bot, visit.awaitingEntry, left);
         MarkEntryTried(bot, visit.awaitingEntry, visit.tried);
         AuctionMemory::Held(bot->GetGUID().GetCounter(), visit.awaitingEntry);
         LOG_DEBUG("playerbots", "[Auction] {} listing of item {} at {} copper not taken by the core", bot->GetName(),
@@ -525,6 +609,8 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
         *packet << auctioneer->GetGUID() << uint32(1) << item->GetGUID() << units << Clamped(ask.startBid)
                 << Clamped(ask.ask) << minutes;
         bot->GetSession()->QueuePacket(packet);
+        if (botAI->testConstraints)
+            ProbeQueued(bot, item);
         visit.awaiting = item->GetGUID().GetCounter();
         visit.awaitingEntry = item->GetEntry();
         visit.ask = Clamped(ask.ask);
@@ -553,6 +639,8 @@ bool WriteAuctionEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, V
               "bids, {} copper spent, {} s",
               bot->GetName(), how, visit.posted, visit.held, visit.refused, visit.deposits, visit.bought, visit.bids,
               visit.spent, getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
+    if (botAI->testConstraints)
+        ProbeEnd(bot, state, how);
     visit = AuctionVisitData{};
     return false;
 }
@@ -598,15 +686,31 @@ bool BeginAuctionVisit(PlayerbotAI* botAI, AuctioneerSpot const& spot)
     return true;
 }
 
+void ArmAuctionGrow(Player* bot, uint32 entry, uint32 units)
+{
+    std::lock_guard<std::mutex> const guard(probeLock);
+    ListingProbe& probe = probes[bot->GetGUID().GetCounter()];
+    probe.growEntry = entry;
+    probe.growUnits = units;
+}
+
 bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args)
 {
     std::istringstream in(args ? args : "");
     std::string name;
+    in >> name;
     uint32 only = 0;
-    in >> name >> only;
+    bool anyDistance = false;
+    for (std::string word; in >> word;)
+    {
+        if (word == "far")
+            anyDistance = true;
+        else
+            only = static_cast<uint32>(std::strtoul(word.c_str(), nullptr, 10));
+    }
     if (name.empty())
     {
-        handler->SendErrorMessage("Usage: playerbots auction visit <bot name> [<item>]");
+        handler->SendErrorMessage("Usage: playerbots auction visit <bot name> [<item>] [far]");
         return false;
     }
     std::string const asked = name;
@@ -636,7 +740,7 @@ bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args)
                                      bot->GetPositionZ(), 2.0f * VISIT_COMMAND_REACH_YARDS);
     if (!refusal && !spot)
         refusal = "no auctioneer serving the bot near it";
-    if (spot && !WithinVisitReach(spot->distance))
+    if (spot && !anyDistance && !WithinVisitReach(spot->distance))
     {
         handler->SendErrorMessage(
             "AUCTION visit {}: refused, {} (the nearest auctioneer is {:.0f} yd away, reach {:.0f} yd)", bot->GetName(),
