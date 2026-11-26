@@ -7,8 +7,10 @@
 #include "EquipAction.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -20,7 +22,114 @@
 #include "ItemVisitors.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
+#include "RandomItemMgr.h"
 #include "StatsWeightCalculator.h"
+#include "WorldLog.h"
+
+namespace
+{
+// A weapon or armour piece in an equipment slot (the world log's gear equip row)
+struct WornItem
+{
+    ObjectGuid guid;
+    uint32 entry = 0;
+    int32 randomPropertyId = 0;
+    bool broken = false;
+};
+using WornItems = std::array<WornItem, EQUIPMENT_SLOT_END>;
+constexpr uint8 NO_ROW_SLOT = EQUIPMENT_SLOT_END;
+
+WornItems ReadWorn(Player* bot)
+{
+    WornItems worn;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || (proto->Class != ITEM_CLASS_WEAPON && proto->Class != ITEM_CLASS_ARMOR))
+            continue;
+
+        bool const broken =
+            item->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0;
+        worn[slot] = {item->GetGUID(), proto->ItemId, item->GetItemRandomPropertyId(), broken};
+    }
+    return worn;
+}
+
+bool IsWorn(WornItems const& worn, ObjectGuid guid)
+{
+    return std::any_of(worn.begin(), worn.end(),
+                       [guid](WornItem const& item) { return item.entry && item.guid == guid; });
+}
+
+std::string_view EquipReason(Player* bot, WornItem const& worn)
+{
+    if (!worn.entry)
+        return "empty_slot";
+
+    if (worn.broken)
+        return "broken";
+
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(worn.entry);
+    if (proto && proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, bot->getClass()))
+        return "kind";
+
+    if (proto && proto->Class == ITEM_CLASS_ARMOR &&
+        !sRandomItemMgr.CanEquipArmorKind(proto, bot->getClass(), bot->GetLevel()))
+        return "kind";
+
+    return "upgrade";
+}
+
+// One gear equip row per weapon or armour piece the pass newly wears: its score, the score of what its slot held
+// before the pass and the entries of up to two items that left the equipment with it (one that left a hand with no
+// row of its own goes to the other hand's row: a two-hander over two weapons, a main hand moved to the off hand)
+void LogEquips(Player* bot, WornItems const& before)
+{
+    WornItems const after = ReadWorn(bot);
+    std::array<bool, EQUIPMENT_SLOT_END> row{};
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        row[slot] = after[slot].entry && !IsWorn(before, after[slot].guid);
+
+    std::array<std::array<uint32, 2>, EQUIPMENT_SLOT_END> off{};
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (!before[slot].entry || IsWorn(after, before[slot].guid))
+            continue;
+
+        uint8 rowSlot = row[slot] ? slot : NO_ROW_SLOT;
+        if (rowSlot == NO_ROW_SLOT && slot == EQUIPMENT_SLOT_MAINHAND && row[EQUIPMENT_SLOT_OFFHAND])
+            rowSlot = EQUIPMENT_SLOT_OFFHAND;
+        if (rowSlot == NO_ROW_SLOT && slot == EQUIPMENT_SLOT_OFFHAND && row[EQUIPMENT_SLOT_MAINHAND])
+            rowSlot = EQUIPMENT_SLOT_MAINHAND;
+        if (rowSlot == NO_ROW_SLOT)
+            continue;
+
+        std::array<uint32, 2>& left = off[rowSlot];
+        if (!left[0])
+            left[0] = before[slot].entry;
+        else if (!left[1])
+            left[1] = before[slot].entry;
+    }
+
+    StatsWeightCalculator calculator(bot);
+    calculator.SetUpForEquipCompare();
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (!row[slot])
+            continue;
+
+        WornItem const& worn = before[slot];
+        float const score = calculator.CalculateItem(after[slot].entry, after[slot].randomPropertyId);
+        float const wornScore = worn.entry ? calculator.CalculateItem(worn.entry, worn.randomPropertyId) : 0.0f;
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Gear, "equip", EquipReason(bot, worn), score,
+                           {{"worn", wornScore},
+                            {"off", static_cast<float>(off[slot][0])},
+                            {"off2", static_cast<float>(off[slot][1])}},
+                           after[slot].entry);
+    }
+}
+}  // namespace
 
 bool EquipAction::Execute(Event event)
 {
@@ -41,11 +150,19 @@ void EquipAction::EquipItems(ItemIds ids)
 
 void EquipAction::EquipItems(std::vector<ObjectGuid> const& guids)
 {
+    bool const logged = !guids.empty() && WorldLog::Active();
+    WornItems before;
+    if (logged)
+        before = ReadWorn(bot);
+
     _passCandidates = &guids;
     for (ObjectGuid const& guid : guids)
         if (Item* item = bot->GetItemByGuid(guid))
             EquipItem(item);
     _passCandidates = nullptr;
+
+    if (logged)
+        LogEquips(bot, before);
 }
 
 // Anything fills an empty slot and anything that scores above 0 replaces a broken item, as the upgrade rule counts
