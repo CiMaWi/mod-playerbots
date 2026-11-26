@@ -155,7 +155,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // above this fill level (see StoreLootAction), so every harvest would
     // open the node, store nothing and stall until the timeout. Stop
     // farming and let the maintenance logic (sell/destroy) catch up.
-    if (AI_VALUE(uint8, "bag space") > 80)
+    if (Gather::BagsTooFull(AI_VALUE(uint8, "bag space")))
     {
         RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "bags_full"});
         return true;

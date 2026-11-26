@@ -16,6 +16,7 @@
 #include "ProfessionRules.h"
 #include "RouteRules.h"
 #include "TraitRules.h"
+#include "WorldTravelTypes.h"
 
 // The bot as the planner sees it (PlannerPool.h): Planner::Snapshot and the plain types it holds. The
 // snapshot contract: a step that gives the planner a new fact adds its field here.
@@ -196,6 +197,9 @@ struct Snapshot
     // the first as up and leaves the second out (Gather::ApplySight)
     std::vector<std::uint32_t> gatherUp;
     std::vector<std::uint32_t> gatherDown;
+    // The places the record of failed attempts refuses as the bot plans (Gather::RefusedPlaces): no stop of a gather
+    // circuit is within them (Gather::DropRefused, professions WPC9)
+    std::vector<WorldTravel::SightPoint> gatherRefused;
 
     // The route search's own view of the bot as a trip asks it (planning WN1a, PlannerRouteCost.h): filled on the map
     // thread with the rest, transports on and the test constraints applied; its points and taxi mask are its own copy
@@ -217,6 +221,7 @@ struct Snapshot
                ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownRecipes.capacity() + toolsHeld.capacity() + gatherUp.capacity() + gatherDown.capacity()) *
                    sizeof(std::uint32_t) +
+               gatherRefused.capacity() * sizeof(WorldTravel::SightPoint) +
                ladders.capacity() * sizeof(ProfessionRung) + materials.capacity() * sizeof(MaterialHeld) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *

@@ -455,6 +455,22 @@ inline void Errands(std::vector<Check>& checks)
     Add(checks, "errand: full bags near a vendor sell", TopIs(ranked, GoalKind::Errand, 77, "bags_full_vendor_near"),
         Summary(ranked));
 
+    // WPC9: above the gather status's bag limit no circuit is planned (GatherLive FillGatherCircuit asks the limit);
+    // the errand the bot then needs ranks
+    Snapshot over = bot;
+    over.bagSlots = 16;
+    over.bagFree = 3;
+    Snapshot under = bot;
+    under.bagSlots = 48;
+    under.bagFree = 10;
+    std::uint32_t const overUsed = Gather::BagUsedPercent(over.bagSlots, over.bagFree);
+    std::uint32_t const underUsed = Gather::BagUsedPercent(under.bagSlots, under.bagFree);
+    Ranked const overRanked = Rank(over, situation);
+    Add(checks, "errand (WPC9): a gatherer at 81 % gets no circuit and its sell errand ranks, at 79 % the circuit is",
+        overUsed == 81 && Gather::BagsTooFull(overUsed) && Has(overRanked, GoalKind::Errand) && underUsed == 79 &&
+            !Gather::BagsTooFull(underUsed),
+        Summary(overRanked) + " " + std::to_string(overUsed) + " " + std::to_string(underUsed));
+
     ReplanInput in;
     in.current = {GoalKind::Quest, HOME_HUB, 0.0f, false, false};
     in.fresh = &ranked;

@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "BotTravel.h"
 #include "Chat.h"
 #include "DBCStores.h"
 #include "Formulas.h"
@@ -350,6 +351,14 @@ void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Ma
                  std::make_move_iterator(creatures.stops.end()));
     if (nodes.empty())
         return;
+    // Above the status's bag limit the circuit would end at once: none is planned and the refusal is named (WPC9)
+    if (std::uint32_t const used = Gather::BagUsedPercent(snapshot.bagSlots, snapshot.bagFree);
+        Gather::BagsTooFull(used))
+    {
+        situation.gatherBagsFull = used;
+        return;
+    }
+    Gather::DropRefused(nodes, snapshot.position.map, snapshot.gatherRefused);
     Gather::ApplySight(nodes, snapshot.gatherUp, snapshot.gatherDown);
     Planner::Circuit::Point const here{snapshot.position.x, snapshot.position.y, snapshot.position.z};
     Gather::Circuit const circuit = Gather::BuildCircuit(here, nodes, gatherer);
@@ -371,6 +380,7 @@ void FillGatherSight(Player* bot, Snapshot& snapshot)
     if (!botAI)
         return;
     uint32 const now = getMSTime();
+    snapshot.gatherRefused = Gather::RefusedPlaces(botAI->GetTravel().Failures(), now);
     for (Gather::Memory::Entry const& entry : botAI->rpgInfo.gatherMemory.ring)
         if (botAI->rpgInfo.gatherMemory.Away(entry.spawn, now))
             snapshot.gatherDown.push_back(entry.spawn);

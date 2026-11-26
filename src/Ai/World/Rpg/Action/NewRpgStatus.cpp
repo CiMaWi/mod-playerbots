@@ -13,6 +13,7 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GatherNodeMgr.h"
+#include "GatherRules.h"
 #include "GroundRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -769,7 +770,7 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
 
             // No point farming with (nearly) full bags - the loot pipeline
             // can't store the harvest (see StoreLootAction).
-            if (AI_VALUE(uint8, "bag space") > 80)
+            if (Gather::BagsTooFull(AI_VALUE(uint8, "bag space")))
                 return false;
 
             return sGatherNodeMgr.HasUsableNodes(bot);

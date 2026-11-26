@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "FailedAttemptRules.h"
 #include "GatherMemoryState.h"
 #include "ItemWorthRules.h"
 #include "SkillPathRules.h"
@@ -514,6 +515,44 @@ inline void ApplySight(std::vector<Node>& nodes, std::vector<std::uint32_t> cons
             node.share = 1.0f;
         else if (std::binary_search(down.begin(), down.end(), Key(node)))
             node.share = 0.0f;
+}
+
+// The bag fill above which gathering ends (the loot pipeline stores nothing above it, StoreLootAction) and no circuit
+// is planned (professions WPC9, DECISIONS WPC.12)
+constexpr std::uint32_t BAG_LIMIT_PERCENT = 80;
+
+// The used share of the general slots, truncated as the "bag space" value gives it; 0 without slots
+inline std::uint32_t BagUsedPercent(std::uint32_t slots, std::uint32_t free)
+{
+    if (!slots)
+        return 0;
+    return static_cast<std::uint32_t>(static_cast<float>(slots - std::min(free, slots)) / slots * 100);
+}
+
+constexpr bool BagsTooFull(std::uint32_t usedPercent) { return usedPercent > BAG_LIMIT_PERCENT; }
+
+// The places of the record's live place entries: a plain copy for the planner's snapshot (professions WPC9)
+inline std::vector<WorldTravel::SightPoint> RefusedPlaces(FailedAttempts::Record const& record, std::uint32_t nowMs)
+{
+    std::vector<WorldTravel::SightPoint> places;
+    for (FailedAttempts::Entry const& entry : FailedAttempts::LiveEntries(record, nowMs))
+        if (entry.key.kind == FailedAttempts::Kind::Place)
+            places.push_back(entry.key.from);
+    return places;
+}
+
+// No stop within PLACE_YARDS of a refused place on this map is planned, whatever refused it (a walk's own no_walk
+// entry there keeps its cause when gather_no_walk follows); what the bot sees there does not bring it back
+inline void DropRefused(std::vector<Node>& nodes, std::uint32_t map,
+                        std::vector<WorldTravel::SightPoint> const& refused)
+{
+    std::erase_if(nodes,
+                  [map, &refused](Node const& node)
+                  {
+                      WorldTravel::SightPoint const at{map, node.at.x, node.at.y, node.at.z};
+                      return std::any_of(refused.begin(), refused.end(), [&at](WorldTravel::SightPoint const& place)
+                                         { return FailedAttempts::Rules::Near(place, at); });
+                  });
 }
 
 struct PassEntry

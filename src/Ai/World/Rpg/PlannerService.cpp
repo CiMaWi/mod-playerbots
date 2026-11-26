@@ -907,6 +907,11 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
                            Professions::ChoiceWord(Professions::Choice::Skip),
                            Professions::ReasonWord(Professions::Reason::TooDangerous), taken.gatherRefusedLevels, {},
                            taken.gatherRefusedItem);
+    // Bags above the gather status's limit refused the circuit (professions WPC9): one skip row per change
+    if (taken.gatherBagsFull && WorldLog::Active() && (!lastPlan || !lastPlan->gatherBagsFull))
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
+            Professions::ReasonWord(Professions::Reason::BagsFull), static_cast<float>(taken.gatherBagsFull));
     // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
     if (!answer->plan->classFailed.empty())
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);

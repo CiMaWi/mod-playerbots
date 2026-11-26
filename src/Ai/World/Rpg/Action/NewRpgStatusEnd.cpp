@@ -214,6 +214,19 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));
     GatherPassBy::NoteStatusEnd(botAI, oldStatus);  // the ended status's passes by cause (professions WR13c)
+    // A gather walk that ended no_walk: the current stop's place enters the record of failed attempts, so no circuit
+    // plans it while the entry lives (professions WPC9, DECISIONS WPC.12). A local piece's own no_walk entry there
+    // stays as it is
+    if (auto const* gather = std::get_if<NewRpgInfo::DoGather>(&info.data);
+        gather && gather->nodeSpawnId && ::GoTo::CauseOf(endWord) == "no_walk")
+    {
+        Player* const bot = botAI->GetBot();
+        WorldPosition const& stop = gather->nodePos;
+        FailedAttempts::Failure failure;
+        failure.goal = {stop.GetMapId(), stop.GetPositionX(), stop.GetPositionY(), stop.GetPositionZ()};
+        failure.spot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        botAI->GetTravel().NoteFailure("gather_no_walk", failure, 0);
+    }
     RpgStatusCore::Replace(botAI, info, std::move(next), {outcome, endWord});
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
 }

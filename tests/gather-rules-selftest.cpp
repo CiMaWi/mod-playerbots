@@ -1415,6 +1415,58 @@ void SightCases()
           "sight: the yield counts what is left");
 }
 
+// WPC9: the bag limit, and the stops the record of failed attempts refuses. Written first: 81 % is over, 80 % is not;
+// a live place entry within 10 yd on the stop's map drops it whatever its cause, the next nearest is taken, and after
+// the entry's expiry the stop returns
+void RefusalCases()
+{
+    Check(!Gather::BagsTooFull(Gather::BagUsedPercent(100, 20)) && Gather::BagsTooFull(Gather::BagUsedPercent(100, 19)),
+          "bags: 80 % passes, 81 % ends gathering");
+    Check(Gather::BagUsedPercent(16, 3) == 81 && Gather::BagUsedPercent(48, 10) == 79 &&
+              Gather::BagUsedPercent(0, 0) == 0 && Gather::BagUsedPercent(16, 20) == 0,
+          "bags: the percent is truncated as the bag space value's");
+
+    constexpr std::uint32_t MAP = 0;
+    Gatherer const bot = BotWith(0, 100, 0);
+    Point const anchor{0.0f, 0.0f, 0.0f};
+    std::vector<Node> const nodes = {NodeAt(20, MINING, 1, 30.0f, 0.0f, 300, 1.0f, 200),
+                                     NodeAt(21, MINING, 1, 70.0f, 0.0f, 300, 1.0f, 200)};
+    auto const planned = [&](FailedAttempts::Record const& record, std::uint32_t nowMs)
+    {
+        std::vector<Node> offered = nodes;
+        Gather::DropRefused(offered, MAP, Gather::RefusedPlaces(record, nowMs));
+        return Gather::BuildCircuit(anchor, offered, bot).stops;
+    };
+    auto const noted = [](char const* word, std::uint32_t map, float x)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.leg = FailedAttempts::Leg::LocalPiece;  // a walk's no_walk keys by leg
+        failure.goal = {map, x, 0.0f, 0.0f};
+        FailedAttempts::NoteFailure(record, word, failure, 1000, 600000);
+        return record;
+    };
+    auto const has = [](auto const& stops, std::uint32_t id)
+    { return std::find(stops.begin(), stops.end(), id) != stops.end(); };
+    for (char const* word : {"gather_no_walk", "no_walk"})
+    {
+        auto const stops = planned(noted(word, MAP, 38.0f), 2000);
+        Check(!has(stops, 20) && has(stops, 21), "refused: a live entry 8 yd off drops the stop, the next is taken");
+    }
+    Check(has(planned(noted("gather_no_walk", MAP, 42.0f), 2000), 20), "refused: an entry 12 yd off drops nothing");
+    Check(has(planned(noted("gather_no_walk", 1, 30.0f), 2000), 20), "refused: another map's entry drops nothing");
+    Check(has(planned(noted("gather_no_walk", MAP, 30.0f), 1000 + 600000), 20), "refused: after expiry it returns");
+
+    // The local piece's no_walk entry comes first: the later note leaves it and its cause
+    FailedAttempts::Record record = noted("no_walk", MAP, 30.0f);
+    FailedAttempts::Failure failure;
+    failure.goal = {MAP, 30.0f, 0.0f, 0.0f};
+    auto const second = FailedAttempts::NoteFailure(record, "gather_no_walk", failure, 1500, 600000);
+    Check(second == FailedAttempts::Noted::AlreadyLive && record.count == 1 && record.entries[0].cause == "no_walk" &&
+              !has(planned(record, 2000), 20),
+          "refused: a live entry keeps its first cause and still drops the stop");
+}
+
 // The walk's watch (WR13d-2): movement against an anchor, not the distance to the stop. Ticks of 1 s; `walk` steps
 // the bot by `step` yards a tick for `ticks` ticks along x and says whether the watch fired on any of them; `fresh`
 // starts a new stop's walk
@@ -1592,6 +1644,7 @@ int main(int argc, char** argv)
     PassCases();
     DownCases();
     SightCases();
+    RefusalCases();
     WalkCases();
     Search();
     CreatureCases();
