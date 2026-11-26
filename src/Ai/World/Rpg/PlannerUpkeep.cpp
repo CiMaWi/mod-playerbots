@@ -30,6 +30,7 @@
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "GoalInterface.h"
 #include "InventorySlots.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"
@@ -1048,12 +1049,15 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
         }
     }
 
-    // The skill path's materials the auction sells cheapest (auction house WA7b, PLAN 3.7): the kept path's wants
-    // there, each at most what getting it the cheapest other way costs; funded as the market's claim, after the
-    // profession reserve (UpkeepNeeds::Fund). The path was computed earlier: the units held now (bags and bank, as
-    // the path's snapshot counts them) come off its want
-    if (SkillPath::Path const* path = KeptPath(botAI))
+    // The skill path's materials the auction sells cheapest (auction house WA7b and AH8, PLAN 3.7): the kept path's
+    // wants there, each at most what getting it the cheapest other way costs, or what the path counted at the auction
+    // where it is the only source, at the need factor of the bot's newest plan (none without one); funded as the
+    // market's claim, after the profession reserve (UpkeepNeeds::Fund). The path was computed earlier: the units held
+    // now (bags and bank, as the path's snapshot counts them) come off its want
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (SkillPath::Path const* path = KeptPath(botAI); path && goals && goals->plan)
     {
+        Planner::Goals::Need const& need = goals->plan->ranked.need;
         auto const held = [bot](uint32 item) { return bot->GetItemCount(item, true); };
         auto const payout = [](uint32 item)
         {
@@ -1061,7 +1065,8 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
             return proto ? proto->SellPrice : 0u;
         };
         for (AuctionRules::BuyLine const& line :
-             AuctionRules::PathLines(path->materials, static_cast<uint8>(Materials::Kind::Auction), held, payout))
+             AuctionRules::PathLines(path->materials, static_cast<uint8>(Materials::Kind::Auction),
+                                     {need.exchange, need.factor}, held, payout))
             lines.push_back(line);
     }
     return AuctionRules::BuyList(std::move(lines));

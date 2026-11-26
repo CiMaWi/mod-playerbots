@@ -223,6 +223,12 @@ struct ItemTally
     std::uint64_t listings{0};
     std::uint64_t sales{0};
     std::array<std::uint64_t, AuctionWords::REASON_COUNT> skips{};
+    // By the buyer's level band: its sales, and its path lines' buyouts and bids the core took, those it refused and
+    // the lines the buy rule skipped by reason
+    std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> bandSales{};
+    std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> pathPlaced{};
+    std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> pathRefused{};
+    std::array<std::array<std::uint64_t, AuctionWords::REASON_COUNT>, WorldTravel::LEVEL_BAND_COUNT> pathSkips{};
 };
 
 // One kind of the sale chance (class, quality and level band, AuctionIndex::KindOf) in one model hour
@@ -234,10 +240,18 @@ struct LevelKindTally
     std::uint64_t standing{0};  // lots in the house at the hour's end
 };
 
+// An item's typical price in a publication
+struct PricePoint
+{
+    std::uint32_t unitPrice{0};
+    AuctionIndex::PriceBasis basis{AuctionIndex::PriceBasis::None};
+};
+
 struct HourTally
 {
     std::map<std::uint32_t, KindTally> kinds;            // by item class
     std::map<std::uint32_t, LevelKindTally> levelKinds;  // by AuctionIndex::KindKey::code
+    std::map<std::uint32_t, PricePoint> prices;          // the market's priced items at the hour's end, by item
 };
 
 struct Result
@@ -749,9 +763,17 @@ private:
             {
                 ++Tally(now, line.item).skips[Slot(line.owner)][Slot(choice.reason)];
                 ++_result.items[line.item].skips[Slot(choice.reason)];
+                if (line.owner == AuctionRules::LineOwner::Path)
+                    ++_result.items[line.item].pathSkips[bot.band][Slot(choice.reason)];
                 continue;
             }
-            if (!Place(index, line, choice, now))
+            bool const placed = Place(index, line, choice, now);
+            if (line.owner == AuctionRules::LineOwner::Path)
+            {
+                ItemTally& item = _result.items[line.item];
+                ++(placed ? item.pathPlaced : item.pathRefused)[bot.band];
+            }
+            if (!placed)
                 continue;
             bagTaken = bagTaken || bag;
             if (choice.kind == AuctionRules::BuyKind::Bid)
@@ -831,6 +853,7 @@ private:
         ++tally.sales;
         tally.gold += price;
         ++_result.items[auction.facts.item].sales;
+        ++_result.items[auction.facts.item].bandSales[buyer.band];
         ++LevelTally(now, auction.facts.item).sales;
         tally.cuts += cut;
     }
@@ -940,6 +963,9 @@ private:
             ++tally.kinds[ClassOf(auction.facts.item)].standing;
             ++tally.levelKinds[LevelKindOf(auction.facts.item).code].standing;
         }
+        for (auto const& [item, goods] : _goods)
+            if (AuctionIndex::ItemEntry const* entry = _snapshot.Find(item); entry && entry->typical.unitPrice)
+                tally.prices[item] = {entry->typical.unitPrice, entry->typical.basis};
     }
 
     // The invariants over the whole market after a settlement

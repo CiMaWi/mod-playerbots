@@ -12,12 +12,15 @@
 // paid, a ceiling ignored, an expiry skipped) must be caught by its own invariant. A preset runs one market under the
 // invariants and prints it as markdown for the user. The default run also runs the preset night under the invariants
 // and the path control (a fed sale makes a path line a bot buys), and checks in the hand market that the run feeds the
-// sale chance's records and that a line taken up later buys nothing before its hour. The presets gear-no-buyer (the
-// night, its gear per hour) and gear-buyers-arrive (the same, with assumed gear buyers from a later model hour on)
-// run only when asked.
-// Usage: auction-market-selftest <repo> [--preset hand|night|gear-no-buyer|gear-buyers-arrive] [--hours H] [--seed S]
-// [--print]. Exit code 1 on a failed check. A preset's print: `<exe> <repo> --preset night --print` (server-tools.md,
-// Market simulation).
+// sale chance's records and that a line taken up later buys nothing before its hour. The default run also runs the
+// preset cold-start (the night's trade goods in an empty house, with assumed path buyers): with the standing time
+// longer than the run no path line exists and no trade good sells; with the default standing time path lines are
+// bought, and every kind with an item priced by its standing offers and asked for by a path is bought (AH.18: each
+// kind's sales to the level bands 1 to 3 are printed, not required). The presets gear-no-buyer (the night, its gear per
+// hour) and gear-buyers-arrive (the same, with assumed gear buyers from a later model hour on) run only when asked.
+// Usage: auction-market-selftest <repo> [--preset hand|night|gear-no-buyer|gear-buyers-arrive|cold-start] [--hours H]
+// [--seed S] [--print]. Exit code 1 on a failed check. A preset's print: `<exe> <repo> --preset night --print`
+// (server-tools.md, Market simulation).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -118,6 +121,8 @@ struct Dice
 constexpr std::uint32_t HAND_BIG_BAG = 1001;
 constexpr std::uint32_t HAND_SMALL_BAG = 1002;
 constexpr std::uint32_t HAND_CLOTH = 1003;
+// A path line's copper weight with the need factor equal to the exchange: its ceiling is the copper given
+constexpr AuctionRules::CopperWeight AT_RESERVE{1.0f, 1.0f};
 constexpr std::uint32_t HAND_WEAPON = 1004;
 constexpr std::uint32_t HAND_GREY = 1005;
 constexpr std::uint32_t HAND_RECIPE = 1006;
@@ -156,7 +161,7 @@ MarketSim::Market HandMarket(std::uint32_t seed)
         else if (index == 4)
             bot.lines.push_back(AuctionRules::LineOf(LineOwner::Gear, HAND_WEAPON, 1, 4000.0, -1.0, 1.0f, 3000));
         else if (index == 5)
-            bot.lines.push_back(AuctionRules::PathLine(HAND_CLOTH, 20, 140, 50));
+            bot.lines.push_back(AuctionRules::PathLine(HAND_CLOTH, 20, 140, 140, AT_RESERVE, 50));
         market.bots.push_back(bot);
     }
     Band& lone = market.bands[1];
@@ -240,8 +245,9 @@ MarketSim::Market RandomMarket(std::uint32_t seed)
                 bot.lines.push_back(AuctionRules::UseLine(goods.item, units, static_cast<std::uint32_t>(worth),
                                                           dice.Pick(30) ? goods.sellPrice * 4 : 0, goods.sellPrice));
             else if (owner == 1)
-                bot.lines.push_back(
-                    AuctionRules::PathLine(goods.item, units, static_cast<std::uint32_t>(worth), goods.sellPrice));
+                bot.lines.push_back(AuctionRules::PathLine(goods.item, units, static_cast<std::uint32_t>(worth),
+                                                           static_cast<std::uint32_t>(worth), AT_RESERVE,
+                                                           goods.sellPrice));
             else
                 bot.lines.push_back(AuctionRules::LineOf(LineOwner::Gear, goods.item, 1, worth,
                                                          dice.Pick(50) ? -1.0 : worth * dice.Real(0.5, 1.5),
@@ -859,10 +865,12 @@ public:
                 {},      market};
     }
 
-    std::vector<AuctionRules::BuyLine> LinesOf(SkillPath::Path const& path,
+    // The path's lines at its bot's copper weight (PlannerUpkeep.cpp BuyListOf: the newest plan's need)
+    std::vector<AuctionRules::BuyLine> LinesOf(SkillPath::Path const& path, SkillPath::PathBot const& bot,
                                                std::function<std::uint32_t(std::uint32_t)> const& held) const
     {
-        return AuctionRules::PathLines(path.materials, static_cast<std::uint8_t>(Materials::Kind::Auction), held,
+        return AuctionRules::PathLines(path.materials, static_cast<std::uint8_t>(Materials::Kind::Auction),
+                                       {bot.rates.exchange, bot.rates.factor}, held,
                                        [this](std::uint32_t item) { return SellOf(item); });
     }
 
@@ -875,7 +883,7 @@ public:
             for (std::size_t slot = 0; slot < PATH_BOTS; ++slot)
             {
                 paths[band][slot] = SkillPath::Weigh(bots[band][slot], world);
-                linesSeen += LinesOf(paths[band][slot], [](std::uint32_t) { return 0u; }).size();
+                linesSeen += LinesOf(paths[band][slot], bots[band][slot], [](std::uint32_t) { return 0u; }).size();
             }
         ++weighs;
         ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -884,7 +892,7 @@ public:
     std::vector<AuctionRules::BuyLine> Lines(std::uint8_t band, std::uint32_t slot,
                                              std::function<std::uint32_t(std::uint32_t)> const& held) const override
     {
-        return LinesOf(paths[band][slot % PATH_BOTS], held);
+        return LinesOf(paths[band][slot % PATH_BOTS], bots[band][slot % PATH_BOTS], held);
     }
 
     std::array<std::array<SkillPath::PathBot, PATH_BOTS>, WorldTravel::LEVEL_BAND_COUNT> bots;
@@ -957,12 +965,18 @@ std::string PathControl(NightPaths const& night)
                                " c is the path's auction material");
             if (!auction)
                 return "path control: the fed material is not taken from the auction";
-            std::vector<AuctionRules::BuyLine> const lines = night.LinesOf(after, [](std::uint32_t) { return 0u; });
+            std::vector<AuctionRules::BuyLine> const lines =
+                night.LinesOf(after, bot, [](std::uint32_t) { return 0u; });
             auto const line = std::find_if(lines.begin(), lines.end(), [&material](AuctionRules::BuyLine const& each)
                                            { return each.item == material->item; });
-            bool const made = line != lines.end() && AuctionRules::CeilingOf(*line) == priced->otherCopperEach;
+            // the other-source cost over the bot's need factor against the exchange (AuctionBuyList.h PathLine)
+            std::uint64_t const otherCeiling = AuctionRules::Ceiling(
+                {static_cast<double>(priced->otherCopperEach), static_cast<double>(priced->otherCopperEach),
+                 AuctionRules::ShareOf({bot.rates.exchange, bot.rates.factor})});
+            bool const made = line != lines.end() && AuctionRules::CeilingOf(*line) == otherCeiling;
             Check(made, "path control: a path line with ceiling = otherCopperEach " +
-                            std::to_string(priced->otherCopperEach));
+                            std::to_string(priced->otherCopperEach) + " over the share, " +
+                            std::to_string(otherCeiling));
             if (!made)
                 return "path control: no path line at the other-source cost";
             AuctionRules::BuyInput buyer;
@@ -1156,7 +1170,7 @@ void PrintNight(std::ostream& out, Night const& night, NightPaths const& paths, 
         << " points per level (assumed), the band's median purse above its reserve, rates by "
            "SkillPathBridge::RatesOf, every tool. Materials of the last weigh as `item xunits: copper each by "
            "source`; a path line needs the auction as the cheapest source, which needs a typical price "
-           "(SkillPathRules.h:948-968, AuctionBuyList.h:101).\n\n";
+           "(SkillPathRules.h:948-968, AuctionBuyList.h PathLines).\n\n";
     out << "| band | craft | level | skill | path | materials | with a typical price | from the auction | path lines "
            "| materials (cheapest source) |\n|---|---|---|---|---|---|---|---|---|---|\n";
     for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
@@ -1178,10 +1192,29 @@ void PrintNight(std::ostream& out, Night const& night, NightPaths const& paths, 
             out << "| " << band << " | " << CraftName(ProfessionRules::CRAFTS[slot].Which) << " | " << bot.level
                 << " | " << bot.skills[0].value << "/" << bot.skills[0].max << " | "
                 << SkillPath::ReasonWord(path.reason) << " | " << path.materials.size() << " | " << typical << " | "
-                << auction << " | " << paths.LinesOf(path, [](std::uint32_t) { return 0u; }).size() << " | "
+                << auction << " | " << paths.LinesOf(path, bot, [](std::uint32_t) { return 0u; }).size() << " | "
                 << (list.str().empty() ? "-" : list.str()) << " |\n";
         }
     out << "\n" << control << ".\n";
+}
+
+// An item's row of the market from its template and its reference value
+Goods GoodsRow(std::unordered_map<std::uint32_t, AuctionRules::ItemInput> const& templates,
+               AuctionRules::Table const& table, std::uint32_t item)
+{
+    auto const found = templates.find(item);
+    AuctionRules::ItemReference const* reference = table.Find(item);
+    Goods goods;
+    goods.item = item;
+    goods.reference = reference ? reference->copper : 0;
+    if (found == templates.end())
+        return goods;
+    goods.classId = found->second.classId;
+    goods.quality = found->second.quality;
+    goods.sellPrice = found->second.sellPrice;
+    goods.requiredLevel = found->second.requiredLevel;
+    goods.itemLevel = found->second.itemLevel;
+    return goods;
 }
 
 Built NightPreset(std::string const& repo, std::uint32_t seed)
@@ -1282,16 +1315,7 @@ Built NightPreset(std::string const& repo, std::uint32_t seed)
         }
     }
     for (std::uint32_t const item : items)
-    {
-        auto const found = templates.find(item);
-        AuctionRules::ItemReference const* reference = table.Find(item);
-        market.goods.push_back({item, found == templates.end() ? UNKNOWN_CLASS : found->second.classId,
-                                found == templates.end() ? 0 : found->second.quality,
-                                found == templates.end() ? 0 : found->second.sellPrice,
-                                reference ? reference->copper : 0,
-                                found == templates.end() ? 0 : found->second.requiredLevel,
-                                found == templates.end() ? 0 : found->second.itemLevel});
-    }
+        market.goods.push_back(GoodsRow(templates, table, item));
     auto const paths = std::make_shared<NightPaths>(index, std::move(sell), market.fees, market.config, *night);
     market.paths = paths;
     built.after = [night, paths](MarketSim::Market const& ran, Result const& result, bool print)
@@ -1433,11 +1457,459 @@ Built GearNoBuyerPreset(std::string const& repo, std::uint32_t seed) { return Ge
 
 Built GearBuyersPreset(std::string const& repo, std::uint32_t seed) { return GearPreset(repo, seed, true); }
 
-std::array<Preset, 4> const PRESETS = {
+// ---- the cold start (auction house round 2 AH8, PLAN 3.4) ----
+// An empty history and house. The night's bots sell gathered surplus: every lot that comes by is one of the gathered
+// goods of three kinds that their band's crafters need (assumed: the night listed no ore, bar or gathered herb); the
+// same bots buy the lines of their skill path and nothing else. Two arms with the same seed:
+// "before" sets the standing time longer than the run, so no offer ever prices an item (only a sale does, the rule
+// before AH8); "after" keeps the default
+constexpr std::uint32_t ITEM_CLASS_TRADE_GOODS = 7;
+constexpr std::size_t TRADE_KIND_COUNT = 3;
+constexpr std::array<std::uint32_t, TRADE_KIND_COUNT> TRADE_SUBCLASSES = {5, 7, 9};  // item_template's
+constexpr std::array<std::string_view, TRADE_KIND_COUNT> TRADE_WORDS = {"cloth", "ore and bars", "herbs"};
+constexpr double COLD_RUN_HOURS = 48.0;  // assumed: the longest listing duration, as the gear run's
+constexpr std::size_t EXIT_BAND_FIRST = 1;
+constexpr std::size_t EXIT_BAND_LAST = 3;
+constexpr std::size_t PRICE_ITEMS = 2;  // per kind, the items whose price the print follows
+
+struct TradeItem
+{
+    std::size_t kind{0};
+    std::string name;
+};
+
+using TradeItems = std::map<std::uint32_t, TradeItem>;  // by item
+
+struct ColdArm
+{
+    std::string_view name;
+    std::uint32_t standingSeconds{0};
+    Result const* result{nullptr};
+    NightPaths const* paths{nullptr};
+};
+
+bool OfKind(TradeItems const& trade, std::uint32_t item, std::size_t kind)
+{
+    auto const found = trade.find(item);
+    return found != trade.end() && found->second.kind == kind;
+}
+
+// A kind's sales to the buyers of the level bands first to last
+std::uint64_t KindSales(TradeItems const& trade, Result const& result, std::size_t kind, std::size_t first,
+                        std::size_t last)
+{
+    std::uint64_t total = 0;
+    for (auto const& [item, tally] : result.items)
+        if (OfKind(trade, item, kind))
+            for (std::size_t band = first; band <= last; ++band)
+                total += tally.bandSales[band];
+    return total;
+}
+
+// A kind's path buyouts and bids, every band
+std::uint64_t KindPlaced(TradeItems const& trade, Result const& result, std::size_t kind)
+{
+    std::uint64_t total = 0;
+    for (auto const& [item, tally] : result.items)
+        if (OfKind(trade, item, kind))
+            for (std::uint64_t const count : tally.pathPlaced)
+                total += count;
+    return total;
+}
+
+// An item of the kind had a standing price (by offers) at some hour's end and a path line for it reached the
+// auctioneer (bought, refused or skipped for any reason)
+bool KindStandingAsked(TradeItems const& trade, Result const& result, std::size_t kind)
+{
+    for (auto const& [item, tally] : result.items)
+    {
+        if (!OfKind(trade, item, kind))
+            continue;
+        std::uint64_t asked = 0;
+        for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+            asked += tally.pathPlaced[band] + tally.pathRefused[band] + Sum(tally.pathSkips[band]);
+        bool const stood = std::any_of(result.hours.begin(), result.hours.end(),
+                                       [item](MarketSim::HourTally const& hour)
+                                       {
+                                           auto const price = hour.prices.find(item);
+                                           return price != hour.prices.end() &&
+                                                  price->second.basis == AuctionIndex::PriceBasis::Offers;
+                                       });
+        if (asked && stood)
+            return true;
+    }
+    return false;
+}
+
+std::uint64_t PathPlaced(Result const& result)
+{
+    std::uint64_t total = 0;
+    for (auto const& [item, tally] : result.items)
+        for (std::uint64_t const count : tally.pathPlaced)
+            total += count;
+    return total;
+}
+
+// A path's trade goods: units over the stretch, the cheapest source's cost and word
+std::string TradeMaterials(TradeItems const& trade, NightPaths const& paths, SkillPath::Path const& path)
+{
+    std::ostringstream text;
+    for (SkillPath::Material const& material : path.materials)
+        if (auto const found = trade.find(material.item); found != trade.end())
+            text << (text.str().empty() ? "" : ", ") << found->second.name << " x" << material.used << ": "
+                 << material.copperEach << " c by "
+                 << Materials::KindWord(static_cast<Materials::Kind>(material.source))
+                 << (paths.view.Typical(material.item).unitPrice ? "" : " (no price)");
+    return text.str().empty() ? "-" : text.str();
+}
+
+void PrintColdStart(std::ostream& out, MarketSim::Market const& market, TradeItems const& trade,
+                    std::array<ColdArm, 2> const& arms)
+{
+    out.unsetf(std::ios::floatfield);
+    out << std::setprecision(6) << "\n## The cold start: before and after\n\n";
+    out << "- Arms (same bots, same seed, " << market.hours << " model hours, assumed): " << arms[0].name
+        << " has the standing time " << arms[0].standingSeconds
+        << " s, longer than the run, so only a sale prices an item; " << arms[1].name << " has the standing time "
+        << arms[1].standingSeconds << " s (Playerbots.Auction.Market.StandingSeconds, the default). The sections above "
+        << "this one are the " << arms[1].name << " arm.\n";
+    out << "- From the night: the bots (count, purse, reserve, free slots), visits, income and lots per bot hour, and "
+           "the units of a lot (the mean of its listings of the three kinds).\n";
+    out << "- Assumed sellers (the night listed no ore, bar or herb a gatherer brings): every lot that comes by is "
+           "gathered surplus of one of the three kinds (item class 7, subclass 5 cloth, 7 metal and stone, 9 herb), "
+           "drawn evenly from the items of its band: what a recipe of one of the band's typical crafters needs "
+           "(learnable by the rank's top, not grey at its skill, and what its made reagents are made of; the dumped "
+           "recipe index), no vendor stocks, and either no recipe makes or a gatherer's does. By band:";
+    for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+        out << (band ? ";" : "") << " band " << band << ' ' << market.bands[band].mix.size() << " items";
+    out << ". Items a vendor pays more for than a listing is worth go to the vendor, as the bags' plan says.\n";
+    out << "- Assumed buyers (the night wrote no path lines): every bot follows one typical path bot of its band, "
+           "which has its craft and no gathering skill (it buys what it does not gather) and climbs a stretch without "
+           "asking what the climb brings (PathBot::anyStretch: the model prices no products, so a climb is worth "
+           "nothing to it otherwise); level, skill at "
+        << SKILL_PER_LEVEL << " points per level, purse and tools as the preset night's. No use or bag line.\n\n";
+
+    out << "### Totals\n\n| arm | lots listed | sales | expiries | path lines over all weighs | path buyouts and bids "
+           "| items priced at the end: by sales | by offers |\n|---|---|---|---|---|---|---|---|\n";
+    for (ColdArm const& arm : arms)
+    {
+        KindTally const total = arm.result->Total();
+        std::size_t bySales = 0;
+        std::size_t byOffers = 0;
+        for (auto const& [item, point] : arm.result->hours.back().prices)
+            ++(point.basis == AuctionIndex::PriceBasis::Sales ? bySales : byOffers);
+        out << "| " << arm.name << " | " << total.posts + total.relists << " | " << total.sales << " | "
+            << total.expiries << " | " << arm.paths->linesSeen << " | " << PathPlaced(*arm.result) << " | " << bySales
+            << " | " << byOffers << " |\n";
+    }
+
+    out << "\n### Sales per kind by the buyer's level band (before / after)\n\n| kind |";
+    for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+        out << " band " << band << " |";
+    out << "\n|---|---|---|---|---|---|\n";
+    for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+    {
+        out << "| " << TRADE_WORDS[kind] << " |";
+        for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+            out << ' ' << KindSales(trade, *arms[0].result, kind, band, band) << " / "
+                << KindSales(trade, *arms[1].result, kind, band, band) << " |";
+        out << '\n';
+    }
+
+    out << "\n### Unbought path lines by cause\n\n";
+    out << "Counted per visit and line: the buy rule's skips by reason, and the buys the core refused (the lot was "
+           "gone, the bot's own, outbid or beyond the purse). An arm without a row had no path line: the cause is then "
+           "in the paths below.\n\n";
+    out << "| arm | kind | band | bought or bid | unbought by cause |\n|---|---|---|---|---|\n";
+    for (ColdArm const& arm : arms)
+        for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+            for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+            {
+                std::uint64_t placed = 0;
+                std::uint64_t refused = 0;
+                std::array<std::uint64_t, AuctionWords::REASON_COUNT> skips{};
+                for (auto const& [item, tally] : arm.result->items)
+                {
+                    if (!OfKind(trade, item, kind))
+                        continue;
+                    placed += tally.pathPlaced[band];
+                    refused += tally.pathRefused[band];
+                    for (std::size_t reason = 0; reason < skips.size(); ++reason)
+                        skips[reason] += tally.pathSkips[band][reason];
+                }
+                if (!placed && !refused && !Sum(skips))
+                    continue;
+                std::string causes = Sum(skips) ? Reasons(skips) : std::string();
+                if (refused)
+                    causes += (causes.empty() ? "refused " : ", refused ") + std::to_string(refused);
+                out << "| " << arm.name << " | " << TRADE_WORDS[kind] << " | " << band << " | " << placed << " | "
+                    << (causes.empty() ? "-" : causes) << " |\n";
+            }
+
+    out << "\nBy item (after), every trade good a path line asked for: its lots listed and sold, its price at the "
+           "run's "
+           "end (s: by sales, o: by offers), the path buys and the unbought lines by cause.\n\n";
+    out << "| item | kind | listed | sold | price at the end | path buyouts and bids | unbought by cause |\n"
+           "|---|---|---|---|---|---|---|\n";
+    std::map<std::uint32_t, MarketSim::PricePoint> const& endPrices = arms[1].result->hours.back().prices;
+    for (auto const& [item, tally] : arms[1].result->items)
+    {
+        std::uint64_t placed = 0;
+        std::uint64_t refused = 0;
+        std::array<std::uint64_t, AuctionWords::REASON_COUNT> skips{};
+        for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+        {
+            placed += tally.pathPlaced[band];
+            refused += tally.pathRefused[band];
+            for (std::size_t reason = 0; reason < skips.size(); ++reason)
+                skips[reason] += tally.pathSkips[band][reason];
+        }
+        auto const found = trade.find(item);
+        if (found == trade.end() || (!placed && !refused && !Sum(skips)))
+            continue;
+        out << "| " << found->second.name << " | " << TRADE_WORDS[found->second.kind] << " | " << tally.listings
+            << " | " << tally.sales << " | ";
+        if (auto const price = endPrices.find(item); price == endPrices.end())
+            out << '-';
+        else
+            out << price->second.unitPrice << (price->second.basis == AuctionIndex::PriceBasis::Sales ? " s" : " o");
+        std::string causes = Sum(skips) ? Reasons(skips) : std::string();
+        if (refused)
+            causes += (causes.empty() ? "refused " : ", refused ") + std::to_string(refused);
+        out << " | " << placed << " | " << (causes.empty() ? "-" : causes) << " |\n";
+    }
+
+    out << "\n### The paths' trade goods at the last weigh\n\n";
+    out << "A path line needs the auction as the material's cheapest source, which needs a price. `item xunits: "
+           "copper each by source`.\n\n";
+    out << "| band | craft | before: path | before: trade goods | after: path | after: trade goods |\n"
+           "|---|---|---|---|---|---|\n";
+    for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+        for (std::size_t slot = 0; slot < PATH_BOTS; ++slot)
+        {
+            out << "| " << band << " | " << CraftName(ProfessionRules::CRAFTS[slot].Which) << " |";
+            for (ColdArm const& arm : arms)
+            {
+                SkillPath::Path const& path = arm.paths->paths[band][slot];
+                out << ' ' << SkillPath::ReasonWord(path.reason) << " | " << TradeMaterials(trade, *arm.paths, path)
+                    << " |";
+            }
+            out << '\n';
+        }
+
+    Result const& after = *arms[1].result;
+    out << "\n### How the price moved (after)\n\n";
+    out << "At each model hour's end: the trade goods with a price (by sales / by offers, the standing price), and the "
+           "unit price in copper of each kind's "
+        << PRICE_ITEMS << " most sold items (s: by sales, o: by offers, -: none).\n\n";
+    std::vector<std::uint32_t> followed;
+    for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+    {
+        std::vector<std::pair<std::uint64_t, std::uint32_t>> sold;  // sales, item
+        for (auto const& [item, tally] : after.items)
+            if (OfKind(trade, item, kind) && tally.sales)
+                sold.emplace_back(tally.sales, item);
+        std::stable_sort(sold.begin(), sold.end(),
+                         [](auto const& left, auto const& right) { return left.first > right.first; });
+        for (std::size_t at = 0; at < std::min(PRICE_ITEMS, sold.size()); ++at)
+            followed.push_back(sold[at].second);
+    }
+    out << "| hour |";
+    for (std::string_view const word : TRADE_WORDS)
+        out << ' ' << word << " priced |";
+    for (std::uint32_t const item : followed)
+        out << ' ' << trade.at(item).name << " |";
+    out << "\n|---|";
+    for (std::size_t column = 0; column < TRADE_KIND_COUNT + followed.size(); ++column)
+        out << "---|";
+    out << '\n';
+    for (std::size_t hour = 0; hour < after.hours.size(); ++hour)
+    {
+        std::map<std::uint32_t, MarketSim::PricePoint> const& prices = after.hours[hour].prices;
+        out << "| " << HourWord(market, hour) << " |";
+        for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+        {
+            std::size_t bySales = 0;
+            std::size_t byOffers = 0;
+            for (auto const& [item, point] : prices)
+                if (OfKind(trade, item, kind))
+                    ++(point.basis == AuctionIndex::PriceBasis::Sales ? bySales : byOffers);
+            out << ' ' << bySales << " / " << byOffers << " |";
+        }
+        for (std::uint32_t const item : followed)
+        {
+            auto const found = prices.find(item);
+            if (found == prices.end())
+                out << " - |";
+            else
+                out << ' ' << found->second.unitPrice
+                    << (found->second.basis == AuctionIndex::PriceBasis::Sales ? " s |" : " o |");
+        }
+        out << '\n';
+    }
+}
+
+// The units of a lot: the mean over the night's listings of the three kinds
+std::uint32_t TradeLotUnits(MarketSim::Market const& market, TradeItems const& trade)
+{
+    double lots = 0.0;
+    double units = 0.0;
+    for (MarketSim::Band const& band : market.bands)
+        for (Arrival const& arrival : band.mix)
+            if (trade.count(arrival.item))
+            {
+                lots += arrival.weight;
+                units += arrival.weight * arrival.units;
+            }
+    return lots > 0.0 ? std::max<std::uint32_t>(Whole(units / lots), 1) : 1;
+}
+
+// The gathered goods of the three kinds a band's typical crafters need: the reagents of their recipes learnable by
+// the rank's top and not grey at their skill, and the reagents behind a reagent that is itself made. Gathered: no
+// vendor stocks it and either no recipe makes it or a gatherer's does (a miner's bar)
+std::set<std::uint32_t> SurplusOf(Recipes::RecipeIndex const& index, TradeItems const& trade,
+                                  std::unordered_map<std::uint32_t, AuctionRules::ItemInput> const& templates,
+                                  std::array<SkillPath::PathBot, PATH_BOTS> const& bots)
+{
+    std::unordered_map<std::uint32_t, std::vector<Recipes::Recipe const*>> makers;
+    for (Recipes::Recipe const& recipe : index.Recipes())
+        if (recipe.product)
+            makers[recipe.product].push_back(&recipe);
+    std::vector<std::uint32_t> open;
+    for (SkillPath::PathBot const& bot : bots)
+        for (Recipes::Recipe const& recipe : index.Recipes())
+        {
+            SkillPath::SkillLevel const& craft = bot.skills.front();
+            if (recipe.skill == craft.skill && recipe.minRank <= craft.max && recipe.grey > craft.value)
+                for (Recipes::ItemCount const& reagent : recipe.reagents)
+                    open.push_back(reagent.item);
+        }
+    auto const gatherer = [](Recipes::Recipe const* recipe)
+    {
+        return std::any_of(std::begin(ProfessionRules::GATHERERS), std::end(ProfessionRules::GATHERERS),
+                           [recipe](ProfessionRules::Skill skill)
+                           { return recipe->skill == static_cast<std::uint16_t>(skill); });
+    };
+    std::set<std::uint32_t> seen;
+    std::set<std::uint32_t> items;
+    while (!open.empty())
+    {
+        std::uint32_t const item = open.back();
+        open.pop_back();
+        if (!seen.insert(item).second)
+            continue;
+        auto const made = makers.find(item);
+        if (made != makers.end())
+            for (Recipes::Recipe const* recipe : made->second)
+                for (Recipes::ItemCount const& reagent : recipe->reagents)
+                    open.push_back(reagent.item);
+        bool const gathered = made == makers.end() || std::any_of(made->second.begin(), made->second.end(), gatherer);
+        auto const known = templates.find(item);
+        if (gathered && trade.count(item) && known != templates.end() && !known->second.vendorStocked)
+            items.insert(item);
+    }
+    return items;
+}
+
+Built ColdStartPreset(std::string const& repo, std::uint32_t seed)
+{
+    Built built = NightPreset(repo, seed);
+    MarketSim::Market& market = built.market;
+    std::vector<AuctionRules::ItemInput> inputs;
+    std::string core;
+    std::string error;
+    bool const parsed =
+        AuctionRules::ParseInputs(ReadFile(repo + "/tests/fixtures/auction-reference-inputs.txt"), inputs, core, error);
+    Recipes::RecipeIndex index;
+    bool const recipes =
+        Recipes::RecipeIndex::Parse(ReadFile(repo + "/tests/fixtures/recipe-index-dump.txt"), index, error);
+    Check(parsed && recipes && market.paths, "cold start: the night's market and the dumps: " + error);
+    if (!parsed || !recipes || !market.paths)
+        return built;
+    std::unordered_map<std::uint32_t, AuctionRules::ItemInput> templates;
+    auto const trade = std::make_shared<TradeItems>();
+    for (AuctionRules::ItemInput const& input : inputs)
+    {
+        templates[input.id] = input;
+        for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+            if (input.classId == ITEM_CLASS_TRADE_GOODS && input.subClass == TRADE_SUBCLASSES[kind])
+                (*trade)[input.id] = {kind, input.name};
+    }
+    market.hours = COLD_RUN_HOURS;
+    auto const paths = std::static_pointer_cast<NightPaths>(market.paths);
+    for (auto& band : paths->bots)
+        for (SkillPath::PathBot& bot : band)
+        {
+            bot.skills.resize(1);  // the craft without its gatherer
+            bot.anyStretch = true;
+        }
+    AuctionRules::Table const table = AuctionRules::Build(inputs, index, WorldTravel::DEFAULT_SLOT_BANDS);
+    std::uint32_t const units = TradeLotUnits(market, *trade);
+    std::set<std::uint32_t> known;
+    for (Goods const& goods : market.goods)
+        known.insert(goods.item);
+    for (std::size_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+    {
+        market.bands[band].mix.clear();
+        for (std::uint32_t const item : SurplusOf(index, *trade, templates, paths->bots[band]))
+        {
+            market.bands[band].mix.push_back({item, units, 1.0});
+            if (known.insert(item).second)
+                market.goods.push_back(GoodsRow(templates, table, item));
+        }
+    }
+    for (BotSetup& bot : market.bots)
+        bot.lines.clear();
+    auto const unrun = std::make_shared<NightPaths>(*paths);
+    built.after = [trade, paths, unrun](MarketSim::Market const& ran, Result const& result, bool print)
+    {
+        MarketSim::Market before = ran;
+        before.config.StandingSeconds =
+            static_cast<std::uint32_t>(std::llround(ran.hours * MarketSim::HOUR_SECONDS) + MarketSim::HOUR_SECONDS);
+        auto const beforePaths = std::make_shared<NightPaths>(*unrun);
+        before.paths = beforePaths;
+        Result const locked = Sim(before).Run();
+        CheckClean(locked, "preset cold-start, before");
+        std::uint64_t lockedSales = 0;
+        for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+            lockedSales += KindSales(*trade, locked, kind, 0, WorldTravel::LEVEL_BAND_COUNT - 1);
+        Check(!beforePaths->linesSeen && !PathPlaced(locked) && !lockedSales,
+              "cold start before: no path line, path buy or trade sale (" + std::to_string(beforePaths->linesSeen) +
+                  " lines, " + std::to_string(PathPlaced(locked)) + " buys, " + std::to_string(lockedSales) +
+                  " sales)");
+        // After (AH.18): the rule guarantees path buys where an item stands priced and a path asks the auction for
+        // it; each kind's sales to the bands 1 to 3 are printed, not required (they depend on the reference values
+        // and the paths' own sources, which the fixture assumes)
+        Check(PathPlaced(result) > 0,
+              "cold start after: path lines are bought (" + std::to_string(PathPlaced(result)) + " buyouts and bids)");
+        std::ostringstream sales;
+        for (std::size_t kind = 0; kind < TRADE_KIND_COUNT; ++kind)
+        {
+            std::uint64_t const sold = KindSales(*trade, result, kind, EXIT_BAND_FIRST, EXIT_BAND_LAST);
+            sales << ", " << TRADE_WORDS[kind] << ' ' << sold;
+            if (KindStandingAsked(*trade, result, kind))
+                Check(KindPlaced(*trade, result, kind) > 0,
+                      "cold start after: " + std::string(TRADE_WORDS[kind]) +
+                          " stood priced by its offers and a path asked the auction for it: it is bought");
+        }
+        if (print)
+            PrintColdStart(std::cout, ran, *trade,
+                           {{{"before", before.config.StandingSeconds, &locked, beforePaths.get()},
+                             {"after", ran.config.StandingSeconds, &result, paths.get()}}});
+        else
+            std::cout << "cold start: before path lines " << beforePaths->linesSeen << ", trade sales " << lockedSales
+                      << "; after path lines " << paths->linesSeen << ", sales to the bands 1 to 3" << sales.str()
+                      << '\n';
+    };
+    return built;
+}
+
+std::array<Preset, 5> const PRESETS = {
     {{"hand", "the selftest's hand market", &HandPreset},
      {"night", "lab5's night of 2026-11-25 (AH1's fixture)", &NightPreset},
      {"gear-no-buyer", "the night, its gear per hour", &GearNoBuyerPreset},
-     {"gear-buyers-arrive", "the night, with assumed gear buyers from a later hour on", &GearBuyersPreset}}};
+     {"gear-buyers-arrive", "the night, with assumed gear buyers from a later hour on", &GearBuyersPreset},
+     {"cold-start", "gathered trade goods in an empty house, with assumed sellers and path buyers", &ColdStartPreset}}};
 
 void RunPreset(std::string const& repo, std::string const& name, double hours, std::uint32_t seed, bool print)
 {
@@ -1499,6 +1971,7 @@ int main(int argc, char** argv)
         Search();
         Controls();
         RunPreset(repo, "night", 0.0, 1, false);
+        RunPreset(repo, "cold-start", 0.0, 1, false);
     }
     else
         RunPreset(repo, preset, hours, seed, print);

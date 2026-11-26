@@ -428,9 +428,8 @@ Snapshot PathSnapshot(UpkeepIndex const& index, PathSample const& sample, std::u
 // A vendor's price for the tools of ProfessionRules::TOOLS: the world DB's item_template.BuyPrice (2026-11-20)
 std::uint32_t ToolPrice(std::uint32_t item)
 {
-    static std::map<std::uint32_t, std::uint32_t> const prices = {{2901, 81},   {5956, 18},    {7005, 82},
-                                                                   {6256, 23},   {20815, 800}, {20824, 25000},
-                                                                   {39505, 750}};
+    static std::map<std::uint32_t, std::uint32_t> const prices = {{2901, 81},   {5956, 18},     {7005, 82},  {6256, 23},
+                                                                  {20815, 800}, {20824, 25000}, {39505, 750}};
     auto const found = prices.find(item);
     return found == prices.end() ? 0 : found->second;
 }
@@ -850,8 +849,8 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
         for (SkillPath::Craft const& craft : claims.queue)
             shown << " craft " << craft.spell << " x" << craft.casts << (craft.forSkill ? " (skill)" : "");
         bool const fixed = fault == SkillPath::Fault::None;
-        std::cout << "  a smith with 40 copper ore, 38 bracers casts chosen" << (fixed ? "" : " (wants unexpanded, as the review found)")
-                  << ":" << shown.str() << "\n";
+        std::cout << "  a smith with 40 copper ore, 38 bracers casts chosen"
+                  << (fixed ? "" : " (wants unexpanded, as the review found)") << ":" << shown.str() << "\n";
         if (!fixed)
             continue;
         bool const wantsBar = std::any_of(wants.begin(), wants.end(),
@@ -880,8 +879,7 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     noHammer.tools = {2901};
     noHammer.categories = {165};
     std::uint32_t const flush = PATH_MONEY[5];
-    SkillPath::SecondChoice const with =
-        PathOf(PathSnapshot(index, hammer, flush), index, hammer, recipes).path.second;
+    SkillPath::SecondChoice const with = PathOf(PathSnapshot(index, hammer, flush), index, hammer, recipes).path.second;
     SkillPath::SecondChoice const without =
         PathOf(PathSnapshot(index, noHammer, flush), index, noHammer, recipes).path.second;
     std::cout << "  " << hammer.name << ": " << SecondText(with) << "\n  " << noHammer.name << ": "
@@ -923,8 +921,8 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
         SkillPath::SecondChoice const priced = PathOf(young, index, herbalist, recipes, true, gathered).path.second;
         std::cout << "  " << herbalist.name << ", " << Money(money) << ": " << SecondText(second)
                   << "; with a market for gathered yields: " << SecondText(priced) << "\n";
-        gatherer = gatherer || second.gatherer ||
-                   (second.take && second.take != static_cast<std::uint16_t>(Skill::Alchemy));
+        gatherer =
+            gatherer || second.gatherer || (second.take && second.take != static_cast<std::uint16_t>(Skill::Alchemy));
     }
     Check(!gatherer, std::string(herbalist.name) + " at 3s, 10s and 30s: no second gatherer without a market");
 }
@@ -1036,25 +1034,30 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     std::size_t marketSales = 0;
     auto const linesOf = [&](SkillPath::Path const& path)
     {
-        // the sample bots hold nothing, as when their paths were computed: every want stands
+        // the sample bots hold nothing, as when their paths were computed: every want stands. At the reserve (the
+        // need factor equal to the exchange) a line's ceiling is the path's copper
         auto const none = [](std::uint32_t) { return 0u; };
+        AuctionRules::CopperWeight const atReserve{1.0f, 1.0f};
         std::vector<AuctionRules::BuyLine> const lines =
-            AuctionRules::BuyList(AuctionRules::PathLines(path.materials, auctionKind, none, none));
+            AuctionRules::BuyList(AuctionRules::PathLines(path.materials, auctionKind, atReserve, none, none));
         std::size_t expected = 0;
         for (SkillPath::Material const& material : path.materials)
         {
             lineViolations += material.source != auctionKind && material.otherCopperEach != 0;
-            if (!material.wanted || material.source != auctionKind || !material.otherCopperEach)
+            if (!material.wanted || material.source != auctionKind)
                 continue;
             ++expected;
             auto const line = std::find_if(lines.begin(), lines.end(), [&material](AuctionRules::BuyLine const& l)
                                            { return l.item == material.item; });
+            // the cheapest other way's cost, or (AH8) what the path counted at the auction, its only source
+            std::uint32_t const ceiling = material.otherCopperEach ? material.otherCopperEach : material.copperEach;
             lineViolations += line == lines.end() || line->units != material.wanted ||
-                              AuctionRules::CeilingOf(*line) != material.otherCopperEach ||
-                              material.otherCopperEach < material.copperEach;
+                              AuctionRules::CeilingOf(*line) != ceiling ||
+                              (material.otherCopperEach && material.otherCopperEach < material.copperEach);
             // control: a ceiling at the auction's own cost is never above that cost
-            controlCaught += AuctionRules::CeilingOf(AuctionRules::PathLine(
-                                 material.item, material.wanted, material.copperEach, 0)) <= material.copperEach;
+            controlCaught +=
+                AuctionRules::CeilingOf(AuctionRules::PathLine(material.item, material.wanted, material.copperEach, 0,
+                                                               atReserve, 0)) <= material.copperEach;
         }
         lineViolations += lines.size() != expected;
         return lines.size();
