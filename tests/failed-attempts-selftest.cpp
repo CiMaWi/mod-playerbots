@@ -215,6 +215,7 @@ constexpr Case CASES[] = {
     {"inn_failed", Leg::None, false, Expect::Goal},
     {"inn_no_walk", Leg::OffGraphWalk, false, Expect::Goal},  // an inn trip's no_walk end: the inn's place (NE3)
     {"inn_no_walk", Leg::GraphWalk, false, Expect::Goal},
+    {"gather_no_walk", Leg::LocalPiece, false, Expect::Goal},  // a gather walk's no_walk end: the stop (WPC9)
 };
 
 // The trip's own ends (TravelLegs' "abort:" sources that are no failed leg) and the inn trip's event

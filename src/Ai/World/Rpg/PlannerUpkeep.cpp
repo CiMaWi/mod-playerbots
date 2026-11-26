@@ -25,11 +25,14 @@
 #include "AiObjectContext.h"
 #include "AuctionBuyList.h"
 #include "AuctionIndex.h"
+#include "AuctionReference.h"
+#include "AuctionRules.h"
 #include "Bag.h"
 #include "BotProfessionMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "GoalInterface.h"
 #include "InventorySlots.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"
@@ -1000,12 +1003,35 @@ std::vector<ItemTemplate const*> const& BagCandidates()
 }
 }  // namespace
 
+AuctionRules::CopperWeight CopperWeightOf(PlayerbotAI* botAI)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    GoalApply::BotGoals const* goals = bot ? botAI->planner.goals.get() : nullptr;
+    if (!goals || !goals->plan)
+        return {};
+    Planner::Goals::Need const need = Planner::Goals::NeedAt(goals->plan->ranked.need, bot->GetMoney());
+    return {need.exchange, need.factor};
+}
+
 std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
 {
     std::vector<AuctionRules::BuyLine> lines;
     Player* bot = botAI ? botAI->GetBot() : nullptr;
     if (!bot || !botAI->KeepsPossessions())
         return lines;
+
+    // Every line at one copper weight, the need factor at the money held now (AH.5, AH.19). A vendor's price caps a
+    // use or bag line only where a spawned vendor stocks the item; until the reference table is built every template
+    // price still caps, so no ceiling rises by accident
+    AuctionRules::CopperWeight const weight = CopperWeightOf(botAI);
+    std::shared_ptr<AuctionRules::Table const> const reference = AuctionReference::Current();
+    auto const stockedCopper = [&reference](uint32 item, uint32 copper)
+    {
+        if (!reference)
+            return copper;
+        AuctionRules::ItemInput const* input = reference->Input(item);
+        return input && input->vendorStocked ? copper : 0u;
+    };
 
     // Item use's lines (WA.6: no gear): demand's strongest offered entry up to the wanted stock; food, drink and
     // coatings stay upkeep's vendor stock (FillUseWants). An entry bound on pickup (a battleground supply officer's
@@ -1022,12 +1048,12 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
                 continue;
             uint32 const vendorEach = proto->BuyPrice / std::max<uint32>(proto->BuyCount, 1);
             lines.push_back(AuctionRules::UseLine(line.buyEntry, line.buyUnits,
-                                                  ItemUse::DemandWorthEach(botAI, line.buyEntry), vendorEach,
-                                                  proto->SellPrice));
+                                                  ItemUse::DemandWorthEach(botAI, line.buyEntry),
+                                                  stockedCopper(line.buyEntry, vendorEach), proto->SellPrice, weight));
         }
     }
 
-    // The bags the index knows that add slots: each by its worth, its ceiling at most the template's vendor price
+    // The bags the index knows that add slots: each by its worth, its ceiling at most a stocking vendor's price
     std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
     if (index)
     {
@@ -1044,15 +1070,18 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
             uint32 const worth =
                 WorldTravel::BagWorth(rates, freeSlots, proto->ContainerSlots, smallest, band.BagHorizonHours);
             if (worth)
-                lines.push_back(AuctionRules::BagLine(proto->ItemId, worth, proto->BuyPrice));
+                lines.push_back(
+                    AuctionRules::BagLine(proto->ItemId, worth, stockedCopper(proto->ItemId, proto->BuyPrice), weight));
         }
     }
 
-    // The skill path's materials the auction sells cheapest (auction house WA7b, PLAN 3.7): the kept path's wants
-    // there, each at most what getting it the cheapest other way costs; funded as the market's claim, after the
-    // profession reserve (UpkeepNeeds::Fund). The path was computed earlier: the units held now (bags and bank, as
-    // the path's snapshot counts them) come off its want
-    if (SkillPath::Path const* path = KeptPath(botAI))
+    // The skill path's materials the auction sells cheapest (auction house WA7b and AH8, PLAN 3.7): the kept path's
+    // wants there, each at most what getting it the cheapest other way costs, or what the path counted at the auction
+    // where it is the only source, and at most a stocking vendor's price (AH.19), at the copper weight above (none
+    // without a plan); funded as the market's claim, after the profession reserve (UpkeepNeeds::Fund). The path was
+    // computed earlier: the units held now (bags and bank, as the path's snapshot counts them) come off its want
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (SkillPath::Path const* path = KeptPath(botAI); path && goals && goals->plan)
     {
         auto const held = [bot](uint32 item) { return bot->GetItemCount(item, true); };
         auto const payout = [](uint32 item)
@@ -1060,8 +1089,13 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
             return proto ? proto->SellPrice : 0u;
         };
-        for (AuctionRules::BuyLine const& line :
-             AuctionRules::PathLines(path->materials, static_cast<uint8>(Materials::Kind::Auction), held, payout))
+        auto const vendor = [&stockedCopper](uint32 item)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+            return proto ? stockedCopper(item, proto->BuyPrice / std::max<uint32>(proto->BuyCount, 1)) : 0u;
+        };
+        for (AuctionRules::BuyLine const& line : AuctionRules::PathLines(
+                 path->materials, static_cast<uint8>(Materials::Kind::Auction), weight, held, payout, vendor))
             lines.push_back(line);
     }
     return AuctionRules::BuyList(std::move(lines));

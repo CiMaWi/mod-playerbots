@@ -34,6 +34,7 @@
 #include "AuctionMemory.h"
 #include "AuctionPricing.h"
 #include "AuctionRules.h"
+#include "MarketRules.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
 
@@ -886,39 +887,96 @@ void CheckCases()
     std::cout << "cases: " << met << " of " << std::size(CASES) << " economy reference values met\n";
 }
 
+// An item record (sales, no listing hours) whose 24 h chance is p beside an empty kind: its rate is -ln(1 - p) / hours,
+// its kind's the starting rate for the item's first prior hours. For p at or above the start
+AuctionIndex::Record ChanceRecord(double p, double hours, AuctionConfig const& config)
+{
+    double const rate = -std::log(1.0 - p) / hours;
+    double const prior = static_cast<double>(config.ChanceItemPriorHours);
+    return {prior * (rate - StartRate(config)), 0.0};
+}
+
 // WA3a: what listing a lot as stock is worth. The case sale_expiry_threshold's lot terms follow from its sell total, so
-// one unit that sells for 260 with a typical price of 311 is its 20 linen; p from the history, (sales + 1) / (sales +
-// expiries + 2): 2 sales give 3/4, none 1/2, 24 sales and 8 expiries 25/34
+// one unit that sells for 260 with a typical price of 311 is its 20 linen, worth 160 + 136 p listed for 24 h (sold:
+// 311 less the cut 15; unsold: the vendor's 260 less the deposit 100): above the vendor's 260 from the break-even
+// p = 25/34. p from the records (AH5): none gives 1/2, two recent sales of the item lift it above the break-even, a
+// record planted at the break-even gives it
 void CheckStockWorth()
 {
     AuctionConfig const config;
-    auto lot = [](std::uint32_t sales, std::uint32_t expiries)
+    auto lot = [](AuctionIndex::Record const& item)
     {
         AskInput in = Lot(1, 260);
         in.typical.unitPrice = 311;
-        in.typical.sample = sales;
-        in.typical.weight = static_cast<double>(sales);
-        in.typical.expiries = expiries;
+        in.typical.sample = 2;
+        in.typical.weight = 2.0;
+        in.itemRecord = item;
         return in;
     };
-    AskInput const threeQuarters = lot(2, 0);
-    AskInput const half = lot(0, 0);
-    AskInput const parity = lot(24, 8);
-    Check(SaleChance(threeQuarters.typical) == 0.75 && SaleChance(half.typical) == 0.5 &&
-              Near(SaleChance(parity.typical), 25.0 / 34.0),
-          "stock: the planted histories give p = 3/4, 1/2 and 25/34");
-    std::uint32_t const atThreeQuarters = StockWorth(threeQuarters, config);
+    AskInput const sold = lot({2.0, 0.0});
+    AskInput const half = lot({});
+    AskInput const parity = lot(ChanceRecord(25.0 / 34.0, 24.0, config));
+    double const soldP = ListingChance(sold, config, 24);
+    Check(soldP > 25.0 / 34.0 && ListingChance(half, config, 24) == 0.5 &&
+              Near(ListingChance(parity, config, 24), 25.0 / 34.0),
+          "stock: the records give p = " + std::to_string(soldP) + " (2 sales), 1/2 (none) and 25/34 (planted)");
+    std::uint32_t const atSold = StockWorth(sold, config);
     std::uint32_t const atHalf = StockWorth(half, config);
     std::uint32_t const atParity = StockWorth(parity, config);
-    std::cout << "stock worth of the case's lot (vendor 260): p 3/4 " << atThreeQuarters << ", p 1/2 " << atHalf
+    std::cout << "stock worth of the case's lot (vendor 260): 2 sales " << atSold << ", no record " << atHalf
               << ", p 25/34 " << atParity << "\n";
-    Check(atThreeQuarters == 262, "stock: case sale_expiry_threshold at p = 3/4 is worth 262, above the vendor's 260");
+    Check(atSold > 260 && atSold == static_cast<std::uint32_t>(std::floor(ListingValue(soldP, 311, 15, 100, 260))),
+          "stock: case sale_expiry_threshold with 2 recent sales is worth its expected value, above the vendor's 260");
     Check(atHalf <= 260 && atParity <= 260,
           "stock: at p = 1/2 and at the break-even p = 25/34 the lot is worth no more than the vendor's 260");
     AskResult const lifted = Ask(half, config);
     Check(lifted.kind == AskResult::Kind::List && lifted.ask > 311 && lifted.expected > 260.0 && atHalf == 0,
           "stock: control: Ask lists the p = 1/2 lot at its floor above the evidence, worth more than the vendor; "
           "stock asks the evidence (caught)");
+}
+
+// AH8: a standing price nobody buys at fetches little. Linen whose only price is its lot of 311 that stood unsold
+// through 500 listing hours, its kind's too, is worth no more listed than the vendor's 260 (the sale chance near 0),
+// through the snapshot and the view a path reads; control: the same standing price with a record of 20 sales in 24
+// listing hours is worth listing
+void CheckStandingProceeds()
+{
+    AuctionConfig const config;
+    std::int64_t const now = 1800000000;
+    std::int64_t const window = static_cast<std::int64_t>(config.HistoryDays) * AuctionIndex::SECONDS_PER_DAY;
+    AuctionIndex::KindKey const kind = AuctionIndex::KindOf(7, 1, 0, 5);  // a trade good, common, item level 5
+    AuctionIndex::AuctionFacts facts;
+    facts.id = 1;
+    facts.item = LINEN;
+    facts.count = 1;
+    facts.startBid = 200;
+    facts.buyout = 311;
+    facts.endTime = now + AuctionIndex::SECONDS_PER_DAY;
+    facts.added = now - static_cast<std::int64_t>(config.StandingSeconds);
+    AuctionIndex::Book book;
+    book.Add(facts, kind);
+    book.CreditListing(LINEN, kind, 500.0, now, window);
+    book.TakeStanding(now, config.StandingSeconds);
+    book.Prune(now, window);
+    auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+    book.Fill(*snapshot, now, window);
+    Market::View view;
+    view.snapshot = snapshot;
+    view.fees = FACTION_FEES;
+    view.config = config;
+    AuctionIndex::ItemEntry const* entry = snapshot->Find(LINEN);
+    Check(entry && entry->typical.unitPrice == 311 && entry->typical.basis == AuctionIndex::PriceBasis::Offers,
+          "standing proceeds: the lot's 311 is linen's typical price, basis offers");
+    if (!entry)
+        return;
+    double const unsold = view.ProceedsOf(LINEN, 260);
+    double const sold =
+        Market::ProceedsEach(entry->typical, {20.0, 24.0}, snapshot->KindRecord(kind), 260, 1, FACTION_FEES, config);
+    std::cout << "standing proceeds of linen at 311 (vendor 260): 500 unsold hours " << unsold << ", 20 sales " << sold
+              << "\n";
+    Check(unsold <= 260.0 && view.SaleOf(LINEN, 260.0) == 260.0,
+          "standing proceeds: a standing price nobody buys at fetches no more than the vendor's 260");
+    Check(sold > 260.0, "standing proceeds: control: the same price with sales is worth listing (caught)");
 }
 
 bool Equal(AskResult const& a, AskResult const& b)
@@ -942,11 +1000,13 @@ void CheckPricingHand()
     Check(Deposit(FACTION_FEES, 0, 20, SECONDS_24H) == 100 && Deposit(FACTION_FEES, 0, 1, SECONDS_48H) == 100,
           "no sell price: the minimum at any duration");
     Check(ExpirySeconds(FACTION_FEES, 24) == SECONDS_24H, "rate 1: a listing runs its nominal time");
-    Check(Near(SaleChance({}), 0.5), "no history: the sale chance 1/2");
-    AuctionIndex::TypicalPrice history;
-    history.sample = 5;
-    history.expiries = 1;
-    Check(Near(SaleChance(history), 0.75), "5 sales, 1 expiry: the sale chance 3/4");
+    Check(SaleChance({}, {}, 24.0, config) == 0.5 && SaleChance({}, {}, 48.0, config) == 0.75 &&
+              Near(SaleChance({}, {}, 12.0, config), 1.0 - std::sqrt(0.5)),
+          "no record: the starting rate, 1/2 at 24 h, 3/4 at 48 h, 0.29 at 12 h");
+    AuctionIndex::Record const unsold{0.0, 96.0};
+    Check(SaleChance(unsold, {}, 24.0, config) < 0.5 && SaleChance({}, unsold, 24.0, config) < 0.5 &&
+              SaleChance({1.0, 0.0}, {}, 24.0, config) > 0.5,
+          "unsold hours of the item or its kind lower the chance at 24 h below 1/2, a sale raises it");
 
     // The case's linen: worth listing at 3/4, not at 0.7 (planted beside the case)
     Check(WorthListing(0.75, 311, 15, 100, 260), "linen at 311: worth listing at p 3/4");
@@ -992,12 +1052,14 @@ void CheckPricingHand()
     ore.reference = 5;
     AskResult const atFloor = Ask(ore, config);
     ore.expiredSteps = 1;
-    ore.typical.expiries = 1;
+    ore.itemRecord.hours = 24.0;
+    ore.kindRecord.hours = 24.0;
     AskResult const afterExpiry = Ask(ore, config);
     Check(atFloor.kind == AskResult::Kind::List && atFloor.ask == atFloor.floor &&
               afterExpiry.kind == AskResult::Kind::Hold && afterExpiry.reason == Reason::BelowFloor &&
               afterExpiry.floor > atFloor.floor,
-          "a lot listed at the floor expired: the index's expiry lifts the floor, so it is held, not listed higher");
+          "a lot listed at the floor expired: its unsold hours in the records lift the floor, so it is held, not "
+          "listed higher");
     linen.expiredSteps = config.RelistLimit + 1;
     AskResult const spent = Ask(linen, config);
     Check(spent.kind == AskResult::Kind::Hold && spent.reason == Reason::Expired,
@@ -1088,6 +1150,15 @@ AuctionConfig RandomConfig(Dice& dice)
     return config;
 }
 
+// A record as the book weighs it: none, hours without a sale, or both
+AuctionIndex::Record RandomRecord(Dice& dice)
+{
+    if (dice.Pick(30))
+        return {};
+    double const sales = dice.Pick(40) ? 0.0 : dice.Real(0.01, 30.0);
+    return {sales, dice.Pick(10) ? 0.0 : dice.Real(0.01, 3000.0)};
+}
+
 AskInput RandomAsk(Dice& dice)
 {
     AskInput in;
@@ -1104,6 +1175,8 @@ AskInput RandomAsk(Dice& dice)
         in.typical.sample = dice.Range(1, 20);
     }
     in.typical.expiries = dice.Range(0, 12);
+    in.itemRecord = RandomRecord(dice);
+    in.kindRecord = RandomRecord(dice);
     if (dice.Pick(50))
         in.cheapestUnitBuyout = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(base * dice.Real(0.2, 2.0)));
     in.expiredSteps = dice.Pick(60) ? 0 : dice.Range(1, 5);
@@ -1125,8 +1198,7 @@ enum class AskFault
 
 AskResult AskVariant(AskInput const& in, AuctionConfig const& config, AskFault fault, std::uint32_t item = 0)
 {
-    double const p = SaleChance(in.typical);
-    std::uint64_t floor = AskFloor(in, config, p);
+    std::uint64_t floor = AskFloor(in, config);
     if (fault == AskFault::VendorFloor)
         floor = std::max({in.vendorPayout + 1, in.keepWorth, SellTotal(in)});
     std::uint64_t const lowest = floor == NEVER_LISTS ? SellTotal(in) : floor;
@@ -1153,7 +1225,7 @@ AskResult AskVariant(AskInput const& in, AuctionConfig const& config, AskFault f
         ask += item % 97 + 1;
     if (fault != AskFault::NoClamp)
         ask = std::max(ask, lowest);
-    return ListingTerms(in, config, p, floor, ask, below);
+    return ListingTerms(in, config, floor, ask, below);
 }
 
 // Invariant 2, recomputed here: a listing beats the vendor at its own terms
@@ -1427,8 +1499,8 @@ void SearchAsk(Dice& dice, PriceTally& rule, PriceTally& control, PriceCoverage&
     AskResult const vendorFloor = AskVariant(in, config, AskFault::VendorFloor);
     control.notWorth += vendorFloor.kind == AskResult::Kind::List && !ListsWorth(vendorFloor, in) ? 1 : 0;
 
-    // 6: after an expiry a lot is never listed higher, nor listed when it was held; the index counts the bot's own
-    // expiry too (the sale chance falls and the floor rises), or it lies outside the window
+    // 6: after an expiry a lot is never listed higher, nor listed when it was held; the records count the expired
+    // listing's unsold hours too (the sale chance falls and the floor rises), or they have decayed
     auto raised = [](AskResult const& before, AskResult const& after)
     { return after.kind == AskResult::Kind::List && (before.kind != AskResult::Kind::List || after.ask > before.ask); };
     for (std::uint32_t n = 0; n < 4; ++n)
@@ -1438,7 +1510,9 @@ void SearchAsk(Dice& dice, PriceTally& rule, PriceTally& control, PriceCoverage&
             now.expiredSteps = n;
             AskInput after = now;
             after.expiredSteps = n + 1;
-            after.typical.expiries += counted ? 1 : 0;
+            double const unsold = counted ? static_cast<double>(ListingHours(config, n)) : 0.0;
+            after.itemRecord.hours += unsold;
+            after.kindRecord.hours += unsold;
             rule.expiryRaises += raised(Ask(now, config), Ask(after, config)) ? 1 : 0;
             control.expiryRaises +=
                 raised(AskVariant(now, config, AskFault::StepUp), AskVariant(after, config, AskFault::StepUp)) ? 1 : 0;
@@ -1518,6 +1592,155 @@ void SearchMarket(Dice& dice, PriceTally& rule, PriceTally& control, PriceCovera
                     ? 1
                     : 0;
     }
+}
+
+// AH5: the sale chance from the records (AuctionPricing.h SaleChance) recomposed, and broken variants for the controls
+enum class ChanceFault
+{
+    None,
+    NoCurve,      // the rate times the hours, unbounded
+    HoursCount,   // listing hours read as demand
+    SaleAsHours,  // a sale read as unsold listing hours
+    ShortRuns,    // a longer listing given a shorter time to sell
+    KindIgnored,  // an item without a record at the starting rate, not its kind's
+    KindLiteral   // the kind's sales per listing hour without the starting rate as prior: it never drifts back
+};
+
+double ChanceVariant(AuctionIndex::Record item, AuctionIndex::Record kind, double hours, AuctionConfig const& config,
+                     ChanceFault fault)
+{
+    double const even = static_cast<double>(std::max<std::uint32_t>(config.ChanceEvenHours, 1));
+    if (fault == ChanceFault::SaleAsHours)
+    {
+        item = {0.0, item.hours + item.sales * even};
+        kind = {0.0, kind.hours + kind.sales * even};
+    }
+    if (fault == ChanceFault::KindIgnored && item.Empty())
+        kind = {};
+    if (fault == ChanceFault::ShortRuns)
+        hours = 2304.0 / hours;
+    if (!(hours > 0.0))
+        return 0.0;
+    if (item.Empty() && kind.Empty())
+        return 1.0 - std::exp2(-hours / even);
+    double kindRate = KindRate(kind, config);
+    if (fault == ChanceFault::KindLiteral && kind.hours > 0.0)
+        kindRate = kind.sales / kind.hours;
+    double const prior = static_cast<double>(std::max<std::uint32_t>(config.ChanceItemPriorHours, 1));
+    double rate = item.Empty() ? kindRate : (item.sales + prior * kindRate) / (item.hours + prior);
+    if (fault == ChanceFault::HoursCount)
+        rate += (item.hours + kind.hours) * 1e-4;
+    if (fault == ChanceFault::NoCurve)
+        return rate * hours;
+    return 1.0 - std::exp(-rate * hours);
+}
+
+struct ChanceTally
+{
+    int outside{0};     // C1: below 0 or above 1
+    int hoursRaise{0};  // C2: unsold listing hours raised it
+    int saleLowers{0};  // C3: a sale lowered it
+    int hoursFall{0};   // C4: a longer listing got less
+    int notKind{0};     // C5: an item without a record off its kind's chance
+    int noDrift{0};     // C6: a kind left alone did not return to the start as it decays
+};
+
+void SearchChanceOnce(Dice& dice, ChanceTally& rule, ChanceTally& control, int& recomposed)
+{
+    using AuctionIndex::Record;
+    AuctionConfig config;
+    config.ChanceEvenHours = dice.Range(6, 96);
+    config.ChanceKindPriorHours = dice.Range(1, 500);
+    config.ChanceItemPriorHours = dice.Range(1, 500);
+    Record const item = RandomRecord(dice);
+    Record const kind = RandomRecord(dice);
+    double const hours = dice.Real(0.5, 96.0);
+    double const longer = hours + dice.Real(0.1, 96.0);
+    double const unsold = dice.Real(0.5, 500.0);
+    recomposed +=
+        SaleChance(item, kind, hours, config) == ChanceVariant(item, kind, hours, config, ChanceFault::None) ? 0 : 1;
+    auto tally = [&](ChanceTally& into, ChanceFault outsideFault, ChanceFault hoursFault, ChanceFault saleFault,
+                     ChanceFault fallFault, ChanceFault kindFault, ChanceFault driftFault)
+    {
+        auto p = [&](Record const& i, Record const& k, double h, ChanceFault f)
+        { return ChanceVariant(i, k, h, config, f); };
+        double const at = p(item, kind, hours, outsideFault);
+        into.outside += at < 0.0 || at > 1.0 ? 1 : 0;
+        Record const itemUnsold{item.sales, item.hours + unsold};
+        Record const kindUnsold{kind.sales, kind.hours + unsold};
+        double const base = p(item, kind, hours, hoursFault);
+        into.hoursRaise += p(itemUnsold, kindUnsold, hours, hoursFault) > base ||
+                                   p(itemUnsold, kind, hours, hoursFault) > base ||
+                                   p(item, kindUnsold, hours, hoursFault) > base
+                               ? 1
+                               : 0;
+        Record const itemSold{item.sales + 1.0, item.hours};
+        Record const kindSold{kind.sales + 1.0, kind.hours};
+        double const before = p(item, kind, hours, saleFault);
+        into.saleLowers += p(itemSold, kindSold, hours, saleFault) < before ||
+                                   p(itemSold, kind, hours, saleFault) < before ||
+                                   p(item, kindSold, hours, saleFault) < before
+                               ? 1
+                               : 0;
+        into.hoursFall += p(item, kind, longer, fallFault) < p(item, kind, hours, fallFault) ? 1 : 0;
+        double const kindChance = kind.Empty() ? 1.0 - std::exp2(-hours / config.ChanceEvenHours)
+                                               : 1.0 - std::exp(-KindRate(kind, config) * hours);
+        into.notKind += std::abs(p({}, kind, hours, kindFault) - kindChance) > 1e-12 ? 1 : 0;
+        // A kind with hours and no further listings, weighed by 2^-k: never farther from the start than before, and
+        // at it once forgotten all but 2^-40
+        if (kind.hours > 0.0)
+        {
+            double const start = p({}, {}, hours, driftFault);
+            double last = 2.0;
+            bool drifts = true;
+            for (int k = 0; k <= 40; k += 4)
+            {
+                double const weight = std::exp2(-k);
+                double const away =
+                    std::abs(p({}, {kind.sales * weight, kind.hours * weight}, hours, driftFault) - start);
+                drifts = drifts && away <= last + 1e-15;
+                last = away;
+            }
+            into.noDrift += drifts && last < 1e-6 ? 0 : 1;
+        }
+    };
+    tally(rule, ChanceFault::None, ChanceFault::None, ChanceFault::None, ChanceFault::None, ChanceFault::None,
+          ChanceFault::None);
+    tally(control, ChanceFault::NoCurve, ChanceFault::HoursCount, ChanceFault::SaleAsHours, ChanceFault::ShortRuns,
+          ChanceFault::KindIgnored, ChanceFault::KindLiteral);
+}
+
+void SearchChance()
+{
+    ChanceTally rule;
+    ChanceTally control;
+    int recomposed = 0;
+    int draws = 0;
+    for (std::uint32_t const seed : SEEDS)
+    {
+        std::mt19937 rng(seed + 5);
+        Dice dice{rng};
+        for (int n = 0; n < 2000; ++n, ++draws)
+            SearchChanceOnce(dice, rule, control, recomposed);
+    }
+    std::cout << "sale chance search: " << draws << " draws; counterexamples (rule / control): bounds " << rule.outside
+              << "/" << control.outside << ", hours " << rule.hoursRaise << "/" << control.hoursRaise << ", sale "
+              << rule.saleLowers << "/" << control.saleLowers << ", longer " << rule.hoursFall << "/"
+              << control.hoursFall << ", kind " << rule.notKind << "/" << control.notKind << ", drift " << rule.noDrift
+              << "/" << control.noDrift << "; recomposed off " << recomposed << '\n';
+    Check(recomposed == 0, "the harness's sale chance equals SaleChance");
+    Check(rule.outside == 0, "C1. the sale chance lies within 0..1");
+    Check(control.outside > 0, "C1. control: the rate times the hours (caught)");
+    Check(rule.hoursRaise == 0, "C2. listing hours without a sale never raise the chance");
+    Check(control.hoursRaise > 0, "C2. control: listing hours read as demand (caught)");
+    Check(rule.saleLowers == 0, "C3. a sale never lowers the chance");
+    Check(control.saleLowers > 0, "C3. control: a sale read as unsold hours (caught)");
+    Check(rule.hoursFall == 0, "C4. the chance never falls with the listing's hours");
+    Check(control.hoursFall > 0, "C4. control: a longer listing given less time (caught)");
+    Check(rule.notKind == 0, "C5. an item without a record has its kind's chance");
+    Check(control.notKind > 0, "C5. control: an item without a record at the starting rate (caught)");
+    Check(rule.noDrift == 0, "C6. a kind with no further listings returns toward the start as its record decays");
+    Check(control.noDrift > 0, "C6. control: the kind's rate without the starting rate as prior (caught)");
 }
 
 void SearchPricing()
@@ -1715,8 +1938,8 @@ void CheckBuyListHand()
     std::cout << "buy list by hand:\n";
     std::vector<BuyLine> const lines =
         BuyList({LineOf(LineOwner::Gear, 801, 1, 90.0, 60.0, 0.5f, 0),
-                 LineOf(LineOwner::Path, 802, 3, 600.0, -1.0, 3.0f, 0), BagLine(803, 5000, 0),
-                 UseLine(804, 4, 120, 100, 5), UseLine(805, 0, 120, 100, 5), UseLine(806, 4, 0, 100, 5)});
+                 LineOf(LineOwner::Path, 802, 3, 600.0, -1.0, 3.0f, 0), BagLine(803, 5000, 0, {}),
+                 UseLine(804, 4, 120, 100, 5, {}), UseLine(805, 0, 120, 100, 5, {}), UseLine(806, 4, 0, 100, 5, {})});
     for (BuyLine const& line : lines)
         std::cout << "  " << OwnerWord(line.owner) << " " << line.item << " x" << line.units << " ceiling "
                   << CeilingOf(line) << '\n';
@@ -1727,11 +1950,17 @@ void CheckBuyListHand()
               CeilingOf(lines[3]) == 120,
           "ceilings: use at the vendor's price under its worth, a bag at its worth, the path and gear stubs in value "
           "units over the factor");
-    Check(CeilingOf(UseLine(807, 1, 80, 100, 0)) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0)) == 120,
+    Check(CeilingOf(UseLine(807, 1, 80, 100, 0, {})) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0, {})) == 120,
           "a use line's ceiling is its worth under a dearer vendor or with none");
+    Check(CeilingOf(BagLine(809, 5000, 0, {})) == 5000 && CeilingOf(BagLine(809, 5000, 0, {4.0f, 0.5f})) == 40000 &&
+              CeilingOf(BagLine(809, 5000, 20000, {4.0f, 0.5f})) == 20000 &&
+              CeilingOf(UseLine(809, 1, 120, 100, 0, {2.0f, 8.0f})) == 30,
+          "AH.5: an unknown need pays at the reserve's share; a flush bot (share 1/8) eight times the bag's worth, at "
+          "most a stocking vendor's price; a bot at a quarter of its reserve's weight (share 4) a quarter");
 
-    // The skill path's lines (WA7b): only a material the auction sells cheapest, for its wanted units, its ceiling the
-    // cheapest other way's cost; none for a material another source sells cheapest, none wanted, or no other way
+    // The skill path's lines (WA7b, AH8): only a material the auction sells cheapest, for its wanted units, its ceiling
+    // the cheapest other way's cost, or what the path counted at the auction where that is the only source; none for
+    // a material another source sells cheapest or none wanted
     struct PathMaterialRow
     {
         std::uint32_t item;
@@ -1739,26 +1968,123 @@ void CheckBuyListHand()
         std::uint32_t wanted;
         std::uint8_t source;
         std::uint32_t otherCopperEach;
+        std::uint32_t copperEach;
     };
-    constexpr std::uint8_t AUCTION_KIND = 7;  // Materials::Kind::Auction
-    std::vector<PathMaterialRow> const materials = {
-        {820, 5, 5, AUCTION_KIND, 90}, {821, 5, 5, 3, 0}, {822, 9, 0, AUCTION_KIND, 90}, {823, 2, 2, AUCTION_KIND, 0}};
+    constexpr std::uint8_t AUCTION_KIND = 7;   // Materials::Kind::Auction
+    CopperWeight const atReserve{0.5f, 0.5f};  // the need factor equal to the exchange: share 1
+    std::vector<PathMaterialRow> const materials = {{820, 5, 5, AUCTION_KIND, 90, 60},
+                                                    {821, 5, 5, 3, 0, 40},
+                                                    {822, 9, 0, AUCTION_KIND, 90, 60},
+                                                    {823, 2, 2, AUCTION_KIND, 0, 70}};
     auto const payoutOf = [](std::uint32_t) { return 4u; };
+    auto const noVendor = [](std::uint32_t) { return 0u; };
     std::vector<BuyLine> const pathLines =
-        BuyList(PathLines(materials, AUCTION_KIND, [](std::uint32_t) { return 0u; }, payoutOf));
+        BuyList(PathLines(materials, AUCTION_KIND, atReserve, [](std::uint32_t) { return 0u; }, payoutOf, noVendor));
     for (BuyLine const& line : pathLines)
         std::cout << "  path line " << line.item << " x" << line.units << " ceiling " << CeilingOf(line) << '\n';
-    Check(pathLines.size() == 1 && pathLines[0].item == 820 && pathLines[0].units == 5 &&
+    Check(pathLines.size() == 2 && pathLines[0].item == 820 && pathLines[0].units == 5 &&
               pathLines[0].owner == LineOwner::Path && CeilingOf(pathLines[0]) == 90 &&
-              pathLines[0].excessUnitWorth == 4,
-          "a path line only for a wanted material the auction sells cheapest, at most its other way's cost");
+              pathLines[0].excessUnitWorth == 4 && pathLines[1].item == 823 && pathLines[1].units == 2 &&
+              CeilingOf(pathLines[1]) == 70,
+          "a path line only for a wanted material the auction sells cheapest, at most its other way's cost, or what "
+          "the path counted where the auction is the only source");
+    // AH8: an auction-only material's ceiling is the price the path counted, at any need factor. The path counts a
+    // unit at its typical price x factor, shown as copper at the exchange (SkillPathRules.h CopperOf: rounded up); the
+    // line takes that over the bot's factor. Controls: the rule before AH8 (no worth without another source) drops
+    // the line; the counted copper read at factor 1 lets a bot short of gold pay twice the price and keeps a rich one
+    // under it
+    {
+        constexpr std::uint32_t TYPICAL = 35;
+        std::size_t wrong = 0;
+        for (float const share : {0.1f, 0.5f, 1.0f, 2.0f, 4.0f})
+        {
+            CopperWeight const weight{0.25f, 0.25f * share};
+            auto const counted = static_cast<std::uint32_t>(
+                std::ceil(static_cast<double>(TYPICAL) * weight.factor / static_cast<double>(weight.exchange)));
+            std::vector<BuyLine> const only = BuyList(PathLines(
+                std::vector<PathMaterialRow>{{825, 4, 4, AUCTION_KIND, 0, counted}}, AUCTION_KIND, weight,
+                [](std::uint32_t) { return 0u; }, payoutOf, noVendor));
+            std::uint64_t const ceiling = only.empty() ? 0 : CeilingOf(only[0]);
+            std::cout << "  auction-only path line at share " << share << ": counted " << counted << " c, ceiling "
+                      << ceiling << " c (typical " << TYPICAL << ")\n";
+            // the path keeps whole copper rounded up: the ceiling lies at most a copper over the share above it
+            wrong += ceiling < TYPICAL || static_cast<double>(ceiling) > TYPICAL + 1.0 / share ? 1 : 0;
+        }
+        Check(!wrong,
+              "an auction-only path line's ceiling is the typical price the path counted, at every need "
+              "factor (" +
+                  std::to_string(wrong) + " wrong)");
+        BuyLine const beforeRule = LineOf(LineOwner::Path, 825, 4, 0.0, -1.0, 1.0f, 4);
+        Check(BuyList({beforeRule}).empty(),
+              "control: the rule before AH8 (an auction-only material has no worth) drops the line (caught)");
+        BuyLine const poorAtOne = LineOf(LineOwner::Path, 825, 4, TYPICAL * 2.0, -1.0, 1.0f, 4);
+        BuyLine const richAtOne = LineOf(LineOwner::Path, 825, 4, std::ceil(TYPICAL * 0.1), -1.0, 1.0f, 4);
+        Check(CeilingOf(poorAtOne) == TYPICAL * 2 && CeilingOf(richAtOne) < TYPICAL,
+              "control: the counted copper at factor 1 pays twice the price at share 2 and stays under it at 0.1 "
+              "(caught)");
+    }
+    // AH.19 (AH9b): a material a spawned vendor stocks is paid at most the vendor's price, at any need factor. The path
+    // counts a vendor's unit at its price x the factor the bot had then (MaterialRules.h Bought, shown as copper at the
+    // exchange, rounded up); a bot whose factor fell since reads that over its factor now, a multiple of the price.
+    // Swept: the share then and now, the vendor as the other way or unseen by the path (auction-only). Control: the
+    // same lines without the vendor's price pay that multiple
+    {
+        constexpr std::uint32_t VENDOR = 40;
+        std::vector<float> const shares = {0.125f, 0.5f, 1.0f, 2.0f, 4.0f};  // exact in binary
+        auto const vendorOf = [](std::uint32_t) { return VENDOR; };
+        std::size_t over = 0;
+        std::size_t notVendor = 0;
+        std::size_t notLess = 0;
+        std::size_t controlOver = 0;
+        std::uint64_t flushCeiling = 0;
+        std::uint64_t flushControl = 0;
+        for (float const then : shares)
+            for (float const now : shares)
+                for (bool const vendorIsOther : {true, false})
+                {
+                    CopperWeight const weight{1.0f, now};
+                    auto const counted = static_cast<std::uint32_t>(std::ceil(static_cast<double>(VENDOR) * then));
+                    std::vector<PathMaterialRow> const row = {
+                        {826, 3, 3, AUCTION_KIND, vendorIsOther ? counted : 0u, counted}};
+                    auto const ceilingOf = [&](auto const& vendor)
+                    {
+                        std::vector<BuyLine> const lines =
+                            BuyList(PathLines(row, AUCTION_KIND, weight, noVendor, payoutOf, vendor));
+                        return lines.empty() ? std::uint64_t{0} : CeilingOf(lines[0]);
+                    };
+                    std::uint64_t const ceiling = ceilingOf(vendorOf);
+                    std::uint64_t const control = ceilingOf(noVendor);
+                    over += ceiling > VENDOR;
+                    // as rich as when the path counted it or richer: the vendor's price; poorer: less
+                    notVendor += now <= then && ceiling != VENDOR;
+                    notLess += now > then && ceiling >= VENDOR;
+                    controlOver += control > VENDOR;
+                    if (then == 1.0f && now == 0.125f && vendorIsOther)
+                    {
+                        flushCeiling = ceiling;
+                        flushControl = control;
+                    }
+                }
+        std::cout << "  vendor-stocked path line (vendor " << VENDOR << " c), counted at the reserve, now at share "
+                  << "1/8: ceiling " << flushCeiling << " c; control without the cap " << flushControl << " c\n";
+        Check(!over && !notVendor && !notLess,
+              "a vendor-stocked path material is paid at most the vendor's price at every share then and now, the "
+              "price itself for a bot as rich as when its path counted it, less for a poorer one (" +
+                  std::to_string(over) + " over, " + std::to_string(notVendor) + " not the price, " +
+                  std::to_string(notLess) + " not less)");
+        Check(controlOver > 0 && flushControl == VENDOR * 8,
+              "control: without the vendor's price a bot richer than when its path counted pays above it, eight times "
+              "from the reserve to share 1/8 (" +
+                  std::to_string(controlOver) + " over, caught)");
+    }
     // The kept path is older than the bags (WA7 review): 824's path uses 12 and wanted 7 with 5 held. A line asks for
     // what the bot lacks now, never for more than the path's want. Control: a rule that does not read the bags
-    std::vector<PathMaterialRow> const kept = {{824, 12, 7, AUCTION_KIND, 90}};
+    std::vector<PathMaterialRow> const kept = {{824, 12, 7, AUCTION_KIND, 90, 60}};
     auto const unitsHolding = [&](std::uint32_t heldNow, bool readsBags = true)
     {
-        std::vector<BuyLine> const now =
-            BuyList(PathLines(kept, AUCTION_KIND, [=](std::uint32_t) { return readsBags ? heldNow : 0u; }, payoutOf));
+        std::vector<BuyLine> const now = BuyList(PathLines(
+            kept, AUCTION_KIND, atReserve, [=](std::uint32_t) { return readsBags ? heldNow : 0u; }, payoutOf,
+            noVendor));
         return now.empty() ? 0u : now[0].units;
     };
     std::cout << "  path line 824 (uses 12, wanted 7) holding 5: x" << unitsHolding(5) << ", 9: x" << unitsHolding(9)
@@ -1769,13 +2095,14 @@ void CheckBuyListHand()
     Check(unitsHolding(0) == 7, "a path line never asks for more than the path's want, emptied bags or not");
     Check(unitsHolding(40, false) == 7,
           "control: a path line that does not read the bags buys 7 units of what the bot holds (caught)");
-    BuyLine const atAuctionCost = PathLine(820, 5, 60, 4);  // control: the ceiling from the auction's own cost
+    BuyLine const atAuctionCost =
+        PathLine(820, 5, 60, 0, atReserve, 4, 0);  // control: the ceiling from the auction's own cost
     Check(
         TypicalCopper(pathLines.empty() ? BuyLine{} : pathLines[0], 60) == 300 && TypicalCopper(atAuctionCost, 60) == 0,
         "typical 60 under the other way's 90: the path claims 300 for 5; control: a ceiling at the auction's own "
         "cost claims nothing (caught)");
-    std::vector<BuyLine> const mixed =
-        BuyList({PathLine(820, 5, 90, 4), BagLine(803, 5000, 0), UseLine(804, 4, 120, 100, 5)});
+    std::vector<BuyLine> const mixed = BuyList(
+        {PathLine(820, 5, 60, 90, atReserve, 4, 0), BagLine(803, 5000, 0, {}), UseLine(804, 4, 120, 100, 5, {})});
     Check(mixed.size() == 3 && mixed[0].owner == LineOwner::Use && mixed[1].owner == LineOwner::Bag &&
               mixed[2].owner == LineOwner::Path,
           "a path line sorts after the use and bag lines");
@@ -1881,10 +2208,12 @@ VisitWorld RandomVisit(Dice& dice)
         { return std::max<std::uint32_t>(1, static_cast<std::uint32_t>(unit * dice.Real(low, high))); };
         std::uint32_t const owner = dice.Range(0, 3);
         std::uint32_t const payout = dice.Pick(50) ? 0 : dice.Range(0, unit / 2);
+        CopperWeight const weight{1.0f, static_cast<float>(dice.Real(0.05, 4.0))};
         if (owner == 0)
-            lines.push_back(UseLine(item, units, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, payout));
+            lines.push_back(
+                UseLine(item, units, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, payout, weight));
         else if (owner == 1)
-            lines.push_back(BagLine(item, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0));
+            lines.push_back(BagLine(item, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, weight));
         else
         {
             float const factor = static_cast<float>(dice.Real(0.05, 20.0));
@@ -2087,7 +2416,8 @@ struct SampleItem
 void PrintAsks(std::vector<SampleItem> const& items, AuctionConfig const& config)
 {
     std::cout << "## Asks\n\nSituations: *reference* (no trades, not at the auctioneer) and *market* (typical price "
-                 "1.2 x reference from 5 sales and 1 expiry, cheapest buyout seen 1.1 x reference).\n\n";
+                 "1.2 x reference from 5 sales; the item's and its kind's records 5 sales in 144 listing hours; "
+                 "cheapest buyout seen 1.1 x reference).\n\n";
     std::cout << "| item | count | house | situation | V | reference/u | typical/u | cheapest/u | p | floor | ask | "
                  "start bid | hours | deposit | cut | net if sold | expected | decision | reason |\n";
     std::cout << "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
@@ -2102,7 +2432,8 @@ void PrintAsks(std::vector<SampleItem> const& items, AuctionConfig const& config
                     in.typical.unitPrice =
                         static_cast<std::uint32_t>(std::max<std::uint64_t>(item.reference * 6 / 5, 1));
                     in.typical.sample = 5;
-                    in.typical.expiries = 1;
+                    in.itemRecord = {5.0, 144.0};
+                    in.kindRecord = {5.0, 144.0};
                     in.cheapestUnitBuyout =
                         static_cast<std::uint32_t>(std::max<std::uint64_t>(item.reference * 11 / 10, 1));
                 }
@@ -2201,9 +2532,12 @@ void Decisions(Table const& table)
                  "configs); the goblin row (7) as the client data has it, deposit 25 % cut 15 %, for contrast. With "
                  "AllowTwoSide.Interaction.Auction every auctioneer uses row 7, which WA1a's world SQL makes 5/5 "
                  "once applied (WA3b). The core's formulas in binary32, the 100-copper minimum deposit.\n";
-    std::cout << "- [E] Sale chance p = (sales + 1) / (sales + expiries + 2) in the history window: 1/2 with no "
-                 "history. Undercut "
-              << config.UndercutPercent << " % under the cheapest buyout seen (only at the auctioneer); an expiry "
+    std::cout << "- [E] Sale chance p = 1 - e^(-rate x hours) over the listing's real hours; rate = the item's sales "
+                 "per listing hour, its kind's rate standing in for its first "
+              << config.ChanceItemPriorHours << " hours; the kind's, a starting rate (even odds at "
+              << config.ChanceEvenHours << " h) standing in for its first " << config.ChanceKindPriorHours
+              << " hours; records weighed by recency: 1/2 at 24 h without a record. Undercut " << config.UndercutPercent
+              << " % under the cheapest buyout seen (only at the auctioneer); an expiry "
               << "lowers the next ask " << config.RelistStepPercent << " %, a quick sale raises it as much; relist "
               << "limit " << config.RelistLimit << "; durations " << config.FirstDurationHours << " h first, "
               << config.RelistDurationHours << " h after an expiry (the shorter when the ask does not cover the "
@@ -2362,16 +2696,120 @@ void CheckMemory()
           "memory: past the relist limit the ask holds and the item is no stock");
 }
 
+// A bag's and a use item's worth at the bot's need (AH9, AH.5) over random bots, each invariant with its negative
+// control: of two bots alike but for their gold the richer never has the lower ceiling (control: the share inverted);
+// a bot at its reserve pays what the AH8 rule paid (min of worth and template price) where a vendor stocks the item or
+// that rule's cap did not bind (control: an unknown reserve passed as 0); no ceiling above a stocking vendor's price
+// (control: the cap dropped); a vendor's ShouldBuyBag takes the bag line's worth (control: the time worth alone)
+void SearchNeedWorth()
+{
+    std::mt19937 rng(95);
+    Dice dice{rng};
+    constexpr int CASES = 20000;
+    int richerLower = 0;
+    int invertedCaught = 0;
+    int reserveDiffers = 0;
+    int reserveCompared = 0;
+    int zeroReserveCaught = 0;
+    int overVendor = 0;
+    int capDroppedCaught = 0;
+    int vendorDiffers = 0;
+    int vendorAlone = 0;
+    for (int i = 0; i < CASES; ++i)
+    {
+        Planner::Snapshot bot;
+        bot.level = static_cast<std::uint8_t>(dice.Range(1, 80));
+        Planner::Goals::Weights weights;
+        weights.greed = static_cast<float>(dice.Real(-1.0, 1.0));
+        weights.thrift = static_cast<float>(dice.Real(-1.0, 1.0));
+        std::uint64_t const reserve = dice.Pick(10) ? 0 : dice.Range(1, 2000000);
+        std::uint32_t const worth = dice.Range(1, 300000);
+        std::uint32_t const templatePrice = dice.Range(1, 200000);
+        bool const stocked = dice.Pick(50);
+        bool const use = dice.Pick(50);
+        Planner::Goals::Need const need = Planner::Goals::NeedFor(bot, weights, reserve);
+        auto const weightAt = [&need](std::uint64_t money)
+        {
+            Planner::Goals::Need const at = Planner::Goals::NeedAt(need, money);
+            return CopperWeight{at.exchange, at.factor};
+        };
+        auto const ceiling = [&](CopperWeight weight, std::uint32_t vendor)
+        { return CeilingOf(use ? UseLine(900, 1, worth, vendor, 0, weight) : BagLine(900, worth, vendor, weight)); };
+        std::uint32_t const vendor = stocked ? templatePrice : 0;
+        std::uint64_t const top = std::max<std::uint64_t>(3 * need.reserve, 1000);
+        std::uint64_t const poorer = dice.Range(0, static_cast<std::uint32_t>(top));
+        std::uint64_t const richer = poorer + dice.Range(1, static_cast<std::uint32_t>(top));
+        CopperWeight const poor = weightAt(poorer);
+        CopperWeight const rich = weightAt(richer);
+        richerLower += ceiling(rich, vendor) < ceiling(poor, vendor) ? 1 : 0;
+        auto const inverted = [](CopperWeight weight) { return CopperWeight{weight.factor, weight.exchange}; };
+        invertedCaught += ceiling(inverted(rich), vendor) < ceiling(inverted(poor), vendor) ? 1 : 0;
+        if (stocked)
+        {
+            overVendor += ceiling(rich, vendor) > vendor || ceiling(poor, vendor) > vendor ? 1 : 0;
+            capDroppedCaught += ceiling(rich, 0) > vendor || ceiling(poor, 0) > vendor ? 1 : 0;
+        }
+        if (need.reserve && (stocked || worth <= templatePrice))
+        {
+            ++reserveCompared;
+            std::uint64_t const before = std::min(worth, templatePrice);
+            reserveDiffers += ceiling(weightAt(need.reserve), vendor) != before ? 1 : 0;
+            bot.money = static_cast<std::uint32_t>(std::min<std::uint64_t>(need.reserve, 0xFFFFFFFFu));
+            Planner::Goals::Need const unknown = Planner::Goals::NeedFor(bot, weights, 0);
+            zeroReserveCaught += ceiling({unknown.exchange, unknown.factor}, vendor) != before ? 1 : 0;
+        }
+        if (!use)
+        {
+            // A vendor that stocks the bag sells it at most at the template price (a reputation discount lowers it)
+            std::uint32_t const price = dice.Range(1, templatePrice);
+            WorldTravel::BagBuyInput in;
+            in.Price = price;
+            in.Gold = std::numeric_limits<std::uint32_t>::max();
+            in.Worth = BagCeiling(worth, 0, rich);
+            bool const atVendor = WorldTravel::ShouldBuyBag(in);
+            bool const atAuction = price <= CeilingOf(BagLine(900, worth, templatePrice, rich));
+            vendorDiffers += atVendor != atAuction ? 1 : 0;
+            in.Worth = worth;
+            vendorAlone += WorldTravel::ShouldBuyBag(in) != atAuction ? 1 : 0;
+        }
+    }
+    std::cout << "need worth: " << CASES << " bots, " << reserveCompared << " at their reserve compared\n";
+    Check(!richerLower, "AH.5: of two bots alike but for their gold the richer never has the lower ceiling (" +
+                            std::to_string(richerLower) + "); control: the share inverted (" +
+                            std::to_string(invertedCaught) + " caught)");
+    Check(invertedCaught > 0, "control: an inverted share gives a richer bot the lower ceiling");
+    Check(!reserveDiffers,
+          "AH.5: at its reserve a bot pays what the AH8 rule paid where a vendor stocks the item or "
+          "its template cap did not bind (" +
+              std::to_string(reserveDiffers) + " differ)");
+    Check(zeroReserveCaught > 0,
+          "control: an unknown reserve passed as 0 (the flush share) changes the price at the "
+          "reserve (" +
+              std::to_string(zeroReserveCaught) + " caught)");
+    Check(!overVendor, "AH.5: no ceiling above a stocking vendor's price (" + std::to_string(overVendor) + ")");
+    Check(capDroppedCaught > 0,
+          "control: without the vendor cap a ceiling rises above it (" + std::to_string(capDroppedCaught) + " caught)");
+    Check(!vendorDiffers,
+          "AH.5: one worth: a vendor's ShouldBuyBag takes a stocked bag at a price iff the bag line's "
+          "ceiling does (" +
+              std::to_string(vendorDiffers) + " differ)");
+    Check(vendorAlone > 0,
+          "control: a vendor at the time worth alone decides otherwise (" + std::to_string(vendorAlone) + " caught)");
+}
+
 int main(int argc, char** argv)
 {
     CheckHand();
     Search();
     CheckCases();
     CheckStockWorth();
+    CheckStandingProceeds();
     CheckMemory();
     CheckPricingHand();
     SearchPricing();
+    SearchChance();
     SearchBuying();
+    SearchNeedWorth();
     Tables(argc > 1 ? argv[1] : ".");
     std::cout << "auction-rules: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

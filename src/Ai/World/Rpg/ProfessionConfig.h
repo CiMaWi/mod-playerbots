@@ -99,14 +99,16 @@ enum class Reason : std::uint8_t
     Interest,  // WR16b: a fishing trip for the fishing interest's pleasure
     Trip,      // WR25a: the estimate row of a fishing trip
     Yield,     // WR19c: what a harvest gave, one row per item looted from a node or a skinned corpse
-    Sale       // auction house WA7b: a craft row of casts whose products the bot sells
+    Sale,      // auction house WA7b: a craft row of casts whose products the bot sells
+    BagsFull,  // WPC9: no gather circuit, the bags are above the gather status's limit (value: percent used)
+    Unarmed    // WPC10: no creature stop, no weapon in the main hand (value: stops refused)
 };
-constexpr std::size_t REASON_COUNT = 19;
+constexpr std::size_t REASON_COUNT = 21;
 constexpr std::array<std::string_view, REASON_COUNT> REASON_WORDS = {
-    "use_soon",      "held_recipe", "access",     "income",       "cheapest_point",
-    "supply",        "on_the_way",  "circuit",    "not_worth_it", "detour_too_long",
-    "too_dangerous", "no_source",   "no_station", "gold_short",   "locked",
-    "interest",      "trip",        "yield",      "sale"};
+    "use_soon",   "held_recipe", "access",       "income",          "cheapest_point", "supply",
+    "on_the_way", "circuit",     "not_worth_it", "detour_too_long", "too_dangerous",  "no_source",
+    "no_station", "gold_short",  "locked",       "interest",        "trip",           "yield",
+    "sale",       "bags_full",   "unarmed"};
 
 constexpr std::string_view ChoiceWord(Choice choice)
 {

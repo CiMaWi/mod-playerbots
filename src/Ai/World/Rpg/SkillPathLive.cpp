@@ -15,6 +15,7 @@
 #include "BotProfessionMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "GatherLive.h"
 #include "GoalInterface.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"
@@ -197,6 +198,7 @@ PathData PathDataNow()
         data.recipes = CurrentRecipeIndex();
     if (IndexesReady())
         data.indexes = Indexes();
+    data.gatherRates = GatherRatesNow();
     return data;
 }
 
@@ -319,7 +321,8 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
                                      {},
                                      SkillPath::Fault::None,
                                      ToolSources(),
-                                     std::move(market)};
+                                     std::move(market),
+                                     data.gatherRates};
     SkillPathBridge::Computed computed =
         SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
                                  CategoriesOf(snapshot.toolsHeld));

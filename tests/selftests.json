@@ -323,6 +323,12 @@
                 "src/Bot",
                 "src/Mgr/Travel"
             ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/gather-rate-night.tsv"
+            ],
             "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {

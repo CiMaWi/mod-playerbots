@@ -29,6 +29,10 @@ struct AuctionConfig
     std::uint32_t SaveSeconds = 300;
     // Market.HistoryDays (1-60): days of sales and expiries an item's price history keeps
     std::uint32_t HistoryDays = 7;
+    // Market.StandingSeconds (60-86400): seconds an offer stands before its unit buyout is an item's standing price,
+    // the typical price of an item without a recent sale (AH8): a price a visitor would have seen, not a lot that
+    // flashed by
+    std::uint32_t StandingSeconds = 3600;
     // Bid.OpenMax (0-20): bids a bot holds at once on auctions it does not lead to buy out
     std::uint32_t OpenBidsMax = 3;
     // Post.UndercutPercent (0-50): percent a bot's ask lies below the cheapest competing buyout of the same item
@@ -42,6 +46,13 @@ struct AuctionConfig
     // expiry; the core takes 12, 24 or 48, the poster uses the longest of them not above the value
     std::uint32_t FirstDurationHours = 24;
     std::uint32_t RelistDurationHours = 48;
+    // Chance.EvenHours (1-240): hours a listing of a kind the house never saw stands to sell at even odds: the
+    // starting rate of the sale chance (AuctionRules::StartRate)
+    std::uint32_t ChanceEvenHours = 24;
+    // Chance.KindPriorHours (1-1000): listing hours of a kind the starting rate stands in for
+    std::uint32_t ChanceKindPriorHours = 48;
+    // Chance.ItemPriorHours (1-1000): listing hours of an item its kind's rate stands in for
+    std::uint32_t ChanceItemPriorHours = 48;
 };
 
 extern ConfigFamily<AuctionConfig> const AuctionFamily;
@@ -65,10 +76,13 @@ enum class Choice : std::uint8_t
     Relist,
     Buy,
     Bid,
-    Skip
+    Skip,
+    Chance,  // the second row of a post, relist or hold (AH6): its sale chance in permille, the hours beside it
+    Factor   // the second row of a buy, bid or skip (AH9): the line's need factor against the exchange in percent
 };
-constexpr std::size_t CHOICE_COUNT = 6;
-constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"post", "hold", "relist", "buy", "bid", "skip"};
+constexpr std::size_t CHOICE_COUNT = 8;
+constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"post", "hold", "relist", "buy",
+                                                                     "bid",  "skip", "chance", "factor"};
 
 enum class Reason : std::uint8_t
 {
@@ -99,7 +113,7 @@ constexpr std::string_view ReasonWord(Reason reason)
     return index < REASON_COUNT ? REASON_WORDS[index] : std::string_view("other");
 }
 
-static_assert(static_cast<std::size_t>(Choice::Skip) + 1 == CHOICE_COUNT, "a word for every auction choice");
+static_assert(static_cast<std::size_t>(Choice::Factor) + 1 == CHOICE_COUNT, "a word for every auction choice");
 static_assert(static_cast<std::size_t>(Reason::UnderCeiling) + 1 == REASON_COUNT, "a word for every auction reason");
 }  // namespace AuctionWords
 

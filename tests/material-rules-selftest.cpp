@@ -914,11 +914,13 @@ void CheckProceeds()
     AuctionRules::Fees const shared;  // the shared house's row as WA.9 sets it: deposit 5 %, cut 5 %, rates 1
     AuctionConfig const config;
     AuctionIndex::TypicalPrice const typical{1000, 9, 9.0, 1};
-    Check(Market::ProceedsEach({}, 250, 20, shared, config) == 0.0, "WA7a: no typical price, no proceeds");
-    // 20 units at 1000c, 24 h: ask 20000, cut 1000, deposit 1500, V 5000, p 10/12: 16416 over 20 units
-    double const each = Market::ProceedsEach(typical, 250, 20, shared, config);
-    Check(Near(each, 820.8), "WA7a: proceeds are the listing's expected value less cut and deposit, per unit");
-    Check(Market::ProceedsEach({2, 3, 3.0, 0}, 1, 1, shared, config) == 0.0,
+    Check(Market::ProceedsEach({}, {}, {}, 250, 20, shared, config) == 0.0, "WA7a: no typical price, no proceeds");
+    // 20 units at 1000c, 24 h: ask 20000, cut 1000, deposit 1500, V 5000, no record so p 1/2 (AH5): 11250 over 20
+    double const each = Market::ProceedsEach(typical, {}, {}, 250, 20, shared, config);
+    Check(Near(each, 562.5), "WA7a: proceeds are the listing's expected value less cut and deposit, per unit");
+    Check(Market::ProceedsEach(typical, {9.0, 0.0}, {}, 250, 20, shared, config) > each,
+          "AH5: the item's recent sales raise the proceeds");
+    Check(Market::ProceedsEach({2, 3, 3.0, 0}, {}, {}, 1, 1, shared, config) == 0.0,
           "WA7a: a listing that does not beat the vendor fetches nothing at auction (the vendor is the outlet)");
     int belowVendor = 0;
     int falls = 0;
@@ -929,7 +931,7 @@ void CheckProceeds()
             double before = 0.0;
             for (std::uint32_t unit = 1; unit <= 3000; unit += 7)
             {
-                double const proceeds = Market::ProceedsEach({unit, 3, 3.0, 1}, sell, lot, shared, config);
+                double const proceeds = Market::ProceedsEach({unit, 3, 3.0, 1}, {}, {}, sell, lot, shared, config);
                 listed += proceeds > 0.0 ? 1 : 0;
                 belowVendor += proceeds > 0.0 && proceeds < sell ? 1 : 0;
                 falls += proceeds < before ? 1 : 0;

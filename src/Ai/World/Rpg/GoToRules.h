@@ -174,6 +174,7 @@ inline constexpr CauseRow CAUSES[] = {
     {"abandoned", StatusEnd::Outcome::Abandoned},
     {"no_path", StatusEnd::Outcome::Abandoned},
     {"no_walk", StatusEnd::Outcome::Abandoned},
+    {"gather_no_walk", StatusEnd::Outcome::Abandoned},  // a walk a gather stop's entry refuses (professions WPC9)
     {"no_route", StatusEnd::Outcome::Abandoned},
     {"unreachable_poi", StatusEnd::Outcome::Abandoned},
     {"no_answer", StatusEnd::Outcome::Abandoned},

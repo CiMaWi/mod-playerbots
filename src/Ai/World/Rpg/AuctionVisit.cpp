@@ -7,6 +7,7 @@
 #include "AuctionVisit.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -291,8 +292,8 @@ uint32 ListUnits(PlayerbotAI* botAI, Item const* item)
     return StockUnits(keep);
 }
 
-// The ask for the stack's listed units at this house (PLAN 3.4): its fees, the cheapest competing buyout the index
-// saw, the seller's expiry memory
+// The ask for the stack's listed units at this house (PLAN 3.4): its fees, the index's evidence (the cheapest competing
+// buyout it saw, the item's and its kind's records), the seller's expiry memory
 AuctionRules::AskResult AskFor(Player* bot, Item const* item, uint32 units, uint8 houseId)
 {
     ItemTemplate const* proto = item->GetTemplate();
@@ -304,11 +305,14 @@ AuctionRules::AskResult AskFor(Player* bot, Item const* item, uint32 units, uint
         if (AuctionRules::ItemReference const* row = reference->Find(proto->ItemId))
             in.reference = row->copper;
     if (std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current())
-        if (AuctionIndex::ItemEntry const* entry = index->Find(proto->ItemId))
-        {
-            in.typical = entry->typical;
-            in.cheapestUnitBuyout = entry->offers.cheapestUnitBuyout;
-        }
+    {
+        AuctionIndex::Evidence const evidence = index->EvidenceOf(
+            proto->ItemId, AuctionIndex::KindOf(proto->Class, proto->Quality, proto->RequiredLevel, proto->ItemLevel));
+        in.typical = evidence.typical;
+        in.cheapestUnitBuyout = evidence.cheapestUnitBuyout;
+        in.itemRecord = evidence.item;
+        in.kindRecord = evidence.kind;
+    }
     AuctionMemory::ItemMemory const memory = AuctionMemory::Of(bot->GetGUID().GetCounter(), proto->ItemId);
     in.expiredSteps = memory.expiredSteps;
     in.quickSale = memory.quickSale;
@@ -330,6 +334,21 @@ void WriteRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason rea
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Auction, AuctionWords::ChoiceWord(choice),
                        AuctionWords::ReasonWord(reason), static_cast<float>(ask), amounts, entry);
 }
+
+// The second `auction` row of a post, relist or hold (AH6): value = the sale chance at the listing's duration in
+// permille, the duration beside it (hours); ref = the item entry. A row holds three alternatives, which the first row's
+// floor, deposit and left take
+void WriteChanceRow(Player* bot, AuctionWords::Reason reason, uint32 permille, uint32 hours, uint32 entry)
+{
+    if (!WorldLog::Active())
+        return;
+    WorldLogFormat::Alternatives const amounts{{"hours", static_cast<float>(hours)}};
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Auction,
+                       AuctionWords::ChoiceWord(AuctionWords::Choice::Chance), AuctionWords::ReasonWord(reason),
+                       static_cast<float>(permille), amounts, entry);
+}
+
+uint32 Permille(double p) { return static_cast<uint32>(std::lround(std::clamp(p, 0.0, 1.0) * 1000.0)); }
 
 uint32 Clamped(uint64 copper)
 {
@@ -401,6 +420,22 @@ void WriteBuyRow(Player* bot, AuctionWords::Choice choice, AuctionWords::Reason 
                            entry);
 }
 
+// The `factor` row after a buy, bid or skip (AH9, PLAN 3.9): value = the line's need factor against the exchange in
+// percent (100 at the bot's reserve, more short of it, less above it: 10 flush at neutral greed), the row's reason and
+// item beside it. A line's ceiling factor is that share (AuctionBuyList.h: use, bag and path lines)
+void WriteFactorRow(Player* bot, AuctionWords::Reason reason, uint32 percent, uint32 entry)
+{
+    if (WorldLog::Active())
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Auction,
+                           AuctionWords::ChoiceWord(AuctionWords::Choice::Factor), AuctionWords::ReasonWord(reason),
+                           static_cast<float>(percent), {}, entry);
+}
+
+uint32 FactorPercent(AuctionRules::BuyLine const& line)
+{
+    return static_cast<uint32>(std::lround(std::max(line.ceiling.factor, 0.0f) * 100.0f));
+}
+
 // A listing or a purchase the core took renews the visit's limit
 void RenewLimit(PlayerbotAI* botAI)
 {
@@ -431,9 +466,11 @@ VisitTurn AwaitPurchase(PlayerbotAI* botAI, Player* bot)
             ++visit.openBids;
             EventLog::Emit(bot, EventLog::EventType::AuctionBid, "bid", visit.awaitingEntry, visit.awaitPrice);
         }
-        WriteBuyRow(bot, buyout ? AuctionWords::Choice::Buy : AuctionWords::Choice::Bid,
-                    buyout ? AuctionWords::Reason::UnderCeiling : static_cast<AuctionWords::Reason>(visit.awaitReason),
-                    visit.awaitPrice, visit.awaitCeiling, visit.awaitCost, visit.awaitSpendable, visit.awaitingEntry);
+        AuctionWords::Reason const reason =
+            buyout ? AuctionWords::Reason::UnderCeiling : static_cast<AuctionWords::Reason>(visit.awaitReason);
+        WriteBuyRow(bot, buyout ? AuctionWords::Choice::Buy : AuctionWords::Choice::Bid, reason, visit.awaitPrice,
+                    visit.awaitCeiling, visit.awaitCost, visit.awaitSpendable, visit.awaitingEntry);
+        WriteFactorRow(bot, reason, visit.awaitFactor, visit.awaitingEntry);
     }
     else
     {
@@ -464,9 +501,11 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
         uint32 const deposit = visit.moneyBefore > bot->GetMoney() ? visit.moneyBefore - bot->GetMoney() : 0;
         visit.deposits += deposit;
         Item const* const left = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(visit.awaiting));
-        WriteRow(bot, visit.relist ? AuctionWords::Choice::Relist : AuctionWords::Choice::Post,
-                 visit.relist ? AuctionWords::Reason::Expired : AuctionWords::Reason::AboveVendor, visit.ask,
+        AuctionWords::Reason const reason =
+            visit.relist ? AuctionWords::Reason::Expired : AuctionWords::Reason::AboveVendor;
+        WriteRow(bot, visit.relist ? AuctionWords::Choice::Relist : AuctionWords::Choice::Post, reason, visit.ask,
                  visit.floor, deposit, visit.awaitingEntry, left ? ListUnits(botAI, left) : 0);
+        WriteChanceRow(bot, reason, visit.chance, visit.hours, visit.awaitingEntry);
     }
     else
     {
@@ -552,6 +591,7 @@ VisitTurn BuyNext(PlayerbotAI* botAI, Player* bot, Creature const* auctioneer, u
         if (choice.kind == AuctionRules::BuyKind::Skip)
         {
             WriteBuyRow(bot, AuctionWords::Choice::Skip, choice.reason, price, ceiling, cost, spendable, line.item);
+            WriteFactorRow(bot, choice.reason, FactorPercent(line), line.item);
             continue;
         }
 
@@ -567,6 +607,7 @@ VisitTurn BuyNext(PlayerbotAI* botAI, Player* bot, Creature const* auctioneer, u
         visit.awaitSpendable = Clamped(spendable);
         visit.awaitKind = static_cast<uint8>(choice.kind);
         visit.awaitReason = static_cast<uint8>(choice.reason);
+        visit.awaitFactor = FactorPercent(line);
         visit.awaitBag = bag;
         visit.moneyBefore = bot->GetMoney();
         visit.stepTick = GameTick();
@@ -602,8 +643,9 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
             ++visit.held;
             MarkEntryTried(bot, item->GetEntry(), visit.tried);
             AuctionMemory::Held(bot->GetGUID().GetCounter(), item->GetEntry());
-            WriteRow(bot, AuctionWords::Choice::Hold, lists ? AuctionWords::Reason::Budget : ask.reason, ask.ask,
-                     ask.floor, deposit, item->GetEntry());
+            AuctionWords::Reason const reason = lists ? AuctionWords::Reason::Budget : ask.reason;
+            WriteRow(bot, AuctionWords::Choice::Hold, reason, ask.ask, ask.floor, deposit, item->GetEntry());
+            WriteChanceRow(bot, reason, Permille(ask.p), ask.hours, item->GetEntry());
             continue;
         }
 
@@ -621,6 +663,8 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
         visit.awaitingEntry = item->GetEntry();
         visit.ask = Clamped(ask.ask);
         visit.floor = Clamped(ask.floor);
+        visit.chance = Permille(ask.p);
+        visit.hours = ask.hours;
         visit.relist = ask.reason == AuctionWords::Reason::Expired;
         visit.moneyBefore = bot->GetMoney();
         visit.stepTick = GameTick();

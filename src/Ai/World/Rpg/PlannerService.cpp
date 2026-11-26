@@ -204,6 +204,7 @@ void FillBags(Player* bot, Snapshot& snapshot)
                 ++free;
     }
     snapshot.bagFree = static_cast<uint16>(free);
+    snapshot.unarmed = !bot->GetWeaponForAttack(BASE_ATTACK);
 
     GearWear const wear = ReadGearWear(bot);
     snapshot.durabilityPercent = wear.durabilityPercent;
@@ -565,13 +566,18 @@ bool StartRoute(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
 // The plan's estimate of a gather circuit or fishing trip, written beside its start row (professions WR25a): value the
 // minutes the plan gave it (a circuit: its laps' minutes; a trip: the walk and its time at the water), alternatives the
 // takes expected in them (a node harvested, a creature killed, a fish caught), the units those give and the fight
-// minutes of the kills; ref the goal's target as the start row's. A session then holds plan and outcome side by side
+// minutes of the kills; ref the goal's target as the start row's. A session then holds plan and outcome side by side.
+// The takes' name says the rate's source (WPC13b): `takes_observed` when the minutes per take were observed, else
+// `takes` (the static rule)
 void NoteEstimate(Player* bot, Professions::Reason way, GoalApply::Active const& goal)
 {
-    WorldLog::Decision(
-        bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Estimate),
-        Professions::ReasonWord(way), goal.minutes,
-        {{"takes", goal.takes}, {"units", goal.units}, {"fight_minutes", goal.fightMinutes}}, goal.target);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                       Professions::ChoiceWord(Professions::Choice::Estimate), Professions::ReasonWord(way),
+                       goal.minutes,
+                       {{goal.observed ? "takes_observed" : "takes", goal.takes},
+                        {"units", goal.units},
+                        {"fight_minutes", goal.fightMinutes}},
+                       goal.target);
 }
 
 // Today's statuses are the executors (GoalApply::ExecutorFor). False when the goal cannot start here, having ended
@@ -604,10 +610,18 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             NewRpgInfo::DoGather gather;
             Goals::GoalPlan const* plan = goals.plan.get();
             bool const circuit = plan && !plan->gatherStops.empty() && plan->gatherStops.front() == goal.target;
+            uint32 creatures = 0;
             if (circuit)
             {
                 gather.circuit.assign(plan->gatherStops.begin(), plan->gatherStops.end());
                 gather.laps = std::max<uint32>(plan->gatherLaps, 1);
+                creatures = static_cast<uint32>(
+                    std::count_if(plan->gatherStops.begin(), plan->gatherStops.end(), Gather::IsCreatureStop));
+                // The span the observed rate counts (WPC13b): its zone and way as the circuit row names them
+                gather.spanStartMs = std::max<uint32>(getMSTime(), 1);
+                gather.span.zone = bot->GetZoneId();
+                gather.span.way =
+                    GatherRate::WayOf(static_cast<uint32>(plan->gatherStops.size()), plan->gatherHerbStops, creatures);
             }
             RpgStatus::Start(botAI, std::move(gather), word);
             if (circuit)
@@ -615,9 +629,8 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
                     bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Gather),
                     Professions::ReasonWord(Professions::Reason::Circuit), static_cast<float>(plan->gatherStops.size()),
                     {{"laps", static_cast<float>(std::max<uint32>(plan->gatherLaps, 1))},
-                     {"lap_minutes", plan->gatherLapMinutes},
-                     {"creatures", static_cast<float>(std::count_if(plan->gatherStops.begin(), plan->gatherStops.end(),
-                                                                    Gather::IsCreatureStop))}},
+                     {"herbs", static_cast<float>(plan->gatherHerbStops)},
+                     {"creatures", static_cast<float>(creatures)}},
                     goal.target);
             if (circuit)
                 NoteEstimate(bot, Professions::Reason::Circuit, goal);
@@ -917,6 +930,16 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
                            Professions::ChoiceWord(Professions::Choice::Skip),
                            Professions::ReasonWord(Professions::Reason::TooDangerous), taken.gatherRefusedLevels, {},
                            taken.gatherRefusedItem);
+    // Bags above the gather status's limit refused the circuit (professions WPC9): one skip row per change
+    if (taken.gatherBagsFull && WorldLog::Active() && (!lastPlan || !lastPlan->gatherBagsFull))
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
+            Professions::ReasonWord(Professions::Reason::BagsFull), static_cast<float>(taken.gatherBagsFull));
+    // A bot without a weapon was refused creature stops (professions WPC10): one skip row per change
+    if (taken.gatherUnarmed && WorldLog::Active() && (!lastPlan || !lastPlan->gatherUnarmed))
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
+            Professions::ReasonWord(Professions::Reason::Unarmed), static_cast<float>(taken.gatherUnarmed));
     // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
     if (!answer->plan->classFailed.empty())
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
