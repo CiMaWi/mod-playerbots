@@ -37,6 +37,7 @@
 #include "PlayerbotsRequiredTables.h"
 #include <mysqld_error.h>
 #include "ArenaOnlyConfig.h"
+#include "GatherLive.h"
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
@@ -754,6 +755,8 @@ public:
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // The auction price index: a timer add; every PublishSeconds a refresh of the listed auctions
             TimeHookCall("WorldHook AuctionIndex", [diff] { AuctionIndex::Update(diff); });
+            // The observed minutes per take (professions WPC13b): a timer add; every 15 s a fade and a publication
+            TimeHookCall("WorldHook GatherRates", [diff] { Planner::UpdateGatherRates(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
             TimeHookCall("WorldHook PlannerQuestStats", [diff] { Planner::UpdateQuestStats(diff); });
             // The quest failure record: a timer add; every 300 s an asynchronous write of the changed rows

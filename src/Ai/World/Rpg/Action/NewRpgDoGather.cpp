@@ -448,6 +448,9 @@ void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, b
                         {"entry", spawn ? static_cast<float>(spawn->entry) : 0.0f},
                         {cause, bot->GetExactDist(data.nodePos)}},
                        data.nodeSpawnId);
+    ++data.span.resolved;  // the observed rate's span counts the rows part 4 counts (WPC13b)
+    if (taken)
+        ++data.span.takes;
     // The respawn memory: taken, found empty or written off, the bot comes back after the respawn at the earliest
     if (spawn)
         botAI->rpgInfo.gatherMemory.Note(spawn->spawnId, getMSTime(), spawn->respawnSecs * IN_MILLISECONDS);

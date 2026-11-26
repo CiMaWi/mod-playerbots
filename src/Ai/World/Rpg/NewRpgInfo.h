@@ -16,6 +16,7 @@
 
 #include "Define.h"
 #include "GatherMemoryState.h"
+#include "GatherRateRules.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
@@ -151,6 +152,10 @@ struct NewRpgInfo
         ObjectGuid targetGuid;
         uint32 killedMs{0};
         uint32 skinSeenMs{0};
+        // The observed rate's span (professions WPC13b): a planned circuit's start (0: none, not observed), its zone
+        // and way then, the stops it took and resolved; the status's end enters it in the tally
+        uint32 spanStartMs{0};
+        GatherRate::Span span;
     };
     // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
     // probed there and the water it faces, what the pole replaced, the casts so far

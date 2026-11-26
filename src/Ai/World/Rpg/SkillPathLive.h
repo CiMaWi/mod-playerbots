@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include "GatherRateRules.h"
 #include "MarketRules.h"
 #include "SkillPathTypes.h"
 
@@ -42,6 +43,7 @@ struct PathData
 {
     std::shared_ptr<Recipes::RecipeIndex const> recipes;
     std::shared_ptr<PlannerIndexes const> indexes;
+    GatherRate::View gatherRates;  // the observed minutes per take (WPC13b); empty before the first publication
 };
 
 // Any thread: the published recipe and planner indexes (null before their builds)
