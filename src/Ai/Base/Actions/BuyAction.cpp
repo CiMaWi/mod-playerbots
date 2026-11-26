@@ -353,12 +353,13 @@ void BuyAction::BuyGearByWorth(Creature* vendor, ObjectGuid vendorguid, VendorIt
         PvpGearMgr::Instance().IsWorn(bot))
         return;
 
-    std::optional<AuctionRules::CopperWeight> weight;
     std::vector<GearWorth::Offer> offers;
     std::vector<ItemTemplate const*> protos;  // the offers' items, in their order
-    // Each purchase changes what is worn, so the rule's answers and the worths are read again after it
+    // Each purchase changes what is worn and the gold left, so the rule's answers, the worths and the copper
+    // weight are read again after it
     while (true)
     {
+        std::optional<AuctionRules::CopperWeight> weight;
         offers.clear();
         protos.clear();
         for (VendorItem const* vendorItem : tItems->m_items)
