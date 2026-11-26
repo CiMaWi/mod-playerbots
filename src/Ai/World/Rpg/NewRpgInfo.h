@@ -140,8 +140,10 @@ struct NewRpgInfo
         std::vector<ObjectGuid::LowType> circuit;
         uint32 laps{1};
         uint32 lap{0};
-        uint32 next{0};           // the stop targeted or due
-        bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
+        uint32 next{0};  // the stop targeted or due
+        // A creature stop: the bot's skin cast went at its kill (NoteHarvestCast). A node stop's take is read from
+        // the record of harvest casts instead (Gather::OwnTakeInStatus), whichever came first, cast or target
+        bool harvestCast{false};
         // The walk to the target and its watch (GatherRules.h Gather::WalkStalled), reset with the target
         std::array<float, 3> walkAnchor{};
         uint32 walkStalledMs{0};

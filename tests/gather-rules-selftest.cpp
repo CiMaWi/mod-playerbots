@@ -1386,6 +1386,13 @@ void DownCases()
     Check(cause({.held = true}) == "down_unknown", "down: outside a pool, an object respawning, taken unseen");
     Check(cause({.pooled = true, .held = true, .notReady = true}) == "down_not_ready",
           "down: an object held here but not ready");
+    // The stop's take (WPC13b): the cast inside the status counts, whether it went before the status targeted the
+    // stop (scn-261126125954: cast 2 s ago, the status 7 s old, the stop targeted only now) or after; a cast before
+    // the status and an earlier lap's are not this stop's take
+    Check(Gather::OwnTakeInStatus(2000, 7000, 300000), "take: the cast before the stop was targeted counts");
+    Check(Gather::OwnTakeInStatus(0, 0, 300000), "take: a cast in the status's first moment counts");
+    Check(!Gather::OwnTakeInStatus(8000, 7000, 300000), "take: a cast before the status is an earlier take");
+    Check(!Gather::OwnTakeInStatus(310000, 900000, 300000), "take: an earlier lap's cast, past the respawn");
 }
 
 // The respawn memory and the sight on hand cases (WR13d)

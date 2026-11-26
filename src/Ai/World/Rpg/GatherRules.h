@@ -490,11 +490,20 @@ inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, s
     return {take, take ? PassCause::None : PassCause::NotWorthIt, net};
 }
 
+// A gather status's stop is taken (professions WPC13b) when the bot's own gather cast went at its spawn within the
+// spawn's respawn and since the status began, whether before the status targeted the stop (the loot pipeline harvests
+// a node in reach before the status's first tick, or one further on the way) or after. Ages in ms, from now; a cast
+// older than the status is an earlier take (DOWN_OWN_TAKE), one older than the respawn an earlier lap's
+inline bool OwnTakeInStatus(std::uint32_t castAgeMs, std::uint32_t statusAgeMs, std::uint32_t respawnMs)
+{
+    return castAgeMs < respawnMs && castAgeMs <= statusAgeMs;
+}
+
 // Why a circuit stop found no live node at its spawn point (WR13d, the diagnosis): the facts the bot could read at
 // that moment
 struct DownFacts
 {
-    bool ownTake{false};    // the bot's own gather cast went at the spawn within the spawn's respawn
+    bool ownTake{false};    // the bot's own gather cast went at the spawn within the spawn's respawn, before the status
     bool otherTake{false};  // another bot's did
     bool pooled{false};     // the spawn is a pool member
     bool held{false};       // in a pool: the pool holds its node at this point; outside one: an object of the spawn
