@@ -7,6 +7,7 @@
 #include "FoodActions.h"
 #include "Event.h"
 #include "EventLog.h"
+#include "NewRpgAction.h"
 #include "Playerbots.h"
 #include "Upkeep.h"
 #include <algorithm>
@@ -75,6 +76,10 @@ bool IsDisallowedFoodState(PlayerbotAI* botAI, Player* bot)
 
     // a timed item use (a bandage's channel) runs to its end: sitting down to eat would stop it (item use WI4)
     if (botAI->GetWork() & BotWork::ItemTimed)
+        return true;
+
+    // a transport leg's crossing waits for no meal: sitting holds the bot's checks up to 27 s (PA91)
+    if (TravelHoldsUpkeep(botAI))
         return true;
 
     if (bot->getClass() == CLASS_DRUID)

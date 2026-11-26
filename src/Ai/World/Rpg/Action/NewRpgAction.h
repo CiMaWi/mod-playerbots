@@ -241,6 +241,9 @@ public:
 // A trip at a transport leg past its approach (waiting at the dock, boarding, aboard, walking off) keeps the bot on
 // foot: the boarding and exit moves dismount it, and the mount check would mount it again before the next one (WT54)
 bool TravelKeepsOnFoot(PlayerbotAI* botAI);
+// The held trip's transport leg holds the bot's eating and drinking (TravelLegs::HoldsUpkeep, PA91): from its dock on
+// to its end, unless it waits or rides with its docking far ahead
+bool TravelHoldsUpkeep(PlayerbotAI* botAI);
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction
 {

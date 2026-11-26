@@ -2147,6 +2147,23 @@ void UseNeeds()
     Check(use && use->funded == std::min<std::uint64_t>(use->copper, above),
           "the use need is funded from the gold above the reserve");
 
+    // NR4 (item 17): the use need is no part of the reserve, so it never names the shortfall
+    Snapshot broke = bot;
+    broke.money = 0;
+    NeedRates large = plain;
+    large.useWants.push_back({{ITEM_SUPER_HEALING}, 1000, 1000, 0});
+    NeedList const wanting = ComputeNeeds(broke, index, large);
+    Need const* wanted = Find(wanting, NeedOrder::Use);
+    std::uint64_t dearest = 0;
+    for (Planner::NeedBridge::ReservePart const& part : Planner::NeedBridge::PartsOf(wanting))
+        dearest = std::max<std::uint64_t>(dearest, Scaled(wanting, part.copper));
+    Planner::NeedBridge::NeedInputs const named = Planner::NeedBridge::InputsOf(wanting);
+    std::cout << "   broke, wants 1000 potions: " << named.shortText << "\n";
+    Check(wanted && wanted->copper > dearest && named.shortfallCopper > 0 &&
+              named.shortText.find("for use") == std::string::npos &&
+              named.shortText.find("the reserve") == std::string::npos,
+          "a broke bot with a large use want names its shortfall by a reserve part, not use");
+
     std::cout << "   at the apothecary, the alchemist (the weaker potion only), the mana vendor and the inn:\n";
     std::vector<ShopLine> const apothecary = PlanShopping(with, index, bot, VENDOR_APOTHECARY);
     std::vector<ShopLine> const alchemist = PlanShopping(with, index, bot, VENDOR_ALCHEMIST);
@@ -2227,14 +2244,15 @@ std::uint64_t FundedOf(NeedList const& list, NeedOrder order)
 }
 
 // The reserve's parts as PartsOf counted them before the market (its control): every need with copper but repair,
-// training, riding and professions, and the four reserve sums
+// training, riding, pet, use and professions, and the four reserve sums
 std::size_t PartsBeforeMarket(NeedList const& list)
 {
     std::size_t parts = (list.reserveRepair ? 1 : 0) + (list.reserveTraining ? 1 : 0) + (list.reserveRiding ? 1 : 0) +
                         (list.reserveProfession ? 1 : 0);
     for (Need const& need : list.needs)
         parts += need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
-                         need.order != NeedOrder::Riding && need.order != NeedOrder::Profession
+                         need.order != NeedOrder::Riding && need.order != NeedOrder::Pet &&
+                         need.order != NeedOrder::Use && need.order != NeedOrder::Profession
                      ? 1
                      : 0;
     return parts;
@@ -2394,6 +2412,47 @@ void MarketKeptNeeds(UpkeepIndex const& index)
     }
 }
 
+// NR3 (NR.4): a sick hunter's trip takes no errand that fights (the tame, the stable's swap) and no stop or placed
+// errand outside its safe area; the same hunter healthy keeps the tame and the sale (its trip never calls the filter)
+void SickTrip()
+{
+    using WorldTravel::ErrandKind;
+    std::vector<WorldTravel::ErrandOffer> offers(3);
+    offers[0].Kind = ErrandKind::Sell;
+    offers[0].Service = WorldTravel::SERVICE_VENDOR;
+    offers[1].Kind = ErrandKind::Tame;
+    offers[1].Placed = true;
+    offers[1].Place = {0, 10.0f, 10.0f, 0.0f};  // inside the safe area: the fight alone leaves it out
+    offers[1].Due = true;
+    offers[2].Kind = ErrandKind::TurnIn;
+    offers[2].Placed = true;
+    offers[2].Place = {0, 900.0f, 900.0f, 0.0f};
+    std::vector<WorldTravel::ServiceStop> stops(2);
+    stops[0].Id = 1;
+    stops[0].Place = {0, 5.0f, 5.0f, 0.0f};
+    stops[0].Services = WorldTravel::SERVICE_VENDOR;
+    stops[1].Id = 2;
+    stops[1].Place = {0, 800.0f, 800.0f, 0.0f};
+    stops[1].Services = WorldTravel::SERVICE_VENDOR;
+    auto const safeAt = [](WorldTravel::ErrandPlace const& place) { return place.X < 100.0f && place.Y < 100.0f; };
+    auto const has = [](std::vector<WorldTravel::ErrandOffer> const& list, ErrandKind kind)
+    {
+        return std::any_of(list.begin(), list.end(),
+                           [kind](WorldTravel::ErrandOffer const& offer) { return offer.Kind == kind; });
+    };
+    std::vector<WorldTravel::ErrandOffer> sick = offers;
+    std::vector<WorldTravel::ServiceStop> sickStops = stops;
+    WorldTravel::KeepSickErrands(sickStops, sick, safeAt);
+    Check(has(offers, ErrandKind::Tame) && has(offers, ErrandKind::Sell) && stops.size() == 2,
+          "a healthy hunter with a tame due keeps the tame stop and the sale");
+    Check(!has(sick, ErrandKind::Tame) && has(sick, ErrandKind::Sell) && !has(sick, ErrandKind::TurnIn) &&
+              sickStops.size() == 1 && sickStops.front().Id == 1,
+          "a sick hunter's trip has no tame stop and no stop outside its safe area (mutant: the tame stays)");
+    Check(WorldTravel::ErrandStartsFight(ErrandKind::Tame) && WorldTravel::ErrandStartsFight(ErrandKind::Stable) &&
+              !WorldTravel::ErrandStartsFight(ErrandKind::Sell) && !WorldTravel::ErrandStartsFight(ErrandKind::Repair),
+          "the tame and the stable's swap start a fight, a sale and a repair do not");
+}
+
 int main(int argc, char** argv)
 {
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
@@ -2422,6 +2481,7 @@ int main(int argc, char** argv)
     PetSwap();
     TameSteps();
     TameSiteRules();
+    SickTrip();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

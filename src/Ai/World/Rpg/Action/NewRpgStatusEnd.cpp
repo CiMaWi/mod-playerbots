@@ -326,7 +326,7 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
     }
     TravelTransportGeometry::DiscardMotion(*bot, trip->passengerMotion);
     LandsItsBot(botAI, *trip);
-    RpgStatusCore::Hold(travel).Finish(outcome, word);
+    RpgStatusCore::Hold(travel).Finish(outcome, word, bot->GetExactDist(trip->dest));
     TravelOrders::FlushWalk(botAI);
 }
 

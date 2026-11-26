@@ -36,7 +36,8 @@ enum class Reason : std::uint8_t
 {
     Done,  // rewarded
     InLog,
-    GivenUp,  // on the caller's given-up list (QuestFailBook GivenUp)
+    GivenUp,     // on the caller's given-up list (QuestFailBook GivenUp)
+    Impossible,  // WQ38: on the list of quests known to be impossible (QuestRecord::impossible)
     Repeatable,
     Level,        // below the quest's minimum level
     Limits,       // race, class or maximum level
@@ -51,7 +52,7 @@ enum class Reason : std::uint8_t
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Reason::Count)> WORDS = {
-    "done",     "in_log", "given_up", "repeatable",  "level",        "limits",    "unsupported",
+    "done",     "in_log", "given_up", "impossible",  "repeatable",   "level",     "limits",    "unsupported",
     "too_high", "grey",   "kind",     "elite_group", "prerequisite", "exclusive", "breadcrumb"};
 
 inline char const* Word(Reason reason) { return WORDS[static_cast<std::size_t>(reason)]; }
@@ -110,6 +111,8 @@ inline std::optional<Reason> MayBeforeBreadcrumb(QuestRecord const& quest, Facts
         return Reason::InLog;
     if (Holds(bot.givenUp, quest.id))
         return Reason::GivenUp;
+    if (Listed(quest))
+        return Reason::Impossible;
     if (quest.flags & REPEAT_FLAGS)
         return Reason::Repeatable;
     if (bot.level < quest.minLevel)

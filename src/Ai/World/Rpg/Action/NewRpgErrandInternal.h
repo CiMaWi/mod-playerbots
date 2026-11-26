@@ -57,6 +57,11 @@ struct ErrandOrder
 // once and starts the trip. False when it cannot be done (a test's hold, no stop in reach; for an order also a
 // visit, a fight, death, sickness, a group, an instance) and, for the trigger's start only, by its worth rules
 bool StartErrand(PlayerbotAI* botAI, ErrandOrder const& order);
+// NR3 (NR.4): the planner's sick_hearth errand (GoalModel AddSickHearthErrand), on the bot's map thread: a sick bot
+// handed over by recover outside every safe area casts its hearthstone, in a rest the planner ends at the bind; its
+// errand at the inn is the next plan's. False when the stone cannot be cast (not ready, a fight, the air, a group, an
+// instance) or the bot is not handed over
+bool StartSickHearth(PlayerbotAI* botAI, char const* word);
 // What the bind entry is asked (planning 3.19 (3.3)): the inn trigger's start (order false) or an order of the planner
 // (its innkeeper named) or the bridge (none named: the entry picks)
 struct BindOrder

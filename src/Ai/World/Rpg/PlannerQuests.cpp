@@ -46,6 +46,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "QueryResult.h"
 #include "QuestCircuit.h"
 #include "QuestDef.h"
 #include "QuestExecRules.h"
@@ -955,6 +956,33 @@ void LogPlaceCensus(QuestIndexStats const& s)
 }
 }  // namespace
 
+// Questing WQ38: the list of quests known to be impossible (playerbots_quest_impossible: quest, cause word, note), read
+// at startup on the world thread as the floors are; each listed quest's record carries its cause word into the index
+// (an empty word reads "other"). A change of the list needs a restart
+void MarkImpossible(std::vector<QuestRecord>& quests)
+{
+    std::unordered_map<uint32, std::string> causes;
+    if (PreparedQueryResult result =
+            PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_QUEST_IMPOSSIBLE)))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            std::string cause = fields[1].Get<std::string>();
+            causes[fields[0].Get<uint32>()] = cause.empty() ? std::string("other") : std::move(cause);
+        } while (result->NextRow());
+    }
+    uint32 marked = 0;
+    for (QuestRecord& quest : quests)
+        if (auto const it = causes.find(quest.id); it != causes.end())
+        {
+            quest.impossible = it->second;
+            ++marked;
+        }
+    LOG_INFO("server.loading", "Quest index: {} quests listed as impossible ({} rows in playerbots_quest_impossible)",
+             marked, causes.size());
+}
+
 void StartQuestIndex()
 {
     QuestIndexState expected = QuestIndexState::NotStarted;
@@ -971,6 +999,7 @@ void StartQuestIndex()
         QuestPoiZStore floors;
         floors.Load();
         input = std::make_shared<QuestGather>(GatherQuests(floors, *fieldSpawns));
+        MarkImpossible(input->quests);
     }
     uint32 const gatherMs = MsSince(gatherStart);
     LOG_INFO(

@@ -220,7 +220,20 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             // The walk uses stock and wears gear, which the needs list's key does not hold
             data->needs.reset();
             // One trip per stop, held by the errand status (WT64b)
-            return Away(stop.pos, VENDOR_SEARCH_YARDS).value_or(true);
+            std::optional<bool> const away = Away(stop.pos, VENDOR_SEARCH_YARDS);
+            // NR1 group D (bots that stood beside the stop to the status deadline): the walk's answer with the planar
+            // and 3D distances, once per stop and answer (0 there, 1 walking, 2 spent)
+            uint8 const traced = 1 + (!away ? 0 : *away ? 2 : 1);
+            if (data->awayTraced != traced)
+            {
+                data->awayTraced = traced;
+                LOG_DEBUG("playerbots",
+                          "[Errand] {} stop {} away {} planar {:.1f} yd 3d {:.1f} yd bot z {:.1f} stop z {:.1f}",
+                          bot->GetName(), data->stop, traced - 1,
+                          bot->GetExactDist2d(stop.pos.GetPositionX(), stop.pos.GetPositionY()),
+                          bot->GetExactDist(stop.pos), bot->GetPositionZ(), stop.pos.GetPositionZ());
+            }
+            return away.value_or(true);
         }
         data->arrived = true;
     }
@@ -297,8 +310,18 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) &&
             (AI_VALUE(bool, "can repair") || WorldTravel::RepairErrandWanted(bot)))
         {
-            botAI->DoSpecificAction("repair", Event("repair"), true);
+            uint32 const moneyBefore = bot->GetMoney();
+            Planner::GearWear const wearBefore = Planner::ReadGearWear(bot);
+            bool const found = botAI->DoSpecificAction("repair", Event("repair", vendor->GetGUID()), true);
             repaired = true;
+            // NR1 group C (bots beside the repairer that paid nothing): what the repair found and paid, once per stop
+            Planner::GearWear const wearAfter = Planner::ReadGearWear(bot);
+            LOG_DEBUG("playerbots",
+                      "[Errand] {} repair at {} ({}) found {} money {} -> {} broken {} -> {} lowest {}% -> {}% "
+                      "can_repair {} wanted {}",
+                      bot->GetName(), vendor->GetEntry(), vendor->GetGUID().ToString(), found, moneyBefore,
+                      bot->GetMoney(), wearBefore.broken, wearAfter.broken, wearBefore.lowestPercent,
+                      wearAfter.lowestPercent, AI_VALUE(bool, "can repair"), WorldTravel::RepairErrandWanted(bot));
         }
 
         if (shopping)
@@ -483,6 +506,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     ++data->stop;
     data->arrived = false;
     data->vendorDone = false;
+    data->awayTraced = 0;
     data->vendor = ObjectGuid();
     data->needs.reset();  // the stop's turn-ins, deposit and mail moved items without gold: the next stop computes anew
     return true;

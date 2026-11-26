@@ -73,6 +73,7 @@ enum class EventType : uint8_t
     QuestFail,
     QuestOrder,
     QuestReady,
+    QuestStall,  // questing WQ38: a quest worked on orders 10 minutes without a credit
     Record,
     Resurrect,
     ResumeNotStarted,
@@ -204,6 +205,7 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::QuestFail, "QuestFail", ROW_ONLY},
     {EventType::QuestOrder, "QuestOrder", ROW_ONLY},
     {EventType::QuestReady, "QuestReady", ROW_ONLY},
+    {EventType::QuestStall, "QuestStall", ROW_ONLY},
     {EventType::Record, "Record", ROW_ONLY},
     {EventType::Resurrect, "Resurrect", RECORD_ROW},
     {EventType::ResumeNotStarted, "ResumeNotStarted", ROW_ONLY},

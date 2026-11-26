@@ -26,8 +26,9 @@ struct NeedInputs
 {
     std::uint64_t reserveCopper{0};  // unscaled: the goal model scales it by thrift as the needs rules do
     std::uint64_t shortfallCopper{0};
-    std::string shortKind;  // the largest unpaid part's kind word (Upkeep::KindWord): NeedShort's src
-    std::string shortText;  // "12g 0s 0c short for journeyman riding"
+    std::string shortKind;          // the largest unpaid part's kind word (Upkeep::KindWord): NeedShort's src
+    std::string shortText;          // "12g 0s 0c short for journeyman riding"
+    bool trainingUnpayable{false};  // a due trainer spell whose cheapest waiting rank the funded gold does not pay
 };
 
 struct ReservePart
@@ -46,7 +47,8 @@ inline std::vector<ReservePart> PartsOf(UpkeepNeeds::NeedList const& list)
         parts.push_back({list.reserveRepair, UpkeepKind::Repair, "repair"});
     for (UpkeepNeeds::Need const& need : list.needs)
         if (need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
-            need.order != NeedOrder::Riding && need.order != NeedOrder::Profession && need.order != NeedOrder::Market)
+            need.order != NeedOrder::Riding && need.order != NeedOrder::Pet && need.order != NeedOrder::Use &&
+            need.order != NeedOrder::Profession && need.order != NeedOrder::Market)
             parts.push_back({need.copper, need.kind, UpkeepNeeds::OrderWord(need.order)});
     if (list.reserveTraining)
         parts.push_back({list.reserveTraining, UpkeepKind::TrainerSpell, "training"});
@@ -72,6 +74,11 @@ inline NeedInputs InputsOf(UpkeepNeeds::NeedList const& list)
     inputs.reserveCopper =
         list.reserveRepair + list.reserveStock + list.reserveTraining + list.reserveRiding + list.reserveProfession;
     inputs.shortfallCopper = list.shortfall;
+    // The questing test's money goal (questing WQ37): a due training the gold cannot pay (TrainingErrandDue's
+    // opposite), whether or not the reserve is short
+    for (UpkeepNeeds::Need const& need : list.needs)
+        if (need.kind == UpkeepKind::TrainerSpell && need.due && need.cheapest > 0 && need.funded < need.cheapest)
+            inputs.trainingUnpayable = true;
     if (!list.shortfall)
         return inputs;
 
@@ -102,6 +109,7 @@ inline void Fill(Goals::Situation& situation, NeedInputs const& inputs)
     situation.shortfallCopper = inputs.shortfallCopper;
     situation.shortKind = inputs.shortKind;
     situation.shortText = inputs.shortText;
+    situation.trainingUnpayable = inputs.trainingUnpayable;
 }
 }  // namespace NeedBridge
 }  // namespace Planner

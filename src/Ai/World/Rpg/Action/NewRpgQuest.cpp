@@ -23,6 +23,7 @@
 #include "GameObject.h"
 #include "GossipDef.h"
 #include "GridTerrainData.h"
+#include "Group.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "LootObjectStack.h"
@@ -48,6 +49,7 @@
 #include "QuestDef.h"
 #include "QuestExecRules.h"
 #include "QuestFailRecord.h"
+#include "QuestFailRows.h"
 #include "QuestFieldExec.h"
 #include "QuestFields.h"
 #include "QuestGiveUp.h"
@@ -119,15 +121,17 @@ char const* TickPursuit(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& da
 }
 
 // questing WQ19a: the open needs of the bot's log (QuestFields::Needs over its slots, at neutral prices), each item
-// objective's credits left read from the log (a slot holds only the creature and object counters)
+// objective's credits left read from the log (a slot holds only the creature and object counters). WQ38: as the
+// bot's group sees them (a lone bot works no elite, group or instance quest)
 std::vector<Planner::QuestFields::Need> LogNeeds(Player* bot, Planner::QuestIndex const& index)
 {
     std::vector<Planner::QuestSlot> slots;
     slots.reserve(MAX_QUEST_LOG_SIZE);
     Planner::FillSlots(bot, slots);
     Planner::QuestFields::Pricing const pricing{};
-    std::vector<Planner::QuestFields::Need> needs =
-        Planner::QuestFields::Needs(index, slots, static_cast<uint8>(bot->GetTeamId()), pricing);
+    Group const* group = bot->GetGroup();
+    std::vector<Planner::QuestFields::Need> needs = Planner::QuestFields::Needs(
+        index, slots, static_cast<uint8>(bot->GetTeamId()), pricing, group ? group->GetMembersCount() : 1);
     for (Planner::QuestFields::Need& need : needs)
     {
         if (need.objective == Planner::QuestFields::HAND_IN || need.objective == Planner::QuestFields::TAKE)
@@ -310,6 +314,39 @@ void NoteOrderCredits(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data
         EventLog::Emit(bot, EventLog::EventType::QuestReady, "executor", questId, 0);
     }
 }
+
+// questing WQ38: the stall sum (QuestFailRows.h) of each quest the order expects an open objective of, once per quest
+// and tick, after the tick's credits are noted. The sums live with the bot's goals, so they outlive the order; a quest
+// gone from the log is forgotten. A sum that reaches 10 minutes (2 under shortgiveup) writes QuestStall: src the
+// order's word, id the quest, amount the minutes and the order's cell (QuestFieldExec::StallRowAmount). O(expected
+// needs x open needs)
+void TickStall(PlayerbotAI* botAI, Player* bot, Planner::QuestOrderRun const& run)
+{
+    std::vector<uint32> worked;
+    for (Planner::QuestOrderNeed const& need : run.order.expected)
+        if (need.objective != Planner::QuestFields::HAND_IN && need.objective != Planner::QuestFields::TAKE &&
+            std::any_of(run.open.begin(), run.open.end(), [&need](Planner::QuestOrderOpen const& open)
+                        { return open.quest == need.quest && open.objective == need.objective && open.left; }))
+            worked.push_back(need.quest);
+    Planner::QuestFailRows::Sums& sums = Planner::QuestStallsOf(botAI, bot);
+    if (worked.empty() && sums.quests.empty())
+        return;
+    Planner::QuestFailRows::KeepLogged(
+        sums, [bot](uint32 questId) { return bot->FindQuestSlot(questId) < MAX_QUEST_LOG_SIZE; });
+    std::sort(worked.begin(), worked.end());
+    worked.erase(std::unique(worked.begin(), worked.end()), worked.end());
+    uint32 const now = getMSTime();
+    uint32 const limit = Planner::QuestFailRows::LimitMs(TestConstraints::GiveUpShortened(botAI->testConstraints));
+    for (uint32 const questId : worked)
+    {
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
+            continue;
+        if (std::optional<Planner::QuestFailRows::Row> const row =
+                Planner::QuestFailRows::Tick(sums, questId, QuestProgress(bot, questId), now, limit))
+            EventLog::Emit(bot, EventLog::EventType::QuestStall, Planner::QuestOrderWordName(run.order.word), questId,
+                           Planner::QuestFieldExec::StallRowAmount(row->minutes, run.order.cell));
+    }
+}
 }  // namespace
 
 void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, char const* cause)
@@ -378,7 +415,12 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
     if (auto* doing = std::get_if<NewRpgInfo::DoQuest>(&info.data))
     {
         if (doing->order)
+        {
             NoteOrderCredits(botAI, bot, *doing);
+            // AimOrder may have ended the status: the order is read again
+            if (auto* still = std::get_if<NewRpgInfo::DoQuest>(&info.data); still && still->order)
+                TickStall(botAI, bot, *still->order);
+        }
         else if (char const* const cause = TickPursuit(botAI, bot, *doing))
         {
             RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = cause});
@@ -432,7 +474,7 @@ void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
     packet << static_cast<uint8>(slot);
     WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
     removeQuest.Read();
-    WorldLog::QuestDropWord const word(QuestDropReasonName(reason));
+    WorldLog::QuestDropWord const word(QuestDropReasonName(reason), bot, bot->GetQuestSlotQuestId(slot));
     bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
 }
 

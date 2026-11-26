@@ -67,8 +67,9 @@ protected:
     // have their own judged walk (NewRpgTravelAction::MoveFarTo), which no status can call
     ::GoTo::Answer GoTo(WorldPosition const& place, float reach);
     // GoTo for an executor, one line per site: nothing when the bot is there, else what Execute returns this tick
-    // (false: the held trip's follower did nothing this tick, so the lower actions run as under travel's own status)
-    std::optional<bool> Away(WorldPosition const& place, float reach);
+    // (false: the held trip's follower did nothing this tick, so the lower actions run as under travel's own status).
+    // answer, when given: GoTo's own, for a caller that ends its work on a failed walk
+    std::optional<bool> Away(WorldPosition const& place, float reach, ::GoTo::Answer* answer = nullptr);
     // go_grind's and go_camp's reach: inside the 10 yd at which the status update takes them as arrived
     static constexpr float PLACE_REACH_YARDS = 8.0f;
     // The mover gives dest up: the Stuck row (ClassifyGiveUp) and, off the mesh, the recovery; quiet (OffMesh, no row
@@ -175,7 +176,6 @@ private:
         uint32 moveSeq{0};    // the move stamp: counts the ends of the local orders given
         uint32 lastMs{0};     // the last tick the local piece was served
         bool ordered{false};  // a local order is under way
-        bool arrived{false};  // a trip to this place arrived
         bool local{false};    // a local piece was ordered and its end is not seen yet (walkflush)
         bool spent{false};    // Away's answer for the last tick
         ObjectGuid object;    // an approach's object, the place it was picked at and its stand point
