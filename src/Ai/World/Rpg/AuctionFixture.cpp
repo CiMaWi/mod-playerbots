@@ -19,6 +19,7 @@
 #include "AuctionHouseMgr.h"
 #include "AuctionHouseSearcher.h"
 #include "AuctionIndex.h"
+#include "AuctionVisit.h"
 #include "Bag.h"
 #include "CellImpl.h"
 #include "Chat.h"
@@ -507,10 +508,18 @@ bool HandleCommand(ChatHandler* handler, char const* args)
     if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot))
         return Fail(handler, scene,
                     "no bot online by that name; usage: playerbots auction fixture post|bid|buyout|"
-                    "cancel|end|standin post|standin bid|standin buyout|check|mail <bot> <item> ..");
+                    "cancel|end|standin post|standin bid|standin buyout|check|mail|grow <bot> <item> ..");
     scene.bot = bot;
     if (!sObjectMgr->GetItemTemplate(scene.item))
         return Fail(handler, scene, "no item " + itemWord);
+    if (scene.verb == "grow")
+    {
+        uint32 const units = words.empty() ? 0 : static_cast<uint32>(std::strtoul(words[0].c_str(), nullptr, 10));
+        if (!units)
+            return Fail(handler, scene, "no units; usage: grow <bot> <item> <units>");
+        BankMail::ArmAuctionGrow(bot, scene.item, units);
+        return Ok(handler, scene, "its next listing grows by " + std::to_string(units) + " units after the packet");
+    }
     scene.auctioneer = NearestAuctioneer(bot);
     if (!scene.auctioneer)
         return Fail(handler, scene,

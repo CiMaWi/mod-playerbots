@@ -21,6 +21,8 @@ class ChatHandler;
 // - check <bot> <item> [offers N] [sales N] [expiries N] [unit C] [bid C] [bidder none|bot|standin]: compares the
 //   index entry after a forced publish.
 // - mail <bot> <item> <kind> <n>.. [money C]: counts the bot's delivered auction mails by kind.
+// - grow <bot> <item> <units>: the bot's next listing of the item (a bot under a test constraint) finds its stack grown
+//   by the units right after the sell packet is queued (AH3's forced case); needs no auctioneer near.
 // Each answers one line `AUCTION fixture <verb> <bot> <item>: ok, ..` or `.. error, <why>`.
 namespace AuctionFixture
 {
