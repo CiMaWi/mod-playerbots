@@ -6,6 +6,7 @@
 
 #include "LootAction.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "BankRulesInput.h"
@@ -33,6 +34,7 @@
 #include "PvpGearMgr.h"
 #include "ServerFacade.h"
 #include "TestConstraints.h"
+#include "TravelLegRules.h"
 #include "UseItemAction.h"
 #include "WorldTravelConfig.h"
 
@@ -300,6 +302,18 @@ struct OpenLootAction::InteractionAdapter
     void Defer() { Stack.Cancel("dry"); }
 };
 
+// In the air: falling, or flying by the flag and above the floor (the higher of ground and water). A bot on its flying
+// mount keeps the flag on the ground; it is dismounted for the loot like any mounted bot
+static bool LootInTheAir(Player* bot)
+{
+    if (bot->Unit::IsFalling())
+        return true;
+    if (!bot->IsFlying())
+        return false;
+    auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+    return TravelLegs::InTheAir(bot->GetPositionZ(), std::max(groundZ, waterZ));
+}
+
 LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
 {
     LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
@@ -307,8 +321,8 @@ LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
         return LootInteraction::Attempt::Prepared;
 
     if (availableLoot->IsLootPending() || bot->GetLootGUID() || bot->IsNonMeleeSpellCast(false) ||
-        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->IsFlying() ||
-        bot->Unit::IsFalling() || bot->GetTransport() || bot->GetVehicle())
+        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->GetTransport() ||
+        bot->GetVehicle() || LootInTheAir(bot))
         return LootInteraction::Attempt::Failed;
 
     InteractionAdapter adapter{*this, *bot, *availableLoot, AI_VALUE(LootObject, "loot target"), encounter};

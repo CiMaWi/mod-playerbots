@@ -12,6 +12,7 @@
 #include "Action.h"
 #include "LastMovementValue.h"
 #include "MeshMoveRules.h"
+#include "MoveToLootRules.h"
 #include "PlayerbotAIConfig.h"
 
 class PathGenerator;
@@ -231,10 +232,7 @@ public:
 
 private:
     // Progress watchdog: stop chasing a loot target we are not actually getting closer to.
-    ObjectGuid lootWatchGuid;
-    float lootWatchDistance = -1.0f;
-    uint32 lootWatchMs = 0;
-    uint32 lootWatchLastEvalMs = 0;
+    MoveToLootRules::Watch lootWatch;
 };
 
 class MoveOutOfEnemyContactAction : public MovementAction
