@@ -608,7 +608,7 @@ ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI*
         return outlet;
 
     SkillPath::Path const* path = Planner::KeptPath(botAI);
-    Market::View const market = Planner::MarketView();
+    Market::View const market = Planner::CountedMarketView("market view: disenchant outlet");
     std::vector<WorldTravel::OutletYield> yields;
     yields.reserve(process->yields.size());
     for (Recipes::Yield const& yield : process->yields)

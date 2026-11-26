@@ -945,6 +945,7 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
     std::shared_ptr<SkillPath::Path const> const before = std::exchange(goals.path, answer->path);  // WR11
     goals.pathMs = answer->path ? result.takenMs : 0;
+    goals.pathRecord = answer->pathRecord;
     goals.gatherRates = answer->gatherRates;  // WR13c: the pass-by gate's rates
     if (goals.path)
         TakeSecondChoice(botAI, bot, before.get(), *goals.path);
@@ -1286,8 +1287,11 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
     Goals::Situation situation = SituationOf(botAI, bot);
     // The cells a dry order closed to the bot (questing WQ18b): its route passes them and their neighbours over
     situation.closedCells = GoalApply::ClosedCells(goals, LogNow(bot), now, BlockMs());
+    // WPC14a: the last computation's record, when the bot still keeps its path (the stock fixture replaces it)
+    std::shared_ptr<PathRecord const> lastPath =
+        goals.pathRecord && goals.pathRecord->path == goals.path ? goals.pathRecord : nullptr;
     Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), situation,
-                                   BotNeedRates(botAI, snapshot), PathInputsOf(botAI));
+                                   BotNeedRates(botAI, snapshot), PathInputsOf(botAI), std::move(lastPath));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
     state.snapshotDue = false;

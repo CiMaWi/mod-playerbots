@@ -64,7 +64,7 @@ std::vector<Gather::Yield> YieldsOf(std::vector<GatherYield> const* yields, Skil
     std::vector<Gather::Yield> priced;
     if (!yields)
         return priced;
-    Market::View const market = Planner::MarketView();
+    Market::View const market = Planner::CountedMarketView("market view: pass-by yields");
     priced.reserve(yields->size());
     for (GatherYield const& yield : *yields)
     {

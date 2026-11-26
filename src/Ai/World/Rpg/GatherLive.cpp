@@ -176,7 +176,7 @@ CreatureStops CreatureStopsOf(Snapshot const& snapshot, SkillPath::Path const* p
     if (!wants && !gatherer.shortOfGold)
         return out;
     bool const skinner = gatherer.Find(Gather::SKINNING) != nullptr;
-    Market::View const market = MarketView();
+    Market::View const market = CountedMarketView("market view: creature stops (worker)");
     std::vector<Recipes::DropRow const*> rows;
     std::vector<uint32> chosen;
     std::vector<uint32> wanted;

@@ -7,7 +7,10 @@
 #include "SkillPathLive.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "AuctionIndex.h"
@@ -171,7 +174,228 @@ std::string SecondText(SkillPath::SecondChoice const& second)
 }
 
 constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps the command prints
+
+uint64 MicrosSince(std::chrono::steady_clock::time_point started)
+{
+    return static_cast<uint64>(std::max<long long>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(), 0));
+}
+
+void CountRow(std::string_view name, uint64 value)
+{
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, name))
+        row->Record(value);
+}
+
+// WPC14a: the inputs a path computation reads, as their PerfMonitor rows name them
+enum PathInput : std::uint8_t
+{
+    INPUT_LEVEL,
+    INPUT_PERSON,
+    INPUT_SKILLS,
+    INPUT_HELD_PATH,   // the units held of the last path's materials
+    INPUT_HELD_OTHER,  // the units held of the other materials
+    INPUT_KNOWN,
+    INPUT_TOOLS,
+    INPUT_SPENDABLE,
+    INPUT_RATES,
+    INPUT_SHORT,
+    INPUT_GATHERER_LEVEL,
+    INPUT_USES,
+    INPUT_CONSUMABLES,
+    INPUT_ANY_STRETCH,
+    INPUT_RECIPE_INDEX,
+    INPUT_INDEXES,
+    INPUT_MARKET_PATH,   // a price of one of the last path's materials
+    INPUT_MARKET_OTHER,  // a price of another item
+    INPUT_GATHER_RATES,
+    INPUT_COUNT
+};
+
+constexpr std::array<char const*, INPUT_COUNT> INPUT_NAMES{
+    "level",        "person",  "skills",      "held path",      "held other",  "known recipes", "tools",
+    "spendable",    "rates",   "short",       "gatherer level", "uses",        "consumables",   "anypath",
+    "recipe index", "indexes", "market path", "market other",   "gather rates"};
+
+template <class T>
+bool SameObject(std::weak_ptr<T> const& a, std::weak_ptr<T> const& b)
+{
+    return !a.owner_before(b) && !b.owner_before(a);
+}
+
+bool SameEntry(AuctionIndex::Snapshot const* a, AuctionIndex::Snapshot const* b, std::uint32_t item)
+{
+    AuctionIndex::ItemEntry const* x = a ? a->Find(item) : nullptr;
+    AuctionIndex::ItemEntry const* y = b ? b->Find(item) : nullptr;
+    if (!x || !y)
+        return !x && !y;
+    AuctionIndex::TypicalPrice const& p = x->typical;
+    AuctionIndex::TypicalPrice const& q = y->typical;
+    AuctionIndex::Record const kindA = a->KindRecord(x->kind);
+    AuctionIndex::Record const kindB = b->KindRecord(y->kind);
+    return p.unitPrice == q.unitPrice && p.sample == q.sample && p.weight == q.weight && p.expiries == q.expiries &&
+           p.basis == q.basis && x->record.sales == y->record.sales && x->record.hours == y->record.hours &&
+           x->kind == y->kind && kindA.sales == kindB.sales && kindA.hours == kindB.hours;
+}
+
+bool SameGatherRates(GatherRate::View const& a, GatherRate::View const& b)
+{
+    if (a.snapshot == b.snapshot)
+        return true;
+    CountRow("profession path gather snapshot changed", 0);
+    static GatherRate::Tallies const none;
+    GatherRate::Tallies const& x = a.snapshot ? a.snapshot->tallies : none;
+    GatherRate::Tallies const& y = b.snapshot ? b.snapshot->tallies : none;
+    GatherRate::Fault const faultA = a.snapshot ? a.snapshot->fault : GatherRate::Fault::None;
+    GatherRate::Fault const faultB = b.snapshot ? b.snapshot->fault : GatherRate::Fault::None;
+    if (faultA != faultB || x.size() != y.size())
+        return false;
+    for (auto const& [key, tally] : x)
+    {
+        auto const found = y.find(key);
+        if (found == y.end() || found->second.minutes != tally.minutes || found->second.takes != tally.takes)
+            return false;
+    }
+    return true;
+}
+
+bool SameUses(std::vector<SkillPath::UseWant> const& a, std::vector<SkillPath::UseWant> const& b)
+{
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                      [](SkillPath::UseWant const& x, SkillPath::UseWant const& y)
+                      {
+                          return x.item == y.item && x.spell == y.spell && x.worthCopperEach == y.worthCopperEach &&
+                                 x.level == y.level;
+                      });
+}
+
+bool SameConsumables(std::vector<SkillPath::ConsumableWant> const& a, std::vector<SkillPath::ConsumableWant> const& b)
+{
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                      [](SkillPath::ConsumableWant const& x, SkillPath::ConsumableWant const& y)
+                      {
+                          return x.item == y.item && x.wantedStock == y.wantedStock && x.held == y.held &&
+                                 x.worthCopperEach == y.worthCopperEach && x.group == y.group && x.food == y.food;
+                      });
+}
+
+bool SameSteps(std::vector<SkillPath::PathStep> const& a, std::vector<SkillPath::PathStep> const& b)
+{
+    return std::equal(
+        a.begin(), a.end(), b.begin(), b.end(), [](SkillPath::PathStep const& x, SkillPath::PathStep const& y)
+        { return x.kind == y.kind && x.id == y.id && x.from == y.from && x.to == y.to && x.zone == y.zone; });
+}
+
+// The decision a path's readers act on: the chosen stretch and its steps, the buys, the wants, the queue, the
+// materials' units and sources, the second choice
+bool SameDecision(SkillPath::Path const& a, SkillPath::Path const& b)
+{
+    if (a.reason != b.reason || a.chosen != b.chosen || a.foodUnits != b.foodUnits ||
+        a.second.craft != b.second.craft || a.second.gatherer != b.second.gatherer || a.second.take != b.second.take ||
+        a.second.reason != b.second.reason)
+        return false;
+    if (a.chosen != SkillPath::NONE)
+    {
+        if (a.chosen >= static_cast<int>(a.weighed.size()) || b.chosen >= static_cast<int>(b.weighed.size()))
+            return false;
+        SkillPath::Stretch const& x = a.weighed[a.chosen];
+        SkillPath::Stretch const& y = b.weighed[b.chosen];
+        if (x.skill != y.skill || x.from != y.from || x.to != y.to || x.milestone != y.milestone ||
+            x.milestoneId != y.milestoneId || x.reason != y.reason || x.blockedAt != y.blockedAt ||
+            !SameSteps(x.steps, y.steps))
+            return false;
+    }
+    return std::equal(a.needs.begin(), a.needs.end(), b.needs.begin(), b.needs.end(),
+                      [](SkillPath::Purchase const& x, SkillPath::Purchase const& y)
+                      { return x.kind == y.kind && x.spell == y.spell && x.item == y.item; }) &&
+           std::equal(a.wants.begin(), a.wants.end(), b.wants.begin(), b.wants.end(),
+                      [](SkillPath::Want const& x, SkillPath::Want const& y)
+                      { return x.item == y.item && x.count == y.count; }) &&
+           std::equal(a.queue.begin(), a.queue.end(), b.queue.begin(), b.queue.end(),
+                      [](SkillPath::Craft const& x, SkillPath::Craft const& y)
+                      {
+                          return x.spell == y.spell && x.casts == y.casts && x.forSkill == y.forSkill &&
+                                 x.source == y.source && x.forSale == y.forSale;
+                      }) &&
+           std::equal(a.materials.begin(), a.materials.end(), b.materials.begin(), b.materials.end(),
+                      [](SkillPath::Material const& x, SkillPath::Material const& y)
+                      {
+                          return x.item == y.item && x.used == y.used && x.wanted == y.wanted && x.skill == y.skill &&
+                                 x.dueSkill == y.dueSkill && x.source == y.source && x.via == y.via;
+                      });
+}
+
+// The prices beside an equal decision (SameDecision first: the lists have the same lengths)
+bool SamePrices(SkillPath::Path const& a, SkillPath::Path const& b)
+{
+    if (a.useWorth != b.useWorth || a.second.craftWorth != b.second.craftWorth ||
+        a.second.gathererWorth != b.second.gathererWorth || a.second.money != b.second.money)
+        return false;
+    if (a.chosen != SkillPath::NONE)
+    {
+        SkillPath::Stretch const& x = a.weighed[a.chosen];
+        SkillPath::Stretch const& y = b.weighed[b.chosen];
+        if (x.copper != y.copper || x.minutes != y.minutes || x.netWorth != y.netWorth || x.perMinute != y.perMinute)
+            return false;
+        for (std::size_t step = 0; step < x.steps.size(); ++step)
+            if (x.steps[step].casts != y.steps[step].casts || x.steps[step].copper != y.steps[step].copper ||
+                x.steps[step].minutes != y.steps[step].minutes || x.steps[step].value != y.steps[step].value)
+                return false;
+    }
+    for (std::size_t at = 0; at < a.needs.size(); ++at)
+        if (a.needs[at].copper != b.needs[at].copper)
+            return false;
+    for (std::size_t at = 0; at < a.wants.size(); ++at)
+        if (a.wants[at].worthEach != b.wants[at].worthEach)
+            return false;
+    for (std::size_t at = 0; at < a.materials.size(); ++at)
+        if (a.materials[at].copperEach != b.materials[at].copperEach ||
+            a.materials[at].otherCopperEach != b.materials[at].otherCopperEach)
+            return false;
+    return true;
+}
+
+void FillRecord(PathRecord& record, Snapshot const& snapshot, SkillPathBridge::Computed const& computed,
+                UpkeepNeeds::NeedRates const& rates, SkillPath::PathInputs const& inputs, PathData const& data,
+                std::shared_ptr<AuctionIndex::Snapshot const> market, std::shared_ptr<SkillPath::Path const> path)
+{
+    record.path = std::move(path);
+    record.level = snapshot.level;
+    if (snapshot.person)
+        record.mains = {static_cast<std::uint16_t>(snapshot.person->Mains[0]),
+                        static_cast<std::uint16_t>(snapshot.person->Mains[1])};
+    for (Planner::Skill const& skill : snapshot.skills)
+        if (skill.value > 0 && SkillPathBridge::IsProfession(skill.id))
+            record.skills.push_back({skill.id, skill.value, skill.max});
+    record.held.reserve(snapshot.materials.size());
+    for (Planner::MaterialHeld const& held : snapshot.materials)
+        record.held.push_back({held.item, held.bags + held.bank, 0});
+    std::sort(record.held.begin(), record.held.end(),
+              [](PathRecord::Level const& a, PathRecord::Level const& b) { return a.id < b.id; });
+    record.knownRecipes = snapshot.knownRecipes;
+    record.toolsHeld = snapshot.toolsHeld;
+    record.money = snapshot.money;
+    record.reserve = computed.reserve;
+    record.spendable = snapshot.money > computed.reserve ? snapshot.money - computed.reserve : 0;
+    Materials::Rates const derived = SkillPathBridge::RatesOf(snapshot, computed.reserve);
+    record.rates = {derived.exchange, derived.factor, derived.minuteValue, derived.cautionWeight};
+    record.shortOfGold = computed.shortOfGold;
+    record.gathererLevel = rates.gathererLevel;
+    record.inputs = inputs;
+    record.recipes = data.recipes;
+    record.indexes = data.indexes;
+    record.market = std::move(market);
+    record.gatherRates = data.gatherRates;
+}
 }  // namespace
+
+Market::View CountedMarketView(char const* row)
+{
+    auto const started = std::chrono::steady_clock::now();
+    Market::View market = MarketView();
+    CountRow(row, MicrosSince(started));
+    return market;
+}
 
 Market::View MarketView()
 {
@@ -289,7 +513,7 @@ SkillPath::Path const* KeptPath(PlayerbotAI* botAI)
 std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, UpkeepIndex const& upkeep,
                                                      UpkeepNeeds::NeedRates const& rates,
                                                      SkillPath::PathInputs const& inputs, PathData const& data,
-                                                     UpkeepNeeds::NeedList& needs)
+                                                     UpkeepNeeds::NeedList& needs, PathRecord* record)
 {
     if (!data.recipes || !snapshot.person)
     {
@@ -314,6 +538,7 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         skinnables = SkillPath::SkinnablesOf(
             *data.recipes, killer, [&market](std::uint32_t item) { return market.SaleOf(item, SellCopper(item)); });
     }
+    uint64 const skinnablesMicros = MicrosSince(started);
     SkillPath::PathWorld const world{*data.recipes,
                                      [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
                                      SellCopper,
@@ -328,11 +553,108 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
                                  CategoriesOf(snapshot.toolsHeld));
     needs = std::move(computed.needs);
     auto path = std::make_shared<SkillPath::Path const>(std::move(computed.path));
-    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "profession path computed"))
-        row->Record(static_cast<uint64>(std::max<long long>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(),
-            0)));
+    CountRow("profession path computed", MicrosSince(started));
+    // WPC14a: the parts (the skinnables with the market view, both needs lists, the weigh, the second choice's weigh)
+    CountRow("profession path computed: skinnables", skinnablesMicros);
+    CountRow("profession path computed: needs", computed.needsMicros);
+    CountRow("profession path computed: weigh", computed.weighMicros);
+    if (path->second.craft)
+        CountRow("profession path computed: second weigh", computed.secondMicros);
+    if (record)
+        FillRecord(*record, snapshot, computed, rates, inputs, data, world.market.snapshot, path);
     return path;
+}
+
+void CountPathChanges(PathRecord const* last, PathRecord const& now)
+{
+    auto const started = std::chrono::steady_clock::now();
+    CountRow("profession path market items", now.market ? now.market->items.size() : 0);
+    CountRow("profession path gather tallies", now.gatherRates.snapshot ? now.gatherRates.snapshot->tallies.size() : 0);
+    if (!last || !last->path || !now.path)
+    {
+        CountRow("profession path first", 0);
+        return;
+    }
+    SkillPath::Path const& kept = *last->path;
+    std::uint32_t changed = 0;
+    auto const mark = [&changed](PathInput input, bool differs)
+    {
+        if (differs)
+            changed |= 1u << input;
+    };
+    mark(INPUT_LEVEL, last->level != now.level);
+    mark(INPUT_PERSON, last->mains != now.mains);
+    mark(INPUT_SKILLS, last->skills != now.skills);
+    // The held units, both lists sorted by item: an item missing from one holds 0 there
+    for (auto a = last->held.begin(), b = now.held.begin(); a != last->held.end() || b != now.held.end();)
+    {
+        bool const takeA = b == now.held.end() || (a != last->held.end() && a->id <= b->id);
+        bool const takeB = a == last->held.end() || (b != now.held.end() && b->id <= a->id);
+        std::uint32_t const item = takeA ? a->id : b->id;
+        if ((takeA ? a->value : 0) != (takeB ? b->value : 0))
+            mark(SkillPath::MaterialOf(kept, item) ? INPUT_HELD_PATH : INPUT_HELD_OTHER, true);
+        if (takeA)
+            ++a;
+        if (takeB)
+            ++b;
+    }
+    mark(INPUT_KNOWN, last->knownRecipes != now.knownRecipes);
+    mark(INPUT_TOOLS, last->toolsHeld != now.toolsHeld);
+    mark(INPUT_SPENDABLE, last->spendable != now.spendable);
+    mark(INPUT_RATES, last->rates != now.rates);
+    mark(INPUT_SHORT, last->shortOfGold != now.shortOfGold);
+    mark(INPUT_GATHERER_LEVEL, last->gathererLevel != now.gathererLevel);
+    mark(INPUT_USES, !SameUses(last->inputs.uses, now.inputs.uses));
+    mark(INPUT_CONSUMABLES, !SameConsumables(last->inputs.consumables, now.inputs.consumables));
+    mark(INPUT_ANY_STRETCH, last->inputs.anyStretch != now.inputs.anyStretch);
+    mark(INPUT_RECIPE_INDEX, !SameObject(last->recipes, now.recipes));
+    mark(INPUT_INDEXES, !SameObject(last->indexes, now.indexes));
+    if (last->market != now.market)
+    {
+        CountRow("profession path market snapshot changed", 0);
+        AuctionIndex::Snapshot const* a = last->market.get();
+        AuctionIndex::Snapshot const* b = now.market.get();
+        auto const check = [&](std::uint32_t item)
+        {
+            if (!SameEntry(a, b, item))
+                mark(SkillPath::MaterialOf(kept, item) ? INPUT_MARKET_PATH : INPUT_MARKET_OTHER, true);
+        };
+        if (a)
+            for (auto const& [item, entry] : a->items)
+                check(item);
+        if (b)
+            for (auto const& [item, entry] : b->items)
+                if (!a || !a->Find(item))
+                    check(item);
+    }
+    mark(INPUT_GATHER_RATES, !SameGatherRates(last->gatherRates, now.gatherRates));
+    if (last->money != now.money)
+        CountRow("profession path money changed", 0);
+    if (last->reserve != now.reserve)
+        CountRow("profession path reserve changed", 0);
+
+    bool const same = SameDecision(kept, *now.path);
+    bool const prices = same && SamePrices(kept, *now.path);
+    CountRow(same ? "profession path same result" : "profession path differs", 0);
+    if (prices)
+        CountRow("profession path same result and prices", 0);
+    if (!changed && !same)
+        CountRow("profession path differs, no input changed", 0);
+    if (!changed && same && !prices)
+        CountRow("profession path prices differ, no input changed", 0);
+    std::string names;
+    for (std::size_t input = 0; input < INPUT_COUNT; ++input)
+        if (changed & (1u << input))
+        {
+            CountRow(std::string("profession path input changed: ") + INPUT_NAMES[input], 0);
+            names += names.empty() ? "" : ", ";
+            names += INPUT_NAMES[input];
+        }
+    std::string const verdict = !same    ? "profession path inputs (differs): "
+                                : prices ? "profession path inputs (same): "
+                                         : "profession path inputs (prices differ): ";
+    CountRow(verdict + (names.empty() ? std::string("none") : names), 0);
+    CountRow("profession path record compare", MicrosSince(started));
 }
 
 void AddKeptPath(PlayerbotAI* botAI, UpkeepNeeds::NeedRates& rates)

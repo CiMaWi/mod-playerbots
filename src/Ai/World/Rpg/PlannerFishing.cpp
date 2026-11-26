@@ -209,7 +209,7 @@ void FillFishWaters(Snapshot const& snapshot, SkillPath::Path const* path, Mater
         return;
     // The fish at the bot's prices: a vendor's, the skill path's for a material it uses (a cook's fish) and a
     // listing's proceeds (WA7a)
-    Market::View const market = MarketView();
+    Market::View const market = CountedMarketView("market view: fishing waters (worker)");
     Fish::Candidate candidate{*zone, {}};
     for (std::vector<Gather::Yield>* yields : {&candidate.water.openYields, &candidate.water.poolYields})
         for (Gather::Yield& yield : *yields)
