@@ -48,6 +48,10 @@ public:
 
     ItemUsage Calculate() override;
 
+    // The upgrade rule's comparison: a score replaces a worn item's when it is above that score times
+    // EquipUpgradeThreshold; a worn score at or below 0 counts as an empty slot
+    static bool BeatsWornScore(float score, float wornScore);
+
 protected:
     ItemUsage QueryItemUsageForEquip(ItemTemplate const* proto, int32 randomPropertyId = 0);
     ItemUsage QueryItemUsageForAmmo(ItemTemplate const* proto);
