@@ -325,6 +325,15 @@
             "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
+            "file": "gear-worth-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "gear-worth: \\d+ passed, 0 failed"
+        },
+        {
             "file": "go-to-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
