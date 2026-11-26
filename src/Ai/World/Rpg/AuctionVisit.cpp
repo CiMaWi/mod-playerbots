@@ -554,10 +554,11 @@ VisitTurn BuyNext(PlayerbotAI* botAI, Player* bot, Creature const* auctioneer, u
     AuctionIndex::CurrentOffers const none;
     for (AuctionRules::BuyLine const& line : Planner::BuyListOf(botAI))
     {
+        uint64 const key = AuctionRules::DecidedKey(line);
         if ((visit.only && line.item != visit.only) ||
-            std::find(visit.decided.begin(), visit.decided.end(), line.item) != visit.decided.end())
+            std::find(visit.decided.begin(), visit.decided.end(), key) != visit.decided.end())
             continue;
-        visit.decided.push_back(line.item);
+        visit.decided.push_back(key);
         bool const bag = line.owner == AuctionRules::LineOwner::Bag;
         if (bag && visit.bagTaken)
             continue;

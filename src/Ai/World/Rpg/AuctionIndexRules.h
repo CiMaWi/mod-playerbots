@@ -53,6 +53,9 @@ struct AuctionFacts
     std::uint64_t bidder = 0;  // raw guid, 0 = none
     std::uint8_t houseId = 0;  // the core's AuctionHouseId as stored
     std::int64_t added = 0;    // game time the book took it (a hook, the startup walk); 0 = long ago
+    // The item's random property id as the core keeps it (negative = a suffix, 0 = none), read at the add and the
+    // startup walk; no part of the history
+    std::int32_t randomPropertyId = 0;
 };
 using OfferLine = AuctionFacts;
 

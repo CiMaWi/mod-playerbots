@@ -132,7 +132,7 @@ struct AuctionVisitData
     uint64 kept{0};               // copper the market leaves in the purse (UpkeepNeeds::MarketKept), read once
     uint32 openBids{0};           // the index's open bids of the bot at the first buy step, plus those placed since
     bool bagTaken{false};         // one bag per visit
-    std::vector<uint32> decided;  // the items whose line was decided on this visit
+    std::vector<uint64> decided;  // the lines decided on this visit (AuctionRules::DecidedKey)
     uint32 awaitAuction{0};       // the awaited bid or buyout's auction id; 0 = none (awaitingEntry: its item)
     uint32 awaitPrice{0};         // its price, copper
     uint32 awaitCeiling{0};       // the line's ceiling for the units the lot covers

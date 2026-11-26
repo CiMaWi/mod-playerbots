@@ -44,9 +44,16 @@ struct BuyLine
     std::uint32_t units{0};
     CeilingInput ceiling;
     std::uint64_t excessUnitWorth{0};  // copper: a unit beyond the line, its vendor payout or keep worth
+    std::uint32_t auctionId{0};        // the one auction the line takes; 0 = any offer of the entry
 };
 
 inline std::uint64_t CeilingOf(BuyLine const& line) { return Ceiling(line.ceiling); }
+
+// A line within a visit, which decides each once: its item and the auction it names (0 for any offer)
+inline std::uint64_t DecidedKey(BuyLine const& line)
+{
+    return (static_cast<std::uint64_t>(line.auctionId) << 32) | line.item;
+}
 
 // Any owner's line from value units; gettingValue < 0: no other way of getting it
 inline BuyLine LineOf(LineOwner owner, std::uint32_t item, std::uint32_t units, double worthValue, double gettingValue,
@@ -205,13 +212,14 @@ inline std::uint32_t OpenBids(AuctionIndex::Snapshot const& snapshot, std::uint6
 }
 
 // The house's offers for a line: its lines of this house, without the bot's own auctions (AuctionFacts has no
-// owner: the visit passes the ids it listed; the core refuses a bid on them too)
+// owner: the visit passes the ids it listed; the core refuses a bid on them too). A line that names an auction
+// gets that one only
 inline std::vector<OfferInput> OffersFor(AuctionIndex::CurrentOffers const& offers, BuyLine const& line,
                                          std::uint8_t houseId, std::vector<std::uint32_t> const& ownAuctions)
 {
     std::vector<OfferInput> inputs;
     for (AuctionIndex::OfferLine const& offer : offers.cheapest)
-        if (offer.houseId == houseId &&
+        if (offer.houseId == houseId && (!line.auctionId || offer.id == line.auctionId) &&
             std::find(ownAuctions.begin(), ownAuctions.end(), offer.id) == ownAuctions.end())
             inputs.push_back({offer, line.units, line.excessUnitWorth});
     return inputs;

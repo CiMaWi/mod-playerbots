@@ -2338,9 +2338,78 @@ void PlayVisit(VisitWorld const& world, VisitFault fault, VisitTally& tally, Vis
     }
 }
 
+// A line that names one auction (gear plan WG6) is offered that auction only; a line without one as before
+void CheckNamedLine()
+{
+    std::vector<AuctionFacts> lots;
+    auto lot = [&lots](std::uint32_t id, std::uint32_t buyout, std::uint8_t house)
+    {
+        AuctionFacts facts;
+        facts.id = id;
+        facts.item = 805;
+        facts.count = 1;
+        facts.startBid = buyout;
+        facts.buyout = buyout;
+        facts.endTime = MARKET_NOW + 3600;
+        facts.houseId = house;
+        lots.push_back(facts);
+    };
+    lot(11, 40, BUYER_HOUSE);
+    lot(12, 70, BUYER_HOUSE);
+    lot(13, 50, 2);             // another house
+    lot(14, 60, BUYER_HOUSE);   // the bot's own listing
+    lot(15, 400, BUYER_HOUSE);  // over the ceiling
+    AuctionIndex::Snapshot const snapshot = Publish(lots);
+    AuctionIndex::ItemEntry const* entry = snapshot.Find(805);
+    AuctionIndex::CurrentOffers const offers = entry ? entry->offers : AuctionIndex::CurrentOffers{};
+    std::vector<std::uint32_t> const own = {14};
+    BuyLine any;
+    any.item = 805;
+    any.units = 1;
+    any.ceiling = {100.0, -1.0, 1.0f};
+    BuyInput buyer;
+    buyer.spendable = 1000;
+    buyer.now = MARKET_NOW;
+    buyer.ownGuid = BUYER_GUID;
+    auto named = [&any](std::uint32_t auctionId)
+    {
+        BuyLine line = any;
+        line.auctionId = auctionId;
+        return line;
+    };
+
+    std::vector<OfferInput> const open = OffersFor(offers, any, BUYER_HOUSE, own);
+    BuyChoice const cheapest = ChooseLine(offers, any, BUYER_HOUSE, own, buyer);
+    Check(open.size() == 3 && open[0].line.id == 11 && open[1].line.id == 12 && open[2].line.id == 15 &&
+              cheapest.kind == BuyKind::Buyout && cheapest.auctionId == 11 && cheapest.price == 40,
+          "a line that names no auction: this house's offers without the own one, the cheapest bought");
+    std::vector<OfferInput> const one = OffersFor(offers, named(12), BUYER_HOUSE, own);
+    BuyChoice const dearer = ChooseLine(offers, named(12), BUYER_HOUSE, own, buyer);
+    Check(one.size() == 1 && one[0].line.id == 12 && dearer.kind == BuyKind::Buyout && dearer.auctionId == 12 &&
+              dearer.price == 70,
+          "a named line: offered only its auction and buys it although a cheaper one stands");
+    for (std::uint32_t const id : {13u, 14u, 99u})
+    {
+        BuyChoice const none = ChooseLine(offers, named(id), BUYER_HOUSE, own, buyer);
+        Check(OffersFor(offers, named(id), BUYER_HOUSE, own).empty() && none.kind == BuyKind::Skip &&
+                  none.reason == AuctionWords::Reason::NoOffer,
+              "a named auction in another house, the bot's own or not listed: no offer, auction " + std::to_string(id));
+    }
+    BuyChoice const over = ChooseLine(offers, named(15), BUYER_HOUSE, own, buyer);
+    Check(over.kind == BuyKind::Skip && over.reason == AuctionWords::Reason::OverCeiling,
+          "a named auction over the ceiling: skipped although a cheaper one is under it");
+
+    BuyLine gear = any;
+    gear.owner = LineOwner::Gear;
+    Check(DecidedKey(any) == DecidedKey(gear) && DecidedKey(named(11)) != DecidedKey(named(12)) &&
+              DecidedKey(named(11)) != DecidedKey(any),
+          "decided: unnamed lines of one entry are one, each named auction its own");
+}
+
 void SearchBuying()
 {
     CheckBuyListHand();
+    CheckNamedLine();
     WidthTally width;
     VisitTally rule;
     VisitSeen seen;
