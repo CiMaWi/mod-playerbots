@@ -38,8 +38,6 @@ namespace
 {
 // The bot looks for the banker once it is this close to the spawn (the spawn is the banker's own position)
 constexpr float BANKER_SEARCH_YARDS = 20.0f;
-// The nearest banker spawns on the map looked through for one whose faction serves the bot
-constexpr size_t BANKER_CANDIDATES = 32;
 
 template <typename Verdicts>
 auto VerdictOf(Verdicts& verdicts, uint32 itemGuid) -> decltype(&verdicts.front())
@@ -343,61 +341,6 @@ constexpr VisitKindRow BANK_VISIT{.startWord = "bank",
                                   .act = &MoveNext,
                                   .end = &WriteBankEnd};
 }  // namespace
-
-std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
-{
-    refusal = nullptr;
-    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
-        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!bot || !indexes)
-    {
-        refusal = "the planner's indexes are not ready";
-        return std::nullopt;
-    }
-
-    std::vector<Planner::Nearby> const nearest =
-        indexes->Nearest(Planner::ServiceKind::Banker, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                         bot->GetPositionZ(), BANKER_CANDIDATES);
-    if (nearest.empty())
-    {
-        refusal = "no banker on the map";
-        return std::nullopt;
-    }
-
-    for (Planner::Nearby const& candidate : nearest)
-    {
-        Planner::Service const& service = indexes->services[candidate.index];
-        if (!BankerServes(bot, service.factionTemplate))
-            continue;
-        return BankerSpot{service.mapId, service.x, service.y, service.z, service.entry, candidate.distance};
-    }
-    refusal = "no banker near the bot serves its faction";
-    return std::nullopt;
-}
-
-bool BankerServes(Player const* bot, uint32 factionTemplate)
-{
-    // The banker's reaction must be above Unfriendly
-    return bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(factionTemplate), bot) > REP_UNFRIENDLY;
-}
-
-std::optional<BankerSpot> BankerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards)
-{
-    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
-        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!bot || !indexes)
-        return std::nullopt;
-
-    for (Planner::Nearby const& candidate :
-         indexes->Nearest(Planner::ServiceKind::Banker, mapId, x, y, z, BANKER_CANDIDATES, yards))
-    {
-        Planner::Service const& service = indexes->services[candidate.index];
-        if (BankerServes(bot, service.factionTemplate))
-            return BankerSpot{service.mapId, service.x,     service.y,
-                              service.z,     service.entry, bot->GetExactDist(service.x, service.y, service.z)};
-    }
-    return std::nullopt;
-}
 
 VisitKindRow const& BankVisitRow() { return BANK_VISIT; }
 
