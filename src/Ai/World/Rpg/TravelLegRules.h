@@ -2216,17 +2216,45 @@ struct VesselLeaveFacts
 {
     std::uint64_t aboardGuid{0};  // the vessel the bot rides (its membership), 0: none
     bool tripHeld{false};
-    bool owned{false};     // a follower at its master's vessel, a player's bot, a test placement, a battleground
-    bool underWay{false};  // the trip-less get-off has begun (OffFirst::sinceMs)
+    bool owned{false};      // a follower at its master's vessel, a player's bot, a test placement, a battleground
+    bool underWay{false};   // the trip-less get-off has begun (OffFirst::sinceMs)
+    bool car{false};        // the vessel is a lift's or the tram's car
+    bool carLeaves{false};  // that car has stop records with leaving rows
 };
 
+// A lift's or the tram's car is a ship to this rule where its stop records have leaving rows (G412: a rider with no
+// trip stood on its car for good); a car without them is not, it would give a stuck_aboard every period
 constexpr VesselLeave DecideVesselLeave(VesselLeaveFacts const& facts)
 {
     if (facts.tripHeld || facts.owned)
         return VesselLeave::None;
     if (facts.underWay)
         return VesselLeave::Step;
-    return facts.aboardGuid ? VesselLeave::Begin : VesselLeave::None;
+    return facts.aboardGuid && (!facts.car || facts.carLeaves) ? VesselLeave::Begin : VesselLeave::None;
+}
+
+// The travel's reasons to keep the bot on foot (the mount policy's onFoot; TravelKeepsOnFoot), one rule for every
+// status (G411: an errand's rider was asked only about its tame or stable stop and mounted aboard): an errand's tame
+// (Tame Beast is not cast mounted; WU21b-2) or stable visit (a mounted hunter's pet is away, WU21c), a get-off, the
+// trip-less one too (PA39b: a mount cast on every check held its deck walk and crossing, the bot rode on to
+// stuck_aboard), and a transport leg from its dock on (WT54-7: also while it waits there)
+struct OnFootFacts
+{
+    bool errandVisit{false};    // an errand arrived at its tame or stable stop
+    bool vesselOff{false};      // the trip-less get-off is under way (VesselLeave)
+    Trip const* trip{nullptr};  // the held trip, null: none
+};
+
+inline bool KeepsOnFoot(OnFootFacts const& facts)
+{
+    if (facts.errandVisit || facts.vesselOff)
+        return true;
+    if (!facts.trip)
+        return false;
+    Trip const& trip = *facts.trip;
+    if (trip.offFirst.sinceMs)
+        return true;
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
 }
 
 // The trip-less get-off's end: ashore, `Transport left` with the seconds since its off_first

@@ -3638,6 +3638,21 @@ void CheckVesselLeave()
                   f.underWay = true;
               }) == VesselLeave::Step,
           "vessel leave: ashore with one under way: steps once more (the exit's sample ends it)");
+    // G412: a lift's or the tram's car is left by the same get-off where its stop records have leaving rows; a car
+    // without them would give a stuck_aboard every period
+    VesselLeaveFacts car = aboard;
+    car.car = true;
+    car.carLeaves = true;
+    Check(DecideVesselLeave(car) == VesselLeave::Begin,
+          "vessel leave: a car with leaving rows, no trip: the get-off begins (G412)");
+    car.carLeaves = false;
+    Check(DecideVesselLeave(car) == VesselLeave::None, "vessel leave: a car without leaving rows: nothing");
+    car.carLeaves = true;
+    car.tripHeld = true;
+    Check(DecideVesselLeave(car) == VesselLeave::None, "vessel leave: a car's rider with a trip: its own get-off");
+    car.tripHeld = false;
+    car.owned = true;
+    Check(DecideVesselLeave(car) == VesselLeave::None, "vessel leave: a car's owned rider: not this rule");
 
     // The full sequence on a trip without legs: off_first, waits at sea, deck walk, crossing, ashore: left
     Trip off;
@@ -3679,6 +3694,44 @@ void CheckVesselLeave()
               Words(again) == "off_first,stuck_aboard",
           "vessel leave: the second period: one off_first, one stuck_aboard, nothing between");
     Check(std::string(TravelLegs::TransportSource(TransportEvent::Left)) == "left", "vessel leave: the word left");
+}
+
+// G411: who stays on foot (TravelKeepsOnFoot's rule, TravelLegs::KeepsOnFoot) is one rule for every status: an
+// errand's tame or stable visit is one reason among the get-offs and the transport leg, not the errand's only answer
+void CheckTravelOnFoot()
+{
+    using TravelLegs::KeepsOnFoot;
+    using TravelLegs::OnFootFacts;
+
+    Trip const lift = StartedTrip({LiftLeg()}, 0);
+    Trip offFirst = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+    TravelLegs::BeginOffFirst(offFirst, SHIP, VESSEL, 300000, 2000);
+    Trip const walk = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+
+    OnFootFacts facts;
+    facts.trip = &lift;
+    Check(KeepsOnFoot(facts), "on foot: an errand's rider at its transport leg stays on foot (G411)");
+    facts.trip = &offFirst;
+    Check(KeepsOnFoot(facts), "on foot: an errand's rider getting off first stays on foot");
+    facts.trip = nullptr;
+    facts.vesselOff = true;
+    Check(KeepsOnFoot(facts), "on foot: an errand's rider on the trip-less get-off stays on foot");
+    facts.vesselOff = false;
+    facts.errandVisit = true;
+    Check(KeepsOnFoot(facts), "on foot: an errand's tame or stable visit, no trip: on foot");
+    facts.errandVisit = false;
+    facts.trip = &walk;
+    Check(!KeepsOnFoot(facts), "on foot: an errand's walking leg may mount");
+    facts.trip = nullptr;
+    Check(!KeepsOnFoot(facts), "on foot: an errand with no trip and no visit may mount");
+
+    OnFootFacts other;
+    other.trip = &lift;
+    Check(KeepsOnFoot(other), "on foot: any other status at its transport leg stays on foot");
+    other.trip = &walk;
+    Check(!KeepsOnFoot(other), "on foot: any other status on a walking leg may mount");
+    other.trip = nullptr;
+    Check(!KeepsOnFoot(other), "on foot: no trip, no get-off: may mount");
 }
 
 void CheckDeckContact()
@@ -4085,6 +4138,7 @@ int main()
     CheckOffFirst();
     CheckDeckContact();
     CheckVesselLeave();
+    CheckTravelOnFoot();
     CheckNextDeadline();
     CheckWalkStartWord();
     std::cout << passed << " passed, " << failed << " failed\n";
