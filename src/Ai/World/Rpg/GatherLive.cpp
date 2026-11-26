@@ -342,9 +342,8 @@ void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Ma
         if (std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone))
             nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
     CreatureStops creatures = CreatureStopsOf(snapshot, path, data, gatherer);
-    // A test's nofight bot kills nothing (Situation::fightsHeld): no creature stop; a refusal is still named
-    if (situation.fightsHeld)
-        creatures.stops.clear();
+    // No creature stop for a test's nofight bot or one without a weapon; a refusal is still named
+    situation.gatherUnarmed = Gather::DropCreatureStops(creatures.stops, situation.fightsHeld, snapshot.unarmed);
     situation.gatherRefusedItem = creatures.refusedItem;
     situation.gatherRefusedLevels = creatures.refusedLevels;
     nodes.insert(nodes.end(), std::make_move_iterator(creatures.stops.begin()),

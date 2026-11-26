@@ -1467,6 +1467,26 @@ void RefusalCases()
           "refused: a live entry keeps its first cause and still drops the stop");
 }
 
+// WPC10: no creature stop without a weapon in the main hand. Written first: unarmed or fights held leaves no
+// creature stop and every node stop; an armed bot that may fight keeps the list; only unarmed refusals are counted
+void UnarmedCases()
+{
+    Node creature = NodeAt(31, MINING, 1, 40.0f, 0.0f, 300, 1.0f, 200);
+    creature.kind = Gather::StopKind::Creature;
+    std::vector<Node> const nodes = {NodeAt(30, MINING, 1, 30.0f, 0.0f, 300, 1.0f, 200), creature};
+    for (bool const fightsHeld : {false, true})
+        for (bool const unarmed : {false, true})
+        {
+            std::vector<Node> stops = nodes;
+            std::uint32_t const refused = Gather::DropCreatureStops(stops, fightsHeld, unarmed);
+            bool const dropped = fightsHeld || unarmed;
+            Check(stops.size() == (dropped ? 1u : 2u) && stops[0].id == 30, "unarmed: only creature stops are dropped");
+            Check(refused == (unarmed ? 1u : 0u), "unarmed: the count is the missing weapon's refusals");
+        }
+    std::vector<Node> only = {nodes[0]};
+    Check(Gather::DropCreatureStops(only, false, true) == 0 && only.size() == 1, "unarmed: nothing to refuse, no row");
+}
+
 // The walk's watch (WR13d-2): movement against an anchor, not the distance to the stop. Ticks of 1 s; `walk` steps
 // the bot by `step` yards a tick for `ticks` ticks along x and says whether the watch fired on any of them; `fresh`
 // starts a new stop's walk
@@ -1645,6 +1665,7 @@ int main(int argc, char** argv)
     DownCases();
     SightCases();
     RefusalCases();
+    UnarmedCases();
     WalkCases();
     Search();
     CreatureCases();

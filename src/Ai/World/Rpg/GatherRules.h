@@ -180,6 +180,16 @@ struct Circuit
     double worthPerLap{0.0};
 };
 
+// A test's nofight bot kills nothing, and a bot with no weapon in its main hand is planned no creature stop
+// (professions WPC10, DECISIONS WPC.15). Returns how many stops the missing weapon refused.
+inline std::uint32_t DropCreatureStops(std::vector<Node>& stops, bool fightsHeld, bool unarmed)
+{
+    if (!fightsHeld && !unarmed)
+        return 0;
+    auto const dropped = std::erase_if(stops, [](Node const& node) { return node.kind == StopKind::Creature; });
+    return unarmed ? static_cast<std::uint32_t>(dropped) : 0;
+}
+
 // A creature the bot may fight (WR20b): not friendly to its side and not refused by the fight estimate (its top level
 // more than Materials::FIGHT_LEVELS_ABOVE above the bot, or an elite near its level for a bot alone)
 inline bool MayFight(Node const& node, Gatherer const& bot)

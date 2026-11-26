@@ -197,6 +197,7 @@ void FillBags(Player* bot, Snapshot& snapshot)
                 ++free;
     }
     snapshot.bagFree = static_cast<uint16>(free);
+    snapshot.unarmed = !bot->GetWeaponForAttack(BASE_ATTACK);
 
     GearWear const wear = ReadGearWear(bot);
     snapshot.durabilityPercent = wear.durabilityPercent;
@@ -912,6 +913,11 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         WorldLog::Decision(
             bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
             Professions::ReasonWord(Professions::Reason::BagsFull), static_cast<float>(taken.gatherBagsFull));
+    // A bot without a weapon was refused creature stops (professions WPC10): one skip row per change
+    if (taken.gatherUnarmed && WorldLog::Active() && (!lastPlan || !lastPlan->gatherUnarmed))
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
+            Professions::ReasonWord(Professions::Reason::Unarmed), static_cast<float>(taken.gatherUnarmed));
     // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
     if (!answer->plan->classFailed.empty())
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
