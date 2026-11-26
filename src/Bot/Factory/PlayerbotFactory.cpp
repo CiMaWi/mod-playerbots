@@ -2513,7 +2513,8 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         if (incremental && oldItem)
         {
             float old_score = calculator.CalculateItem(oldItem->GetEntry(), oldItem->GetItemRandomPropertyId(), slot);
-            if (bestScoreForSlot < 1.2f * old_score)
+            // a worn score at or below 0 counts as none: the new item needs a score of at least 0
+            if (bestScoreForSlot < 1.2f * std::max(old_score, 0.0f))
                 continue;
         }
         uint32 replacedLevel = 0;  // the world log's Equip amount is the new item's level over it
