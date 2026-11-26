@@ -1039,7 +1039,7 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
         auto const none = [](std::uint32_t) { return 0u; };
         AuctionRules::CopperWeight const atReserve{1.0f, 1.0f};
         std::vector<AuctionRules::BuyLine> const lines =
-            AuctionRules::BuyList(AuctionRules::PathLines(path.materials, auctionKind, atReserve, none, none));
+            AuctionRules::BuyList(AuctionRules::PathLines(path.materials, auctionKind, atReserve, none, none, none));
         std::size_t expected = 0;
         for (SkillPath::Material const& material : path.materials)
         {
@@ -1057,7 +1057,7 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
             // control: a ceiling at the auction's own cost is never above that cost
             controlCaught +=
                 AuctionRules::CeilingOf(AuctionRules::PathLine(material.item, material.wanted, material.copperEach, 0,
-                                                               atReserve, 0)) <= material.copperEach;
+                                                               atReserve, 0, 0)) <= material.copperEach;
         }
         lineViolations += lines.size() != expected;
         return lines.size();

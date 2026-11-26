@@ -162,7 +162,7 @@ MarketSim::Market HandMarket(std::uint32_t seed)
         else if (index == 4)
             bot.lines.push_back(AuctionRules::LineOf(LineOwner::Gear, HAND_WEAPON, 1, 4000.0, -1.0, 1.0f, 3000));
         else if (index == 5)
-            bot.lines.push_back(AuctionRules::PathLine(HAND_CLOTH, 20, 140, 140, AT_RESERVE, 50));
+            bot.lines.push_back(AuctionRules::PathLine(HAND_CLOTH, 20, 140, 140, AT_RESERVE, 50, 0));
         market.bots.push_back(bot);
     }
     Band& lone = market.bands[1];
@@ -249,7 +249,7 @@ MarketSim::Market RandomMarket(std::uint32_t seed)
             else if (owner == 1)
                 bot.lines.push_back(AuctionRules::PathLine(goods.item, units, static_cast<std::uint32_t>(worth),
                                                            static_cast<std::uint32_t>(worth), AT_RESERVE,
-                                                           goods.sellPrice));
+                                                           goods.sellPrice, 0));
             else
                 bot.lines.push_back(AuctionRules::LineOf(LineOwner::Gear, goods.item, 1, worth,
                                                          dice.Pick(50) ? -1.0 : worth * dice.Real(0.5, 1.5),
@@ -887,13 +887,20 @@ public:
                 {},      market};
     }
 
-    // The path's lines at its bot's copper weight (PlannerUpkeep.cpp BuyListOf: the newest plan's need)
+    // The path's lines at its bot's copper weight (PlannerUpkeep.cpp BuyListOf: the newest plan's need), at most a
+    // stocking vendor's price (the index's vendor rows, as AuctionRules::Table's vendorStocked reads them)
     std::vector<AuctionRules::BuyLine> LinesOf(SkillPath::Path const& path, SkillPath::PathBot const& bot,
                                                std::function<std::uint32_t(std::uint32_t)> const& held) const
     {
-        return AuctionRules::PathLines(path.materials, static_cast<std::uint8_t>(Materials::Kind::Auction),
-                                       {bot.rates.exchange, bot.rates.factor}, held,
-                                       [this](std::uint32_t item) { return SellOf(item); });
+        return AuctionRules::PathLines(
+            path.materials, static_cast<std::uint8_t>(Materials::Kind::Auction), {bot.rates.exchange, bot.rates.factor},
+            held, [this](std::uint32_t item) { return SellOf(item); },
+            [this](std::uint32_t item)
+            {
+                Recipes::VendorRow const* vendor = _index->Vendor(item);
+                return vendor && vendor->stocked ? vendor->buyCopper / std::max<std::uint32_t>(vendor->buyCount, 1)
+                                                 : 0u;
+            });
     }
 
     void Weigh(AuctionIndex::Snapshot const& snapshot) override

@@ -1977,8 +1977,9 @@ void CheckBuyListHand()
                                                     {822, 9, 0, AUCTION_KIND, 90, 60},
                                                     {823, 2, 2, AUCTION_KIND, 0, 70}};
     auto const payoutOf = [](std::uint32_t) { return 4u; };
+    auto const noVendor = [](std::uint32_t) { return 0u; };
     std::vector<BuyLine> const pathLines =
-        BuyList(PathLines(materials, AUCTION_KIND, atReserve, [](std::uint32_t) { return 0u; }, payoutOf));
+        BuyList(PathLines(materials, AUCTION_KIND, atReserve, [](std::uint32_t) { return 0u; }, payoutOf, noVendor));
     for (BuyLine const& line : pathLines)
         std::cout << "  path line " << line.item << " x" << line.units << " ceiling " << CeilingOf(line) << '\n';
     Check(pathLines.size() == 2 && pathLines[0].item == 820 && pathLines[0].units == 5 &&
@@ -2002,7 +2003,7 @@ void CheckBuyListHand()
                 std::ceil(static_cast<double>(TYPICAL) * weight.factor / static_cast<double>(weight.exchange)));
             std::vector<BuyLine> const only = BuyList(PathLines(
                 std::vector<PathMaterialRow>{{825, 4, 4, AUCTION_KIND, 0, counted}}, AUCTION_KIND, weight,
-                [](std::uint32_t) { return 0u; }, payoutOf));
+                [](std::uint32_t) { return 0u; }, payoutOf, noVendor));
             std::uint64_t const ceiling = only.empty() ? 0 : CeilingOf(only[0]);
             std::cout << "  auction-only path line at share " << share << ": counted " << counted << " c, ceiling "
                       << ceiling << " c (typical " << TYPICAL << ")\n";
@@ -2022,13 +2023,68 @@ void CheckBuyListHand()
               "control: the counted copper at factor 1 pays twice the price at share 2 and stays under it at 0.1 "
               "(caught)");
     }
+    // AH.19 (AH9b): a material a spawned vendor stocks is paid at most the vendor's price, at any need factor. The path
+    // counts a vendor's unit at its price x the factor the bot had then (MaterialRules.h Bought, shown as copper at the
+    // exchange, rounded up); a bot whose factor fell since reads that over its factor now, a multiple of the price.
+    // Swept: the share then and now, the vendor as the other way or unseen by the path (auction-only). Control: the
+    // same lines without the vendor's price pay that multiple
+    {
+        constexpr std::uint32_t VENDOR = 40;
+        std::vector<float> const shares = {0.125f, 0.5f, 1.0f, 2.0f, 4.0f};  // exact in binary
+        auto const vendorOf = [](std::uint32_t) { return VENDOR; };
+        std::size_t over = 0;
+        std::size_t notVendor = 0;
+        std::size_t notLess = 0;
+        std::size_t controlOver = 0;
+        std::uint64_t flushCeiling = 0;
+        std::uint64_t flushControl = 0;
+        for (float const then : shares)
+            for (float const now : shares)
+                for (bool const vendorIsOther : {true, false})
+                {
+                    CopperWeight const weight{1.0f, now};
+                    auto const counted = static_cast<std::uint32_t>(std::ceil(static_cast<double>(VENDOR) * then));
+                    std::vector<PathMaterialRow> const row = {
+                        {826, 3, 3, AUCTION_KIND, vendorIsOther ? counted : 0u, counted}};
+                    auto const ceilingOf = [&](auto const& vendor)
+                    {
+                        std::vector<BuyLine> const lines =
+                            BuyList(PathLines(row, AUCTION_KIND, weight, noVendor, payoutOf, vendor));
+                        return lines.empty() ? std::uint64_t{0} : CeilingOf(lines[0]);
+                    };
+                    std::uint64_t const ceiling = ceilingOf(vendorOf);
+                    std::uint64_t const control = ceilingOf(noVendor);
+                    over += ceiling > VENDOR;
+                    // as rich as when the path counted it or richer: the vendor's price; poorer: less
+                    notVendor += now <= then && ceiling != VENDOR;
+                    notLess += now > then && ceiling >= VENDOR;
+                    controlOver += control > VENDOR;
+                    if (then == 1.0f && now == 0.125f && vendorIsOther)
+                    {
+                        flushCeiling = ceiling;
+                        flushControl = control;
+                    }
+                }
+        std::cout << "  vendor-stocked path line (vendor " << VENDOR << " c), counted at the reserve, now at share "
+                  << "1/8: ceiling " << flushCeiling << " c; control without the cap " << flushControl << " c\n";
+        Check(!over && !notVendor && !notLess,
+              "a vendor-stocked path material is paid at most the vendor's price at every share then and now, the "
+              "price itself for a bot as rich as when its path counted it, less for a poorer one (" +
+                  std::to_string(over) + " over, " + std::to_string(notVendor) + " not the price, " +
+                  std::to_string(notLess) + " not less)");
+        Check(controlOver > 0 && flushControl == VENDOR * 8,
+              "control: without the vendor's price a bot richer than when its path counted pays above it, eight times "
+              "from the reserve to share 1/8 (" +
+                  std::to_string(controlOver) + " over, caught)");
+    }
     // The kept path is older than the bags (WA7 review): 824's path uses 12 and wanted 7 with 5 held. A line asks for
     // what the bot lacks now, never for more than the path's want. Control: a rule that does not read the bags
     std::vector<PathMaterialRow> const kept = {{824, 12, 7, AUCTION_KIND, 90, 60}};
     auto const unitsHolding = [&](std::uint32_t heldNow, bool readsBags = true)
     {
         std::vector<BuyLine> const now = BuyList(PathLines(
-            kept, AUCTION_KIND, atReserve, [=](std::uint32_t) { return readsBags ? heldNow : 0u; }, payoutOf));
+            kept, AUCTION_KIND, atReserve, [=](std::uint32_t) { return readsBags ? heldNow : 0u; }, payoutOf,
+            noVendor));
         return now.empty() ? 0u : now[0].units;
     };
     std::cout << "  path line 824 (uses 12, wanted 7) holding 5: x" << unitsHolding(5) << ", 9: x" << unitsHolding(9)
@@ -2040,13 +2096,13 @@ void CheckBuyListHand()
     Check(unitsHolding(40, false) == 7,
           "control: a path line that does not read the bags buys 7 units of what the bot holds (caught)");
     BuyLine const atAuctionCost =
-        PathLine(820, 5, 60, 0, atReserve, 4);  // control: the ceiling from the auction's own cost
+        PathLine(820, 5, 60, 0, atReserve, 4, 0);  // control: the ceiling from the auction's own cost
     Check(
         TypicalCopper(pathLines.empty() ? BuyLine{} : pathLines[0], 60) == 300 && TypicalCopper(atAuctionCost, 60) == 0,
         "typical 60 under the other way's 90: the path claims 300 for 5; control: a ceiling at the auction's own "
         "cost claims nothing (caught)");
-    std::vector<BuyLine> const mixed =
-        BuyList({PathLine(820, 5, 60, 90, atReserve, 4), BagLine(803, 5000, 0, {}), UseLine(804, 4, 120, 100, 5, {})});
+    std::vector<BuyLine> const mixed = BuyList(
+        {PathLine(820, 5, 60, 90, atReserve, 4, 0), BagLine(803, 5000, 0, {}), UseLine(804, 4, 120, 100, 5, {})});
     Check(mixed.size() == 3 && mixed[0].owner == LineOwner::Use && mixed[1].owner == LineOwner::Bag &&
               mixed[2].owner == LineOwner::Path,
           "a path line sorts after the use and bag lines");
