@@ -5,6 +5,7 @@
  */
 
 #include "BuyAction.h"
+#include "AuctionBuyList.h"
 #include "BudgetValues.h"
 #include "DBCStores.h"
 #include "Event.h"
@@ -23,9 +24,10 @@
 
 namespace
 {
-// A persistent bot buys a vendor bag when its price is at most its worth (the slots it adds over the bag it replaces)
-// and fits the budget above the money reserve (WT.5)
-bool ShouldBuyVendorBag(Player* bot, AiObjectContext* context, ItemTemplate const* proto, uint32 price)
+// A persistent bot buys a vendor bag when its price is at most its worth (the slots it adds over the bag it replaces,
+// at the bot's need factor as the auction's bag line, AH.5) and fits the budget above the money reserve (WT.5)
+bool ShouldBuyVendorBag(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, ItemTemplate const* proto,
+                        uint32 price)
 {
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
     WorldTravel::SlotBand const& band = config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())];
@@ -34,8 +36,10 @@ bool ShouldBuyVendorBag(Player* bot, AiObjectContext* context, ItemTemplate cons
 
     WorldTravel::BagBuyInput input;
     input.Price = price;
-    input.Worth = WorldTravel::BagWorth(rates, WorldTravel::FreeGeneralSlots(bot), proto->ContainerSlots,
-                                        ItemUsageValue::SmallestBagSize(bot), band.BagHorizonHours);
+    input.Worth =
+        AuctionRules::BagCeiling(WorldTravel::BagWorth(rates, WorldTravel::FreeGeneralSlots(bot), proto->ContainerSlots,
+                                                       ItemUsageValue::SmallestBagSize(bot), band.BagHorizonHours),
+                                 0, Planner::CopperWeightOf(botAI));
     input.Gold = bot->GetMoney();
     // Everything saved before gear: guild, repairs, ammo, training and travel
     input.Reserve = AI_VALUE2(uint32, "total money needed for", uint32(NeedMoneyFor::gear)) -
@@ -156,7 +160,8 @@ bool BuyAction::Execute(Event event)
                         // A bag bought earlier that could not be equipped yet would be bought again
                         if (boughtBag || orderedBags ||
                             WorldTravel::CarriesSpareBag(bot, ItemUsageValue::SmallestBagSize(bot)) ||
-                            !ShouldBuyVendorBag(bot, context, proto, bagPrice) || !BuyItem(tItems, vendorguid, proto))
+                            !ShouldBuyVendorBag(botAI, bot, context, proto, bagPrice) ||
+                            !BuyItem(tItems, vendorguid, proto))
                             break;
 
                         boughtBag = true;

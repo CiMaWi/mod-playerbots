@@ -118,7 +118,8 @@ PathWorld WorldOf(RecipeIndex const& index, World const& world, Fault fault = Fa
 }
 
 // A market for a world (WA7b): three of four items priced from a hash of the item (nothing drawn from the search's
-// generator), at one to five times its sell price plus up to 40 copper, sold steadily
+// generator), at one to five times its sell price plus up to 40 copper, sold steadily: 10 sales in 24 listing hours
+// (AH5's record)
 Market::View SaleMarket(World const& world)
 {
     auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
@@ -133,6 +134,7 @@ Market::View SaleMarket(World const& world)
         typical.unitPrice = static_cast<std::uint32_t>(copper) * (1 + (hash >> 24) % 5) + (hash >> 16) % 40 + 1;
         typical.sample = 10;
         typical.weight = 10.0;
+        snapshot->items[fact.id].record = {10.0, 24.0};
     }
     return {snapshot, {}, {}, {}};
 }
@@ -1078,6 +1080,7 @@ void CheckSaleClaim()
                 typical.unitPrice = price;
                 typical.sample = 10;
                 typical.weight = 10.0;
+                snapshot->items[item].record = {10.0, 24.0};
             }
         return Market::View{snapshot, {}, {}, {}};
     };

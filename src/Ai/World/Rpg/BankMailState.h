@@ -116,6 +116,8 @@ struct AuctionVisitData
     uint32 awaitingEntry{0};
     uint32 ask{0};  // its buyout, copper
     uint32 floor{0};
+    uint32 chance{0};           // its sale chance at its duration, permille (the chance row, AH6)
+    uint32 hours{0};            // its duration
     uint32 listingsBefore{0};   // the add hook's count of the bot's listings when it was queued (AuctionMemory::Taken)
     uint32 moneyBefore{0};      // the bot's copper when it was queued
     bool relist{false};         // listed again after an expiry
@@ -138,6 +140,7 @@ struct AuctionVisitData
     uint32 awaitSpendable{0};     // the gold the market could spend at the choice
     uint8 awaitKind{0};           // AuctionRules::BuyKind
     uint8 awaitReason{0};         // AuctionWords::Reason of a bid: why not the buyout
+    uint32 awaitFactor{0};        // the line's need factor against the exchange, percent (the factor row, AH9)
     bool awaitBag{false};
     uint32 bought{0};  // buyouts the core took
     uint32 bids{0};    // bids the core took

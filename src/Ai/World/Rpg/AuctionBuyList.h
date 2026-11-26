@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -60,29 +61,72 @@ inline BuyLine LineOf(LineOwner owner, std::uint32_t item, std::uint32_t units, 
     return line;
 }
 
-// Item use's line: worth and the vendor's price are copper, so the factor cancels and stays 1 (an exact ceiling);
-// vendorCopperEach 0: no vendor sells it
+// A bot's copper weight as the planner keeps it (Planner::Goals::Need, Materials::Rates): a copper's neutral worth and
+// the bot's need factor. The path counts its materials in copper at the neutral exchange; a price is paid at the factor
+struct CopperWeight
+{
+    float exchange{0.0f};
+    float factor{0.0f};
+};
+
+// The need factor against the neutral exchange (1 at the reserve, more for a bot short of gold); 0 unknown
+inline float ShareOf(CopperWeight weight) { return weight.exchange > 0.0f ? weight.factor / weight.exchange : 0.0f; }
+
+// The share a use or bag line pays at (AH.5): the bot's, or the reserve's 1 while its need is unknown (no plan yet)
+inline float PriceShare(CopperWeight weight)
+{
+    float const share = ShareOf(weight);
+    return share > 0.0f ? share : 1.0f;
+}
+
+// Item use's line (AH.5, PLAN 3.1 R3): the worth is copper at the neutral exchange and a price is paid at the need
+// factor, so the ceiling is the worth over the bot's share, at most the vendor's price where a spawned vendor stocks
+// the item (vendorCopperEach 0: none does)
 inline BuyLine UseLine(std::uint32_t item, std::uint32_t units, std::uint32_t worthCopperEach,
-                       std::uint32_t vendorCopperEach, std::uint32_t payoutCopperEach)
+                       std::uint32_t vendorCopperEach, std::uint32_t payoutCopperEach, CopperWeight weight)
 {
-    return LineOf(LineOwner::Use, item, units, worthCopperEach, vendorCopperEach ? vendorCopperEach : -1.0, 1.0f,
-                  payoutCopperEach);
+    float const share = PriceShare(weight);
+    return LineOf(LineOwner::Use, item, units, worthCopperEach,
+                  vendorCopperEach ? static_cast<double>(vendorCopperEach) * share : -1.0, share, payoutCopperEach);
 }
 
-// A bag by the worth of the slots it adds (copper over the horizon); vendorCopper 0: no vendor sells it
-inline BuyLine BagLine(std::uint32_t item, std::uint32_t worthCopper, std::uint32_t vendorCopper)
+// A bag by the worth of the slots it adds (ItemWorthRules.h BagWorth: copper over the horizon at the neutral exchange),
+// priced as a use line: over the bot's share, at most the price of a vendor that stocks it (vendorCopper 0: none)
+inline BuyLine BagLine(std::uint32_t item, std::uint32_t worthCopper, std::uint32_t vendorCopper, CopperWeight weight)
 {
-    return LineOf(LineOwner::Bag, item, 1, worthCopper, vendorCopper ? vendorCopper : -1.0, 1.0f, 0);
+    float const share = PriceShare(weight);
+    return LineOf(LineOwner::Bag, item, 1, worthCopper, vendorCopper ? static_cast<double>(vendorCopper) * share : -1.0,
+                  share, 0);
 }
 
-// A skill path's material (auction house WA7b, PLAN 3.7): worth and getting are both what getting a unit the
-// cheapest other way costs (the path's saving bounds the price), copper, so the factor stays 1; otherCopperEach 0: no
-// other way, no worth known, no line
-inline BuyLine PathLine(std::uint32_t item, std::uint32_t units, std::uint32_t otherCopperEach,
-                        std::uint32_t payoutCopperEach)
+// The bag's worth as copper to the bot: its bag line's ceiling, which a vendor's purchase (ShouldBuyBag) takes as the
+// worth too, so one bag has one worth to a bot (AH.5)
+inline std::uint32_t BagCeiling(std::uint32_t worthCopper, std::uint32_t vendorCopper, CopperWeight weight)
 {
-    return LineOf(LineOwner::Path, item, units, otherCopperEach, otherCopperEach ? otherCopperEach : -1.0, 1.0f,
-                  payoutCopperEach);
+    return static_cast<std::uint32_t>(std::min<std::uint64_t>(CeilingOf(BagLine(0, worthCopper, vendorCopper, weight)),
+                                                              std::numeric_limits<std::uint32_t>::max()));
+}
+
+// A skill path's material (auction house WA7b and AH8, PLAN 3.1 R3): as every line, the lesser of worth and getting
+// over the bot's need factor, both counted by the path at the neutral exchange. Getting is what the cheapest other way
+// costs (otherCopperEach), and so is the worth: the path's saving bounds the price. Where the auction is the only
+// source (otherCopperEach 0) the worth is what the path counted for a unit there (copperEach): the bot pays up to the
+// price its chosen climb assumed, and a dearer lot is over its ceiling. A material a spawned vendor stocks is paid at
+// most the vendor's price (AH.19, as a bag: vendorCopperEach, 0 none), whatever the bot's factor was when the path
+// counted it
+inline BuyLine PathLine(std::uint32_t item, std::uint32_t units, std::uint32_t copperEach,
+                        std::uint32_t otherCopperEach, CopperWeight weight, std::uint32_t payoutCopperEach,
+                        std::uint32_t vendorCopperEach)
+{
+    float const share = ShareOf(weight);
+    double const worth = otherCopperEach ? otherCopperEach : copperEach;
+    double getting = otherCopperEach ? otherCopperEach : -1.0;
+    if (vendorCopperEach)
+    {
+        double const vendor = static_cast<double>(vendorCopperEach) * share;
+        getting = getting >= 0.0 ? std::min(getting, vendor) : vendor;
+    }
+    return LineOf(LineOwner::Path, item, units, worth, getting, share, payoutCopperEach);
 }
 
 // The skill path's lines: each material whose cheapest source is the auction (source == auctionKind, the pricer's
@@ -90,10 +134,11 @@ inline BuyLine PathLine(std::uint32_t item, std::uint32_t units, std::uint32_t o
 // path uses beyond the units the bot holds at this moment (heldNow(item): bags and bank, as the path counts them). The
 // kept path is older than the bags, so a bot that gathered or was sent the material since buys no unit it already
 // holds, and one whose bags emptied never asks for more than the path's want. Recipes and ranks stay with the trainers
-// and vendors. payout(item): one unit's vendor payout in copper
-template <typename MaterialList, typename Held, typename Payout>
-std::vector<BuyLine> PathLines(MaterialList const& materials, std::uint8_t auctionKind, Held const& heldNow,
-                               Payout const& payout)
+// and vendors. weight: the bot's copper weight now; payout(item): one unit's vendor payout in copper; vendor(item): a
+// unit's price at a spawned vendor that stocks it, 0 none
+template <typename MaterialList, typename Held, typename Payout, typename Vendor>
+std::vector<BuyLine> PathLines(MaterialList const& materials, std::uint8_t auctionKind, CopperWeight weight,
+                               Held const& heldNow, Payout const& payout, Vendor const& vendor)
 {
     std::vector<BuyLine> lines;
     for (auto const& material : materials)
@@ -103,7 +148,8 @@ std::vector<BuyLine> PathLines(MaterialList const& materials, std::uint8_t aucti
         std::uint32_t const held = heldNow(material.item);
         std::uint32_t const lacking = material.used > held ? material.used - held : 0;
         if (std::uint32_t const units = std::min<std::uint32_t>(material.wanted, lacking))
-            lines.push_back(PathLine(material.item, units, material.otherCopperEach, payout(material.item)));
+            lines.push_back(PathLine(material.item, units, material.copperEach, material.otherCopperEach, weight,
+                                     payout(material.item), vendor(material.item)));
     }
     return lines;
 }
