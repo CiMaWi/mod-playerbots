@@ -5,6 +5,12 @@
  */
 
 #include "EquipAction.h"
+
+#include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "ItemPackets.h"
@@ -13,7 +19,6 @@
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
 #include "StatsWeightCalculator.h"
-#include <utility>
 
 bool EquipAction::Execute(Event event)
 {
@@ -30,6 +35,13 @@ void EquipAction::EquipItems(ItemIds ids)
         FindItemByIdVisitor visitor(*i);
         EquipItem(&visitor);
     }
+}
+
+void EquipAction::EquipItems(std::vector<ObjectGuid> const& guids)
+{
+    for (ObjectGuid const& guid : guids)
+        if (Item* item = bot->GetItemByGuid(guid))
+            EquipItem(item);
 }
 
 // Return bagslot with smalest bag.
@@ -331,12 +343,13 @@ void EquipAction::EquipItem(Item* item)
     botAI->TellMaster(out);
 }
 
-ItemIds EquipAction::SelectInventoryItemsToEquip()
+std::vector<ObjectGuid> EquipAction::SelectInventoryItemsToEquip()
 {
     CollectItemsVisitor visitor;
     IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
 
-    ItemIds items;
+    std::vector<ObjectGuid> items;
+    std::unordered_set<std::string> judged;  // one copy per item and suffix
     for (auto i = visitor.items.begin(); i != visitor.items.end(); ++i)
     {
         Item* item = *i;
@@ -360,9 +373,12 @@ ItemIds EquipAction::SelectInventoryItemsToEquip()
         else
             itemUsageParam = std::to_string(itemId);
 
+        if (!judged.insert(itemUsageParam).second)
+            continue;
+
         ItemUsage usage = AI_VALUE2(ItemUsage, "item upgrade", itemUsageParam);
         if (usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE || usage == ITEM_USAGE_BAD_EQUIP)
-            items.insert(itemId);
+            items.push_back(item->GetGUID());
     }
     return items;
 }
@@ -408,7 +424,7 @@ bool EquipUpgradesPacketAction::Execute(Event event)
             return false;
     }
 
-    ItemIds items = SelectInventoryItemsToEquip();
+    std::vector<ObjectGuid> const items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
 }
@@ -418,7 +434,7 @@ bool EquipUpgradeAction::Execute(Event /*event*/)
     if (PvpGearMgr::Instance().IsWorn(bot))
         return false;
 
-    ItemIds items = SelectInventoryItemsToEquip();
+    std::vector<ObjectGuid> const items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
 }

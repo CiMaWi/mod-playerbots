@@ -7,9 +7,12 @@
 #ifndef PLAYERBOTS_EQUIPACTION_H
 #define PLAYERBOTS_EQUIPACTION_H
 
+#include <vector>
+
 #include "ChatHelper.h"
 #include "InventoryAction.h"
 #include "Item.h"
+#include "ObjectGuid.h"
 
 class FindItemVisitor;
 class Item;
@@ -22,7 +25,9 @@ public:
 
     bool Execute(Event event) override;
     void EquipItems(ItemIds ids);
-    ItemIds SelectInventoryItemsToEquip();
+    // The bag items the upgrade rule judged, each copy by its own suffix, equipped as those copies
+    void EquipItems(std::vector<ObjectGuid> const& guids);
+    std::vector<ObjectGuid> SelectInventoryItemsToEquip();
 
 private:
     void EquipItem(FindItemVisitor* visitor);
