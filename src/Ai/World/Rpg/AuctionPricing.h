@@ -18,6 +18,7 @@
 
 #include "AuctionConfig.h"
 #include "AuctionIndexRules.h"
+#include "AuctionLineTypes.h"
 
 // What a bot asks and what it pays at most (auction house plan WA2b, PLAN 3.4 and 3.6, WA.2, WA.5, WA.17): the fees
 // as the core computes them, whether a listing beats a vendor, the ask from the evidence and the bot's own outcomes,
@@ -420,15 +421,8 @@ inline std::uint32_t StockWorth(AskInput const& in, AuctionConfig const& config)
 constexpr std::int64_t BID_PATIENCE_SECONDS = 2 * 3600;  // [E] a bid only on an auction that ends this soon
 constexpr std::uint32_t LOT_UNITS_MAX = 1u << 20;        // keeps the ranking's cross products in 64 bits
 
-// Worth and getting in the planner's value units (MaterialRules.h: Cost::value = copper x factor); the ceiling is
-// the lesser as copper at the bot's need factor, per unit. No use: 0; no way of getting it: the worth alone
-struct CeilingInput
-{
-    double worthValue{0.0};     // what a unit is worth to the bot; 0 no use
-    double gettingValue{-1.0};  // a vendor's price x factor, or its own getting cost; < 0 no way
-    float factor{0.0f};         // Need.factor
-};
-
+// The ceiling of a CeilingInput (AuctionLineTypes.h): the lesser of worth and getting as copper at the bot's need
+// factor, per unit. No use: 0; no way of getting it: the worth alone
 inline std::uint64_t Ceiling(CeilingInput const& in)
 {
     if (!(in.factor > 0.0f) || !(in.worthValue > 0.0))

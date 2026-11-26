@@ -19,6 +19,7 @@
 #include "Chat.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
+#include "Item.h"
 #include "Log.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -66,6 +67,16 @@ AuctionFacts FactsOf(AuctionEntry const* entry)
     facts.bidder = entry->bidder.GetRawValue();
     facts.houseId = static_cast<std::uint8_t>(entry->houseId);
     facts.added = GameNow();  // the startup walk's too: the core keeps no start time, so its offers stand anew
+    return facts;
+}
+
+// A listed auction's facts with its item's random property id. Only for an add and the startup walk: at a sale or
+// an expiry the mail may already have deleted the item, while the auction manager still holds its pointer
+AuctionFacts ListedFactsOf(AuctionEntry const* entry)
+{
+    AuctionFacts facts = FactsOf(entry);
+    if (Item const* item = sAuctionMgr->GetAItem(entry->item_guid))
+        facts.randomPropertyId = item->GetItemRandomPropertyId();
     return facts;
 }
 }  // namespace
@@ -252,7 +263,7 @@ void Walk()
         {
             if (!entry)
                 continue;
-            book.Add(FactsOf(entry), KindOfEntry(entry->item_template));
+            book.Add(ListedFactsOf(entry), KindOfEntry(entry->item_template));
             ++found;
         }
     }
@@ -284,7 +295,7 @@ public:
         PLAYERBOT_CHECK_WORLD_THREAD("AuctionIndex add");
         if (!entry)
             return;
-        book.Add(FactsOf(entry), KindOfEntry(entry->item_template));
+        book.Add(ListedFactsOf(entry), KindOfEntry(entry->item_template));
         AuctionMemory::Listed(entry);
     }
 

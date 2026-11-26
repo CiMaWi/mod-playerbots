@@ -8,6 +8,7 @@
 #define _PLAYERBOT_GEARWORTHRULES_H
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -213,6 +214,78 @@ inline std::vector<Refusal> Refusals(std::vector<Offer> const& offers, std::uint
             *same = {i, noGold};
     }
     return out;
+}
+
+// Gear lines at the auctioneer (gear WG7, PLAN 3.3): per replaced slot the offer the bot takes. `wears` (an offer's
+// index -> bool: the upgrade rule, R1) is asked in each slot's order until its first yes: an offer within its ceiling
+// and the spendable gold before any other (a dear offer hides no buyable one), then the largest surplus, then the
+// lower price; worth 0 never. A slot none of whose offers fits keeps its best one, whose line writes the skip row.
+// The picks by surplus, the largest first (then the cheaper, then the first)
+template <typename Wears>
+std::vector<std::size_t> PickPerSlot(std::vector<Offer> const& offers, std::uint64_t spendable, Wears&& wears)
+{
+    auto const fits = [&](Offer const& offer) { return offer.price <= offer.ceiling && offer.price <= spendable; };
+    auto const bySurplus = [&](std::size_t a, std::size_t b)
+    {
+        if (Surplus(offers[a]) != Surplus(offers[b]))
+            return Surplus(offers[a]) > Surplus(offers[b]);
+        if (offers[a].price != offers[b].price)
+            return offers[a].price < offers[b].price;
+        return a < b;
+    };
+
+    std::vector<std::size_t> order;
+    for (std::size_t i = 0; i < offers.size(); ++i)
+        if (offers[i].worth)
+            order.push_back(i);
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b)
+              { return fits(offers[a]) != fits(offers[b]) ? fits(offers[a]) : bySurplus(a, b); });
+
+    std::vector<std::size_t> picks;
+    std::uint32_t picked = 0;  // a bit per slot with its pick
+    for (std::size_t const i : order)
+    {
+        std::uint32_t const bit = 1u << offers[i].slot;
+        if ((picked & bit) || !wears(i))
+            continue;
+        picked |= bit;
+        picks.push_back(i);
+    }
+    std::sort(picks.begin(), picks.end(), bySurplus);
+    return picks;
+}
+
+// The equipment slots as the core numbers them (EQUIPMENT_SLOT_*)
+constexpr std::uint8_t EQUIPMENT_SLOTS = 19;
+constexpr std::uint8_t SLOT_SHIRT = 3;
+constexpr std::uint8_t SLOT_OFF_HAND = 16;
+constexpr std::uint8_t SLOT_TABARD = 18;
+constexpr std::uint8_t NO_SLOT = 0xFF;
+
+struct WornSlot
+{
+    bool worn{false};
+    std::uint32_t itemLevel{0};
+};
+
+// The slot an auction visit's `no_offer` row names when the house has no line for the bot (PLAN 3.3 point 4: demand
+// without supply): the first empty slot, else the one whose worn item has the lowest item level (the first of
+// equals). Never the shirt, the tabard or a `blocked` slot (a bit per slot: the off hand under a two-hander without
+// titan grip, a slot an open bid fills); NO_SLOT when none is left
+inline std::uint8_t NoOfferSlot(std::array<WornSlot, EQUIPMENT_SLOTS> const& worn, std::uint32_t blocked)
+{
+    blocked |= (1u << SLOT_SHIRT) | (1u << SLOT_TABARD);
+    std::uint8_t lowest = NO_SLOT;
+    for (std::uint8_t slot = 0; slot < EQUIPMENT_SLOTS; ++slot)
+    {
+        if (blocked & (1u << slot))
+            continue;
+        if (!worn[slot].worn)
+            return slot;
+        if (lowest == NO_SLOT || worn[slot].itemLevel < worn[lowest].itemLevel)
+            lowest = slot;
+    }
+    return lowest;
 }
 }  // namespace GearWorth
 

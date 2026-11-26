@@ -113,8 +113,46 @@ SlotChoice ChooseSlot(Player* bot, ItemTemplate const* proto, uint8 dstSlot, flo
 }
 }  // namespace
 
-std::optional<GearWorth::LiveInput> GearWorth::ReadInput(PlayerbotAI* botAI, ItemTemplate const* proto,
-                                                         int32 randomPropertyId)
+// The score setup, the worn items and the rates, read once per reader
+struct GearWorth::InputReader::State
+{
+    explicit State(Player* bot) : calculator(bot) {}
+
+    StatsWeightCalculator calculator;
+    Worn worn;
+    uint32 level{0};
+    float earnCopperPerMinute{0.0f};
+    float hoursPerLevel{0.0f};
+};
+
+GearWorth::InputReader::InputReader(PlayerbotAI* botAI) : botAI(botAI), state(std::make_unique<State>(botAI->GetBot()))
+{
+    Player* bot = botAI->GetBot();
+    state->calculator.SetUpForEquipCompare();
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        state->worn.proto[slot] = item->GetTemplate();
+        state->worn.score[slot] =
+            state->calculator.CalculateItem(item->GetEntry(), item->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID));
+    }
+
+    WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+    WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(),
+        config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())]);
+    state->level = bot->GetLevel();
+    state->earnCopperPerMinute = rates.EarnCopperPerMinute;
+    state->hoursPerLevel = HoursPerLevel(bot->GetLevel());
+}
+
+GearWorth::InputReader::~InputReader() = default;
+
+std::optional<GearWorth::LiveInput> GearWorth::InputReader::Read(ItemTemplate const* proto,
+                                                                 int32 randomPropertyId) const
 {
     if (!proto || proto->InventoryType == INVTYPE_NON_EQUIP)
         return std::nullopt;
@@ -124,22 +162,9 @@ std::optional<GearWorth::LiveInput> GearWorth::ReadInput(PlayerbotAI* botAI, Ite
     if (dstSlot >= EQUIPMENT_SLOT_END)
         return std::nullopt;
 
-    StatsWeightCalculator calculator(bot);
-    calculator.SetUpForEquipCompare();
-    float const itemScore = calculator.CalculateItem(proto->ItemId, randomPropertyId);
-
-    Worn worn;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-    {
-        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-            continue;
-
-        worn.proto[slot] = item->GetTemplate();
-        worn.score[slot] =
-            calculator.CalculateItem(item->GetEntry(), item->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID));
-    }
-
+    // CalculateItem resets the calculator's stats for each item: the order of the reads does not matter
+    float const itemScore = state->calculator.CalculateItem(proto->ItemId, randomPropertyId);
+    Worn const& worn = state->worn;
     SlotChoice const choice = ChooseSlot(bot, proto, dstSlot, itemScore, worn);
     LiveInput out;
     out.slot = choice.slot;
@@ -155,16 +180,20 @@ std::optional<GearWorth::LiveInput> GearWorth::ReadInput(PlayerbotAI* botAI, Ite
             summed += score;
     }
 
-    WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
-    WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
-        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(),
-        config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())]);
-
     out.worth.itemScore = itemScore;
     out.worth.summedScore = summed;
-    out.worth.level = bot->GetLevel();
+    out.worth.level = state->level;
     out.worth.itemLevel = proto->ItemLevel;
-    out.worth.earnCopperPerMinute = rates.EarnCopperPerMinute;
-    out.worth.hoursPerLevel = HoursPerLevel(bot->GetLevel());
+    out.worth.earnCopperPerMinute = state->earnCopperPerMinute;
+    out.worth.hoursPerLevel = state->hoursPerLevel;
     return out;
+}
+
+std::optional<GearWorth::LiveInput> GearWorth::ReadInput(PlayerbotAI* botAI, ItemTemplate const* proto,
+                                                         int32 randomPropertyId)
+{
+    if (!proto || proto->InventoryType == INVTYPE_NON_EQUIP ||
+        botAI->FindEquipSlot(proto, NULL_SLOT, true) >= EQUIPMENT_SLOT_END)
+        return std::nullopt;
+    return InputReader(botAI).Read(proto, randomPropertyId);
 }
