@@ -21,7 +21,8 @@ class PlayerbotAI;
 // The auctioneer visit (auction house WA3b): a selling trip's stop at an auctioneer. Once in reach the bot lists its
 // bag stock (the carried keeps of AuctionStock) one stack per step through the core's sell packet, at the price
 // AuctionRules::Ask gives at this house (its fees, the cheapest competing buyout, the seller's expiry memory); a
-// stack Ask holds gets a `hold` decision row and stays. The driver is Visit.h's; the row of the visit is
+// stack Ask holds gets a `hold` decision row and stays. A listing or a purchase the core took renews the visit's limit,
+// and a visit that never came into reach ends `unreached`. The driver is Visit.h's; the row of the visit is
 // AuctionVisitRow.
 namespace BankMail
 {
@@ -45,8 +46,16 @@ namespace AuctionMemory
 {
 // Any thread: what the seller remembers of the item
 ItemMemory Of(uint32 sellerLow, uint32 entry);
-// Any thread: the seller's open listings the add hook saw (a test probe's reading, AH3)
-std::size_t OpenListings(uint32 sellerLow);
+// What the core's hooks took of a bot's own packets, the visit's proof of an answer. Kept for the server's run, apart
+// from the listings above, so a sale or a removal in between loses none of it
+struct Taken
+{
+    uint32 listings{0};   // its listings the add hook saw
+    uint32 listed{0};     // the item entry of the last of them
+    uint32 boughtOut{0};  // the auction id of its last won buyout
+};
+// Any thread
+Taken TakenOf(uint32 botLow);
 // World thread, from the core's auction hooks (AuctionIndex.cpp): a bot's listing, and the sale, expiry or removal
 // of a listing a bot made; each with the seller's event row when it is online (AuctionPost, AuctionSale,
 // AuctionExpire)

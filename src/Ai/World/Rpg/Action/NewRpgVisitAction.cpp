@@ -12,6 +12,14 @@
 #include "Transport.h"
 #include "Visit.h"
 
+namespace
+{
+char const* WalkWord(::GoTo::Answer answer)
+{
+    return answer == ::GoTo::Answer::There ? "there" : answer == ::GoTo::Answer::Going ? "going" : "failed";
+}
+}  // namespace
+
 bool NewRpgVisitAction::isUseful() { return BankMail::VisitRuns(botAI->bankMail); }
 
 bool NewRpgVisitAction::Execute(Event /*event*/)
@@ -23,18 +31,22 @@ bool NewRpgVisitAction::Execute(Event /*event*/)
     // True while walking too: the lower RPG actions would lead the bot away from the visit's object
     if (step.object.IsEmpty())
     {
-        std::optional<bool> const away = Away(WorldPosition(step.mapId, step.x, step.y, step.z), step.reach);
+        ::GoTo::Answer answer = ::GoTo::Answer::Going;
+        std::optional<bool> const away = Away(WorldPosition(step.mapId, step.x, step.y, step.z), step.reach, &answer);
         if (botAI->testConstraints)
-            ProbeWalk("spot", !away ? "there" : (*away ? "spent" : "going"));
+            ProbeWalk("spot", WalkWord(answer));
+        // An auction visit ends at a failed walk to the spawn too (auction house AH4); the other kinds wait for their
+        // limit
+        if (answer == ::GoTo::Answer::Failed &&
+            BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Auction))
+            BankMail::EndVisits(botAI, step.unreached);
         return away.value_or(true);
     }
     // The last yards into the kind's reach (WT64g, WT68): an object whose stand point the mesh does not carry ends the
     // visit (its Stuck row); no other move is tried
     ::GoTo::Answer const answer = Approach(step.object, step.reach);
     if (botAI->testConstraints)
-        ProbeWalk("reach", answer == ::GoTo::Answer::There   ? "there"
-                           : answer == ::GoTo::Answer::Going ? "going"
-                                                             : "failed");
+        ProbeWalk("reach", WalkWord(answer));
     if (answer == ::GoTo::Answer::Failed)
         BankMail::EndVisits(botAI, step.unreached);
     return true;
