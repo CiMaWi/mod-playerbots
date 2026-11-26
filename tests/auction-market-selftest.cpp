@@ -117,7 +117,8 @@ struct Dice
 // grey item that is no stock; two bags, one under the bag lines' ceilings of bots with few free slots and one above
 // them. Two band-1 bots with no stream: one carries a lone recipe, the other wants it above its start bid and under
 // its ask, so it bids once the auction nears its end. Planted so the run sells, bids, wins, expires, holds, skips and
-// vendors.
+// vendors. Use lines hold their worth at the neutral exchange: every hand buyer holds at least twice its reserve,
+// so it pays ten times that (AH.5: the flush share 0.1), and a vendor stocks both bags (their cap stands).
 constexpr std::uint32_t HAND_BIG_BAG = 1001;
 constexpr std::uint32_t HAND_SMALL_BAG = 1002;
 constexpr std::uint32_t HAND_CLOTH = 1003;
@@ -135,7 +136,7 @@ MarketSim::Market HandMarket(std::uint32_t seed)
     market.goods = {{HAND_BIG_BAG, 1, 1, 2500, 12000, 0, 15}, {HAND_SMALL_BAG, 1, 1, 625, 2000, 0, 10},
                     {HAND_CLOTH, 7, 1, 50, 150, 0, 10},       {HAND_WEAPON, 2, 2, 3000, 9000, 20, 25},
                     {HAND_GREY, 4, 0, 40, 40, 0, 5},          {HAND_RECIPE, 9, 2, 1000, 5000, 0, 20}};
-    market.ladder = {{HAND_BIG_BAG, 10, 10000}, {HAND_SMALL_BAG, 8, 2500}};
+    market.ladder = {{HAND_BIG_BAG, 10, 10000, true}, {HAND_SMALL_BAG, 8, 2500, true}};
     Band& band = market.bands[0];
     band.slots = WorldTravel::DEFAULT_SLOT_BANDS[0];
     band.visitsPerHour = 1.0;
@@ -155,9 +156,9 @@ MarketSim::Market HandMarket(std::uint32_t seed)
         bot.freeSlots = index % 2 ? 4 : 12;
         bot.smallestBag = index < 8 ? 6 : 10;
         if (index < 2)
-            bot.lines.push_back(AuctionRules::UseLine(HAND_CLOTH, 10, 160, 0, 50));
+            bot.lines.push_back(AuctionRules::UseLine(HAND_CLOTH, 10, 16, 0, 50, {}));
         else if (index < 4)
-            bot.lines.push_back(AuctionRules::UseLine(HAND_CLOTH, 10, 130, 0, 50));
+            bot.lines.push_back(AuctionRules::UseLine(HAND_CLOTH, 10, 13, 0, 50, {}));
         else if (index == 4)
             bot.lines.push_back(AuctionRules::LineOf(LineOwner::Gear, HAND_WEAPON, 1, 4000.0, -1.0, 1.0f, 3000));
         else if (index == 5)
@@ -177,7 +178,7 @@ MarketSim::Market HandMarket(std::uint32_t seed)
     bidder.money = 50000;
     bidder.reserve = 10000;
     bidder.smallestBag = 16;
-    bidder.lines.push_back(AuctionRules::UseLine(HAND_RECIPE, 1, 4500, 0, 1000));
+    bidder.lines.push_back(AuctionRules::UseLine(HAND_RECIPE, 1, 450, 0, 1000, {}));
     market.bots.push_back(bidder);
     return market;
 }
@@ -199,7 +200,7 @@ MarketSim::Market RandomMarket(std::uint32_t seed)
         std::uint32_t const item = next++;
         std::uint32_t const slots = 6 + 2 * dice.Range(0, 5);
         std::uint32_t const buy = dice.Range(500, 40000);
-        market.ladder.push_back({item, slots, buy});
+        market.ladder.push_back({item, slots, buy, item % 2 == 0});  // every other bag a vendor stocks
         market.goods.push_back(
             {item, 1, 1, buy / 4, static_cast<std::uint64_t>(buy * dice.Real(0.3, 2.0)), 0, dice.Range(1, 80)});
     }
@@ -243,7 +244,8 @@ MarketSim::Market RandomMarket(std::uint32_t seed)
             std::uint32_t const owner = dice.Range(0, 2);
             if (!owner)
                 bot.lines.push_back(AuctionRules::UseLine(goods.item, units, static_cast<std::uint32_t>(worth),
-                                                          dice.Pick(30) ? goods.sellPrice * 4 : 0, goods.sellPrice));
+                                                          dice.Pick(30) ? goods.sellPrice * 4 : 0, goods.sellPrice,
+                                                          {}));
             else if (owner == 1)
                 bot.lines.push_back(AuctionRules::PathLine(goods.item, units, static_cast<std::uint32_t>(worth),
                                                            static_cast<std::uint32_t>(worth), AT_RESERVE,
@@ -350,9 +352,11 @@ void Controls()
         Invariant invariant;
         std::string_view what;
     };
-    std::array<Control, 3> const controls = {{{Fault::CutNotPaid, Invariant::Copper, "a cut not paid"},
-                                              {Fault::CeilingIgnored, Invariant::Ceiling, "a ceiling ignored"},
-                                              {Fault::ExpirySkipped, Invariant::Ends, "an expiry skipped"}}};
+    std::array<Control, 4> const controls = {
+        {{Fault::CutNotPaid, Invariant::Copper, "a cut not paid"},
+         {Fault::CeilingIgnored, Invariant::Ceiling, "a ceiling ignored"},
+         {Fault::ExpirySkipped, Invariant::Ends, "an expiry skipped"},
+         {Fault::KeptIgnored, Invariant::Kept, "a purse that ignores what the market keeps"}}};
     for (Control const& control : controls)
     {
         std::uint64_t caught = 0;
@@ -679,6 +683,15 @@ struct NightItem
     std::map<std::string, std::uint64_t> skips;
 };
 
+// A bag's buying rows in one band (`bagline`): the over_ceiling skips' median ask and ceiling, and the rows
+struct NightBag
+{
+    double askQ2{0.0};
+    double ceilingQ2{0.0};
+    double overRows{0.0};
+    double buyRows{0.0};
+};
+
 struct Night
 {
     std::string header;
@@ -688,6 +701,7 @@ struct Night
     std::map<std::uint32_t, NightKind> kinds;  // by item class
     std::vector<BagRung> ladder;
     std::map<std::uint32_t, NightItem> items;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, NightBag> bags;  // by band and item
 };
 
 template <typename ClassOf>
@@ -749,15 +763,23 @@ void ReadNight(std::string const& text, Night& night, ClassOf const& classOf)
         {
             NightKind& kind = night.kinds[classOf(Whole(Number(row, 2)))];
             NightItem& item = night.items[Whole(Number(row, 2))];
+            NightBag& bag = night.bags[{static_cast<std::uint32_t>(band), Whole(Number(row, 2))}];
             if (row[3] == "buy")
             {
                 kind.buys += Whole(Number(row, 5));
                 item.buys += Whole(Number(row, 5));
+                bag.buyRows += Number(row, 5);
             }
             else
             {
                 kind.skips[row[4]] += Whole(Number(row, 5));
                 item.skips[row[4]] += Whole(Number(row, 5));
+                if (row[4] == "over_ceiling")
+                {
+                    bag.overRows += Number(row, 5);
+                    bag.askQ2 = Number(row, 7);
+                    bag.ceilingQ2 = Number(row, 10);
+                }
             }
         }
         else if (tag == "useline" && at)
@@ -777,7 +799,7 @@ void ReadNight(std::string const& text, Night& night, ClassOf const& classOf)
         else if (tag == "income" && at && row.size() > 5 && row[3] != "auction")
             (row[2] == "in" ? at->incomeIn : at->incomeOut) += Number(row, 5);
         else if (tag == "ladder")
-            night.ladder.push_back({Whole(Number(row, 1)), Whole(Number(row, 2)), Whole(Number(row, 3))});
+            night.ladder.push_back({Whole(Number(row, 1)), Whole(Number(row, 2)), Whole(Number(row, 3)), false});
     }
     night.kinds[1].sales = Whole(night.values["sales_containers"]);
 }
@@ -1051,6 +1073,119 @@ double Value(Night const& night, std::string const& name)
     return found == night.values.end() ? 0.0 : found->second;
 }
 
+// Bag lines by band (AH9's exit): the night's over_ceiling and buy rows on bags, the model's over_ceiling skips and
+// bag sales by the buyer's band, and the bags the model sold there
+void PrintBagBands(std::ostream& out, Night const& night, MarketSim::Market const& market, Result const& result)
+{
+    out << "\n### Bag lines by band (night / model)\n\n";
+    out << "| band | over_ceiling | buys or sales | budget skips (model) | bags sold (model, item x sales) |\n"
+           "|---|---|---|---|---|\n";
+    for (std::uint32_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+    {
+        double nightOver = 0.0;
+        double nightBuys = 0.0;
+        for (auto const& [key, bag] : night.bags)
+            if (key.first == band)
+            {
+                nightOver += bag.overRows;
+                nightBuys += bag.buyRows;
+            }
+        std::uint64_t over = 0;
+        std::uint64_t sales = 0;
+        std::uint64_t budget = 0;
+        std::ostringstream sold;
+        for (BagRung const& rung : market.ladder)
+        {
+            auto const found = result.items.find(rung.item);
+            if (found == result.items.end())
+                continue;
+            over += found->second.bagSkips[band][Slot(AuctionWords::Reason::OverCeiling)];
+            budget += found->second.bagSkips[band][Slot(AuctionWords::Reason::Budget)];
+            if (std::uint64_t const count = found->second.bandSales[band])
+            {
+                sales += count;
+                sold << (sold.str().empty() ? "" : ", ") << rung.item << " (" << rung.slots << ") x" << count;
+            }
+        }
+        out << "| " << band << " | " << Pair(nightOver, static_cast<double>(over)) << " | "
+            << Pair(nightBuys, static_cast<double>(sales)) << " | " << budget << " | "
+            << (sold.str().empty() ? "-" : sold.str()) << " |\n";
+    }
+}
+
+// The bot's copper weight at a purse against its reserve, neutral traits, a level of the band (AuctionMarketSim.h
+// WeightOf)
+AuctionRules::CopperWeight WeightAt(std::uint32_t band, double money, double reserve, float greed = 0.0f)
+{
+    Planner::Snapshot bot;
+    bot.level = static_cast<std::uint8_t>(WorldTravel::LEVEL_BAND_TOP[band]);
+    bot.money = Whole(money);
+    Planner::Goals::Weights weights;
+    weights.greed = greed;
+    Planner::Goals::Need const need = Planner::Goals::NeedFor(bot, weights, Whole(reserve));
+    return {need.exchange, need.factor};
+}
+
+// The bag ladder per band (AH9's premise): each bag a band's bots met at the auctioneer (`bagline`), its time worth
+// at the band's median free slots over its most worn smallest bag, the ceilings the rules give it there, and the
+// night's over_ceiling rows (their median ceiling and ask). A comparison, no input
+void PrintLadder(std::ostream& out, Night const& night, MarketSim::Market const& market)
+{
+    out << "\n### The bag ladder by band (AH9)\n\n";
+    out << "Time worth: WorldTravel::BagWorth at the band's default rates, its median free slots (`carried` q2) and "
+           "its "
+           "most worn smallest bag (`smallbag`); vendor price only where a spawned vendor stocks the bag "
+           "(ItemInput::vendorStocked). AH8: the old rule, min(time worth, template price). AH9 at the reserve (share "
+           "1), for the band's median bot (`carried` q2 money against money less spendable; its share in brackets) "
+           "and flush (twice the reserve), neutral greed. Flush multiple of the time worth by greed -1 / 0 / +1: ";
+    for (float const greed : {-1.0f, 0.0f, 1.0f})
+        out << (greed > -1.0f ? " / " : "") << std::fixed << std::setprecision(0)
+            << 1.0f / AuctionRules::ShareOf(WeightAt(0, 2.0, 1.0, greed)) << "x";
+    out << ". Night: the over_ceiling rows' median ceiling and ask (`bagline`, any free slots and bags). Copper.\n\n";
+    out << "| band | bag | slots | vendor price | smallest / free | time worth | AH8 | at reserve | median bot | flush "
+           "| night ceiling q2 | night ask q2 | over_ceiling rows | buy rows |\n"
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    for (std::uint32_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+    {
+        NightBand const& row = night.bands[band];
+        std::uint32_t smallest = 0;
+        double most = -1.0;
+        for (auto const& [slots, bots] : row.smallBags)
+            if (bots > most)
+            {
+                most = bots;
+                smallest = slots;
+            }
+        std::uint32_t const freeSlots = Whole(row.freeSlots[1]);
+        AuctionRules::CopperWeight const median = WeightAt(band, row.money[1], row.money[1] - row.spendable[1]);
+        AuctionRules::CopperWeight const atReserve = WeightAt(band, 1.0, 1.0);
+        AuctionRules::CopperWeight const flush = WeightAt(band, 2.0, 1.0);
+        WorldTravel::SlotBand const& slots = market.bands[band].slots;
+        WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(WorldTravel::SlotMeasure{}, slots);
+        std::vector<BagRung> rungs;
+        for (BagRung const& rung : market.ladder)
+            if (night.bags.count({band, rung.item}))
+                rungs.push_back(rung);
+        std::stable_sort(rungs.begin(), rungs.end(),
+                         [](BagRung const& left, BagRung const& right) { return left.slots < right.slots; });
+        for (BagRung const& rung : rungs)
+        {
+            NightBag const& seen = night.bags.at({band, rung.item});
+            std::uint32_t const worth =
+                WorldTravel::BagWorth(rates, freeSlots, rung.slots, smallest, slots.BagHorizonHours);
+            std::uint32_t const vendor = rung.stocked ? rung.buyCopper : 0;
+            auto const at = [&](AuctionRules::CopperWeight weight)
+            { return AuctionRules::CeilingOf(AuctionRules::BagLine(rung.item, worth, vendor, weight)); };
+            out << "| " << band << " | " << rung.item << " | " << rung.slots << " | "
+                << (vendor ? std::to_string(vendor) : std::string("-")) << " | " << smallest << " / " << freeSlots
+                << " | " << worth << " | " << std::min(worth, rung.buyCopper) << " | " << at(atReserve) << " | "
+                << at(median) << " (" << std::setprecision(2) << AuctionRules::ShareOf(median) << ") | " << at(flush)
+                << " | " << std::fixed << std::setprecision(0) << seen.ceilingQ2 << " | " << seen.askQ2 << " | "
+                << seen.overRows << " | " << seen.buyRows << " |\n";
+        }
+    }
+}
+
 void PrintNight(std::ostream& out, Night const& night, NightPaths const& paths, MarketSim::Market const& market,
                 Result const& result, std::string const& control)
 {
@@ -1063,15 +1198,16 @@ void PrintNight(std::ostream& out, Night const& night, NightPaths const& paths, 
            "bot_hours) and their mix (`item` posts, units per lot = units / listings), income and spending per bot "
            "hour (`income` without source auction), purse and spendable (`carried` quartiles, one draw per bot), free "
            "slots (`carried` quartiles), the bag ladder (`ladder`), use lines (`useline`: a bot has one with the "
-           "chance rows / band visits, one unit, worth = ceiling_copper_q2, built by AuctionRules::UseLine as "
-           "PlannerUpkeep.cpp:1023-1025).\n";
+           "chance rows / band visits, one unit, worth = ceiling_copper_q2, built by AuctionRules::UseLine at the "
+           "bot's weight at each visit as PlannerUpkeep.cpp BuyListOf).\n";
     out << "- Assumed (the fixture's assumed sections): reserve = money less spendable at the bot's draw; the smallest "
            "bag from `smallbag` (the night's end); the stream of lots above (only listed lots are seen: lots the bots "
            "held or sold to vendors do not come by); between the quartiles a linear draw, the tails at q1 and q3; "
            "path lines from SkillPath::Weigh of one typical bot per band and craft (below); the house starts empty "
            "and the bots carry no stock (U2).\n";
     out << "- Not inputs: the bag lines' ceilings (`bagline` ceilings are a comparison only: the model's bag lines "
-           "are AuctionRules::BagLine of WorldTravel::BagWorth, as PlannerUpkeep.cpp:1038-1048).\n\n";
+           "are AuctionRules::BagLine of WorldTravel::BagWorth at the bot's weight at each visit: NeedFor with its "
+           "reserve, neutral traits, as PlannerUpkeep.cpp BuyListOf).\n\n";
     out << "### By kind (night / model)\n\n";
     out << "| kind | listings | posts | relists | holds | sales | buys | unbought: night | unbought: model | in the "
            "house at the end |\n";
@@ -1162,6 +1298,8 @@ void PrintNight(std::ostream& out, Night const& night, NightPaths const& paths, 
             << Pair(static_cast<double>(at.buys), static_cast<double>(tally.sales)) << " | " << NightSkips(at.skips)
             << " | " << Reasons(tally.skips) << " |\n";
     }
+    PrintBagBands(out, night, market, result);
+    PrintLadder(out, night, market);
     out << "\n### Path lines (assumed input)\n\n";
     out << "Weighed " << paths.weighs << " times (the start and every model hour), " << static_cast<long>(paths.ms)
         << " ms in all; path lines at the full want over all weighs: " << paths.linesSeen
@@ -1255,6 +1393,11 @@ Built NightPreset(std::string const& repo, std::uint32_t seed)
         return built;
     market.hours = night->hours;
     market.ladder = night->ladder;
+    for (BagRung& rung : market.ladder)
+    {
+        auto const found = templates.find(rung.item);
+        rung.stocked = found != templates.end() && found->second.vendorStocked;
+    }
     // The reference value as AuctionRules::Tables builds it (auction-rules-selftest.cpp Tables)
     AuctionRules::Table const table = AuctionRules::Build(inputs, *index, WorldTravel::DEFAULT_SLOT_BANDS);
     std::set<std::uint32_t> items;
@@ -1301,14 +1444,16 @@ Built NightPreset(std::string const& repo, std::uint32_t seed)
             for (NightUse const& use : row.uses)
                 if (Unit(rng) * row.visits < use.rows)
                 {
-                    // PlannerUpkeep.cpp:1023-1025: the vendor's price of one unit, the template's sell price
+                    // PlannerUpkeep.cpp BuyListOf: the price of one unit where a vendor stocks it, the template's
+                    // sell price; priced at the bot's weight at each visit (AuctionMarketSim.h AtWeight)
                     auto const found = templates.find(use.item);
                     std::uint32_t const vendorEach =
-                        found == templates.end()
+                        found == templates.end() || !found->second.vendorStocked
                             ? 0
                             : found->second.buyPrice / std::max<std::uint32_t>(found->second.buyCount, 1);
                     bot.lines.push_back(AuctionRules::UseLine(use.item, 1, use.ceilingCopper, vendorEach,
-                                                              found == templates.end() ? 0 : found->second.sellPrice));
+                                                              found == templates.end() ? 0 : found->second.sellPrice,
+                                                              {}));
                 }
             bot.pathSlot = at % PATH_BOTS;
             market.bots.push_back(bot);

@@ -29,7 +29,9 @@
 #include "AuctionIndexRules.h"
 #include "AuctionMemory.h"
 #include "AuctionPricing.h"
+#include "GoalModel.h"
 #include "ItemWorthRules.h"
+#include "PlannerSnapshot.h"
 
 // The auction market simulation (auction house round 2 AH2, PLAN 3.2, AH.3): model bots trade through the real pure
 // headers in rounds of the house's publish interval. Every ask, floor, chance, ceiling and choice is a call into
@@ -58,12 +60,14 @@ struct Goods
     std::uint32_t itemLevel{0};
 };
 
-// A bag of the ladder (PlannerUpkeep.cpp BagCandidates): its slots and the template's buy price
+// A bag of the ladder (PlannerUpkeep.cpp BagCandidates): its slots, the template's buy price and whether a spawned
+// vendor stocks it (AuctionRules::ItemInput::vendorStocked)
 struct BagRung
 {
     std::uint32_t item{0};
     std::uint32_t slots{0};
     std::uint32_t buyCopper{0};
+    bool stocked{false};
 };
 
 // One way a lot comes by: the item, the units of the lot and its share of the band's lots
@@ -138,7 +142,8 @@ enum class Fault : std::uint8_t
     None,
     CutNotPaid,      // a sale pays the seller the price and the deposit without taking the cut
     CeilingIgnored,  // the buy step hands the rule the line without its ceiling
-    ExpirySkipped    // the settlement leaves an unsold auction standing past its end
+    ExpirySkipped,   // the settlement leaves an unsold auction standing past its end
+    KeptIgnored      // the buy step's purse ignores what the market keeps
 };
 
 enum class Invariant : std::uint8_t
@@ -148,11 +153,12 @@ enum class Invariant : std::uint8_t
     Items,    // bags, the house and what buyers received and vendors took = the units that came by
     Ceiling,  // no purchase or bid above its line's ceiling
     Floor,    // no listing below its floor
-    Ends      // after a settlement every listing stands with its end in the future
+    Ends,     // after a settlement every listing stands with its end in the future
+    Kept      // no purchase leaves the purse below what the market keeps (AuctionVisit.cpp MarketKeptNow)
 };
-constexpr std::size_t INVARIANT_COUNT = 5;
-constexpr std::array<std::string_view, INVARIANT_COUNT> INVARIANT_WORDS = {"copper", "items", "ceiling", "floor",
-                                                                           "ends"};
+constexpr std::size_t INVARIANT_COUNT = 6;
+constexpr std::array<std::string_view, INVARIANT_COUNT> INVARIANT_WORDS = {"copper", "items", "ceiling",
+                                                                           "floor",  "ends",  "kept"};
 
 // Why the core refused a buyout or a bid
 enum class Refusal : std::uint8_t
@@ -229,6 +235,7 @@ struct ItemTally
     std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> pathPlaced{};
     std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> pathRefused{};
     std::array<std::array<std::uint64_t, AuctionWords::REASON_COUNT>, WorldTravel::LEVEL_BAND_COUNT> pathSkips{};
+    std::array<std::array<std::uint64_t, AuctionWords::REASON_COUNT>, WorldTravel::LEVEL_BAND_COUNT> bagSkips{};
 };
 
 // One kind of the sale chance (class, quality and level band, AuctionIndex::KindOf) in one model hour
@@ -685,9 +692,31 @@ private:
         ++_result.bandListings[bot.band];
     }
 
-    // PlannerUpkeep.cpp:1030-1047: the ladder's bags the index knows that add slots, each by its worth to the bot,
-    // the ceiling at most the template's buy price
-    void AddBagLines(Bot const& bot, std::vector<AuctionRules::BuyLine>& lines) const
+    // PlannerUpkeep.cpp CopperWeightOf: the need factor at the purse now against the bot's reserve (the market's kept
+    // copper stands in for upkeep's reserve), neutral traits, the band's top level
+    static AuctionRules::CopperWeight WeightOf(Bot const& bot)
+    {
+        Planner::Snapshot snapshot;
+        snapshot.level = static_cast<std::uint8_t>(WorldTravel::LEVEL_BAND_TOP[bot.band]);
+        snapshot.money =
+            static_cast<std::uint32_t>(std::min<std::uint64_t>(bot.money, std::numeric_limits<std::uint32_t>::max()));
+        Planner::Goals::Need const need = Planner::Goals::NeedFor(snapshot, Planner::Goals::Weights{}, bot.reserve);
+        return {need.exchange, need.factor};
+    }
+
+    // A setup's use line holds copper at the reserve's share (built with CopperWeight{}): priced again at the bot's
+    // weight now, as PlannerUpkeep.cpp BuyListOf builds it at every visit
+    static AuctionRules::BuyLine AtWeight(AuctionRules::BuyLine const& line, AuctionRules::CopperWeight weight)
+    {
+        double const vendor = line.ceiling.gettingValue;
+        return AuctionRules::UseLine(line.item, line.units, static_cast<std::uint32_t>(line.ceiling.worthValue),
+                                     vendor > 0.0 ? static_cast<std::uint32_t>(vendor) : 0,
+                                     static_cast<std::uint32_t>(line.excessUnitWorth), weight);
+    }
+
+    // PlannerUpkeep.cpp BuyListOf: the ladder's bags the index knows that add slots, each by its worth to the bot at
+    // its weight, the ceiling at most the price of a vendor that stocks the bag
+    void AddBagLines(Bot const& bot, AuctionRules::CopperWeight weight, std::vector<AuctionRules::BuyLine>& lines) const
     {
         WorldTravel::SlotBand const& band = _market.bands[bot.band].slots;
         WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(WorldTravel::SlotMeasure{}, band);
@@ -698,7 +727,7 @@ private:
             std::uint32_t const worth =
                 WorldTravel::BagWorth(rates, bot.freeSlots, rung.slots, bot.smallestBag, band.BagHorizonHours);
             if (worth)
-                lines.push_back(AuctionRules::BagLine(rung.item, worth, rung.buyCopper));
+                lines.push_back(AuctionRules::BagLine(rung.item, worth, rung.stocked ? rung.buyCopper : 0, weight));
         }
     }
 
@@ -711,8 +740,8 @@ private:
         return line;
     }
 
-    // AuctionVisit.cpp BuyNext and AwaitPurchase: the buy list once per visit at the published
-    // offers, one decision per item, one bag per visit, the purse re-read at every line above the reserve, the
+    // AuctionVisit.cpp BuyNext and AwaitPurchase: the buy list once per visit at the published offers and the bot's
+    // weight then, one decision per item, one bag per visit, the purse re-read at every line above the reserve, the
     // house's offers without leaving out the bot's own (the core refuses them); a bid the core took counts as open
     void Buy(std::uint32_t index, std::int64_t now)
     {
@@ -723,8 +752,11 @@ private:
             bot.lines.insert(bot.lines.end(), bot.laterLines.begin(), bot.laterLines.end());
             bot.laterLines.clear();
         }
-        std::vector<AuctionRules::BuyLine> lines = bot.lines;
-        AddBagLines(bot, lines);
+        AuctionRules::CopperWeight const weight = WeightOf(bot);
+        std::vector<AuctionRules::BuyLine> lines;
+        for (AuctionRules::BuyLine const& line : bot.lines)
+            lines.push_back(line.owner == AuctionRules::LineOwner::Use ? AtWeight(line, weight) : line);
+        AddBagLines(bot, weight, lines);
         if (_market.paths)
         {
             auto const held = [&bot](std::uint32_t item)
@@ -750,7 +782,7 @@ private:
             if (bag && bagTaken)
                 continue;
             AuctionRules::BuyInput buyer;
-            buyer.spendable = AuctionRules::Spendable(bot.money, bot.reserve, 0);
+            buyer.spendable = AuctionRules::Spendable(bot.money, _fault == Fault::KeptIgnored ? 0 : bot.reserve, 0);
             buyer.openBids = openBids;
             buyer.openBidsMax = _market.config.OpenBidsMax;
             buyer.now = now;
@@ -765,6 +797,8 @@ private:
                 ++_result.items[line.item].skips[Slot(choice.reason)];
                 if (line.owner == AuctionRules::LineOwner::Path)
                     ++_result.items[line.item].pathSkips[bot.band][Slot(choice.reason)];
+                if (bag)
+                    ++_result.items[line.item].bagSkips[bot.band][Slot(choice.reason)];
                 continue;
             }
             bool const placed = Place(index, line, choice, now);
@@ -816,6 +850,10 @@ private:
                                             std::to_string(price) + " over its ceiling " +
                                             std::to_string(AuctionRules::CeilingOf(line)) + " per unit");
         bot.money -= due;
+        if (bot.money < bot.reserve)
+            Violate(Invariant::Kept, "item " + std::to_string(line.item) + " paid " + std::to_string(due) +
+                                         " and left " + std::to_string(bot.money) + " under the kept " +
+                                         std::to_string(bot.reserve));
         if (!leads && auction.facts.bidder)
             _bots[BotOf(auction.facts.bidder)].money += auction.facts.bid;
         auction.facts.bid = Copper32(price);

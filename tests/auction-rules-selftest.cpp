@@ -1938,8 +1938,8 @@ void CheckBuyListHand()
     std::cout << "buy list by hand:\n";
     std::vector<BuyLine> const lines =
         BuyList({LineOf(LineOwner::Gear, 801, 1, 90.0, 60.0, 0.5f, 0),
-                 LineOf(LineOwner::Path, 802, 3, 600.0, -1.0, 3.0f, 0), BagLine(803, 5000, 0),
-                 UseLine(804, 4, 120, 100, 5), UseLine(805, 0, 120, 100, 5), UseLine(806, 4, 0, 100, 5)});
+                 LineOf(LineOwner::Path, 802, 3, 600.0, -1.0, 3.0f, 0), BagLine(803, 5000, 0, {}),
+                 UseLine(804, 4, 120, 100, 5, {}), UseLine(805, 0, 120, 100, 5, {}), UseLine(806, 4, 0, 100, 5, {})});
     for (BuyLine const& line : lines)
         std::cout << "  " << OwnerWord(line.owner) << " " << line.item << " x" << line.units << " ceiling "
                   << CeilingOf(line) << '\n';
@@ -1950,8 +1950,13 @@ void CheckBuyListHand()
               CeilingOf(lines[3]) == 120,
           "ceilings: use at the vendor's price under its worth, a bag at its worth, the path and gear stubs in value "
           "units over the factor");
-    Check(CeilingOf(UseLine(807, 1, 80, 100, 0)) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0)) == 120,
+    Check(CeilingOf(UseLine(807, 1, 80, 100, 0, {})) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0, {})) == 120,
           "a use line's ceiling is its worth under a dearer vendor or with none");
+    Check(CeilingOf(BagLine(809, 5000, 0, {})) == 5000 && CeilingOf(BagLine(809, 5000, 0, {4.0f, 0.5f})) == 40000 &&
+              CeilingOf(BagLine(809, 5000, 20000, {4.0f, 0.5f})) == 20000 &&
+              CeilingOf(UseLine(809, 1, 120, 100, 0, {2.0f, 8.0f})) == 30,
+          "AH.5: an unknown need pays at the reserve's share; a flush bot (share 1/8) eight times the bag's worth, at "
+          "most a stocking vendor's price; a bot at a quarter of its reserve's weight (share 4) a quarter");
 
     // The skill path's lines (WA7b, AH8): only a material the auction sells cheapest, for its wanted units, its ceiling
     // the cheapest other way's cost, or what the path counted at the auction where that is the only source; none for
@@ -2041,7 +2046,7 @@ void CheckBuyListHand()
         "typical 60 under the other way's 90: the path claims 300 for 5; control: a ceiling at the auction's own "
         "cost claims nothing (caught)");
     std::vector<BuyLine> const mixed =
-        BuyList({PathLine(820, 5, 60, 90, atReserve, 4), BagLine(803, 5000, 0), UseLine(804, 4, 120, 100, 5)});
+        BuyList({PathLine(820, 5, 60, 90, atReserve, 4), BagLine(803, 5000, 0, {}), UseLine(804, 4, 120, 100, 5, {})});
     Check(mixed.size() == 3 && mixed[0].owner == LineOwner::Use && mixed[1].owner == LineOwner::Bag &&
               mixed[2].owner == LineOwner::Path,
           "a path line sorts after the use and bag lines");
@@ -2147,10 +2152,12 @@ VisitWorld RandomVisit(Dice& dice)
         { return std::max<std::uint32_t>(1, static_cast<std::uint32_t>(unit * dice.Real(low, high))); };
         std::uint32_t const owner = dice.Range(0, 3);
         std::uint32_t const payout = dice.Pick(50) ? 0 : dice.Range(0, unit / 2);
+        CopperWeight const weight{1.0f, static_cast<float>(dice.Real(0.05, 4.0))};
         if (owner == 0)
-            lines.push_back(UseLine(item, units, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, payout));
+            lines.push_back(
+                UseLine(item, units, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, payout, weight));
         else if (owner == 1)
-            lines.push_back(BagLine(item, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0));
+            lines.push_back(BagLine(item, copper(0.3, 3.0), dice.Pick(50) ? copper(0.5, 2.0) : 0, weight));
         else
         {
             float const factor = static_cast<float>(dice.Real(0.05, 20.0));
@@ -2633,6 +2640,107 @@ void CheckMemory()
           "memory: past the relist limit the ask holds and the item is no stock");
 }
 
+// A bag's and a use item's worth at the bot's need (AH9, AH.5) over random bots, each invariant with its negative
+// control: of two bots alike but for their gold the richer never has the lower ceiling (control: the share inverted);
+// a bot at its reserve pays what the AH8 rule paid (min of worth and template price) where a vendor stocks the item or
+// that rule's cap did not bind (control: an unknown reserve passed as 0); no ceiling above a stocking vendor's price
+// (control: the cap dropped); a vendor's ShouldBuyBag takes the bag line's worth (control: the time worth alone)
+void SearchNeedWorth()
+{
+    std::mt19937 rng(95);
+    Dice dice{rng};
+    constexpr int CASES = 20000;
+    int richerLower = 0;
+    int invertedCaught = 0;
+    int reserveDiffers = 0;
+    int reserveCompared = 0;
+    int zeroReserveCaught = 0;
+    int overVendor = 0;
+    int capDroppedCaught = 0;
+    int vendorDiffers = 0;
+    int vendorAlone = 0;
+    for (int i = 0; i < CASES; ++i)
+    {
+        Planner::Snapshot bot;
+        bot.level = static_cast<std::uint8_t>(dice.Range(1, 80));
+        Planner::Goals::Weights weights;
+        weights.greed = static_cast<float>(dice.Real(-1.0, 1.0));
+        weights.thrift = static_cast<float>(dice.Real(-1.0, 1.0));
+        std::uint64_t const reserve = dice.Pick(10) ? 0 : dice.Range(1, 2000000);
+        std::uint32_t const worth = dice.Range(1, 300000);
+        std::uint32_t const templatePrice = dice.Range(1, 200000);
+        bool const stocked = dice.Pick(50);
+        bool const use = dice.Pick(50);
+        Planner::Goals::Need const need = Planner::Goals::NeedFor(bot, weights, reserve);
+        auto const weightAt = [&need](std::uint64_t money)
+        {
+            Planner::Goals::Need const at = Planner::Goals::NeedAt(need, money);
+            return CopperWeight{at.exchange, at.factor};
+        };
+        auto const ceiling = [&](CopperWeight weight, std::uint32_t vendor)
+        { return CeilingOf(use ? UseLine(900, 1, worth, vendor, 0, weight) : BagLine(900, worth, vendor, weight)); };
+        std::uint32_t const vendor = stocked ? templatePrice : 0;
+        std::uint64_t const top = std::max<std::uint64_t>(3 * need.reserve, 1000);
+        std::uint64_t const poorer = dice.Range(0, static_cast<std::uint32_t>(top));
+        std::uint64_t const richer = poorer + dice.Range(1, static_cast<std::uint32_t>(top));
+        CopperWeight const poor = weightAt(poorer);
+        CopperWeight const rich = weightAt(richer);
+        richerLower += ceiling(rich, vendor) < ceiling(poor, vendor) ? 1 : 0;
+        auto const inverted = [](CopperWeight weight) { return CopperWeight{weight.factor, weight.exchange}; };
+        invertedCaught += ceiling(inverted(rich), vendor) < ceiling(inverted(poor), vendor) ? 1 : 0;
+        if (stocked)
+        {
+            overVendor += ceiling(rich, vendor) > vendor || ceiling(poor, vendor) > vendor ? 1 : 0;
+            capDroppedCaught += ceiling(rich, 0) > vendor || ceiling(poor, 0) > vendor ? 1 : 0;
+        }
+        if (need.reserve && (stocked || worth <= templatePrice))
+        {
+            ++reserveCompared;
+            std::uint64_t const before = std::min(worth, templatePrice);
+            reserveDiffers += ceiling(weightAt(need.reserve), vendor) != before ? 1 : 0;
+            bot.money = static_cast<std::uint32_t>(std::min<std::uint64_t>(need.reserve, 0xFFFFFFFFu));
+            Planner::Goals::Need const unknown = Planner::Goals::NeedFor(bot, weights, 0);
+            zeroReserveCaught += ceiling({unknown.exchange, unknown.factor}, vendor) != before ? 1 : 0;
+        }
+        if (!use)
+        {
+            // A vendor that stocks the bag sells it at most at the template price (a reputation discount lowers it)
+            std::uint32_t const price = dice.Range(1, templatePrice);
+            WorldTravel::BagBuyInput in;
+            in.Price = price;
+            in.Gold = std::numeric_limits<std::uint32_t>::max();
+            in.Worth = BagCeiling(worth, 0, rich);
+            bool const atVendor = WorldTravel::ShouldBuyBag(in);
+            bool const atAuction = price <= CeilingOf(BagLine(900, worth, templatePrice, rich));
+            vendorDiffers += atVendor != atAuction ? 1 : 0;
+            in.Worth = worth;
+            vendorAlone += WorldTravel::ShouldBuyBag(in) != atAuction ? 1 : 0;
+        }
+    }
+    std::cout << "need worth: " << CASES << " bots, " << reserveCompared << " at their reserve compared\n";
+    Check(!richerLower, "AH.5: of two bots alike but for their gold the richer never has the lower ceiling (" +
+                            std::to_string(richerLower) + "); control: the share inverted (" +
+                            std::to_string(invertedCaught) + " caught)");
+    Check(invertedCaught > 0, "control: an inverted share gives a richer bot the lower ceiling");
+    Check(!reserveDiffers,
+          "AH.5: at its reserve a bot pays what the AH8 rule paid where a vendor stocks the item or "
+          "its template cap did not bind (" +
+              std::to_string(reserveDiffers) + " differ)");
+    Check(zeroReserveCaught > 0,
+          "control: an unknown reserve passed as 0 (the flush share) changes the price at the "
+          "reserve (" +
+              std::to_string(zeroReserveCaught) + " caught)");
+    Check(!overVendor, "AH.5: no ceiling above a stocking vendor's price (" + std::to_string(overVendor) + ")");
+    Check(capDroppedCaught > 0,
+          "control: without the vendor cap a ceiling rises above it (" + std::to_string(capDroppedCaught) + " caught)");
+    Check(!vendorDiffers,
+          "AH.5: one worth: a vendor's ShouldBuyBag takes a stocked bag at a price iff the bag line's "
+          "ceiling does (" +
+              std::to_string(vendorDiffers) + " differ)");
+    Check(vendorAlone > 0,
+          "control: a vendor at the time worth alone decides otherwise (" + std::to_string(vendorAlone) + " caught)");
+}
+
 int main(int argc, char** argv)
 {
     CheckHand();
@@ -2645,6 +2753,7 @@ int main(int argc, char** argv)
     SearchPricing();
     SearchChance();
     SearchBuying();
+    SearchNeedWorth();
     Tables(argc > 1 ? argv[1] : ".");
     std::cout << "auction-rules: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

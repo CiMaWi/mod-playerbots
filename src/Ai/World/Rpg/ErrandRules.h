@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "ItemWorthRules.h"
 #include "MailRules.h"
 
@@ -284,8 +285,9 @@ struct ErrandSnapshot
     uint32_t BagHorizonHours = 0;
     uint32_t FreeSlots = 0;
     uint32_t SellableSlots = 0;
-    float MinutesToNextStop = 0.0f;  // until the bot passes a vendor anyway
-    uint64_t Reserve = 0;            // ShouldBuyBag's reserve
+    float MinutesToNextStop = 0.0f;     // until the bot passes a vendor anyway
+    uint64_t Reserve = 0;               // ShouldBuyBag's reserve
+    AuctionRules::CopperWeight Weight;  // the need factor a bag's price is paid at (AH.5); {} unknown: the reserve's
     uint32_t ThriftPercent = PERCENT;
     uint32_t BagBudgetPercent = PERCENT;
     std::vector<ServiceStop> Stops;
@@ -544,7 +546,9 @@ inline void ProvideBags(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
 
         BagBuyInput in;
         in.Price = bag.Price;
-        in.Worth = BagWorth(snapshot.Rates, snapshot.FreeSlots, bag.Slots, bag.ReplacedSlots, snapshot.BagHorizonHours);
+        in.Worth = AuctionRules::BagCeiling(
+            BagWorth(snapshot.Rates, snapshot.FreeSlots, bag.Slots, bag.ReplacedSlots, snapshot.BagHorizonHours), 0,
+            snapshot.Weight);
         in.Gold = snapshot.Money;
         in.Reserve = snapshot.Reserve;
         in.ThriftPercent = snapshot.ThriftPercent;

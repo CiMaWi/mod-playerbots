@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "ErrandRules.h"
 #include "ItemWorthRules.h"
 #include "QuestCircuit.h"
@@ -262,7 +263,24 @@ struct Need
     std::uint64_t baseReserve{0};
     std::uint64_t reserve{0};    // scaled by thrift
     bool shortOfReserve{false};  // money below the reserve
+    float flush{0.0f};           // the share from FLUSH_RATIO x the reserve on (greed's)
 };
+
+// The share for money against the reserve (scaled; 0 a real zero, the flush share at any money): NEED_BROKE without
+// money, NEED_AT_RESERVE at the reserve, the flush share from FLUSH_RATIO x the reserve on, linear between
+inline float NeedShare(std::uint64_t money, std::uint64_t reserve, float flush)
+{
+    float share = flush;
+    if (reserve)
+    {
+        float const ratio = static_cast<float>(static_cast<double>(money) / static_cast<double>(reserve));
+        if (ratio < 1.0f)
+            share = NEED_BROKE + (NEED_AT_RESERVE - NEED_BROKE) * ratio;
+        else if (ratio < FLUSH_RATIO)
+            share = NEED_AT_RESERVE + (flush - NEED_AT_RESERVE) * (ratio - 1.0f) / (FLUSH_RATIO - 1.0f);
+    }
+    return std::max(share, flush);
+}
 
 // reserveCopper is upkeep's reserve (NeedGoalBridge), 0 a real zero
 inline Need NeedFor(Snapshot const& bot, Weights const& weights, std::uint64_t reserveCopper)
@@ -275,18 +293,17 @@ inline Need NeedFor(Snapshot const& bot, Weights const& weights, std::uint64_t r
     need.reserve =
         static_cast<std::uint64_t>(static_cast<double>(need.baseReserve) * Factor(weights.thrift, THRIFT_RESERVE_SPAN));
     need.shortOfReserve = bot.money < need.reserve;
+    need.flush = NEED_FLUSH * Factor(weights.greed, GREED_NEED_SPAN);
+    need.factor = need.exchange * NeedShare(bot.money, need.reserve, need.flush);
+    return need;
+}
 
-    float const flush = NEED_FLUSH * Factor(weights.greed, GREED_NEED_SPAN);
-    float share = flush;
-    if (need.reserve)
-    {
-        float const ratio = static_cast<float>(static_cast<double>(bot.money) / static_cast<double>(need.reserve));
-        if (ratio < 1.0f)
-            share = NEED_BROKE + (NEED_AT_RESERVE - NEED_BROKE) * ratio;
-        else if (ratio < FLUSH_RATIO)
-            share = NEED_AT_RESERVE + (flush - NEED_AT_RESERVE) * (ratio - 1.0f) / (FLUSH_RATIO - 1.0f);
-    }
-    need.factor = need.exchange * std::max(share, flush);
+// The need at another purse (auction house AH9): the same reserve and traits, the factor for the money the bot holds
+// now, so a purchase weighs the gold it has rather than the gold it had when its plan was made
+inline Need NeedAt(Need need, std::uint64_t money)
+{
+    need.shortOfReserve = money < need.reserve;
+    need.factor = need.exchange * NeedShare(money, need.reserve, need.flush);
     return need;
 }
 
@@ -1259,7 +1276,8 @@ private:
             Add(std::move(option), {});
     }
 
-    // A bag bought by WT2's rule: price within its worth and the budget after the reserve; the price is paid either way
+    // A bag bought by WT2's rule: price within its worth to the bot (AH.5: the slots' time worth at its need factor, as
+    // the auction's bag line) and the budget after the reserve; the price is paid either way
     void AddBagOffers()
     {
         if (_situation.bagOffers.empty())
@@ -1273,8 +1291,9 @@ private:
             option.kind = GoalKind::BuyBag;
             option.target = offer.item;
             option.minutes = offer.walkMinutes + VISIT_MINUTES;
-            std::uint32_t const worth =
-                WorldTravel::BagWorth(rates, _bot.bagFree, offer.slots, offer.replacedSlots, horizon);
+            std::uint32_t const worth = AuctionRules::BagCeiling(
+                WorldTravel::BagWorth(rates, _bot.bagFree, offer.slots, offer.replacedSlots, horizon), 0,
+                {_model.need.exchange, _model.need.factor});
             WorldTravel::BagBuyInput in;
             in.Price = offer.price;
             in.Worth = worth;
