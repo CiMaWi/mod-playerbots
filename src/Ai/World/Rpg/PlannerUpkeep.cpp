@@ -28,6 +28,7 @@
 #include "AuctionReference.h"
 #include "AuctionRules.h"
 #include "Bag.h"
+#include "BankMailService.h"
 #include "BotProfessionMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
@@ -1020,6 +1021,11 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
     if (!bot || !botAI->KeepsPossessions())
         return lines;
 
+    // What waits in the bot's mail counts as had in every line (needs and errands NR.7). Read here too: a lot won since
+    // the last mail visit is paid for. Every caller is on the bot's map thread or the world thread (BankMailService.h)
+    BankMail::MailKnowledge& mail = botAI->bankMail.mail;
+    BankMail::ReadMailUnits(bot, mail);
+
     // Every line at one copper weight, the need factor at the money held now (AH.5, AH.19). A vendor's price caps a
     // use or bag line only where a spawned vendor stocks the item; until the reference table is built every template
     // price still caps, so no ceiling rises by accident
@@ -1047,8 +1053,8 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
             if (!proto || proto->Bonding == BIND_WHEN_PICKED_UP || proto->Bonding == BIND_QUEST_ITEM)
                 continue;
             uint32 const vendorEach = proto->BuyPrice / std::max<uint32>(proto->BuyCount, 1);
-            lines.push_back(AuctionRules::UseLine(line.buyEntry, line.buyUnits,
-                                                  ItemUse::DemandWorthEach(botAI, line.buyEntry),
+            uint32 const units = BankMail::UnitsLacking(line.buyUnits, BankMail::UnitsOf(mail.units, line.buyEntry));
+            lines.push_back(AuctionRules::UseLine(line.buyEntry, units, ItemUse::DemandWorthEach(botAI, line.buyEntry),
                                                   stockedCopper(line.buyEntry, vendorEach), proto->SellPrice, weight));
         }
     }
@@ -1065,7 +1071,8 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
         uint32 const smallest = ItemUsageValue::SmallestBagSize(bot);
         for (ItemTemplate const* proto : BagCandidates())
         {
-            if (proto->ContainerSlots <= smallest || !index->Find(proto->ItemId))
+            if (proto->ContainerSlots <= smallest || !index->Find(proto->ItemId) ||
+                BankMail::UnitsOf(mail.units, proto->ItemId))
                 continue;
             uint32 const worth =
                 WorldTravel::BagWorth(rates, freeSlots, proto->ContainerSlots, smallest, band.BagHorizonHours);
@@ -1079,11 +1086,13 @@ std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
     // wants there, each at most what getting it the cheapest other way costs, or what the path counted at the auction
     // where it is the only source, and at most a stocking vendor's price (AH.19), at the copper weight above (none
     // without a plan); funded as the market's claim, after the profession reserve (UpkeepNeeds::Fund). The path was
-    // computed earlier: the units held now (bags and bank, as the path's snapshot counts them) come off its want
+    // computed earlier: the units held now (bags and bank, as the path's snapshot counts them, and the mail) come off
+    // its want
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     if (SkillPath::Path const* path = KeptPath(botAI); path && goals && goals->plan)
     {
-        auto const held = [bot](uint32 item) { return bot->GetItemCount(item, true); };
+        auto const held = [bot, &mail](uint32 item)
+        { return bot->GetItemCount(item, true) + BankMail::UnitsOf(mail.units, item); };
         auto const payout = [](uint32 item)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);

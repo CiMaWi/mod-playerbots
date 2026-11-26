@@ -29,9 +29,14 @@ struct MailKnowledge
     uint16 waiting{0};     // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
     uint32 seenCopper{0};  // worth the bot saw in mail it read and left in the box; in memory only
     // Copper of delivered auction house mail not taken yet (a sale's proceeds, a bid back): the house's notice told
-    // the bot of it (auction WA3b; RefreshMailKnowledge counts it from the mail list)
+    // the bot of it (auction WA3b; RefreshMailKnowledge counts it from the mail list), the seen mails left out
     uint32 expectedCopper{0};
     uint32 refreshedMs{0};  // when waiting was last counted; 0 = never
+    // Needs and errands NR.7, all in memory: the units waiting per item (ReadMailUnits), the mails whose leftovers
+    // seenCopper holds and the mails left only for unique copies (skipped while the bot holds them)
+    std::vector<WaitingUnits> units;
+    std::vector<uint32> seenMails;
+    std::vector<uint32> uniqueMails;
 };
 
 // An item the bot keeps in its bank for a later level
