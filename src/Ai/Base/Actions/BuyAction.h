@@ -28,6 +28,12 @@ public:
     bool Execute(Event event) override;
 
 private:
+    // What one visit's gear purchases leave for its next vendor (BuyAction.cpp)
+    struct GearVisit;
+
+    // A bot that keeps its possessions buys from its spare gold, per equipment slot, the vendor's upgrade worth most
+    // above its price, and wears it (gear WG5)
+    void BuyGearByWorth(Creature* vendor, ObjectGuid vendorguid, VendorItemData const* tItems, GearVisit& visit);
     bool BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, ItemTemplate const* proto);
     /** True if the vendor has stock and the bot can pay the extended cost; gold is checked by the core. */
     bool CanAfford(VendorItem const* tItem, ItemTemplate const* proto, Creature* vendor) const;

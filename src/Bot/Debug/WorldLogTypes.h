@@ -64,7 +64,8 @@ enum class DecisionKind : uint8_t
     CombatOffengine,  // casttrace (CFM12c): an open fight outside the combat engine (open, still, ran, rejects)
     Target,           // awareness (AW14): the grind leaves a candidate by the target judgement (strong, many)
     Auction,          // auction (WA1a): post, hold, relist, buy, bid, skip (AuctionConfig.h); written from WA3b/WA4b
-    Gear              // gear (WG3): equip, an item the upgrade rule's pass newly wears (EquipAction.cpp)
+    Gear              // gear (WG3): equip, an item the upgrade rule's pass newly wears (EquipAction.cpp); buy,
+                      // skip: a vendor upgrade bought or refused by its worth (BuyAction.cpp, WG5)
 };
 
 constexpr size_t DECISION_KIND_COUNT = 34;
