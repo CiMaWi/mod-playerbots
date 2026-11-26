@@ -385,9 +385,12 @@ constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
     StatusEnd::STATUS_REST,       StatusEnd::STATUS_OUTDOOR_PVP, StatusEnd::STATUS_DO_GATHER};
 
 // The fallback list; past the no-option bound (moving, WN4) without rest, so the bot walks on instead of resting at
-// the same spot again
-inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving)
+// the same spot again. With the questing test's setting (questing WQ37) a planner bot's fallback is a rest, past the
+// bound too: a wander serves no levelling, and the time it rests counts as the plan's fault
+inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving, bool questingOnly = false)
 {
+    if (fallback && questingOnly)
+        return {StatusEnd::STATUS_REST};
     std::vector<std::uint32_t> list =
         fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
                  : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());

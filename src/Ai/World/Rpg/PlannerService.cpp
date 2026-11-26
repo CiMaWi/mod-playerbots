@@ -37,6 +37,7 @@
 #include "InterludeInputs.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
+#include "LoneKeys.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -1081,6 +1082,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
     // job adds the trainer's spells
     situation.questsHeld = !TestConstraints::QuestChoicesAllowed(botAI->testConstraints);  // a test's noquest
     situation.fightsHeld = !TestConstraints::StartsFights(botAI->testConstraints);         // a test's nofight
+    situation.questingOnly = sPlayerbotAIConfig.Lone.TestQuestingOnly;  // the questing test's setting (WQ37)
     situation.governed = botAI->KeepsPossessions();
     if (situation.governed)
     {
@@ -1746,7 +1748,8 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
 std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
 {
     std::vector<NewRpgStatus> statuses;
-    for (uint32 const status : GoalApply::IdleList(step.fallback, step.moving))
+    for (uint32 const status :
+         GoalApply::IdleList(step.fallback, step.moving, sPlayerbotAIConfig.Lone.TestQuestingOnly))
         statuses.push_back(static_cast<NewRpgStatus>(status));
     return statuses;
 }
