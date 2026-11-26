@@ -67,6 +67,16 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
 // The end of a visit whose walk to the object failed (the object is there; pathing's fault, not a missing one)
 inline VisitEnd ApproachFailedEnd() { return VisitEnd::Unreached; }
 
+// The approach's answer in an update whose reach test was false (StepVisit's walk to the object): does it end the
+// visit (with ApproachFailedEnd)? A failed approach does (NE5). One that answers there does too once neither the bot
+// nor the object moves (NR9; NR8: a stand point a floor below the banker, where the bot stood in sight and out of reach
+// to the visit's limit): nothing walks it closer. While either moves the visit goes on: the last yards end, or the
+// approach picks a new stand point as the object moves
+inline bool ApproachEndsVisit(bool failed, bool there, bool botMoving, bool objectMoving)
+{
+    return failed || (there && !botMoving && !objectMoving);
+}
+
 // An end the visit did not reach by itself
 inline bool IsInterruption(VisitEnd end) { return end >= VisitEnd::Combat && end < VisitEnd::Count; }
 

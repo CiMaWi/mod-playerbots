@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -132,6 +133,9 @@ struct KeepItemIn
     bool auctionable = false;
     uint32_t vendorPayout = 0;
     uint32_t auctionWorth = 0;
+    // A bag item the core's own deposit test refuses by its state (R6: Player::CanBankItem, room apart): the word it
+    // stays in the bags with; empty when the core takes it
+    std::optional<BankReason> depositBlock;
 };
 
 struct KeepBotIn
@@ -379,10 +383,32 @@ inline char const* ReasonWord(BankReason reason)
             return "kept_stock";
         case BankReason::BankFull:
             return "bank_full";
-        case BankReason::Refused:
-            return "refused";
+        case BankReason::Settled:
+            return "settled";
         case BankReason::KeptForSkill:
             return "kept_for_skill";
+        case BankReason::RefusedLooted:
+            return "refused_looted";
+        case BankReason::RefusedNotOwned:
+            return "refused_not_owned";
+        case BankReason::RefusedLimit:
+            return "refused_limit";
+        case BankReason::RefusedFull:
+            return "refused_full";
+        case BankReason::RefusedBag:
+            return "refused_bag";
+        case BankReason::RefusedInPlace:
+            return "refused_in_place";
+        case BankReason::RefusedOther:
+            return "refused_other";
+        case BankReason::BlockedLooted:
+            return "blocked_looted";
+        case BankReason::BlockedNotOwned:
+            return "blocked_not_owned";
+        case BankReason::BlockedLimit:
+            return "blocked_limit";
+        case BankReason::BlockedOther:
+            return "blocked_other";
         default:
             return "no_space";
     }
@@ -539,18 +565,18 @@ inline BankStep MakeStep(BankItemIn const& in, BankChoice kind)
     return {kind, in.bag, in.slot, in.item.itemGuid, in.item.entry, in.item.count};
 }
 
-inline bool IsRefused(std::vector<uint32_t> const& refused, BankItemIn const& in)
+inline bool IsSettled(std::vector<uint32_t> const& settled, BankItemIn const& in)
 {
-    return std::find(refused.begin(), refused.end(), in.item.itemGuid) != refused.end();
+    return std::find(settled.begin(), settled.end(), in.item.itemGuid) != settled.end();
 }
 }  // namespace BankRulesDetail
 
 // What a bot does at a banker now. Withdrawals come first: due items by later worth, then released items by what
 // they fetch, each while the bags have room. Deposits follow: the bags' kept items that are not due, by later worth,
 // while the bank has room, counting the slots the withdrawals freed. When the bank is full the lowest-worth kept items
-// stay in the bags; nothing already banked is taken out to make room. An item in refused (low guids the core
-// refused to move on this visit) stays where it is and takes no room.
-inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {})
+// stay in the bags; nothing already banked is taken out to make room. An item in settled (low guids moved or refused
+// by the core on this visit) stays where it is and takes no room; so does a bag item the core would refuse to bank.
+inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& settled = {})
 {
     using namespace BankRulesDetail;
     BankPlan plan;
@@ -576,10 +602,10 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& ref
 
     auto withdraw = [&](Decided const& decided, BankReason reason, uint32_t& counter)
     {
-        if (IsRefused(refused, *decided.item))
+        if (IsSettled(settled, *decided.item))
         {
             plan.verdicts.push_back(
-                MakeVerdict(*decided.item, decided.answer, true, BankChoice::Leave, BankReason::Refused));
+                MakeVerdict(*decided.item, decided.answer, true, BankChoice::Leave, BankReason::Settled));
             ++plan.leftInBank;
             return;
         }
@@ -622,10 +648,11 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& ref
     SortByLaterWorth(dueInBags);
     for (Decided const& decided : deposit)
     {
-        if (IsRefused(refused, *decided.item))
+        std::optional<BankReason> const stays =
+            IsSettled(settled, *decided.item) ? BankReason::Settled : decided.item->item.depositBlock;
+        if (stays)
         {
-            plan.verdicts.push_back(
-                MakeVerdict(*decided.item, decided.answer, false, BankChoice::Keep, BankReason::Refused));
+            plan.verdicts.push_back(MakeVerdict(*decided.item, decided.answer, false, BankChoice::Keep, *stays));
             ++plan.keptInBags;
             continue;
         }
@@ -649,6 +676,16 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& ref
 
     plan.bankFreeAfter = bankSpace.freeSlots;
     return plan;
+}
+
+// The plan before the visit's next move (BankVisit.cpp, MoveNext), made from the bags and the bank as they lie now; its
+// first step is the next move. Every item moved or refused earlier on the visit is settled: a deposited item the plan
+// would take out again frees no slot that the next deposit then lacks (the night's full banks, NR7)
+inline BankPlan PlanNextMove(BankIn const& in, std::vector<uint32_t> const& moved, std::vector<uint32_t> const& refused)
+{
+    std::vector<uint32_t> settled = moved;
+    settled.insert(settled.end(), refused.begin(), refused.end());
+    return PlanBankVisit(in, settled);
 }
 
 // Item use WI9b: one entry of demand's use stock. worthEach: one unit's worth to the bot; carryUnits: the units the
@@ -777,7 +814,8 @@ inline CarriedKeeps KeptInBags(BankIn const& in, std::span<KeepProvider const> p
     for (Decided const& decided : kept)
     {
         carried.items.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
-                                 decided.answer.dueLevel, decided.answer.provider, decided.item->item.itemGuid});
+                                 decided.answer.dueLevel, decided.answer.provider, decided.item->item.itemGuid,
+                                 decided.item->item.depositBlock.has_value()});
         // Auction stock's worth beats the payout (AuctionStock), so the gain is positive; the trip weighs it (WA3b)
         KeepItemIn const& item = decided.item->item;
         bool const stock = std::string_view(decided.answer.provider) == AUCTION_STOCK_PROVIDER;

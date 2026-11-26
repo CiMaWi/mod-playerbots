@@ -790,6 +790,16 @@ inline void CheckWords(Checker& checker)
                   "a failed approach to the mailbox: unreached");
     checker.Check(endOf({Event::StartCraft, Event::WalkFails, Event::Update}, VisitKind::Craft, VisitEnd::Unreached),
                   "a failed approach to the station: unreached");
+    // NR9 (I2): the step found the object out of reach and the approach answers there: with the bot and the object
+    // standing still nothing walks it closer, so the visit ends at once, unreached; while either moves it goes on
+    checker.Check(ApproachEndsVisit(false, true, false, false) && ApproachFailedEnd() == VisitEnd::Unreached,
+                  "there while out of reach, both standing: the visit ends at once, unreached (I2)");
+    checker.Check(!ApproachEndsVisit(false, true, true, false) && !ApproachEndsVisit(false, true, false, true) &&
+                      !ApproachEndsVisit(false, true, true, true),
+                  "there while the bot or the object still moves: the visit goes on (the last yards, a new stand)");
+    checker.Check(ApproachEndsVisit(true, false, false, false) && ApproachEndsVisit(true, false, true, true) &&
+                      !ApproachEndsVisit(false, false, false, false) && !ApproachEndsVisit(false, false, true, false),
+                  "a failed approach ends the visit, a going one does not");
     checker.Check(endOf({Event::StartBank, Event::LoseSpot, Event::Update}, VisitKind::Bank, VisitEnd::NoSpot),
                   "a spot without its banker: no_banker");
     checker.Check(VisitStartRefusal(VisitKind::Craft, VisitKind::Mail) == std::string("a mailbox visit runs") &&
