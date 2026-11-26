@@ -6,6 +6,7 @@
 
 #include "ItemUsageValue.h"
 
+#include <algorithm>
 #include <array>
 #include <unordered_set>
 #include <utility>
@@ -357,7 +358,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     if (itemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(itemProto, bot->getClass()))
         shouldEquip = false;
     if (itemProto->Class == ITEM_CLASS_ARMOR &&
-        !sRandomItemMgr.CanEquipArmor(itemProto, bot->getClass(), bot->GetLevel()))
+        !sRandomItemMgr.CanEquipArmorKind(itemProto, bot->getClass(), bot->GetLevel()))
         shouldEquip = false;
 
     uint8 possibleSlots = 1;
@@ -408,26 +409,20 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
 
     for (uint8 i = 0; i < possibleSlots; i++)
     {
-        bool shouldEquipInSlot = shouldEquip;
         Item* oldItem = bot->GetItemByPos(dest + i);
 
         // No item equipped
         if (!oldItem)
         {
-            if (shouldEquipInSlot)
+            if (shouldEquip)
                 return ITEM_USAGE_EQUIP;
             else
                 return ITEM_USAGE_BAD_EQUIP;
         }
 
         ItemTemplate const* oldItemProto = oldItem->GetTemplate();
-        float oldScore = calculator.CalculateItem(oldItemProto->ItemId, oldItem->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID));
-        if (oldItem)
-        {
-            // uint32 oldStatWeight = sRandomItemMgr.GetLiveStatWeight(bot, oldItemProto->ItemId);
-            if (itemScore || oldScore)
-                shouldEquipInSlot = itemScore > oldScore * sPlayerbotAIConfig.EquipUpgradeThreshold;
-        }
+        int32 const oldRandomPropertyId = oldItem->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID);
+        float oldScore = calculator.CalculateItem(oldItemProto->ItemId, oldRandomPropertyId);
 
         // Bigger quiver
         if (itemProto->Class == ITEM_CLASS_QUIVER)
@@ -438,26 +433,11 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
                 return ITEM_USAGE_NONE;
         }
 
-        bool existingShouldEquip = true;
-        if (oldItemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(oldItemProto, bot->getClass()))
-            existingShouldEquip = false;
-
-        if (oldItemProto->Class == ITEM_CLASS_ARMOR &&
-            !sRandomItemMgr.CanEquipArmor(oldItemProto, bot->getClass(), bot->GetLevel()))
-            existingShouldEquip = false;
-
-        // uint32 oldItemPower = sRandomItemMgr.GetLiveStatWeight(bot, oldItemProto->ItemId);
-        // uint32 newItemPower = sRandomItemMgr.GetLiveStatWeight(bot, itemProto->ItemId);
-
-        // Compare items based on item level, quality or itemId.
-        bool isBetter = false;
-        if (itemScore > oldScore)
-            isBetter = true;
-        // else if (newItemPower == oldScore && itemProto->Quality > oldItemProto->Quality)
-        //     isBetter = true;
-        // else if (newItemPower == oldScore && itemProto->Quality == oldItemProto->Quality && itemProto->ItemId >
-        // oldItemProto->ItemId)
-        //     isBetter = true;
+        // A fitting item must beat the worn one's score times the threshold, whatever the worn item is; a worn
+        // score at or below 0 counts as an empty slot. The same item with the same suffix never replaces itself.
+        bool const sameItem = itemProto->ItemId == oldItemProto->ItemId && randomPropertyId == oldRandomPropertyId;
+        bool const shouldEquipInSlot =
+            shouldEquip && !sameItem && itemScore > std::max(oldScore, 0.0f) * sPlayerbotAIConfig.EquipUpgradeThreshold;
 
         Item* item = CurrentItem(itemProto);
         bool itemIsBroken =
@@ -465,21 +445,20 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         bool oldItemIsBroken =
             oldItem->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && oldItem->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0;
 
-        if (itemProto->ItemId != oldItemProto->ItemId && (shouldEquipInSlot || !existingShouldEquip) && isBetter)
+        if (shouldEquipInSlot)
         {
             switch (itemProto->Class)
             {
                 case ITEM_CLASS_ARMOR:
                     if (oldItemProto->SubClass <= itemProto->SubClass)
                     {
-                        // Need to add some logic to check second slot before returning, but as it happens, all three of these
-                        // return vals will result in an attempted equip action so it wouldn't have much effect currently
+                        // Need to add some logic to check second slot before returning, but as it happens, both of
+                        // these return vals will result in an attempted equip action so it wouldn't have much effect
+                        // currently
                         if (itemIsBroken && !oldItemIsBroken)
                             return ITEM_USAGE_BROKEN_EQUIP;
-                        else if (shouldEquipInSlot)
-                            return ITEM_USAGE_REPLACE;
                         else
-                            return ITEM_USAGE_BAD_EQUIP;
+                            return ITEM_USAGE_REPLACE;
                     }
                     // A lower-subclass armor piece is handled by the default case below.
                     [[fallthrough]];
@@ -487,16 +466,14 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
                 {
                     if (itemIsBroken && !oldItemIsBroken)
                         return ITEM_USAGE_BROKEN_EQUIP;
-                    else if (shouldEquipInSlot)
-                        return ITEM_USAGE_EQUIP;
                     else
-                        return ITEM_USAGE_BAD_EQUIP;
+                        return ITEM_USAGE_EQUIP;
                 }
             }
         }
 
-        // Item is not better but current item is broken and new one is not.
-        if (oldItemIsBroken && !itemIsBroken)
+        // Item is not better but current item is broken and new one is not: a broken worn item counts as none.
+        if (shouldEquip && oldItemIsBroken && !itemIsBroken)
             return ITEM_USAGE_EQUIP;
     }
     return ITEM_USAGE_NONE;

@@ -201,6 +201,8 @@ public:
     [[nodiscard]] std::vector<uint32> const& GetEnchantmentPool(uint32 entry) const;
 
     [[nodiscard]] bool CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32 level) const;
+    // CanEquipArmor without its class stat table: the armour kind, shield and relic checks only
+    [[nodiscard]] bool CanEquipArmorKind(ItemTemplate const* proto, uint8 clazz, uint32 level) const;
     [[nodiscard]] bool CanEquipWeapon(ItemTemplate const* proto, uint8 clazz) const;
     [[nodiscard]] bool ShouldEquipArmorForSpec(ItemTemplate const* proto, uint8 clazz, uint8 spec) const;
     [[nodiscard]] bool ShouldEquipWeaponForSpec(ItemTemplate const* proto, uint8 clazz, uint8 spec) const;
