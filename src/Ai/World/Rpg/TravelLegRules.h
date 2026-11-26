@@ -2257,6 +2257,33 @@ inline bool KeepsOnFoot(OnFootFacts const& facts)
     return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
 }
 
+// Upkeep that holds the bot's checks starts on a transport leg only with the docking it needs at least this far ahead:
+// a drink holds them up to 27 s (UseItemAction's drink, the food cheat's 20 s), plus a margin
+constexpr std::int64_t UPKEEP_LEAD_MS = 30000;
+
+// What a transport leg lets start beside it (PA91: a mage conjured and drank after its crossing at a lift began,
+// the drink held its checks 17 s, it boarded late and rode on to stuck_aboard): upkeep that holds the bot's checks
+// (eat, drink) waits from the leg's start at its dock to its end, the trip's get-off first too, unless the bot
+// waits or rides with the docking it needs foreseen more than UPKEEP_LEAD_MS ahead (DocksInMs, docksInMs), so a
+// wait or a ride far from its docking still eats and drinks. A crossing tracked or cut, the boarding, the leave
+// and the way back hold it; a docking not foreseen (no window, the vessel not seen on the bot's map) holds it
+// too: a car's period is short, and the leg's own deadline ends every wait. Fights, death and healing are not
+// upkeep. O(1)
+inline bool HoldsUpkeep(Trip const* trip, std::int64_t docksInMs)
+{
+    if (!trip)
+        return false;
+    if (trip->offFirst.sinceMs)
+        return true;
+    if (trip->legIdx >= trip->legs.size() || trip->legs[trip->legIdx].type != TravelRoute::LegType::Transport)
+        return false;
+    if (trip->crossMs || trip->cancelled)
+        return true;
+    if (trip->boarding != Boarding::Wait && trip->boarding != Boarding::Ride)
+        return true;
+    return docksInMs == NO_DEADLINE || docksInMs <= UPKEEP_LEAD_MS;
+}
+
 // The trip-less get-off's end: ashore, `Transport left` with the seconds since its off_first
 inline void NoteLeft(Trip& trip, std::uint32_t entry, std::uint32_t sinceMs, std::uint32_t nowMs)
 {

@@ -3734,6 +3734,52 @@ void CheckTravelOnFoot()
     Check(!KeepsOnFoot(other), "on foot: no trip, no get-off: may mount");
 }
 
+// PA91: what a transport leg lets start beside it (TravelLegs::HoldsUpkeep): no eat or drink from its dock on to its
+// end, unless the bot waits or rides with its docking foreseen more than UPKEEP_LEAD_MS ahead
+void CheckTravelUpkeep()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::HoldsUpkeep;
+    using TravelLegs::NO_DEADLINE;
+    using TravelLegs::UPKEEP_LEAD_MS;
+
+    std::int64_t const far = UPKEEP_LEAD_MS + 90000;
+    std::int64_t const near = UPKEEP_LEAD_MS - 10000;
+    Trip lift = StartedTrip({LiftLeg()}, 0);
+    Check(HoldsUpkeep(&lift, NO_DEADLINE), "upkeep: the walk to the lift's dock holds it");
+    lift.boarding = Boarding::Wait;
+    Check(HoldsUpkeep(&lift, NO_DEADLINE), "upkeep: a wait for a car without a window holds it (a short period)");
+    Check(HoldsUpkeep(&lift, 0), "upkeep: the car standing at the stop holds it");
+    lift.crossMs = 75202;
+    Check(HoldsUpkeep(&lift, far), "upkeep: a crossing under way holds it (Washamuz at 20652, PA91)");
+    lift.crossMs = 0;
+    lift.cancelled = true;
+    Check(HoldsUpkeep(&lift, far), "upkeep: a crossing cut, its verdict pending, holds it");
+    lift.cancelled = false;
+    lift.boarding = Boarding::Board;
+    Check(HoldsUpkeep(&lift, far), "upkeep: the boarding holds it");
+
+    Trip ship = StartedTrip({ShipLeg()}, 0);
+    ship.boarding = Boarding::Wait;
+    Check(!HoldsUpkeep(&ship, far), "upkeep: a wait for a vessel far off eats and drinks");
+    Check(HoldsUpkeep(&ship, near), "upkeep: a wait with the docking near holds it");
+    Check(HoldsUpkeep(&ship, NO_DEADLINE), "upkeep: a wait for a vessel not seen holds it");
+    ship.boarding = Boarding::Ride;
+    Check(!HoldsUpkeep(&ship, far), "upkeep: a ride far from its docking eats and drinks");
+    Check(HoldsUpkeep(&ship, near), "upkeep: a ride near its docking holds it");
+    ship.boarding = Boarding::Leave;
+    Check(HoldsUpkeep(&ship, far), "upkeep: the leave holds it");
+    ship.boarding = Boarding::Back;
+    Check(HoldsUpkeep(&ship, far), "upkeep: the way back holds it");
+
+    Trip offFirst = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+    TravelLegs::BeginOffFirst(offFirst, SHIP, VESSEL, 300000, 2000);
+    Check(HoldsUpkeep(&offFirst, NO_DEADLINE), "upkeep: the trip's get-off first holds it");
+    Trip const walk = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+    Check(!HoldsUpkeep(&walk, NO_DEADLINE), "upkeep: a walking leg eats and drinks");
+    Check(!HoldsUpkeep(nullptr, NO_DEADLINE), "upkeep: no trip eats and drinks");
+}
+
 void CheckDeckContact()
 {
     using TravelLifecycle::Contact;
@@ -4139,6 +4185,7 @@ int main()
     CheckDeckContact();
     CheckVesselLeave();
     CheckTravelOnFoot();
+    CheckTravelUpkeep();
     CheckNextDeadline();
     CheckWalkStartWord();
     std::cout << passed << " passed, " << failed << " failed\n";

@@ -1354,3 +1354,24 @@ bool PassengerOwnsTravel(Player const& bot, HeldTrip const& data)
     return TravelLegs::OwnerOf(data.trip, data.passengerMotion.has_value(), ride) == TravelLegs::TravelOwner::Passenger;
 }
 }  // namespace NewRpgInternal
+
+bool TravelHoldsUpkeep(PlayerbotAI* botAI)
+{
+    // The engine's facts for TravelLegs::HoldsUpkeep: the held trip and the docking its leg needs (the stop the scan's
+    // pace reads, PacedStop; two index lookups). O(1)
+    auto const* const data = botAI->GetTravel().Trip();
+    if (!data)
+        return false;
+    TravelLegs::Trip const& trip = data->trip;
+    std::int64_t docksInMs = TravelLegs::NO_DEADLINE;
+    if (AtTransportLeg(trip))
+    {
+        TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+        TravelCrossing::Stop const* const needs =
+            TravelLegs::PacedStop(trip, TravelGraph::Instance().Crossings().At(leg.crossFrom),
+                                  TravelGraph::Instance().Crossings().At(leg.crossTo));
+        if (needs)
+            docksInMs = TravelLegs::DocksInMs(trip, *needs, getMSTime());
+    }
+    return TravelLegs::HoldsUpkeep(&trip, docksInMs);
+}
