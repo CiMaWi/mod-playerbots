@@ -61,7 +61,7 @@ struct GoalsAnswer
     std::shared_ptr<SkillPath::Path const> path;  // the bot's skill path, computed with the plan (WR11); null: none
     // The rates the gather rules weighed the plan's circuit at (professions WR13c: the pass-by gate reads them)
     std::shared_ptr<Materials::Rates const> gatherRates;
-    std::shared_ptr<PathRecord const> pathRecord;  // what the path's computation read (WPC14a); null with no path
+    std::shared_ptr<PathRecord const> pathRecord;  // what the path was computed from (WPC14b); null with no path
 };
 
 using Payload = std::variant<std::monostate, GoalsAnswer>;

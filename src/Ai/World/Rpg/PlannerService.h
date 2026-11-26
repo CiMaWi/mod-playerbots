@@ -356,7 +356,8 @@ bool RunGoalsHarness(ChatHandler* handler);
 // log quests' progress. Answers a GoalsAnswer, also for a failed ranking; none when the quest index was not ready.
 // The rates (BotNeedRates, map thread) let the job compute the needs list for the need factor (upkeep WU16)
 // The skill path's inputs (professions WR11, SkillPathLive.h PathInputsOf) are copied in on the map thread too, with
-// the record of the bot's last computation (WPC14a; null: none, or not of the kept path)
+// the record of the bot's last computation (WPC14b: the path is reused while it holds; null: none, or not of the kept
+// path)
 Compute GoalsCompute(std::vector<std::uint32_t> const& protectedQuests, std::vector<QuestProgress> const& progress,
                      Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates,
                      SkillPath::PathInputs pathInputs, std::shared_ptr<PathRecord const> lastPath = {});

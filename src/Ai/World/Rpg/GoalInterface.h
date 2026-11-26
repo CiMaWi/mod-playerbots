@@ -813,7 +813,7 @@ struct BotGoals
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
     std::uint32_t pathMs{0};                       // its snapshot's time
-    std::shared_ptr<PathRecord const> pathRecord;  // what the path's computation read (WPC14a): the next one compares
+    std::shared_ptr<PathRecord const> pathRecord;  // what the path was computed from (WPC14b): the next job's reuse
     // The newest plan's gather rates (professions WR13c), null: none yet, so nothing is gated; and the nodes and
     // hides the pass-by gate judged in the running status (GatherPassBy.h)
     std::shared_ptr<Materials::Rates const> gatherRates;

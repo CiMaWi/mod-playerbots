@@ -59,19 +59,21 @@ Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
 }
 
 // The yields at the bot's prices: what its skill path pays, a vendor's price and a listing's proceeds (WA7a)
-std::vector<Gather::Yield> YieldsOf(std::vector<GatherYield> const* yields, SkillPath::Path const* path)
+std::vector<Gather::Yield> YieldsOf(std::vector<GatherYield> const* yields, SkillPath::Path const* path,
+                                    std::optional<Market::View>& market)
 {
     std::vector<Gather::Yield> priced;
     if (!yields)
         return priced;
-    Market::View const market = Planner::CountedMarketView("market view: pass-by yields");
+    if (!market)
+        market = Planner::CountedMarketView("market view: pass-by yields");
     priced.reserve(yields->size());
     for (GatherYield const& yield : *yields)
     {
         SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(yield.item);
         priced.push_back({yield.item, yield.perCast, material ? material->copperEach : 0u,
-                          proto ? proto->SellPrice : 0u, Planner::MarketProceeds(market, yield.item)});
+                          proto ? proto->SellPrice : 0u, Planner::MarketProceeds(*market, yield.item)});
     }
     return priced;
 }
@@ -118,11 +120,13 @@ float DetourYards(Player* bot, WorldObject const* target)
     return there * THERE_AND_BACK;
 }
 
-Gather::Verdict JudgeCorpse(PlayerbotAI* botAI, Player* bot, BotGoals const& goals, Creature* creature, bool inCombat)
+Gather::Verdict JudgeCorpse(PlayerbotAI* botAI, Player* bot, BotGoals const& goals, Creature* creature, bool inCombat,
+                            std::optional<Market::View>& market)
 {
     Gather::Hide hide;
     hide.creatureLevel = creature->GetLevel();
-    hide.yields = YieldsOf(sGatherNodeMgr.HideYields(creature->GetCreatureTemplate()->SkinLootId), goals.path.get());
+    hide.yields =
+        YieldsOf(sGatherNodeMgr.HideYields(creature->GetCreatureTemplate()->SkinLootId), goals.path.get(), market);
     hide.risk = LiveRisk(botAI, bot, creature);
     return Gather::JudgeHide(hide, GathererOf(bot, *goals.gatherRates), inCombat, bot->GetFreeInventorySpace());
 }
@@ -137,7 +141,7 @@ bool CircuitCorpse(PlayerbotAI* botAI, Creature const* creature)
 }
 }  // namespace
 
-bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach)
+bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach, std::optional<Market::View>& market)
 {
     reach = 0.0f;
     BotGoals* goals = RatedGoals(botAI);
@@ -164,7 +168,7 @@ bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach)
         seen.node.required = loot.reqSkillValue;
         seen.node.at = {go->GetPositionX(), go->GetPositionY(), go->GetPositionZ()};
         seen.node.risk = LiveRisk(botAI, bot, go);
-        seen.node.yields = YieldsOf(sGatherNodeMgr.NodeYields(go->GetEntry()), goals->path.get());
+        seen.node.yields = YieldsOf(sGatherNodeMgr.NodeYields(go->GetEntry()), goals->path.get(), market);
         seen.detourYards = DetourYards(bot, go);
         Gather::Verdict const verdict = Gather::JudgeNode(seen, GathererOf(bot, *goals->gatherRates));
         goals->passes.Judge(guid.GetRawValue(), verdict, seen.detourYards);
@@ -179,7 +183,7 @@ bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach)
         !creature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE) ||
         creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING || CircuitCorpse(botAI, creature))
         return true;
-    Gather::Verdict const verdict = JudgeCorpse(botAI, bot, *goals, creature, bot->IsInCombat());
+    Gather::Verdict const verdict = JudgeCorpse(botAI, bot, *goals, creature, bot->IsInCombat(), market);
     goals->passes.Judge(guid.GetRawValue(), verdict, 0.0f);
     return verdict.take;
 }
@@ -216,7 +220,8 @@ bool LootsEmpty(PlayerbotAI* botAI, ObjectGuid corpse)
     if (CircuitCorpse(botAI, creature))
         return botAI->HasSkill(SKILL_SKINNING);  // emptied, so the circuit's skinner can skin it
     // Judged as after the fight: a corpse looted in part can never be skinned, so a hide left here is passed
-    Gather::Verdict const verdict = JudgeCorpse(botAI, botAI->GetBot(), *goals, creature, false);
+    std::optional<Market::View> market;
+    Gather::Verdict const verdict = JudgeCorpse(botAI, botAI->GetBot(), *goals, creature, false, market);
     goals->passes.Judge(corpse.GetRawValue(), verdict, 0.0f);
     return verdict.take;
 }
@@ -230,7 +235,8 @@ bool Skins(PlayerbotAI* botAI, ObjectGuid corpse)
         return true;
     // A corpse kept on the stack from its loot reaches the cast unjudged: the rules decide here too
     Player* bot = botAI->GetBot();
-    Gather::Verdict const verdict = JudgeCorpse(botAI, bot, *goals, creature, bot->IsInCombat());
+    std::optional<Market::View> market;
+    Gather::Verdict const verdict = JudgeCorpse(botAI, bot, *goals, creature, bot->IsInCombat(), market);
     goals->passes.Judge(corpse.GetRawValue(), verdict, 0.0f);
     return verdict.take;
 }

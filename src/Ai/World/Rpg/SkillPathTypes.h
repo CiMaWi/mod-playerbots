@@ -62,6 +62,7 @@ struct Brings
     double income{0.0};       // products it could sell, at what they fetch over their materials
 
     [[nodiscard]] double Total() const { return useSoon + recipesHeld + access + income; }
+    bool operator==(Brings const&) const = default;
 };
 
 // What a stretch costs, in value units
@@ -72,6 +73,7 @@ struct Costs
     double fees{0.0};       // a recipe's price by its share of the points it serves, ranks in full
 
     [[nodiscard]] double Total() const { return materials + time + fees; }
+    bool operator==(Costs const&) const = default;
 };
 
 // One run of the path: consecutive skill points from the same source, or one purchase
@@ -86,6 +88,7 @@ struct PathStep
     double minutes{0.0};    // minutes spent
     double value{0.0};      // the step's cost in value units
     std::uint32_t zone{0};  // where a gathering step gathers
+    bool operator==(PathStep const&) const = default;
 };
 
 struct Stretch
@@ -105,6 +108,7 @@ struct Stretch
     Reason reason{Reason::Open};
     std::uint32_t blockedAt{0};  // the skill a blocked stretch stops at
     std::vector<PathStep> steps;
+    bool operator==(Stretch const&) const = default;
 };
 
 // A recipe or rank to buy
@@ -114,6 +118,7 @@ struct Purchase
     std::uint32_t spell{0};
     std::uint32_t copper{0};
     std::uint32_t item{0};  // a recipe the path buys from a vendor (WR14b): its recipe item; 0: a trainer's, or none
+    bool operator==(Purchase const&) const = default;
 };
 
 // A material the chosen stretch wants beyond what the bot holds for it
@@ -122,6 +127,7 @@ struct Want
     std::uint32_t item{0};
     std::uint32_t count{0};
     double worthEach{0.0};  // value units per unit (its cost by its cheapest source)
+    bool operator==(Want const&) const = default;
 };
 
 // A material the path uses (WR12): what the chosen stretch's casts and tools use, expanded like the wants (the ore it
@@ -140,6 +146,7 @@ struct Material
     // Auction house WA7b: a unit's cost by the cheapest source but the auction, in copper, when the auction is the
     // cheapest (the Path buy line's ceiling); 0: another source is the cheapest, or the auction is the only one
     std::uint32_t otherCopperEach{0};
+    bool operator==(Material const&) const = default;
 };
 
 // A craft for the next stop, in the order of claims: uses, their intermediates, skill, then sale
@@ -150,6 +157,7 @@ struct Craft
     bool forSkill{false};
     std::uint32_t source{0};  // a prospect or mill cast's item (spell: the processing spell); 0 = a recipe
     bool forSale{false};      // auction house WA7b: products the bot sells, from what nothing else claims
+    bool operator==(Craft const&) const = default;
 };
 
 // The second main profession when it is due (WR11, PLAN 3.2, 3.3): the person's craft once a stretch of it from its
@@ -164,6 +172,7 @@ struct SecondChoice
     double gathererWorth{0.0};
     Brings brings;           // what the taken profession's best stretch brings
     std::uint64_t money{0};  // copper above the reserve before the professions
+    bool operator==(SecondChoice const&) const = default;
 };
 
 struct Path
@@ -181,6 +190,7 @@ struct Path
     // their worth (value units: the uses' worth of the units they make) and the units of upkeep's food they make
     double useWorth{0.0};
     std::uint32_t foodUnits{0};
+    bool operator==(Path const&) const = default;
 };
 
 // The path's material of an item, or null: a binary search over the few materials (the item usage's lookup)
@@ -238,6 +248,7 @@ struct ConsumableWant
     // is upkeep's food, so what the claims make counts as its food stock (Path::foodUnits)
     std::uint32_t group{0};
     bool food{false};
+    bool operator==(ConsumableWant const&) const = default;
 };
 
 // A product the bot would use once: an upgrade, a bag, a tool (travel's worth), or an enchant on its own gear (spell)
@@ -247,6 +258,7 @@ struct UseWant
     std::uint32_t spell{0};
     float worthCopperEach{0.0f};
     std::uint32_t level{0};  // the level it is used from
+    bool operator==(UseWant const&) const = default;
 };
 
 // What the bot's thread copies into a goals job for the path besides the snapshot (WR11): item use's answer is a

@@ -443,10 +443,17 @@ double StandInSell(Recipes::RecipeIndex const& recipes, std::uint32_t item)
                 : 0.0;
 }
 
+// The worker's whole order (SkillPathLive.cpp NeedsWithPath): the path and the needs with it
+struct PathResult
+{
+    SkillPath::Path path;
+    UpkeepNeeds::NeedList needs;
+};
+
 // market: the typical prices the path sees (WA7a); empty: only vendors buy and sell
-SkillPathBridge::Computed PathOf(Snapshot const& bot, UpkeepIndex const& index, PathSample const& sample,
-                                 Recipes::RecipeIndex const& recipes, bool sells = true, Market::View market = {},
-                                 SkillPath::Fault fault = SkillPath::Fault::None)
+PathResult PathOf(Snapshot const& bot, UpkeepIndex const& index, PathSample const& sample,
+                  Recipes::RecipeIndex const& recipes, bool sells = true, Market::View market = {},
+                  SkillPath::Fault fault = SkillPath::Fault::None)
 {
     SkillPath::PathWorld world{recipes,
                                [](std::uint32_t spell) { return MayLearn(spell); },
@@ -462,7 +469,11 @@ SkillPathBridge::Computed PathOf(Snapshot const& bot, UpkeepIndex const& index, 
     SkillPath::PathInputs inputs;
     inputs.consumables = sample.consumables;
     inputs.uses = sample.uses;
-    return SkillPathBridge::Compute(bot, index, Rates(bot.level), inputs, world, {}, sample.categories);
+    UpkeepNeeds::NeedRates const rates = Rates(bot.level);
+    SkillPathBridge::Base const base = SkillPathBridge::BaseOf(bot, index, rates, inputs, {}, sample.categories);
+    PathResult result{SkillPathBridge::Compute(bot, rates, base, world).path, {}};
+    result.needs = SkillPathBridge::NeedsWith(bot, index, rates, result.path);
+    return result;
 }
 
 // A harness market (WA7a): the items `priced` picks at MARKET_TIMES x the stand-in sell price (at least
@@ -513,7 +524,7 @@ std::function<bool(std::uint32_t)> GatheredBy(Recipes::RecipeIndex const& recipe
 constexpr std::uint32_t LINEN_CLOTH = 2589;
 constexpr std::uint32_t WOOL_CLOTH = 2592;
 
-std::string Serial(SkillPathBridge::Computed const& computed)
+std::string Serial(PathResult const& computed)
 {
     std::ostringstream out;
     SkillPath::Path const& path = computed.path;
@@ -636,7 +647,7 @@ bool QueuesWithReagents(Snapshot const& bot, UpkeepIndex const& index, PathSampl
                   [](Planner::MaterialHeld const& a, Planner::MaterialHeld const& b) { return a.item < b.item; });
         stocked.knownRecipes.push_back(step.id);
         std::sort(stocked.knownRecipes.begin(), stocked.knownRecipes.end());
-        SkillPathBridge::Computed const queued = PathOf(stocked, index, sample, recipes);
+        PathResult const queued = PathOf(stocked, index, sample, recipes);
         std::cout << "    with the reagents of " << recipe->spell << " in bags and bank: " << queued.path.queue.size()
                   << " crafts queued, choice " << ChoiceText(queued.path) << "\n";
         return !queued.path.queue.empty();
@@ -702,7 +713,7 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
     std::uint32_t const poor = PATH_MONEY[0];  // below the repair reserve: short of gold
 
     Snapshot const flushEngineer = PathSnapshot(index, engineer, flush);
-    SkillPathBridge::Computed const tookCraft = PathOf(flushEngineer, index, engineer, recipes);
+    PathResult const tookCraft = PathOf(flushEngineer, index, engineer, recipes);
     std::cout << "  " << engineer.name << ", " << Money(flush) << ": " << SecondText(tookCraft.path.second) << "\n";
     Check(tookCraft.path.second.craft == static_cast<std::uint16_t>(Skill::Engineering) &&
               tookCraft.path.second.take == static_cast<std::uint16_t>(Skill::Engineering) &&
@@ -716,7 +727,7 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
     // without a market only vendors buy materials (WR11's hold): no gatherer takes the craft's place, the craft's
     // learn waits
     Snapshot const poorEnchanter = PathSnapshot(index, enchanter, poor);
-    SkillPathBridge::Computed const held = PathOf(poorEnchanter, index, enchanter, recipes);
+    PathResult const held = PathOf(poorEnchanter, index, enchanter, recipes);
     std::cout << "  " << enchanter.name << ", " << Money(poor)
               << " (short of gold), no market: " << SecondText(held.path.second) << "\n";
     Check(held.path.second.craft && !held.path.second.gatherer && !held.path.second.take,
@@ -736,7 +747,7 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
     Check(anyMarket.gatherer != 0, "control any_market: a gatherer weighed where the market buys none of its yields");
     // a market that buys the gatherers' yields above the vendors (WR23, WA7a): the gatherer weighed with its proceeds
     Market::View const gathered = MarketOf(recipes, GatheredBy(recipes));
-    SkillPathBridge::Computed const tookGatherer = PathOf(poorEnchanter, index, enchanter, recipes, true, gathered);
+    PathResult const tookGatherer = PathOf(poorEnchanter, index, enchanter, recipes, true, gathered);
     SkillPath::SecondChoice const& replaced = tookGatherer.path.second;
     std::cout << "  " << enchanter.name << ", " << Money(poor)
               << " (short of gold), a market for gathered yields: " << SecondText(replaced) << "\n";
@@ -750,14 +761,14 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
     Snapshot stored = poorEnchanter;
     stored.person->Mains[1] = static_cast<Skill>(replaced.take);
     stored.person->From = ProfessionRules::Origin::Chosen;
-    SkillPathBridge::Computed const after = PathOf(stored, index, enchanter, recipes, true, gathered);
+    PathResult const after = PathOf(stored, index, enchanter, recipes, true, gathered);
     std::cout << "    stored as the person: " << SecondText(after.path.second) << ", "
               << LearnsOf(after.needs, static_cast<Skill>(replaced.take)) << " learn needs of the gatherer\n";
     Check(!after.path.second.craft, "once the gatherer is stored as the person no second choice is due");
 
     // the same enchanter with gold weighs no gatherer: enchanting is not worth it yet, its learn waits
     Snapshot const flushEnchanter = PathSnapshot(index, enchanter, flush);
-    SkillPathBridge::Computed const waits = PathOf(flushEnchanter, index, enchanter, recipes);
+    PathResult const waits = PathOf(flushEnchanter, index, enchanter, recipes);
     std::cout << "  " << enchanter.name << ", " << Money(flush) << ": " << SecondText(waits.path.second) << "\n";
     Check(waits.path.second.craft && !waits.path.second.gatherer && !waits.path.second.take &&
               waits.path.second.reason == SkillPath::Reason::NotWorthIt,
@@ -766,8 +777,8 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
 
     // where nothing sells (no vendor, a market without a sale), no gatherer brings anything either: the craft waits,
     // nothing replaces it
-    SkillPathBridge::Computed const unsold = PathOf(PathSnapshot(index, enchanter, poor), index, enchanter, recipes,
-                                                    false, MarketOf(recipes, GatheredBy(recipes), true));
+    PathResult const unsold = PathOf(PathSnapshot(index, enchanter, poor), index, enchanter, recipes, false,
+                                     MarketOf(recipes, GatheredBy(recipes), true));
     std::cout << "  " << enchanter.name << ", " << Money(poor) << ", nothing sold: " << SecondText(unsold.path.second)
               << "\n";
     Check(unsold.path.second.craft && !unsold.path.second.take, "where nothing sells no gatherer replaces the craft");
@@ -790,7 +801,7 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
     for (int run = 0; run < TIMED_RUNS; ++run)
     {
         auto const started = std::chrono::steady_clock::now();
-        SkillPathBridge::Computed const computed = PathOf(poorEnchanter, index, enchanter, recipes);
+        PathResult const computed = PathOf(poorEnchanter, index, enchanter, recipes);
         double const us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
         best = std::min(best, computed.path.second.craft ? us : -1.0);
     }
@@ -892,7 +903,7 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     PathSample engineer = noHammer;
     engineer.name = "level-20 warrior, mining 90, engineering 1, no hammer";
     engineer.secondValue = 1;
-    SkillPathBridge::Computed const climbs = PathOf(PathSnapshot(index, engineer, flush), index, engineer, recipes);
+    PathResult const climbs = PathOf(PathSnapshot(index, engineer, flush), index, engineer, recipes);
     bool toolStep = false;
     for (SkillPath::Stretch const& stretch : climbs.path.weighed)
         for (SkillPath::PathStep const& step : stretch.steps)
@@ -1067,7 +1078,7 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
         for (std::uint32_t const money : PATH_MONEY)
         {
             Snapshot const bot = PathSnapshot(index, sample, money);
-            SkillPathBridge::Computed const plain = PathOf(bot, index, sample, recipes);
+            PathResult const plain = PathOf(bot, index, sample, recipes);
             std::string const serial = Serial(plain);
             bool const same = serial == Serial(PathOf(bot, index, sample, recipes, true, emptySnapshot)) &&
                               serial == Serial(PathOf(bot, index, sample, recipes, true, unsold));
@@ -1080,10 +1091,10 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
             controlDiffer += serial != control ? 1 : 0;
             if (money != PATH_MONEY[0] && money != PATH_MONEY[4])
                 continue;
-            SkillPathBridge::Computed const sold = PathOf(bot, index, sample, recipes, true, gathered);
-            SkillPathBridge::Computed const all = PathOf(bot, index, sample, recipes, true, everything);
+            PathResult const sold = PathOf(bot, index, sample, recipes, true, gathered);
+            PathResult const all = PathOf(bot, index, sample, recipes, true, everything);
             changed += Serial(sold) != serial || Serial(all) != serial ? 1 : 0;
-            SkillPathBridge::Computed const bargain = PathOf(bot, index, sample, recipes, true, cheap);
+            PathResult const bargain = PathOf(bot, index, sample, recipes, true, cheap);
             std::size_t const bargainLines = linesOf(bargain.path);
             marketLines += linesOf(sold.path) + linesOf(all.path) + bargainLines;
             marketSales += SaleCrafts(sold.path) + SaleCrafts(all.path) + SaleCrafts(bargain.path);
@@ -1139,11 +1150,11 @@ void PathLive(UpkeepIndex const& index, std::string const& root)
     int copperViolations = 0;
     for (PathSample const& sample : PathSamples())
     {
-        std::vector<SkillPathBridge::Computed> byMoney;
+        std::vector<PathResult> byMoney;
         for (std::uint32_t const money : PATH_MONEY)
         {
             Snapshot const bot = PathSnapshot(index, sample, money);
-            SkillPathBridge::Computed const computed = PathOf(bot, index, sample, recipes);
+            PathResult const computed = PathOf(bot, index, sample, recipes);
             SkillPath::Path const& path = computed.path;
             std::cout << "  " << sample.name << ", " << Money(money) << ": " << ChoiceText(path) << ", "
                       << path.needs.size() << " purchases, " << RecipeNeeds(computed.needs) << " recipe needs, "
@@ -1162,7 +1173,7 @@ void PathLive(UpkeepIndex const& index, std::string const& root)
                                                     path.weighed[static_cast<std::size_t>(path.chosen)]);
             }
             // the same bot where nothing it makes or gathers fetches anything: its stretches bring less than they cost
-            SkillPathBridge::Computed const unsold = PathOf(bot, index, sample, recipes, false);
+            PathResult const unsold = PathOf(bot, index, sample, recipes, false);
             if (unsold.path.chosen < 0 && unsold.path.reason == SkillPath::Reason::NotWorthIt)
             {
                 noneFound = true;
@@ -1232,7 +1243,7 @@ void PathLive(UpkeepIndex const& index, std::string const& root)
             for (int run = 0; run < TIMED_RUNS; ++run)
             {
                 auto const started = std::chrono::steady_clock::now();
-                SkillPathBridge::Computed const computed = PathOf(bot, index, sample, recipes);
+                PathResult const computed = PathOf(bot, index, sample, recipes);
                 double const us =
                     std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
                 best = std::min(best, computed.path.version == SkillPath::PATH_VERSION ? us : -1.0);

@@ -1287,9 +1287,9 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
     Goals::Situation situation = SituationOf(botAI, bot);
     // The cells a dry order closed to the bot (questing WQ18b): its route passes them and their neighbours over
     situation.closedCells = GoalApply::ClosedCells(goals, LogNow(bot), now, BlockMs());
-    // WPC14a: the last computation's record, when the bot still keeps its path (the stock fixture replaces it)
+    // WPC14b: the last computation's record, when the bot still keeps its path (the stock fixture replaces it)
     std::shared_ptr<PathRecord const> lastPath =
-        goals.pathRecord && goals.pathRecord->path == goals.path ? goals.pathRecord : nullptr;
+        goals.pathRecord && RecordsPath(*goals.pathRecord, goals.path.get()) ? goals.pathRecord : nullptr;
     Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), situation,
                                    BotNeedRates(botAI, snapshot), PathInputsOf(botAI), std::move(lastPath));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};

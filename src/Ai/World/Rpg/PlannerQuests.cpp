@@ -1249,14 +1249,9 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
             if (upkeep)
             {
                 UpkeepNeeds::NeedList needs;
-                PathRecord record;
-                path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs, &record);
-                // What changed since the bot's last computation, and whether the result did (WPC14a, counters only)
-                if (path)
-                {
-                    CountPathChanges(lastPath.get(), record);
-                    pathRecord = std::make_shared<PathRecord const>(std::move(record));
-                }
+                // The bot's kept path while nothing it was computed from changed (WPC14b)
+                pathRecord = lastPath;
+                path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs, &pathRecord);
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(needs));
                 // The gather circuit at the path's prices (professions WR13b), against the zone's other gatherers
                 uint32 competing = 0;
