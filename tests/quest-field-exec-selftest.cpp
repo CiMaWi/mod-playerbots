@@ -14,6 +14,8 @@
 // WQ20: on the way (Detour, OnOrder): before the arrival a field order with an allowance and a way (WayOrder) take
 // what lies within the allowance on the way, generated walks from 150 to 600 yards off; cases shaped as way-kill,
 // way-far and way-trip.
+// WQ38: the stall sum and its rows (QuestFailRows.h): hand cases on the rule's edges and generated timelines checked
+// against the harness's own count; the abandon's done share and the two rows' amounts.
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //       tests/quest-field-exec-selftest.cpp
@@ -26,11 +28,13 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "PursuitRules.h"
+#include "QuestFailRows.h"
 #include "QuestFieldExec.h"
 
 using namespace Planner;
@@ -1901,6 +1905,229 @@ void RefusedTakeCases()
     }
 }
 
+// WQ38: the stall sum against the harness's own count. Per quest: the ordered milliseconds since its last credit, each
+// pause between two ordered ticks of the quest counted at most 5 s (a tick off the order counts nothing); a credit (its
+// progress rose) zeroes the count; a row when the count reaches 10 minutes, then 20, 40 ... after that credit, with the
+// count's whole minutes
+struct StallModel
+{
+    std::uint32_t progress{0};
+    std::uint32_t count{0};
+    std::uint32_t next{0};
+    std::uint32_t last{0};
+    bool seen{false};
+};
+
+std::optional<std::uint32_t> ModelTick(StallModel& m, std::uint32_t progress, std::uint32_t now, std::uint32_t limit)
+{
+    constexpr std::uint32_t GAP = 5000;
+    if (!m.next)
+        m.next = limit;
+    m.count += m.seen ? std::min(now - m.last, GAP) : 0;
+    m.seen = true;
+    m.last = now;
+    bool const credit = progress > m.progress;
+    m.progress = progress;
+    if (credit)
+    {
+        m.count = 0;
+        m.next = limit;
+        return std::nullopt;
+    }
+    if (m.count < m.next)
+        return std::nullopt;
+    m.next *= 2;
+    return m.count / Planner::QuestFailRows::MINUTE_MS;
+}
+
+void StallRows(std::uint32_t seed)
+{
+    namespace F = Planner::QuestFailRows;
+    constexpr std::uint32_t QUEST = 7;
+    constexpr std::uint32_t OTHER = 8;
+    constexpr std::uint32_t START = 1000;
+    std::uint32_t const limit = F::LimitMs(false);
+    Check(limit == 10 * Planner::QuestFailRows::MINUTE_MS && F::LimitMs(true) == 2 * Planner::QuestFailRows::MINUTE_MS,
+          "stall: the limit is 10 minutes, 2 under shortgiveup");
+    // Ordered 2 s ticks without a credit: the first row at 10 minutes and not a tick before, then at 20 and 40
+    {
+        F::Sums sums;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> rows;  // tick, minutes
+        for (std::uint32_t tick = 0; tick <= 45 * 30; ++tick)
+            if (std::optional<F::Row> const row = F::Tick(sums, QUEST, 3, START + tick * TICK_MS, limit))
+                rows.emplace_back(tick, row->minutes);
+        Check(rows.size() == 3 && rows[0] == std::make_pair(300u, 10u) && rows[1] == std::make_pair(600u, 20u) &&
+                  rows[2] == std::make_pair(1200u, 40u),
+              "stall: rows at 10, 20 and 40 ordered minutes without a credit, none between");
+    }
+    // A credit at 9 minutes: no row at 10; the next 10 minutes after the credit
+    {
+        F::Sums sums;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> rows;
+        for (std::uint32_t tick = 0; tick <= 30 * 30; ++tick)
+        {
+            std::uint32_t const progress = tick >= 270 ? 4 : 3;
+            if (std::optional<F::Row> const row = F::Tick(sums, QUEST, progress, START + tick * TICK_MS, limit))
+                rows.emplace_back(tick, row->minutes);
+        }
+        Check(rows.size() == 2 && rows[0] == std::make_pair(570u, 10u) && rows[1] == std::make_pair(870u, 20u),
+              "stall: a credit at 9 minutes zeroes the sum: the row 10 minutes after it, then 20");
+    }
+    // A credit after the first row: the next row 10 minutes after the credit, not at the doubling
+    {
+        F::Sums sums;
+        std::vector<std::uint32_t> ticks;
+        for (std::uint32_t tick = 0; tick <= 25 * 30; ++tick)
+            if (F::Tick(sums, QUEST, tick >= 400 ? 4 : 3, START + tick * TICK_MS, limit))
+                ticks.push_back(tick);
+        Check(ticks == std::vector<std::uint32_t>{300, 700}, "stall: a credit after a row starts the 10 minutes anew");
+    }
+    // Time off the order: 5 minutes ordered, 30 minutes on something else, then ordered again: the pause adds 5 s
+    {
+        F::Sums sums;
+        std::uint32_t rows = 0;
+        std::uint32_t now = START;
+        for (std::uint32_t tick = 0; tick < 150; ++tick, now += TICK_MS)
+            rows += F::Tick(sums, QUEST, 3, now, limit) ? 1 : 0;
+        now += 30 * Planner::QuestFailRows::MINUTE_MS;
+        std::uint32_t firstRow = 0;
+        for (std::uint32_t tick = 0; tick < 160 && !firstRow; ++tick, now += TICK_MS)
+            if (F::Tick(sums, QUEST, 3, now, limit))
+                firstRow = tick + 1;
+        // 149 x 2 s before the pause, 5 s for it, then 2 s a tick: 298 + 5 + 149 x 2 = 601 s at the 150th
+        Check(rows == 0 && firstRow == 150, "stall: time off the order adds at most 5 s, row after " +
+                                                std::to_string(firstRow) + " ticks back on it");
+    }
+    // Pauses over 5 s on the order (a fight, a rest): each adds 5 s
+    {
+        F::Sums sums;
+        std::uint32_t now = START;
+        std::uint32_t ticks = 0;
+        bool row = false;
+        for (; !row && ticks < 1000; now += 20 * 1000)
+        {
+            ++ticks;
+            row = F::Tick(sums, QUEST, 3, now, limit).has_value();
+        }
+        Check(row && ticks == 121,
+              "stall: 20 s pauses count 5 s each: the row at the 121st tick, it came at " + std::to_string(ticks));
+    }
+    // The shortened limit (shortgiveup): the row at 2 minutes
+    {
+        F::Sums sums;
+        std::uint32_t at = 0;
+        for (std::uint32_t tick = 0; tick <= 100 && !at; ++tick)
+            if (F::Tick(sums, QUEST, 0, START + tick * TICK_MS, F::LimitMs(true)))
+                at = tick;
+        Check(at == 60, "stall: under shortgiveup the row at 2 minutes");
+    }
+    // Two quests count apart; a quest gone from the log is forgotten and starts at zero when it is back
+    {
+        F::Sums sums;
+        for (std::uint32_t tick = 0; tick < 300; ++tick)
+        {
+            F::Tick(sums, QUEST, 0, START + tick * TICK_MS, limit);
+            F::Tick(sums, OTHER, 0, START + tick * TICK_MS, limit);
+        }
+        F::KeepLogged(sums, [](std::uint32_t quest) { return quest != OTHER; });
+        bool const kept = sums.quests.size() == 1 && sums.quests[0].quest == QUEST;
+        bool const row = F::Tick(sums, QUEST, 0, START + 600 * TICK_MS, limit).has_value();
+        bool const anew = !F::Tick(sums, OTHER, 0, START + 600 * TICK_MS, limit).has_value();
+        Check(kept && row && anew, "stall: quests count apart; a quest gone from the log is forgotten");
+    }
+    // Two ticks in one millisecond (two objectives of one quest) add nothing the second time
+    {
+        F::Sums sums;
+        std::uint32_t at = 0;
+        for (std::uint32_t tick = 0; tick <= 400 && !at; ++tick)
+        {
+            std::uint32_t const now = START + tick * TICK_MS;
+            bool const row = F::Tick(sums, QUEST, 0, now, limit).has_value();
+            if (F::Tick(sums, QUEST, 0, now, limit) || row)
+                at = tick;
+        }
+        Check(at == 300, "stall: a second tick in the same millisecond counts nothing");
+    }
+    // Generated timelines: ticks on and off orders, pauses, credits, quests leaving the log; the rule's rows are the
+    // model's rows
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> roll(0, 999);
+    std::size_t timelines = 0;
+    std::size_t rowsSeen = 0;
+    std::string firstBad;
+    constexpr std::size_t TIMELINES = 300;
+    for (std::size_t t = 0; t < TIMELINES && firstBad.empty(); ++t)
+    {
+        F::Sums sums;
+        std::map<std::uint32_t, StallModel> model;
+        std::map<std::uint32_t, std::uint32_t> progress;
+        std::uint32_t const lim = F::LimitMs(roll(rng) < 200);
+        std::uint32_t now = static_cast<std::uint32_t>(roll(rng)) * 1000u + 1u;
+        for (std::size_t step = 0; step < 4000 && firstBad.empty(); ++step)
+        {
+            int const r = roll(rng);
+            now += r < 900 ? TICK_MS : (r < 980 ? static_cast<std::uint32_t>(roll(rng)) * 60u : 600000u);
+            std::uint32_t const quest = 1 + static_cast<std::uint32_t>(roll(rng) % 3);
+            if (roll(rng) < 3)
+                progress[quest] += 1;
+            if (roll(rng) < 1)
+            {
+                progress.erase(quest);
+                model.erase(quest);
+                F::KeepLogged(sums, [quest](std::uint32_t q) { return q != quest; });
+                continue;
+            }
+            std::optional<std::uint32_t> const want = ModelTick(model[quest], progress[quest], now, lim);
+            std::optional<F::Row> const got = F::Tick(sums, quest, progress[quest], now, lim);
+            bool const same =
+                want.has_value() == got.has_value() && (!got || (got->quest == quest && got->minutes == *want));
+            rowsSeen += got ? 1 : 0;
+            if (!same)
+                firstBad = " first wrong: timeline " + std::to_string(t) + " step " + std::to_string(step);
+        }
+        timelines += firstBad.empty() ? 1 : 0;
+    }
+    Check(timelines == TIMELINES && rowsSeen > 100,
+          "stall: " + std::to_string(timelines) + " of 300 generated timelines give the model's rows (seed " +
+              std::to_string(seed) + ", " + std::to_string(rowsSeen) + " rows)" + firstBad);
+}
+
+// WQ38: the abandon's done share and the two rows' amounts
+void ShareAndAmounts()
+{
+    namespace F = Planner::QuestFailRows;
+    using C = F::Credit;
+    auto const share = [](std::vector<C> const& credits, bool complete)
+    { return F::DoneShare(std::span<C const>(credits), complete); };
+    Check(share({{3, 8}}, false) == 37 && share({{8, 8}, {0, 4}}, false) == 66 && share({{12, 8}, {0, 8}}, false) == 50,
+          "share: credits done over credits required, each capped at its requirement, rounded down");
+    Check(share({{8, 8}, {1, 1}}, true) == 100 && share({{0, 8}}, true) == 100 && share({}, true) == 0 &&
+              share({}, false) == 0 && share({{0, 0}, {5, 0}}, false) == 0,
+          "share: a complete quest with credits 100, a quest without any 0");
+    Check(share({{7, 8}}, false) < 100 && share({{8, 8}}, false) == 100, "share: 100 only with every credit done");
+    for (std::uint32_t const level : {0u, 1u, 12u, 83u})
+        for (std::uint32_t const done : {0u, 1u, 50u, 99u, 100u})
+        {
+            std::int64_t const amount = F::AbandonAmount(level, done);
+            Check(amount >= 1000 && amount / 1000 - 1 == done && amount % 1000 == level,
+                  "abandon amount: share " + std::to_string(done) + " level " + std::to_string(level) + " reads back");
+        }
+    Check(F::AbandonAmount(12, std::nullopt) == 12 && F::AbandonAmount(83, std::nullopt) < 1000 &&
+              F::AbandonAmount(12, 0) != F::AbandonAmount(12, std::nullopt) && F::AbandonAmount(12, 250) == 101012,
+          "abandon amount: no share is the bare level (under 1000, as the old rows), a share over 100 counts 100");
+    auto const signed10 = [](std::int64_t bits) { return bits >= 512 ? bits - 1024 : bits; };
+    for (std::int32_t const x : {-91, 0, 5, 511, -512})
+        for (std::uint32_t const minutes : {2u, 10u, 40u, 5000u})
+        {
+            std::uint64_t const cell = FieldCellKey(0, x, -x / 2);
+            std::int64_t const amount = X::StallRowAmount(minutes, cell);
+            bool const back = (amount & 0xFFF) == std::min<std::int64_t>(minutes, 0xFFF) &&
+                              signed10((amount >> 12) & 0x3FF) == x && signed10((amount >> 22) & 0x3FF) == -x / 2;
+            Check(amount >= 0 && back,
+                  "stall amount: minutes " + std::to_string(minutes) + " cell " + std::to_string(x) + " reads back");
+        }
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
@@ -1922,6 +2149,8 @@ int main(int argc, char** argv)
     EnderWalks(seed);
     FieldEnder();
     RefusedTakeCases();
+    StallRows(seed);
+    ShareAndAmounts();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

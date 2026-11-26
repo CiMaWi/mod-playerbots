@@ -172,10 +172,14 @@ Sample ReconcileFrom(Membership const& before, Adapter& adapter, PassengerMotion
     if (motion && state == MotionState::Cancelled)
         SettleMotion(*motion, adapter);
 
+    // An exit whose vessel membership is gone before this sample: it left where its move ran to its issued end, off
+    // any vessel, while the vessel still stood at the issued dock, whoever cleared the membership first (G396: the
+    // core before the sample, walked or jumped); away from its end or on another vessel it is lost
     if (motion && motion->Kind == MotionKind::Exit && sample.Before.Guid != motion->Transport)
     {
         SettleMotion(*motion, adapter);
-        motion->Result = Outcome::Lost;
+        bool const exited = !sample.Before.Guid && state == MotionState::Reached && adapter.ExitAtIssuedDock(*motion);
+        motion->Result = exited ? Outcome::Exited : Outcome::Lost;
         return sample;
     }
 

@@ -356,15 +356,17 @@ inline bool UsesPlaces(FieldMap const& map, Need const& need)
 }
 
 // Every open objective of the log as a need, and a ready quest as its hand-in. A quest the capability table refuses for
-// the bot's side gives none; a slot of a quest the index lacks is passed over
+// the bot's side gives none; a slot of a quest the index lacks is passed over. WQ38: a listed quest gives none, its
+// hand-in neither; an elite, group or instance quest gives a bot alone (groupSize 1 or less) no objective need and
+// waits in the log, its ready hand-in, which a lone bot can do, stays
 inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot const> log, std::uint8_t team,
-                               Pricing const& pricing)
+                               Pricing const& pricing, std::uint32_t groupSize)
 {
     std::vector<Need> needs;
     for (QuestSlot const& slot : log)
     {
         QuestRecord const* quest = slot.quest ? index.Find(slot.quest) : nullptr;
-        if (!quest || RefusedFor(*quest, team))
+        if (!quest || RefusedFor(*quest, team) || Listed(*quest))
             continue;
         QuestShares const shares = SharesOf(*quest, pricing);
         if (slot.state & Circuit::SLOT_COMPLETE)
@@ -377,6 +379,8 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
             needs.push_back(std::move(need));
             continue;
         }
+        if ((quest->flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) && groupSize <= 1)
+            continue;
         for (std::uint32_t at = 0; at < QuestExec::ObjectiveCount(*quest); ++at)
         {
             if (!Detail::Worked(*quest, at))

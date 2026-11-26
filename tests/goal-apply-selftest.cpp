@@ -1263,6 +1263,12 @@ int main()
         Check(movingList && moving.size() == 2 && IdleList(false, true).size() == 9,
               "past the bound the fallback list leaves out rest, keeps wander random and npc (each ends at the "
               "fallback's length); the weighted list is unchanged");
+        // The questing test's setting (questing WQ37): a planner bot's fallback is a rest, past the bound too; the
+        // weighted pick (a bot whose planner a test holds, or that keeps no possessions) is unchanged
+        std::vector<std::uint32_t> const restOnly = {STATUS_REST};
+        Check(IdleList(true, false, true) == restOnly && IdleList(true, true, true) == restOnly &&
+                  IdleList(false, true, true).size() == 9 && IdleList(false, false, true).size() == 9,
+              "questing only: the fallback list is rest alone, also past the bound; the weighted list is unchanged");
 
         // One answer from every state: 2^5 inputs x 3 waits x counts 0..bound x 5 outcomes of an applied plan
         std::size_t states = 0;

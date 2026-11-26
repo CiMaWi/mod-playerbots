@@ -22,6 +22,7 @@
 #include "Player.h"
 #include "ProfessionConfig.h"
 #include "QuestDef.h"
+#include "QuestFailRows.h"
 #include "QuestStatEvents.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
@@ -49,6 +50,29 @@ constexpr uint32 MS_PER_SECOND = 1000;
 constexpr int64 ONE_EVENT = 1;
 
 thread_local char const* questDropWord = nullptr;  // WorldLog::QuestDropWord
+thread_local uint32 questDropQuest = 0;            // and the quest it drops, with its done share (-1: none)
+thread_local int32 questDropShare = -1;
+
+// Questing WQ38: the share of the quest's credits done (QuestFailRows::DoneShare) from the bot's log; none when the
+// quest is not in it (the core's abandon cleared it, or it never was)
+std::optional<uint32> DoneShareOf(Player* bot, uint32 questId)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    auto const it = bot->getQuestStatusMap().find(questId);
+    if (!quest || it == bot->getQuestStatusMap().end())
+        return std::nullopt;
+    QuestStatusData const& data = it->second;
+    std::vector<Planner::QuestFailRows::Credit> credits;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i] > 0)
+            credits.push_back({data.CreatureOrGOCount[i], static_cast<uint32>(quest->RequiredNpcOrGoCount[i])});
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
+            credits.push_back({data.ItemCount[i], static_cast<uint32>(quest->RequiredItemCount[i])});
+    if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
+        credits.push_back({data.Explored ? 1u : 0u, 1u});
+    return Planner::QuestFailRows::DoneShare(credits, data.Status == QUEST_STATUS_COMPLETE);
+}
 
 uint32 ItemLevelOf(Item const* item)
 {
@@ -643,13 +667,31 @@ void WorldLog::NoteQuestAbandon(Player* bot, uint32_t questId, char const* reaso
         return;
 
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    // WQ38: the amount carries the done share: the one taken before the bot's abandon packet (QuestDropWord), else
+    // the log's while the quest is still in it (DropQuestAction); a client's abandon has none
+    std::optional<uint32> const share = questDropQuest == questId && questDropShare >= 0
+                                            ? std::optional<uint32>(static_cast<uint32>(questDropShare))
+                                            : DoneShareOf(bot, questId);
+    int32 const level = quest ? bot->GetQuestLevel(quest) : 0;
     EventLog::Emit(bot, EventLog::EventType::QuestAbandon, reason ? reason : EventLog::SOURCE_OTHER, questId,
-                   quest ? bot->GetQuestLevel(quest) : 0);
+                   Planner::QuestFailRows::AbandonAmount(static_cast<uint32>(std::max(level, 0)), share));
 }
 
-WorldLog::QuestDropWord::QuestDropWord(char const* reason) : _previous(questDropWord) { questDropWord = reason; }
+WorldLog::QuestDropWord::QuestDropWord(char const* reason, Player* bot, uint32_t questId)
+    : _previous(questDropWord), _previousQuest(questDropQuest), _previousShare(questDropShare)
+{
+    questDropWord = reason;
+    std::optional<uint32> const share = bot && questId ? DoneShareOf(bot, questId) : std::nullopt;
+    questDropQuest = share ? questId : 0;
+    questDropShare = share ? static_cast<int32>(*share) : -1;
+}
 
-WorldLog::QuestDropWord::~QuestDropWord() { questDropWord = _previous; }
+WorldLog::QuestDropWord::~QuestDropWord()
+{
+    questDropWord = _previous;
+    questDropQuest = _previousQuest;
+    questDropShare = _previousShare;
+}
 
 void WorldLog::NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool flying)
 {

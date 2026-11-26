@@ -1477,6 +1477,12 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 # pass (a registration the skips lack). Costs those guard tests per update while on.
 Playerbots.Test.MissLog = 0
 
+# Test only (the questing test, questing WQ37): 1 makes the planner keep only the goals that serve levelling (quests,
+# the move to the next quest zone, rest, the hearthstone, a bag, an errand for full bags or a repair; money only while
+# a due repair or training is beyond the bot's gold) and turns a planner bot's idle fallback into a rest. A goal row
+# skipped:questing_only names the dropped ones. Read again on .reload config. Bots led by a player keep their own ways.
+Playerbots.Test.QuestingOnly = 0
+
 # World log (on when Dir is set)
 # The server writes the world log to Dir, the session folder the hub's tools/ac.js sets on every start (empty = off):
 # append-only CSV segments per stream (event, state, meta, decision, recorder), each with a header row, named

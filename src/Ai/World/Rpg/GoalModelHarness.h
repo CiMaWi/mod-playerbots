@@ -8,6 +8,7 @@
 #define _PLAYERBOT_GOALMODELHARNESS_H
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -2454,6 +2455,198 @@ inline void HeldFromQuests(std::vector<Check>& checks)
         Summary(routedHeld));
 }
 
+// Questing only (questing WQ37, WQ.50 item 5): the keep list as the test's setting states it, written here and not
+// read from the rule. Quests (the circuit, the route, deliveries, hubs, class quests), a move to another zone, rest,
+// the hearthstone, a bag, an errand for full bags or a repair; money only while a due repair or training is unpayable
+inline bool QuestingKept(Option const& option, bool moneyAllowed)
+{
+    switch (option.kind)
+    {
+        case GoalKind::Quest:
+        case GoalKind::MoveZone:
+        case GoalKind::Rest:
+        case GoalKind::Hearth:
+        case GoalKind::BuyBag:
+            return true;
+        case GoalKind::Errand:
+            return option.reason == "bags_full" || option.reason == "bags_full_vendor_near" ||
+                   option.reason == "repair";
+        case GoalKind::Money:
+            return moneyAllowed;
+        default:
+            return false;
+    }
+}
+
+// With the setting no option outside the keep list is ranked, and each one the same bot is ranked without it is named
+// dropped as questing_only; over generated bots (money, wear, training, bags, health, questing inputs) that every
+// forbidden kind is offered without the setting, and every kept one ranked with it, so the check is not vacuous. The
+// model builds no TravelElsewhere option (only a bridge order sets one), so none is generated here
+inline void QuestingOnly(std::vector<Check>& checks)
+{
+    constexpr std::size_t KINDS = static_cast<std::size_t>(GoalKind::Count);
+    std::array<bool, KINDS> offered{};  // forbidden kinds ranked without the setting
+    std::array<bool, KINDS> kept{};     // kinds ranked with it
+    bool craftOffered = false;
+    bool repairKept = false;
+    bool keptOnly = true;
+    bool named = true;
+    std::string fault;
+    std::uint32_t cases = 0;
+    std::vector<GoalLog::Row> skippedRows;
+
+    Snapshot const fisherBot = Bot(10, FLUSH);
+    Weights const weights = FromTraits(fisherBot);
+    Need const need = NeedFor(fisherBot, weights, ReserveAt(fisherBot.level));
+    Fish::Fisher fisher;
+    fisher.skill = 100;
+    fisher.maxSkill = 150;
+    fisher.poleHeld = true;
+    fisher.rates.exchange = need.exchange;
+    fisher.rates.factor = need.factor;
+    fisher.rates.minuteValue = BAND_XP_PER_MINUTE[WorldTravel::LevelBand(fisherBot.level)];
+    fisher.rates.cautionWeight = CautionWeight(weights);
+    Fish::Water water;
+    water.area = 40;
+    water.baseSkill = 55;
+    water.pools = 12;
+    water.openYields = {{6291, 1.0, 0u, 1u, 0u}};
+    water.poolYields = {{6359, 1.0, 0u, 4u, 0u}};
+    GatherNode const fishing = Fish::TripOption(water, fisher, {}, true, {0, -9800.0f, 1820.0f, 0.0f}, 1.0f);
+    GatherNode herb;
+    herb.id = 81;
+    herb.skill = HERBALISM;
+    herb.required = 25;
+    herb.walkMinutes = 0.5f;
+    herb.copperWorth = 60.0f;
+
+    for (std::uint32_t const money : {0u, 300u, FLUSH})
+        for (int const worn : {0, 1, 2})  // none, a repair the gold pays, one it does not
+            for (bool const training : {false, true})
+                for (std::uint16_t const free : {std::uint16_t{8}, std::uint16_t{2}, std::uint16_t{0}})
+                    for (bool const hurt : {false, true})
+                        for (int const questing : {0, 1, 2})  // the circuit, the route, nothing to quest
+                        {
+                            Snapshot bot = Bot(10, money);
+                            bot.skills = {{HERBALISM, 40, 75}};
+                            bot.bagFree = free;
+                            bot.hearth = {1, 9950.0f, 2280.0f, 0.0f};  // Darnassus: a far bind
+                            if (worn)
+                            {
+                                bot.durabilityPercent = 5;
+                                bot.lowestDurabilityPercent = 0;
+                                bot.brokenItems = 1;
+                                bot.repairCheapest = worn == 1 ? 40 : FLUSH + 1;
+                            }
+                            Situation situation = Base();
+                            CircuitPlan const circuit = Circuit(bot, situation, 1500.0f, 200.0f, 20.0f);
+                            RoutePlan const route = SampleRoute(bot);
+                            if (questing == 0)
+                                situation.circuit = &circuit;
+                            if (questing == 1)
+                            {
+                                situation.route = &route;
+                                situation.onCircuit = false;
+                            }
+                            if (questing < 2)
+                            {
+                                situation.deliveries = {Carried(DELIVERY_QUEST, 300.0f, 5.0f, false)};
+                                situation.hubs = {Hub(21, ELWYNN, 100.0f, 5.0f), Hub(22, WESTFALL, 400.0f, 10.0f)};
+                                // The craft queue and the far bind outrank a grind: only beside the quest inputs
+                                situation.craft = {1000000.0f, 3.0f, 2.0f};
+                                situation.inns = {{701, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, false}};
+                                situation.bindSeconds = FAR_BIND_SECONDS;
+                            }
+                            situation.spots = {Spot(11, 150.0f, 10.0f), Spot(12, 45.0f, 50.0f)};
+                            situation.nodes = {herb};
+                            situation.waters = {fishing};
+                            situation.bags.sellableSlots = 10;
+                            situation.bags.vendor = {77, 1.0f, true};
+                            situation.bagOffers = {{4496, 77, 1.0f, 400, 6, 0}};
+                            situation.healthPercent = hurt ? 30.0f : 100.0f;
+                            situation.trainingUnpayable = training;
+                            Ranked const off = Rank(bot, situation);
+                            situation.questingOnly = true;
+                            Ranked const on = Rank(bot, situation);
+                            ++cases;
+                            bool const moneyAllowed = training || (worn != 0 && bot.repairCheapest > bot.money);
+                            for (Option const& option : off.options)
+                            {
+                                if (QuestingKept(option, moneyAllowed))
+                                    continue;
+                                offered[static_cast<std::size_t>(option.kind)] = true;
+                                craftOffered = craftOffered || option.reason == "craft";
+                                bool const dropped = std::any_of(on.dropped.begin(), on.dropped.end(),
+                                                                 [&option](Dropped const& entry)
+                                                                 {
+                                                                     return entry.kind == option.kind &&
+                                                                            entry.target == option.target &&
+                                                                            entry.reason == QUESTING_ONLY_REASON;
+                                                                 });
+                                if (!dropped && named)
+                                {
+                                    named = false;
+                                    fault += " not named: " + ChoiceWord(option) + " " + option.reason + ";";
+                                }
+                            }
+                            for (Option const& option : on.options)
+                            {
+                                kept[static_cast<std::size_t>(option.kind)] = true;
+                                repairKept =
+                                    repairKept || (option.kind == GoalKind::Errand && option.reason == "repair");
+                                if (!QuestingKept(option, moneyAllowed) && keptOnly)
+                                {
+                                    keptOnly = false;
+                                    fault += " ranked: " + Summary(on) + ";";
+                                }
+                            }
+                            if (skippedRows.empty() && !on.dropped.empty())
+                            {
+                                std::vector<GoalLog::Row> const rows = GoalLog::Rows(on);
+                                if (rows.size() > 1)
+                                    skippedRows = rows;
+                            }
+                        }
+
+    std::string missing;
+    for (GoalKind const kind : {GoalKind::Grind, GoalKind::Gather, GoalKind::Fish, GoalKind::Money})
+        if (!offered[static_cast<std::size_t>(kind)])
+            missing += std::string(" offered ") + KindWord(kind);
+    if (!craftOffered)
+        missing += " offered craft";
+    for (GoalKind const kind : {GoalKind::Quest, GoalKind::MoveZone, GoalKind::Rest, GoalKind::Hearth, GoalKind::BuyBag,
+                                GoalKind::Errand, GoalKind::Money})
+        if (!kept[static_cast<std::size_t>(kind)])
+            missing += std::string(" kept ") + KindWord(kind);
+    if (!repairKept)
+        missing += " kept repair";
+    Add(checks, "questing only: no forbidden option is ranked, each one is named dropped as questing_only",
+        keptOnly && named, std::to_string(cases) + " bots;" + fault);
+    Add(checks, "questing only: every forbidden kind is offered without the setting, every kept one ranked with it",
+        missing.empty(), missing.empty() ? std::to_string(cases) + " bots" : missing);
+
+    // The goal rows show the drop: one skipped:questing_only row after the ranking's, also after a none row when
+    // the setting dropped every option; without drops there is none (LogRows: one row per ranking)
+    bool const skipped = skippedRows.size() == 2 && skippedRows[1].choice == "skipped:questing_only" &&
+                         skippedRows[1].reason == QUESTING_ONLY_REASON && skippedRows[1].value >= 1.0f &&
+                         !skippedRows[1].alternatives.empty() &&
+                         skippedRows[1].alternatives.size() <= GoalLog::ALTERNATIVES &&
+                         skippedRows[1].alternatives[0].choice == LogWord(skippedRows[1].alternatives[0].choice);
+    Snapshot const grinder = Bot(10, FLUSH);
+    Situation only = Base();
+    only.spots = {Spot(11, 75.0f, 10.0f)};
+    only.questingOnly = true;
+    Ranked const none = Rank(grinder, only);
+    std::vector<GoalLog::Row> const noneRows = GoalLog::Rows(none);
+    bool const noneSkipped = none.options.empty() && noneRows.size() == 2 && noneRows[0].choice == "none:0" &&
+                             noneRows[1].choice == "skipped:questing_only" && noneRows[1].value == 1.0f &&
+                             noneRows[1].alternatives.size() == 1 && noneRows[1].alternatives[0].choice == "grind:11";
+    Add(checks, "questing only: the goal rows name the dropped options in a skipped:questing_only row",
+        skipped && noneSkipped,
+        std::to_string(skippedRows.size()) + " rows; only forbidden: " + Summary(none) + ", " +
+            std::to_string(noneRows.size()) + " rows");
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -2482,6 +2675,7 @@ inline std::vector<Check> SyntheticChecks()
     Targets(checks);
     Routes(checks);
     HeldFromQuests(checks);
+    QuestingOnly(checks);
     return checks;
 }
 

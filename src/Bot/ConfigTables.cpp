@@ -374,6 +374,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(TestNamePrefixFamily, sPlayerbotAIConfig.Lone),
         MakeEntry(DebugThreadChecksFamily, sPlayerbotAIConfig.Lone),
         MakeEntry(TestMissLogFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestQuestingOnlyFamily, sPlayerbotAIConfig.Lone),
         MakeEntry(WorldLogFamily, WorldLog::Options()),
         MakeEntry(PopulationRotationFamily, Population::Options()),
         MakeEntry(PopulationRetireFamily, Population::Options()),
