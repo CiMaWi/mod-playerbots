@@ -300,6 +300,11 @@ ItemUsage ItemUsageValue::Calculate()
     return ITEM_USAGE_NONE;
 }
 
+bool ItemUsageValue::BeatsWornScore(float score, float wornScore)
+{
+    return score > std::max(wornScore, 0.0f) * sPlayerbotAIConfig.EquipUpgradeThreshold;
+}
+
 ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, int32 randomPropertyId)
 {
     if (bot->CanUseItem(itemProto) != EQUIP_ERR_OK)
@@ -439,8 +444,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         // A fitting item must beat the worn one's score times the threshold, whatever the worn item is; a worn
         // score at or below 0 counts as an empty slot. The same item with the same suffix never replaces itself.
         bool const sameItem = itemProto->ItemId == oldItemProto->ItemId && randomPropertyId == oldRandomPropertyId;
-        bool const shouldEquipInSlot =
-            shouldEquip && !sameItem && itemScore > std::max(oldScore, 0.0f) * sPlayerbotAIConfig.EquipUpgradeThreshold;
+        bool const shouldEquipInSlot = shouldEquip && !sameItem && BeatsWornScore(itemScore, oldScore);
 
         Item* item = CurrentItem(itemProto);
         bool itemIsBroken =

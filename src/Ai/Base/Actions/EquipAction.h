@@ -33,6 +33,11 @@ private:
     void EquipItem(FindItemVisitor* visitor);
     uint8 GetSmallestBagSlot();
     void EquipItem(Item* item);
+    // Whether an item of this score takes the worn item's place, by the upgrade rule's comparison
+    bool Replaces(float score, Item const* worn, float wornScore) const;
+
+    // The candidates of the pass EquipItems(guids) runs, while it runs
+    std::vector<ObjectGuid> const* _passCandidates = nullptr;
 };
 
 class EquipUpgradesPacketAction : public EquipAction

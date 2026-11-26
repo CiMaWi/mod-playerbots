@@ -41,9 +41,29 @@ void EquipAction::EquipItems(ItemIds ids)
 
 void EquipAction::EquipItems(std::vector<ObjectGuid> const& guids)
 {
+    _passCandidates = &guids;
     for (ObjectGuid const& guid : guids)
         if (Item* item = bot->GetItemByGuid(guid))
             EquipItem(item);
+    _passCandidates = nullptr;
+}
+
+// Anything fills an empty slot and anything that scores above 0 replaces a broken item, as the upgrade rule counts
+// them. A worn item this pass equipped yields to any better candidate: the pass judged every candidate against the
+// slots as it found them and equips them from the lowest score up, so the best of them stays worn.
+bool EquipAction::Replaces(float score, Item const* worn, float wornScore) const
+{
+    if (!worn)
+        return true;
+
+    if (worn->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && worn->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0)
+        return score > 0.0f;
+
+    if (_passCandidates &&
+        std::find(_passCandidates->begin(), _passCandidates->end(), worn->GetGUID()) != _passCandidates->end())
+        return score > wornScore;
+
+    return ItemUsageValue::BeatsWornScore(score, wornScore);
 }
 
 // Return bagslot with smalest bag.
@@ -165,11 +185,9 @@ void EquipAction::EquipItem(Item* item)
 
             // Set up the stats calculator once and reuse results for performance
             StatsWeightCalculator calculator(bot);
-            calculator.SetItemSetBonus(false);
-            calculator.SetOverflowPenalty(false);
+            calculator.SetUpForEquipCompare();
 
-            // Calculate item scores once and store them; an empty hand scores below any item, so a weapon scoring
-            // 0 or less still fills it
+            // Calculate item scores once and store them; an empty hand takes any weapon (Replaces)
             float newItemScore = calculator.CalculateItem(itemId, item->GetItemRandomPropertyId());
             float mainHandScore = mainHandItem ? calculator.CalculateItem(mainHandItem->GetTemplate()->ItemId,
                                                                           mainHandItem->GetItemRandomPropertyId())
@@ -209,9 +227,9 @@ void EquipAction::EquipItem(Item* item)
                                     (mhProto->InventoryType == INVTYPE_2HWEAPON && mhIsValidTG));
             }
 
-            // Priority 1: Replace main hand if the new weapon is strictly better
+            // Priority 1: Replace main hand if the new weapon is an upgrade over it
             // and if conditions allow (e.g. no conflicting 2H logic)
-            bool betterThanMH = (newItemScore > mainHandScore);
+            bool betterThanMH = Replaces(newItemScore, mainHandItem, mainHandScore);
             // If a one-handed weapon is better, we can still use it instead of a two-handed weapon
             bool mhConditionOK = (invType != INVTYPE_2HWEAPON ||
                       (isTwoHander && !canTitanGrip) ||
@@ -230,7 +248,7 @@ void EquipAction::EquipItem(Item* item)
                 }
 
                 // Try moving old main hand weapon to offhand if beneficial
-                if (mainHandItem && mainHandCanGoOff && (!offHandItem || mainHandScore > offHandScore))
+                if (mainHandItem && mainHandCanGoOff && Replaces(mainHandScore, offHandItem, offHandScore))
                 {
                     ItemTemplate const* oldMHProto = mainHandItem->GetTemplate();
 
@@ -253,7 +271,7 @@ void EquipAction::EquipItem(Item* item)
             }
 
             // Priority 2: If not better than main hand, check if better than offhand
-            else if (canGoOff && newItemScore > offHandScore)
+            else if (canGoOff && Replaces(newItemScore, offHandItem, offHandScore))
             {
                 // Equip in offhand
                 WorldPacket eqPacket(CMSG_AUTOEQUIP_ITEM_SLOT, 2);
@@ -293,8 +311,7 @@ void EquipAction::EquipItem(Item* item)
                 {
                     // Both slots are full - pick the worst item to replace, but only if new item is better
                     StatsWeightCalculator calc(bot);
-                    calc.SetItemSetBonus(false);
-                    calc.SetOverflowPenalty(false);
+                    calc.SetUpForEquipCompare();
 
                     // Calculate new item score with random properties
                     int32 newItemRandomProp = item->GetItemRandomPropertyId();
@@ -307,8 +324,8 @@ void EquipAction::EquipItem(Item* item)
                     float secondItemScore = calc.CalculateItem(equippedItems[1]->GetTemplate()->ItemId, secondRandomProp);
 
                     // Determine which slot (if any) should be replaced
-                    bool betterThanFirst = newItemScore > firstItemScore;
-                    bool betterThanSecond = newItemScore > secondItemScore;
+                    bool betterThanFirst = Replaces(newItemScore, equippedItems[0], firstItemScore);
+                    bool betterThanSecond = Replaces(newItemScore, equippedItems[1], secondItemScore);
 
                     // Early return if new item is not better than either equipped item
                     if (!betterThanFirst && !betterThanSecond)
