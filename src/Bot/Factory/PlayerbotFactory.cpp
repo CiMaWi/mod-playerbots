@@ -2467,7 +2467,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             continue;
         }
 
-        float bestScoreForSlot = -1;
+        float bestScoreForSlot = 0.0f;
         uint32 bestItemForSlot = 0;
         int32 bestRandomPropForSlot = 0;
         for (size_t index = 0; index < ids.size(); index++)
@@ -2478,6 +2478,9 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(newItemId);
 
             float cur_score = calculator.CalculateItem(newItemId, newItemProp, slot);
+            // As the upgrade rule: an item scoring 0 or below fills a slot only for a stat that serves the spec
+            if (cur_score <= 0.0f && !calculator.HasUsefulStat())
+                continue;
 
             if (cur_score > 0.0f && proto && proto->Class == ITEM_CLASS_ARMOR && sPlayerbotAIConfig.PreferClassArmorType)
             {
@@ -2486,7 +2489,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                     cur_score *= 3.0f;  // 3x multiplier for preferred armor type
             }
 
-            if (cur_score > bestScoreForSlot)
+            if (!bestItemForSlot || cur_score > bestScoreForSlot)
             {
                 // delay heavy check to here
                 if (!CanEquipItem(proto))
@@ -2513,7 +2516,8 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         if (incremental && oldItem)
         {
             float old_score = calculator.CalculateItem(oldItem->GetEntry(), oldItem->GetItemRandomPropertyId(), slot);
-            if (bestScoreForSlot < 1.2f * old_score)
+            // a worn score at or below 0 counts as none: the new item needs a score of at least 0
+            if (bestScoreForSlot < 1.2f * std::max(old_score, 0.0f))
                 continue;
         }
         uint32 replacedLevel = 0;  // the world log's Equip amount is the new item's level over it
@@ -2594,7 +2598,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             if (ids.empty())
                 continue;
 
-            float bestScoreForSlot = -1;
+            float bestScoreForSlot = 0.0f;
             uint32 bestItemForSlot = 0;
             int32 bestRandomPropForSlot = 0;
             for (size_t index = 0; index < ids.size(); index++)
@@ -2605,6 +2609,9 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 ItemTemplate const* proto = sObjectMgr->GetItemTemplate(newItemId);
 
                 float cur_score = calculator.CalculateItem(newItemId, newItemProp, slot);
+                // As the upgrade rule: an item scoring 0 or below fills a slot only for a stat that serves the spec
+                if (cur_score <= 0.0f && !calculator.HasUsefulStat())
+                    continue;
 
                 if (cur_score > 0.0f && proto && proto->Class == ITEM_CLASS_ARMOR && sPlayerbotAIConfig.PreferClassArmorType)
                 {
@@ -2613,7 +2620,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                         cur_score *= 3.0f;  // 3x multiplier for preferred armor type
                 }
 
-                if (cur_score > bestScoreForSlot)
+                if (!bestItemForSlot || cur_score > bestScoreForSlot)
                 {
                     // delay heavy check to here
                     if (!CanEquipItem(proto))

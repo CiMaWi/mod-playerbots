@@ -5,6 +5,16 @@
  */
 
 #include "EquipAction.h"
+
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "ItemPackets.h"
@@ -12,8 +22,114 @@
 #include "ItemVisitors.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
+#include "RandomItemMgr.h"
 #include "StatsWeightCalculator.h"
-#include <utility>
+#include "WorldLog.h"
+
+namespace
+{
+// A weapon or armour piece in an equipment slot (the world log's gear equip row)
+struct WornItem
+{
+    ObjectGuid guid;
+    uint32 entry = 0;
+    int32 randomPropertyId = 0;
+    bool broken = false;
+};
+using WornItems = std::array<WornItem, EQUIPMENT_SLOT_END>;
+constexpr uint8 NO_ROW_SLOT = EQUIPMENT_SLOT_END;
+
+WornItems ReadWorn(Player* bot)
+{
+    WornItems worn;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || (proto->Class != ITEM_CLASS_WEAPON && proto->Class != ITEM_CLASS_ARMOR))
+            continue;
+
+        bool const broken =
+            item->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0;
+        worn[slot] = {item->GetGUID(), proto->ItemId, item->GetItemRandomPropertyId(), broken};
+    }
+    return worn;
+}
+
+bool IsWorn(WornItems const& worn, ObjectGuid guid)
+{
+    return std::any_of(worn.begin(), worn.end(),
+                       [guid](WornItem const& item) { return item.entry && item.guid == guid; });
+}
+
+std::string_view EquipReason(Player* bot, WornItem const& worn)
+{
+    if (!worn.entry)
+        return "empty_slot";
+
+    if (worn.broken)
+        return "broken";
+
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(worn.entry);
+    if (proto && proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, bot->getClass()))
+        return "kind";
+
+    if (proto && proto->Class == ITEM_CLASS_ARMOR &&
+        !sRandomItemMgr.CanEquipArmorKind(proto, bot->getClass(), bot->GetLevel()))
+        return "kind";
+
+    return "upgrade";
+}
+
+// One gear equip row per weapon or armour piece the pass newly wears: its score, the score of what its slot held
+// before the pass and the entries of up to two items that left the equipment with it (one that left a hand with no
+// row of its own goes to the other hand's row: a two-hander over two weapons, a main hand moved to the off hand)
+void LogEquips(Player* bot, WornItems const& before)
+{
+    WornItems const after = ReadWorn(bot);
+    std::array<bool, EQUIPMENT_SLOT_END> row{};
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        row[slot] = after[slot].entry && !IsWorn(before, after[slot].guid);
+
+    std::array<std::array<uint32, 2>, EQUIPMENT_SLOT_END> off{};
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (!before[slot].entry || IsWorn(after, before[slot].guid))
+            continue;
+
+        uint8 rowSlot = row[slot] ? slot : NO_ROW_SLOT;
+        if (rowSlot == NO_ROW_SLOT && slot == EQUIPMENT_SLOT_MAINHAND && row[EQUIPMENT_SLOT_OFFHAND])
+            rowSlot = EQUIPMENT_SLOT_OFFHAND;
+        if (rowSlot == NO_ROW_SLOT && slot == EQUIPMENT_SLOT_OFFHAND && row[EQUIPMENT_SLOT_MAINHAND])
+            rowSlot = EQUIPMENT_SLOT_MAINHAND;
+        if (rowSlot == NO_ROW_SLOT)
+            continue;
+
+        std::array<uint32, 2>& left = off[rowSlot];
+        if (!left[0])
+            left[0] = before[slot].entry;
+        else if (!left[1])
+            left[1] = before[slot].entry;
+    }
+
+    StatsWeightCalculator calculator(bot);
+    calculator.SetUpForEquipCompare();
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (!row[slot])
+            continue;
+
+        WornItem const& worn = before[slot];
+        float const score = calculator.CalculateItem(after[slot].entry, after[slot].randomPropertyId);
+        float const wornScore = worn.entry ? calculator.CalculateItem(worn.entry, worn.randomPropertyId) : 0.0f;
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Gear, "equip", EquipReason(bot, worn), score,
+                           {{"worn", wornScore},
+                            {"off", static_cast<float>(off[slot][0])},
+                            {"off2", static_cast<float>(off[slot][1])}},
+                           after[slot].entry);
+    }
+}
+}  // namespace
 
 bool EquipAction::Execute(Event event)
 {
@@ -30,6 +146,44 @@ void EquipAction::EquipItems(ItemIds ids)
         FindItemByIdVisitor visitor(*i);
         EquipItem(&visitor);
     }
+}
+
+void EquipAction::EquipItems(std::vector<ObjectGuid> const& guids)
+{
+    bool const logged = !guids.empty() && WorldLog::Active();
+    WornItems before;
+    if (logged)
+        before = ReadWorn(bot);
+
+    _passCandidates = &guids;
+    for (ObjectGuid const& guid : guids)
+        if (Item* item = bot->GetItemByGuid(guid))
+            EquipItem(item);
+    _passCandidates = nullptr;
+
+    if (logged)
+        LogEquips(bot, before);
+}
+
+// Anything fills an empty slot. An equip asked for (chat command, outfit, script) replaces on any higher score. In
+// the bot's own pass anything that scores above 0 replaces a broken item, as the upgrade rule counts it, and a worn
+// item this pass equipped yields to any better candidate: the pass judged every candidate against the slots as it
+// found them and equips them from the lowest score up, so the best of them stays worn.
+bool EquipAction::Replaces(float score, Item const* worn, float wornScore) const
+{
+    if (!worn)
+        return true;
+
+    if (!_passCandidates)
+        return score > wornScore;
+
+    if (worn->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && worn->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0)
+        return score > 0.0f;
+
+    if (std::find(_passCandidates->begin(), _passCandidates->end(), worn->GetGUID()) != _passCandidates->end())
+        return score > wornScore;
+
+    return ItemUsageValue::BeatsWornScore(score, wornScore);
 }
 
 // Return bagslot with smalest bag.
@@ -151,15 +305,16 @@ void EquipAction::EquipItem(Item* item)
 
             // Set up the stats calculator once and reuse results for performance
             StatsWeightCalculator calculator(bot);
-            calculator.SetItemSetBonus(false);
-            calculator.SetOverflowPenalty(false);
+            calculator.SetUpForEquipCompare();
 
-            // Calculate item scores once and store them
+            // Calculate item scores once and store them; an empty hand takes any weapon (Replaces)
             float newItemScore = calculator.CalculateItem(itemId, item->GetItemRandomPropertyId());
-            float mainHandScore = mainHandItem
-                ? calculator.CalculateItem(mainHandItem->GetTemplate()->ItemId, mainHandItem->GetItemRandomPropertyId()) : 0.0f;
-            float offHandScore = offHandItem
-                ? calculator.CalculateItem(offHandItem->GetTemplate()->ItemId, offHandItem->GetItemRandomPropertyId()) : 0.0f;
+            float mainHandScore = mainHandItem ? calculator.CalculateItem(mainHandItem->GetTemplate()->ItemId,
+                                                                          mainHandItem->GetItemRandomPropertyId())
+                                               : std::numeric_limits<float>::lowest();
+            float offHandScore = offHandItem ? calculator.CalculateItem(offHandItem->GetTemplate()->ItemId,
+                                                                        offHandItem->GetItemRandomPropertyId())
+                                             : std::numeric_limits<float>::lowest();
 
             // Determine where this weapon can go
             bool canGoMain = (invType == INVTYPE_WEAPON ||
@@ -192,9 +347,9 @@ void EquipAction::EquipItem(Item* item)
                                     (mhProto->InventoryType == INVTYPE_2HWEAPON && mhIsValidTG));
             }
 
-            // Priority 1: Replace main hand if the new weapon is strictly better
+            // Priority 1: Replace main hand if the new weapon is an upgrade over it
             // and if conditions allow (e.g. no conflicting 2H logic)
-            bool betterThanMH = (newItemScore > mainHandScore);
+            bool betterThanMH = Replaces(newItemScore, mainHandItem, mainHandScore);
             // If a one-handed weapon is better, we can still use it instead of a two-handed weapon
             bool mhConditionOK = (invType != INVTYPE_2HWEAPON ||
                       (isTwoHander && !canTitanGrip) ||
@@ -213,7 +368,7 @@ void EquipAction::EquipItem(Item* item)
                 }
 
                 // Try moving old main hand weapon to offhand if beneficial
-                if (mainHandItem && mainHandCanGoOff && (!offHandItem || mainHandScore > offHandScore))
+                if (mainHandItem && mainHandCanGoOff && Replaces(mainHandScore, offHandItem, offHandScore))
                 {
                     ItemTemplate const* oldMHProto = mainHandItem->GetTemplate();
 
@@ -236,7 +391,7 @@ void EquipAction::EquipItem(Item* item)
             }
 
             // Priority 2: If not better than main hand, check if better than offhand
-            else if (canGoOff && newItemScore > offHandScore)
+            else if (canGoOff && Replaces(newItemScore, offHandItem, offHandScore))
             {
                 // Equip in offhand
                 WorldPacket eqPacket(CMSG_AUTOEQUIP_ITEM_SLOT, 2);
@@ -276,8 +431,7 @@ void EquipAction::EquipItem(Item* item)
                 {
                     // Both slots are full - pick the worst item to replace, but only if new item is better
                     StatsWeightCalculator calc(bot);
-                    calc.SetItemSetBonus(false);
-                    calc.SetOverflowPenalty(false);
+                    calc.SetUpForEquipCompare();
 
                     // Calculate new item score with random properties
                     int32 newItemRandomProp = item->GetItemRandomPropertyId();
@@ -290,8 +444,8 @@ void EquipAction::EquipItem(Item* item)
                     float secondItemScore = calc.CalculateItem(equippedItems[1]->GetTemplate()->ItemId, secondRandomProp);
 
                     // Determine which slot (if any) should be replaced
-                    bool betterThanFirst = newItemScore > firstItemScore;
-                    bool betterThanSecond = newItemScore > secondItemScore;
+                    bool betterThanFirst = Replaces(newItemScore, equippedItems[0], firstItemScore);
+                    bool betterThanSecond = Replaces(newItemScore, equippedItems[1], secondItemScore);
 
                     // Early return if new item is not better than either equipped item
                     if (!betterThanFirst && !betterThanSecond)
@@ -331,12 +485,17 @@ void EquipAction::EquipItem(Item* item)
     botAI->TellMaster(out);
 }
 
-ItemIds EquipAction::SelectInventoryItemsToEquip()
+std::vector<ObjectGuid> EquipAction::SelectInventoryItemsToEquip()
 {
     CollectItemsVisitor visitor;
     IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
 
-    ItemIds items;
+    // Every candidate is judged against the worn items as they are before this pass, so two may claim one slot:
+    // equipped from the lowest score up, the best of them ends worn
+    StatsWeightCalculator calculator(bot);
+    calculator.SetUpForEquipCompare();
+    std::vector<std::pair<float, ObjectGuid>> candidates;
+    std::unordered_set<std::string> judged;  // one copy per item and suffix
     for (auto i = visitor.items.begin(); i != visitor.items.end(); ++i)
     {
         Item* item = *i;
@@ -360,10 +519,20 @@ ItemIds EquipAction::SelectInventoryItemsToEquip()
         else
             itemUsageParam = std::to_string(itemId);
 
+        if (!judged.insert(itemUsageParam).second)
+            continue;
+
         ItemUsage usage = AI_VALUE2(ItemUsage, "item upgrade", itemUsageParam);
         if (usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE || usage == ITEM_USAGE_BAD_EQUIP)
-            items.insert(itemId);
+            candidates.emplace_back(calculator.CalculateItem(itemId, randomProperty), item->GetGUID());
     }
+
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::vector<ObjectGuid> items;
+    items.reserve(candidates.size());
+    for (auto const& candidate : candidates)
+        items.push_back(candidate.second);
     return items;
 }
 
@@ -408,7 +577,7 @@ bool EquipUpgradesPacketAction::Execute(Event event)
             return false;
     }
 
-    ItemIds items = SelectInventoryItemsToEquip();
+    std::vector<ObjectGuid> const items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
 }
@@ -418,7 +587,7 @@ bool EquipUpgradeAction::Execute(Event /*event*/)
     if (PvpGearMgr::Instance().IsWorn(bot))
         return false;
 
-    ItemIds items = SelectInventoryItemsToEquip();
+    std::vector<ObjectGuid> const items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
 }
