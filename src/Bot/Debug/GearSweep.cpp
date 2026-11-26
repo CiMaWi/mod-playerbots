@@ -75,6 +75,11 @@ constexpr uint32 PAIR_MAX_LEVEL = 60;
 
 constexpr uint32 LEVEL_WINDOW = 10;
 
+// The talents the score's weapon factors read (StatsWeightCalculator), for the per-bot line
+constexpr uint32 SPELL_ROGUE_SWORD_SPECIALIZATION = 13964;
+constexpr uint32 SPELL_POLEAXE_SPECIALIZATION = 12785;
+constexpr uint32 SPELL_NERVES_OF_COLD_STEEL = 50138;
+
 struct Worn
 {
     uint8 slot = NULL_SLOT;
@@ -84,6 +89,7 @@ struct Worn
     bool full = false;
     bool kind = false;
     bool broken = false;
+    std::string stats;
 };
 
 // What a template's own bonuses are made of
@@ -108,6 +114,7 @@ struct Row
     std::array<Worn, 2> worn;
     uint8 wornCount = 0;
     uint32 flags = 0;
+    std::string stats;
 };
 
 struct BotResult
@@ -164,7 +171,7 @@ bool IsTitanGripKind(ItemTemplate const* proto)
            proto->SubClass == ITEM_SUBCLASS_WEAPON_SWORD2;
 }
 
-// The rule's full fit test: CanEquipWeapon, or CanEquipArmor with its class stat table
+// The factory's fit test: CanEquipWeapon, or CanEquipArmor with its class stat table (recorded beside the rule's)
 bool FullFits(ItemTemplate const* proto, Player* bot)
 {
     if (proto->Class == ITEM_CLASS_WEAPON)
@@ -174,15 +181,12 @@ bool FullFits(ItemTemplate const* proto, Player* bot)
     return true;
 }
 
-// The kind half of the fit test: the armour test returns right after the kind and relic checks for an item below
-// uncommon, so a poor copy of the template skips only the class stat table. A weapon's test has no table.
+// The rule's kind test: CanEquipWeapon, or the armour kind without the class stat table. A weapon's test has no table.
 bool KindFits(ItemTemplate const* proto, Player* bot, bool full)
 {
-    if (full || proto->Class != ITEM_CLASS_ARMOR)
+    if (proto->Class != ITEM_CLASS_ARMOR)
         return full;
-    ItemTemplate copy = *proto;
-    copy.Quality = ITEM_QUALITY_POOR;
-    return sRandomItemMgr.CanEquipArmor(&copy, bot->getClass(), bot->GetLevel());
+    return sRandomItemMgr.CanEquipArmorKind(proto, bot->getClass(), bot->GetLevel());
 }
 
 Bonus BonusOf(ItemTemplate const* proto)
@@ -352,6 +356,37 @@ uint8 CandidateSlots(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto,
     return 1;
 }
 
+// The stats the calculator collected for its last item, "index:value" of the non-zero ones
+std::string StatsText(StatsWeightCalculator const& calc)
+{
+    std::string text;
+    float const* stats = calc.GetCollector()->stats;
+    for (uint32 i = 0; i < STATS_TYPE_MAX; ++i)
+    {
+        if (stats[i] == 0.0f)
+            continue;
+        if (!text.empty())
+            text += ',';
+        text += Acore::StringFormat("{}:{:.3f}", i, stats[i]);
+    }
+    return text.empty() ? "-" : text;
+}
+
+std::string WeightsText(StatsWeightCalculator const& calc)
+{
+    std::string text;
+    float const* weights = calc.GetStatWeights();
+    for (uint32 i = 0; i < STATS_TYPE_MAX; ++i)
+    {
+        if (weights[i] == 0.0f)
+            continue;
+        if (!text.empty())
+            text += ',';
+        text += Acore::StringFormat("{}:{:.4f}", i, weights[i]);
+    }
+    return text.empty() ? "-" : text;
+}
+
 Worn ReadWorn(Player* bot, StatsWeightCalculator& calc, uint8 slot)
 {
     Worn worn;
@@ -364,6 +399,7 @@ Worn ReadWorn(Player* bot, StatsWeightCalculator& calc, uint8 slot)
     worn.entry = proto->ItemId;
     worn.prop = item->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID);
     worn.score = calc.CalculateItem(worn.entry, worn.prop);
+    worn.stats = StatsText(calc);
     worn.full = FullFits(proto, bot);
     worn.kind = KindFits(proto, bot, worn.full);
     worn.broken =
@@ -371,13 +407,28 @@ Worn ReadWorn(Player* bot, StatsWeightCalculator& calc, uint8 slot)
     return worn;
 }
 
-// An empty candidate slot, or a worn item the score beats by the threshold
+// An empty candidate slot or a broken worn item (the rule takes both as empty), or a worn item the score beats by the
+// threshold, a worn score at or below 0 counting as 0; never the same item with the same suffix
 bool Passes(Row const& row, float threshold)
 {
     for (uint8 i = 0; i < row.wornCount; ++i)
-        if (!row.worn[i].entry || row.score > row.worn[i].score * threshold)
+    {
+        Worn const& worn = row.worn[i];
+        if (!worn.entry || worn.broken)
             return true;
+        if (worn.entry == row.proto->ItemId && worn.prop == row.prop)
+            continue;
+        if (row.score > std::max(worn.score, 0.0f) * threshold)
+            return true;
+    }
     return false;
+}
+
+// The rule's own test of a row: no gate refused it, it is of the bot's kind, its score is above 0 and a candidate
+// slot passes
+bool FitPasses(Row const& row, float threshold)
+{
+    return row.gate == Gate::Ok && row.kind && row.score > 0.0f && Passes(row, threshold);
 }
 
 // The invariants one row decides on its own (S6 and the copy half of S4 compare rows: SweepBot)
@@ -387,6 +438,7 @@ void FlagRow(Row& row, Bonus const& bonus, float threshold)
     bool anyEmpty = false;
     bool anyBroken = false;
     bool wornPositive = false;
+    bool wornTableOnly = false;
     bool sameEntryPass = false;
     for (uint8 i = 0; i < row.wornCount; ++i)
     {
@@ -398,23 +450,34 @@ void FlagRow(Row& row, Bonus const& bonus, float threshold)
         }
         anyBroken = anyBroken || worn.broken;
         wornPositive = wornPositive || worn.score > 0.0f;
-        if (worn.entry == row.proto->ItemId && worn.prop != row.prop && row.score > worn.score * threshold)
+        wornTableOnly = wornTableOnly || (worn.kind && worn.score > 0.0f && !worn.full);
+        if (worn.entry == row.proto->ItemId && worn.prop != row.prop &&
+            row.score > std::max(worn.score, 0.0f) * threshold)
             sameEntryPass = true;
     }
     bool const occupied = row.wornCount && !anyEmpty;
     bool const positive = row.score > 0.0f;
+    bool const passes = Passes(row, threshold);
+    bool const fitPasses = FitPasses(row, threshold);
 
+    // S1: an upgrade with a score at or below 0
     if (upgrade && !positive)
         row.flags |= 1u << FLAG_S1;
-    if (upgrade && occupied && !anyBroken && wornPositive && !Passes(row, threshold))
+    // S2: an upgrade no candidate slot passes over a worn item the class stat table alone would call unfit
+    if (upgrade && !passes && wornTableOnly)
+        row.flags |= 1u << FLAG_S2;
+    // S3: an upgrade over positive worn items that it does not beat by the threshold
+    if (upgrade && occupied && !anyBroken && wornPositive && !passes)
         row.flags |= 1u << FLAG_S3;
-    if ((row.prop && row.kind && positive && !row.full) ||
-        (!upgrade && row.gate == Gate::Ok && row.full && positive && sameEntryPass))
+    // S4: a suffix copy, or another suffix of a worn entry, that fits and passes but is no upgrade
+    if (!upgrade && ((row.prop && fitPasses) || (row.gate == Gate::Ok && row.kind && positive && sameEntryPass)))
         row.flags |= 1u << FLAG_S4;
-    if (!bonus.primary && (bonus.spell || bonus.rating) && row.proto->Quality >= ITEM_QUALITY_UNCOMMON && row.kind &&
-        positive && !row.full)
+    // S5: an item of spell or rating bonuses only (no primary stat) that fits and passes but is no upgrade
+    if (!bonus.primary && (bonus.spell || bonus.rating) && row.proto->Quality >= ITEM_QUALITY_UNCOMMON && fitPasses &&
+        !upgrade)
         row.flags |= 1u << FLAG_S5;
-    if (upgrade && !row.full)
+    // X1: an upgrade of the wrong kind or with a score at or below 0
+    if (upgrade && (!row.kind || !positive))
         row.flags |= 1u << FLAG_X1;
     if (row.usage == ITEM_USAGE_BAD_EQUIP && occupied)
         row.flags |= 1u << FLAG_X2;
@@ -485,7 +548,25 @@ BotResult SweepBot(Player* bot, PlayerbotAI* botAI, std::vector<ItemTemplate con
            << wornCount;
     std::string const head = prefix.str();
 
-    // S2: a worn item of the right kind with a positive score that the fit test calls unfit
+    // The bot's facts the score reads (the collector type as StatsWeightCalculator picks it) and its weights, for the
+    // offline replay of every score and answer
+    if (!candidates.empty())
+    {
+        calc.CalculateItem(candidates.front()->ItemId);
+        CollectorType const type = PlayerbotAI::IsHeal(bot)     ? CollectorType::SPELL_HEAL
+                                   : PlayerbotAI::IsCaster(bot) ? CollectorType::SPELL_DMG
+                                   : PlayerbotAI::IsTank(bot)   ? CollectorType::MELEE_TANK
+                                   : PlayerbotAI::IsMelee(bot)  ? CollectorType::MELEE_DMG
+                                                                : CollectorType::RANGED;
+        out << "B\t" << head << "\trace=" << uint32(bot->getRace(true))
+            << "\ttab=" << uint32(AiFactory::GetPlayerSpecTab(bot)) << "\ttype=" << uint32(type)
+            << "\tdw=" << bot->CanDualWield() << "\ttg=" << bot->CanTitanGrip()
+            << "\tsword=" << bot->HasAura(SPELL_ROGUE_SWORD_SPECIALIZATION)
+            << "\tpoleaxe=" << bot->HasAura(SPELL_POLEAXE_SPECIALIZATION)
+            << "\tnerves=" << bot->HasAura(SPELL_NERVES_OF_COLD_STEEL) << "\tweights=" << WeightsText(calc) << '\n';
+    }
+
+    // The worn items, for the record (their invariant, S2, is read on the rows that compare against them)
     for (Worn const& item : worn)
     {
         if (!item.entry)
@@ -493,8 +574,7 @@ BotResult SweepBot(Player* bot, PlayerbotAI* botAI, std::vector<ItemTemplate con
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item.entry);
         if (!proto)
             continue;
-        uint32 const flags = item.kind && item.score > 0.0f && !item.full ? 1u << FLAG_S2 : 0;
-        Count(result.counts, flags);
+        uint32 const flags = 0;
         ++result.rows;
         out << "W\t" << head;
         WriteItem(out, proto, item.prop);
@@ -502,7 +582,7 @@ BotResult SweepBot(Player* bot, PlayerbotAI* botAI, std::vector<ItemTemplate con
             << CauseOf(item.kind, item.full, item.score, item.prop, BonusOf(proto)) << '\t' << FlagsText(flags);
         WriteWorn(out, &item);
         WriteWorn(out, nullptr);
-        out << '\n';
+        out << '\t' << item.stats << '\n';
     }
 
     std::vector<Row> rows;
@@ -532,6 +612,7 @@ BotResult SweepBot(Player* bot, PlayerbotAI* botAI, std::vector<ItemTemplate con
             Row row = base;
             row.prop = prop;
             row.score = calc.CalculateItem(proto->ItemId, prop);
+            row.stats = StatsText(calc);
             row.usage = Ask(botAI, proto->ItemId, prop);
             row.cause = CauseOf(row.kind, row.full, row.score, prop, bonus);
             FlagRow(row, bonus, threshold);
@@ -557,7 +638,7 @@ BotResult SweepBot(Player* bot, PlayerbotAI* botAI, std::vector<ItemTemplate con
         }
     for (Row& row : rows)
     {
-        if (IsUpgrade(row.usage) || row.gate != Gate::Ok || !row.kind || row.score <= 0.0f || !Passes(row, threshold))
+        if (IsUpgrade(row.usage) || !FitPasses(row, threshold))
             continue;
         auto const it = lowestUpgrade.find(row.slotKey);
         if (it != lowestUpgrade.end() && row.score > it->second)
@@ -574,7 +655,7 @@ BotResult SweepBot(Player* bot, PlayerbotAI* botAI, std::vector<ItemTemplate con
             << '\t' << row.kind << '\t' << row.cause << '\t' << FlagsText(row.flags);
         WriteWorn(out, row.wornCount > 0 ? &row.worn[0] : nullptr);
         WriteWorn(out, row.wornCount > 1 ? &row.worn[1] : nullptr);
-        out << '\n';
+        out << '\t' << row.stats << '\n';
     }
     return result;
 }
@@ -603,17 +684,21 @@ void Pair(ChatHandler* handler, Player* bot, PlayerbotAI* botAI)
 
 std::string Header()
 {
-    return "# gear sweep (gear plan WG1): the upgrade rule's answers over weapon and armour templates in the window "
+    return "# gear sweep (gear plan WG1, WG2): the upgrade rule's answers over weapon and armour templates in the "
+           "window "
            "[level-10, level] (required level, else item level - 5), the class allowed and the bot able to use them. "
            "type I: an item asked (prop: random property > 0, suffix < 0, first/middle/last of its pool); W: a worn "
            "item. gate: the rule's own refusals before scoring (ok, equip, unique, titangrip, create); score: "
-           "StatsWeightCalculator with SetUpForEquipCompare; full: CanEquipWeapon/CanEquipArmor; kind: the armour "
-           "kind without the class stat table; cause: kind, table, suffix, ratings, spell, nostats (unfit), negative "
+           "StatsWeightCalculator with SetUpForEquipCompare; full: CanEquipWeapon/CanEquipArmor (the factory's test, "
+           "with the class stat table); kind: CanEquipWeapon/CanEquipArmorKind (the rule's); cause: kind, table, "
+           "suffix, ratings, spell, nostats (unfit), negative "
            "(fit, score <= 0); slotN..brokenN: the worn item of each slot the rule compares against (entry 0: "
-           "empty)\n"
+           "empty); stats: index:value of the collected stats (StatsType). type B: per bot, the facts the score reads "
+           "and "
+           "its weights\n"
            "type\tbot\tcls\tspec\tlevel\tpvp\tworn\tentry\tprop\tquality\tilvl\treqlevel\ticlass\tsubclass\tinvtype\t"
            "gate\tscore\tanswer\tfull\tkind\tcause\tflags\tslot1\tentry1\tprop1\tscore1\tfull1\tkind1\tbroken1\tslot2\t"
-           "entry2\tprop2\tscore2\tfull2\tkind2\tbroken2\n";
+           "entry2\tprop2\tscore2\tfull2\tkind2\tbroken2\tstats\n";
 }
 }  // namespace
 
@@ -624,22 +709,17 @@ bool HandleSweepCommand(ChatHandler* handler, char const* args)
     size_t const last = name.find_last_not_of(" \t\r\n");
     name.erase(last == std::string::npos ? 0 : last + 1);
 
-    std::vector<Player*> bots;
-    if (!name.empty())
+    // One bot per call: every online bot at once held the world thread for minutes
+    if (name.empty())
     {
-        Player* bot = ObjectAccessor::FindPlayerByName(name, true);
-        if (!bot || !PlayerbotsMgr::instance().GetPlayerbotAI(bot))
-        {
-            handler->SendErrorMessage("GEAR sweep: {} is not an online bot", name);
-            return false;
-        }
-        bots.push_back(bot);
+        handler->SendErrorMessage("GEAR sweep: usage: playerbots gear sweep <bot>");
+        return false;
     }
-    else
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    if (!bot || !PlayerbotsMgr::instance().GetPlayerbotAI(bot))
     {
-        for (auto const& [guid, bot] : sRandomPlayerbotMgr.GetAllBots())
-            if (bot && bot->IsInWorld() && PlayerbotsMgr::instance().GetPlayerbotAI(bot))
-                bots.push_back(bot);
+        handler->SendErrorMessage("GEAR sweep: {} is not an online bot", name);
+        return false;
     }
 
     bool const fresh = sweepFile.empty();
@@ -658,38 +738,20 @@ bool HandleSweepCommand(ChatHandler* handler, char const* args)
         file << Header();
 
     std::vector<ItemTemplate const*> const candidates = Candidates();
-    Counts total{};
-    uint32 totalRows = 0;
+    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
     Clock::time_point const started = Clock::now();
-    for (Player* bot : bots)
-    {
-        PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
-        Clock::time_point const botStarted = Clock::now();
-        Pair(handler, bot, botAI);
+    Pair(handler, bot, botAI);
 
-        std::ostringstream text;
-        text << std::fixed << std::setprecision(2);
-        BotResult const result = SweepBot(bot, botAI, candidates, text);
-        file << text.str();
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(2);
+    BotResult const result = SweepBot(bot, botAI, candidates, text);
+    file << text.str();
 
-        long long const ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - botStarted).count();
-        for (uint32 i = 0; i < FLAG_COUNT; ++i)
-            total[i] += result.counts[i];
-        totalRows += result.rows;
-        std::string const counts = CountsText(result.counts);
-        LOG_INFO("playerbots", "[Route] {} gear sweep done {} rows {} ms {}", bot->GetName(), counts, result.rows, ms);
-        handler->PSendSysMessage("GEAR sweep {}: {} rows {} ms {}", bot->GetName(), counts, result.rows, ms);
-    }
-
-    if (name.empty())
-    {
-        long long const ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
-        std::string const counts = CountsText(total);
-        LOG_INFO("playerbots", "Gear sweep total: bots {} {} rows {} ms {} file {}", bots.size(), counts, totalRows, ms,
-                 sweepFile);
-        handler->PSendSysMessage("GEAR sweep total: bots {} {} rows {} ms {} file {}", bots.size(), counts, totalRows,
-                                 ms, sweepFile);
-    }
+    long long const ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
+    std::string const counts = CountsText(result.counts);
+    LOG_INFO("playerbots", "[Route] {} gear sweep done {} rows {} ms {}", bot->GetName(), counts, result.rows, ms);
+    handler->PSendSysMessage("GEAR sweep {}: {} rows {} ms {} file {}", bot->GetName(), counts, result.rows, ms,
+                             sweepFile);
     return true;
 }
 }  // namespace GearSweep
