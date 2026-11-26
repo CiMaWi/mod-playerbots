@@ -130,6 +130,9 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
                      "SELECT `QuestId`, `PoiIdx`, `PointIdx`, `Rank`, `Z`, `Confidence`, `NavmeshOk`, `MapId`, "
                      "`Evidence` FROM `playerbots_quest_poi_z` ORDER BY `QuestId`, `PoiIdx`, `Rank`",
                      CONNECTION_SYNCH);
+    // Questing WQ38: the quests known to be impossible, read once at startup with the quest index
+    PrepareStatement(PLAYERBOTS_SEL_QUEST_IMPOSSIBLE, "SELECT `Quest`, `Cause` FROM `playerbots_quest_impossible`",
+                     CONNECTION_SYNCH);
     // WA1d: the auction index's trade history, read once at startup, rewritten by the world thread's asynchronous save
     PrepareStatement(PLAYERBOTS_SEL_AUCTION_HISTORY,
                      "SELECT `Item`, `Kind`, `Time`, `UnitPrice`, `Count`, `AuctionId` "

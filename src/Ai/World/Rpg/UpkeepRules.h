@@ -7,9 +7,11 @@
 #ifndef _PLAYERBOT_UPKEEPRULES_H
 #define _PLAYERBOT_UPKEEPRULES_H
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "../../../Bot/Debug/EventTypes.h"
 
@@ -130,6 +132,7 @@ constexpr uint32_t RPG_STATUS_IDLE = 0;
 constexpr uint32_t RPG_STATUS_GO_CAMP = 2;
 constexpr uint32_t RPG_STATUS_WANDER_NPC = 4;
 constexpr uint32_t RPG_STATUS_REST = 7;
+constexpr uint32_t RPG_STATUS_TRAVEL = 10;
 constexpr uint32_t RPG_STATUS_ERRANDS = 11;
 constexpr uint32_t RPG_STATUS_SICK_OPEN_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_REST);
 
@@ -146,11 +149,13 @@ constexpr bool StatusPickable(uint32_t status, bool sick, bool needsRest)
 }
 
 // The status update ends every status a sick bot may not stay in, except a flight in the air (the bot lands, goes
-// idle and then rests) and an errand that started after the bot's last rise (NE11: SickErrandOpen let it start; it
-// runs to its end). An errand from before the death ends as given up, as a trip and every other status do (WU8b)
-constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight, bool errandSinceRise)
+// idle and then rests) and a goal recover handed over after the bot's last rise (SickErrandOpen let it start; it runs
+// to its end, NR3): an errand, or the trip to the inn it binds at (`goalSinceRise`: the caller's, only for those). An
+// errand or a trip from before the death ends as given up, as every other status does (WU8b)
+constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight, bool goalSinceRise)
 {
-    return !inFlight && !StatusAllowed(status, sick) && !(status == RPG_STATUS_ERRANDS && errandSinceRise);
+    return !inFlight && !StatusAllowed(status, sick) &&
+           !((status == RPG_STATUS_ERRANDS || status == RPG_STATUS_TRAVEL) && goalSinceRise);
 }
 
 // Rest ends after its duration (persisted), a sick bot's rest only once the sickness has ended
@@ -158,26 +163,102 @@ constexpr bool RestEnds(bool persisted, bool sick) { return persisted && !sick; 
 
 // The RPG statuses the errand trigger may interrupt (WT3b): those without a goal of their own, never questing
 // (planning 3.19 (3.6): a planner bot's planner weighs a due need against its quest; a questing bot the planner does
-// not lead destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts one only for a due repair
-// recover has handed over (SickErrandOpen)
+// not lead destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts one only once recover has
+// handed it over (SickErrandOpen)
 constexpr uint32_t RPG_STATUS_ERRAND_INTERRUPTS_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_GO_GRIND) |
                                                        (1u << RPG_STATUS_GO_CAMP) | (1u << RPG_STATUS_WANDER_RANDOM) |
                                                        (1u << RPG_STATUS_WANDER_NPC) | (1u << RPG_STATUS_REST) |
                                                        (1u << RPG_STATUS_DO_GATHER);
 
-// NE11 (NE.3): a sick bot goes on an errand only for a due repair (UpkeepNeeds::RepairErrandDue), and only once
-// awareness's recover is done with it: it stands on a clear point and its health and mana are restored
-// (AwarenessRules::Restored, what recover waits for in a bot that is not sick). Otherwise it rests as before; the trip
-// takes the other errands due on the way (the errand plan's stops)
-constexpr bool SickErrandOpen(bool sick, bool repairDue, bool restored, bool clear)
-{
-    return sick && repairDue && restored && clear;
-}
+// NR3 (NR.4): a sick bot takes a goal of its own only once awareness's recover is done with it: it stands on a clear
+// point and its health and mana are restored (AwarenessRules::Restored, what recover waits for in a bot that is not
+// sick). Which goal then is the goal model's sick gate (a goal that starts no fight and keeps to the safe area,
+// SafeLeg); without one the bot rests. The repair is one errand among others, no longer the condition (NE11's was)
+constexpr bool SickErrandOpen(bool sick, bool restored, bool clear) { return sick && restored && clear; }
 
 constexpr bool ErrandMayStart(uint32_t status, bool sick, bool sickErrandOpen)
 {
     bool const interrupts = status < 32 && ((RPG_STATUS_ERRAND_INTERRUPTS_MASK >> status) & 1u) != 0;
     return interrupts && (StatusAllowed(RPG_STATUS_ERRANDS, sick) || sickErrandOpen);
+}
+
+// NR3 (NR.4, stage 1): where a sick bot is safe. A place is safe in its own side's capital or a sanctuary city, inside
+// the circle of a planner hub that is not the other side's, has a flight master or an innkeeper and no creature member
+// hostile to the bot by its own reputation, or in its own side's zone whose level range ends at or below the bot's grey
+// level. Contested zones and the other side's are never low. The map thread fills the facts (PlannerService), the
+// planner job and the trip read the answers
+struct SafeAreas
+{
+    uint32_t city = 0;           // the own capital or sanctuary the place lies in: the zone's id, or a sanctuary area's
+    uint32_t lowZone = 0;        // the own side's low zone the place lies in
+    std::vector<uint32_t> hubs;  // the safe hubs whose circle holds the place (planner hub indices)
+};
+
+// The city a place lies in: its zone when that is an own capital or a sanctuary, else its area when that alone is one
+constexpr uint32_t SafeCity(uint32_t zoneId, uint32_t areaId, bool ownCapital, bool zoneSanctuary, bool areaSanctuary)
+{
+    return ownCapital || zoneSanctuary ? zoneId : areaSanctuary ? areaId : 0;
+}
+
+// A low zone: the bot's own side's, its range known and ending at or below the bot's grey level
+constexpr bool LowZoneSafe(uint32_t zoneHigh, bool ownSide, uint32_t greyLevel)
+{
+    return ownSide && zoneHigh > 0 && zoneHigh <= greyLevel;
+}
+
+// A hub member counts as hostile at the reputation rank hostile or below (ReputationRank: hated 0, hostile 1)
+constexpr int32_t HUB_HOSTILE_RANK = 1;
+constexpr bool HostileMember(int32_t reaction) { return reaction <= HUB_HOSTILE_RANK; }
+
+// A hub is safe when it is not the other side's (its own, neutral or of no side), offers a flight master or an
+// innkeeper, and none of its creature members is hostile to the bot
+constexpr bool HubSafe(bool otherSide, bool flightOrInn, bool hostileMember)
+{
+    return !otherSide && flightOrInn && !hostileMember;
+}
+
+inline bool IsSafe(SafeAreas const& place) { return place.city || place.lowZone || !place.hubs.empty(); }
+
+// The world log's word for where a sick bot was handed over (the upkeep row sick_area): the city first, then a hub,
+// then a low zone; `outside` in none
+inline char const* SafeAreaWord(SafeAreas const& place)
+{
+    return place.city ? "city" : !place.hubs.empty() ? "hub" : place.lowZone ? "low_zone" : "outside";
+}
+
+// Two places lie in one safe area: the same city, the same low zone or a hub circle holding both
+inline bool ShareArea(SafeAreas const& a, SafeAreas const& b)
+{
+    if ((a.city && a.city == b.city) || (a.lowZone && a.lowZone == b.lowZone))
+        return true;
+    return std::any_of(a.hubs.begin(), a.hubs.end(),
+                       [&b](uint32_t hub) { return std::find(b.hubs.begin(), b.hubs.end(), hub) != b.hubs.end(); });
+}
+
+// The legs of a sick bot's route. A leg on foot starts and ends in one safe area; a flight or a transport joins two
+// safe places; the hearthstone needs only its end safe: the cast moves nobody and it is the way in for a bot that rose
+// outside
+enum class SafeLegKind : uint8_t
+{
+    Foot,
+    Flight,
+    Transport,
+    Hearthstone
+};
+
+inline bool SafeLeg(SafeLegKind kind, SafeAreas const& from, SafeAreas const& to)
+{
+    switch (kind)
+    {
+        case SafeLegKind::Foot:
+            return ShareArea(from, to);
+        case SafeLegKind::Hearthstone:
+            return IsSafe(to);
+        case SafeLegKind::Flight:
+        case SafeLegKind::Transport:
+            return IsSafe(from) && IsSafe(to);
+    }
+    return false;
 }
 
 // Event types of honest upkeep (.claude/docs/world-log.md in the hub): Sick (src spirit_healer, id the spell, amount

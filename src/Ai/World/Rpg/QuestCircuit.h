@@ -240,6 +240,7 @@ inline SkipReason SkipOf(Take::Reason reason)
         case Take::Reason::TooHigh:
             return SkipReason::TooHigh;
         case Take::Reason::GivenUp:  // the circuit passes no given-up list
+        case Take::Reason::Impossible:
         case Take::Reason::Limits:
         case Take::Reason::Unsupported:
             return SkipReason::Limits;
@@ -863,6 +864,9 @@ private:
         return (quest.flags & (GROUP_FLAGS | INSTANCE_FLAGS)) && _bot.groupSize <= 1;
     }
 
+    // WQ38: a listed quest is never worked; it waits in the log as one that needs a group does
+    bool Waits(QuestRecord const& quest) const { return NeedsGroup(quest) || Listed(quest); }
+
     void Skip(std::uint32_t quest, SkipReason reason) { _plan.skipped.push_back({quest, reason}); }
 
     void AbandonQuest(std::uint32_t quest, AbandonReason reason)
@@ -1042,7 +1046,7 @@ private:
             std::uint32_t const id = quest.slot.quest;
             if ((quest.slot.state & SLOT_COMPLETE) || Contains(_protected, id) || Abandoned(id))
                 continue;
-            if (NeedsGroup(*quest.record) || !WorkHere(Locate(*quest.record, &quest.slot)))
+            if (Waits(*quest.record) || !WorkHere(Locate(*quest.record, &quest.slot)))
                 idle.emplace_back(Value(*quest.record), id);
         }
         std::sort(idle.begin(), idle.end());
@@ -1088,7 +1092,8 @@ private:
     {
         for (LogQuest const& quest : _log)
         {
-            if (Abandoned(quest.slot.quest) || (!(quest.slot.state & SLOT_COMPLETE) && NeedsGroup(*quest.record)))
+            if (Abandoned(quest.slot.quest) || Listed(*quest.record) ||
+                (!(quest.slot.state & SLOT_COMPLETE) && NeedsGroup(*quest.record)))
                 continue;
             Placement placement = Locate(*quest.record, &quest.slot);
             if (!WorkHere(placement))
@@ -1663,7 +1668,7 @@ private:
             std::uint32_t const id = quest.slot.quest;
             if ((quest.slot.state & SLOT_COMPLETE) || Abandoned(id))
                 continue;
-            bool const group = NeedsGroup(*quest.record);
+            bool const group = Waits(*quest.record);
             Placement const placement = Locate(*quest.record, &quest.slot, at);
             bool const works = !group && WorkHere(placement) && !placement.tasks.empty();
             if (works || (!Contains(_protected, id) && (group || !WorkHere(placement))))

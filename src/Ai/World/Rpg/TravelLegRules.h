@@ -2216,17 +2216,72 @@ struct VesselLeaveFacts
 {
     std::uint64_t aboardGuid{0};  // the vessel the bot rides (its membership), 0: none
     bool tripHeld{false};
-    bool owned{false};     // a follower at its master's vessel, a player's bot, a test placement, a battleground
-    bool underWay{false};  // the trip-less get-off has begun (OffFirst::sinceMs)
+    bool owned{false};      // a follower at its master's vessel, a player's bot, a test placement, a battleground
+    bool underWay{false};   // the trip-less get-off has begun (OffFirst::sinceMs)
+    bool car{false};        // the vessel is a lift's or the tram's car
+    bool carLeaves{false};  // that car has stop records with leaving rows
 };
 
+// A lift's or the tram's car is a ship to this rule where its stop records have leaving rows (G412: a rider with no
+// trip stood on its car for good); a car without them is not, it would give a stuck_aboard every period
 constexpr VesselLeave DecideVesselLeave(VesselLeaveFacts const& facts)
 {
     if (facts.tripHeld || facts.owned)
         return VesselLeave::None;
     if (facts.underWay)
         return VesselLeave::Step;
-    return facts.aboardGuid ? VesselLeave::Begin : VesselLeave::None;
+    return facts.aboardGuid && (!facts.car || facts.carLeaves) ? VesselLeave::Begin : VesselLeave::None;
+}
+
+// The travel's reasons to keep the bot on foot (the mount policy's onFoot; TravelKeepsOnFoot), one rule for every
+// status (G411: an errand's rider was asked only about its tame or stable stop and mounted aboard): an errand's tame
+// (Tame Beast is not cast mounted; WU21b-2) or stable visit (a mounted hunter's pet is away, WU21c), a get-off, the
+// trip-less one too (PA39b: a mount cast on every check held its deck walk and crossing, the bot rode on to
+// stuck_aboard), and a transport leg from its dock on (WT54-7: also while it waits there)
+struct OnFootFacts
+{
+    bool errandVisit{false};    // an errand arrived at its tame or stable stop
+    bool vesselOff{false};      // the trip-less get-off is under way (VesselLeave)
+    Trip const* trip{nullptr};  // the held trip, null: none
+};
+
+inline bool KeepsOnFoot(OnFootFacts const& facts)
+{
+    if (facts.errandVisit || facts.vesselOff)
+        return true;
+    if (!facts.trip)
+        return false;
+    Trip const& trip = *facts.trip;
+    if (trip.offFirst.sinceMs)
+        return true;
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
+}
+
+// Upkeep that holds the bot's checks starts on a transport leg only with the docking it needs at least this far ahead:
+// a drink holds them up to 27 s (UseItemAction's drink, the food cheat's 20 s), plus a margin
+constexpr std::int64_t UPKEEP_LEAD_MS = 30000;
+
+// What a transport leg lets start beside it (PA91: a mage conjured and drank after its crossing at a lift began,
+// the drink held its checks 17 s, it boarded late and rode on to stuck_aboard): upkeep that holds the bot's checks
+// (eat, drink) waits from the leg's start at its dock to its end, the trip's get-off first too, unless the bot
+// waits or rides with the docking it needs foreseen more than UPKEEP_LEAD_MS ahead (DocksInMs, docksInMs), so a
+// wait or a ride far from its docking still eats and drinks. A crossing tracked or cut, the boarding, the leave
+// and the way back hold it; a docking not foreseen (no window, the vessel not seen on the bot's map) holds it
+// too: a car's period is short, and the leg's own deadline ends every wait. Fights, death and healing are not
+// upkeep. O(1)
+inline bool HoldsUpkeep(Trip const* trip, std::int64_t docksInMs)
+{
+    if (!trip)
+        return false;
+    if (trip->offFirst.sinceMs)
+        return true;
+    if (trip->legIdx >= trip->legs.size() || trip->legs[trip->legIdx].type != TravelRoute::LegType::Transport)
+        return false;
+    if (trip->crossMs || trip->cancelled)
+        return true;
+    if (trip->boarding != Boarding::Wait && trip->boarding != Boarding::Ride)
+        return true;
+    return docksInMs == NO_DEADLINE || docksInMs <= UPKEEP_LEAD_MS;
 }
 
 // The trip-less get-off's end: ashore, `Transport left` with the seconds since its off_first

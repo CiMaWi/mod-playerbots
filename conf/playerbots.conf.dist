@@ -1477,6 +1477,12 @@ Playerbots.PvpTest.FightLocation = "0 -436.657 -581.254 53.5944 1.25917"
 # pass (a registration the skips lack). Costs those guard tests per update while on.
 Playerbots.Test.MissLog = 0
 
+# Test only (the questing test, questing WQ37): 1 makes the planner keep only the goals that serve levelling (quests,
+# the move to the next quest zone, rest, the hearthstone, a bag, an errand for full bags or a repair; money only while
+# a due repair or training is beyond the bot's gold) and turns a planner bot's idle fallback into a rest. A goal row
+# skipped:questing_only names the dropped ones. Read again on .reload config. Bots led by a player keep their own ways.
+Playerbots.Test.QuestingOnly = 0
+
 # World log (on when Dir is set)
 # The server writes the world log to Dir, the session folder the hub's tools/ac.js sets on every start (empty = off):
 # append-only CSV segments per stream (event, state, meta, decision, recorder), each with a header row, named
@@ -1854,6 +1860,11 @@ Playerbots.Natural.Path.Walk.Enable = 0
 # and records an Inventory event errand_run; a trip given up after 20 minutes records errand_abort. The same rule
 # tells a full bot looting in the world not to destroy items when a trip is worth it. (Range: 0-1440; 0 = no trip
 # just for selling.) Default: 30
+
+# The inn a persistent bot binds at. The planner binds a bot whose hearthstone is far (over 1000 yd, or another map)
+# at a nearby inn only once the bot has stayed within 1000 yd of that inn for InnDwellMinutes without a break, or its
+# next planned goal lies there; until then it keeps its bind. (Range: 0-1440; 0 = no dwell.) Default: 15
+Playerbots.WorldTravel.InnDwellMinutes = 15
 
 # Every bot has a personality (30 traits and one to three interests, rolled once per bot and stored in
 # playerbots_bot_traits); the GM command `.playerbots traits <bot>` shows it. AllowEdit lets the same command set or

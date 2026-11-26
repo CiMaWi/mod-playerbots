@@ -126,13 +126,13 @@ Facts OtherMap(float yards)
     return facts;
 }
 
-// A trip to PLACE asked and finished by itself with this end, unread
-void FinishedTrip(Bot& bot, Outcome outcome, char const* word, std::uint32_t holder = HOLDER)
+// A trip to PLACE asked and finished by itself with this end, unread; left: the yards to PLACE it left the bot at
+void FinishedTrip(Bot& bot, Outcome outcome, char const* word, std::uint32_t holder = HOLDER, float left = 9.0f)
 {
     bot.state.tripAsked = true;
     bot.state.tripPlace = PLACE;
     bot.hold.Begin(holder, StubTrip{1});
-    bot.hold.Finish(outcome, word);
+    bot.hold.Finish(outcome, word, left);
 }
 
 bool Word(Decision const& decision, char const* word)
@@ -304,6 +304,71 @@ void Suite(DecideFn decide, CarriedFn carried, Counts& c)
         Decision const back = decide(Near(10.0f), moved);
         c.Check(elsewhere.step == Step::Local && back.step != Step::EndRead,
                 "3: an end is this place's: another place forgets it");
+    }
+
+    // An arrival holds only while the bot is where the trip left it (PA78). Arrived and unread, the bot now far off:
+    // every tick walks, none answers There or gives the place up
+    for (float const yards : {40.0f, 100.0f})
+    {
+        Bot bot;
+        FinishedTrip(bot, Outcome::Arrived, "arrived");
+        Decision const first = decide(Near(yards), bot);
+        Decision const second = decide(Near(yards), bot);
+        bool const walks = yards <= GoTo::LOCAL_RANGE_YARDS ? first.step == Step::Local && first.orderLocal
+                                                            : first.step == Step::Trip && first.askTrip;
+        c.Check(walks && first.answer == Answer::Going && second.answer == Answer::Going,
+                "arrival: an unread arrived end far from the place is dropped: the bot walks there again");
+    }
+
+    // The end read at the arrival, the bot then far off: a trip again, whose own arrival counts
+    {
+        Bot bot;
+        bot.carried = false;
+        FinishedTrip(bot, Outcome::Arrived, "arrived");
+        Decision const read = decide(Near(9.0f), bot);
+        Decision const away = decide(Near(100.0f), bot);
+        c.Check(read.step == Step::EndRead && away.step == Step::Trip && away.askTrip && away.answer == Answer::Going,
+                "arrival: read at the place, then far off: a trip again");
+        bot.hold.Begin(HOLDER, StubTrip{5});
+        bot.hold.Finish(Outcome::Arrived, "arrived", 9.0f);
+        c.Check(decide(Near(9.0f), bot).answer == Answer::There, "arrival: the new trip's end is read");
+
+        // Left and come back near without a trip: the old arrival is gone
+        Bot back;
+        back.carried = false;
+        FinishedTrip(back, Outcome::Arrived, "arrived");
+        decide(Near(9.0f), back);
+        back.carried = true;
+        decide(Near(50.0f), back);
+        back.carried = false;
+        Facts again = Near(9.0f);
+        again.moveStamp = 1;
+        c.Check(decide(again, back).askTrip, "arrival: forgotten once the bot has left, also when it comes back");
+    }
+
+    // A fresh arrival whose last yards the mesh does not carry: no second trip, at the reached distance, past it by the
+    // route's merged end point, and farther (off a vessel)
+    for (float const left : {9.0f, GoTo::ARRIVED_YARDS + 0.5f, 40.0f, 100.0f})
+    {
+        Bot bot;
+        bot.carried = false;
+        FinishedTrip(bot, Outcome::Arrived, "arrived", HOLDER, left);
+        Decision const read = decide(Near(left), bot);
+        Decision const next = decide(Near(left), bot);
+        c.Check(read.step == Step::EndRead && read.answer == Answer::There && next.step == Step::Trip &&
+                    next.answer == Answer::Failed && Word(next, "unreachable_poi") &&
+                    next.outcome == Outcome::Abandoned && NoMove(next),
+                "arrival: a fresh arrival not carried is unreachable_poi, no second trip");
+    }
+
+    // Another place and back: the arrival was the other trip's
+    {
+        Bot bot;
+        bot.carried = false;
+        FinishedTrip(bot, Outcome::Arrived, "arrived");
+        decide(Near(9.0f), bot);
+        decide(Near(20.0f, SECOND), bot);
+        c.Check(decide(Near(9.0f), bot).askTrip, "arrival: another place forgets it");
     }
 
     // A holder's end ends its trip and leaves nothing to read
@@ -532,6 +597,29 @@ Decision HolderEndLeftToRead(Facts const& facts, Bot& bot)
             return bot.carried;
         });
 }
+
+// The arrival rule's two mutants: the distance the trip left the bot at read as another one
+Decision LeftReadAs(Facts const& facts, Bot& bot, float yards)
+{
+    return GoTo::Decide(
+        facts, bot.state,
+        [&]
+        {
+            std::optional<StatusEnd::TripEnd> end = bot.hold.TakeEnd(HOLDER);
+            if (end)
+                end->yards = yards;
+            return end;
+        },
+        [&]
+        {
+            ++bot.judgeCalls;
+            return bot.carried;
+        });
+}
+
+Decision ArrivalHoldsAnywhere(Facts const& facts, Bot& bot) { return LeftReadAs(facts, bot, 100000.0f); }
+
+Decision ArrivalByPlaceAlone(Facts const& facts, Bot& bot) { return LeftReadAs(facts, bot, 0.0f); }
 
 Decision OtherMapLocal(Facts const& facts, Bot& bot)
 {
@@ -913,6 +1001,9 @@ int main()
         {"mutant killed: a near place not carried still orders a move", NotCarriedMoves, GoTo::Carried},
         {"mutant killed: the path query asked on every tick", QueryEveryTick, GoTo::Carried},
         {"mutant killed: an approach point not carried still ordered (a trip asked)", ApproachAsksTrip, GoTo::Carried},
+        {"mutant killed: an arrival holds wherever the bot has gone", ArrivalHoldsAnywhere, GoTo::Carried},
+        {"mutant killed: an arrival judged by the place alone (a far one asks trip after trip)", ArrivalByPlaceAlone,
+         GoTo::Carried},
     };
     for (Mutant const& mutant : mutants)
     {

@@ -8,6 +8,7 @@
 #define _PLAYERBOT_GOALMODELHARNESS_H
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +23,7 @@
 #include "GoalModel.h"
 #include "GoalModelLog.h"
 #include "InterludeInputs.h"
+#include "UpkeepRules.h"
 
 // The goal model's scenarios (travel plan WT14): synthetic bots and places, one check per decision. Proof is
 // functional (WT.21): each check is about the chosen goal and its reason word, never a number of our own. Shared by
@@ -1169,6 +1171,111 @@ inline void RestAndHearth(std::vector<Check>& checks)
         Summary(after));
 }
 
+// NR.5: the bind waits for a stay near the inn. Two inns 1426 yd apart and a work spot more than 1000 yd from both
+// (NR2's back and forth, in Tanaris)
+inline void HearthStays(std::vector<Check>& checks)
+{
+    constexpr std::uint32_t first = 7733;
+    constexpr std::uint32_t second = 18542;
+    constexpr std::uint32_t minute = 60000;
+    constexpr std::uint32_t dwell = 15 * minute;
+    Place const atFirst{1, -7159.0f, -3842.0f, 9.0f};
+    Place const atSecond{1, -8159.0f, -4859.0f, -25.0f};
+    Place const work{1, -7021.0f, -4873.0f, -3.5f};
+
+    auto const seenFrom = [&](Place const& at)
+    {
+        auto const yards = [&at](Place const& to) { return std::hypot(to.x - at.x, to.y - at.y); };
+        return std::vector<InnSeen>{{first, atFirst, yards(atFirst), true, 0},
+                                    {second, atSecond, yards(atSecond), true, 0}};
+    };
+
+    // The stay rule
+    std::vector<InnStay> stays;
+    NoteInnStays(stays, seenFrom(atFirst), atFirst, minute);
+    NoteInnStays(stays, seenFrom(atFirst), atFirst, 5 * minute);
+    bool const entered = stays.size() == 1 && stays.front().entry == first && stays.front().sinceMs == minute;
+    std::vector<Inn> inns = InnInputs(seenFrom(atFirst), work, {});
+    MarkUnstayed(inns, stays, minute + dwell - 1, dwell);
+    bool const waits = inns[0].unstayed && inns[1].unstayed;
+    MarkUnstayed(inns, stays, minute + dwell, dwell);
+    bool const stayed = !inns[0].unstayed && inns[1].unstayed;
+    MarkUnstayed(inns, stays, minute, 0);
+    bool const noDwell = !inns[0].unstayed && !inns[1].unstayed && !StayRipened(stays, minute, 0);
+    bool const early = StayRipened(stays, minute + dwell - 1, dwell);
+    bool const due = StayRipened(stays, minute + dwell, dwell);
+    bool const again = StayRipened(stays, minute + 2 * dwell, dwell);
+    DropLeftStays(stays, work);
+    bool const left = stays.empty();
+    NoteInnStays(stays, seenFrom(atFirst), atFirst, minute);
+    DropLeftStays(stays, {0, atFirst.x, atFirst.y, atFirst.z});
+    Add(checks,
+        "inn stay: starts in range, counts from the first look, reaches the dwell once, ends out of range and on "
+        "another map; dwell 0 marks no inn",
+        entered && waits && stayed && noDwell && !early && due && !again && left && stays.empty(), "stays");
+
+    stays.clear();
+    auto const rankAt =
+        [&](Place const& at, Place const& bind, std::uint32_t nowMs, std::uint32_t dwellMs, Situation situation)
+    {
+        std::vector<InnSeen> const seen = seenFrom(at);
+        NoteInnStays(stays, seen, at, nowMs);
+        Snapshot bot = Bot(45, FLUSH);
+        bot.position = at;
+        bot.hearth = bind;
+        situation.inns = InnInputs(seen, bind, {});
+        MarkUnstayed(situation.inns, stays, nowMs, dwellMs);
+        return Rank(bot, situation);
+    };
+    auto const orders = [](Ranked const& ranked, std::uint32_t inn)
+    { return Find(ranked, GoalKind::Hearth, inn) != nullptr; };
+
+    Ranked const control = rankAt(work, atFirst, minute, 0, Base(45));
+    Add(checks, "inn stay (control): without a dwell the work spot orders the other inn at once",
+        orders(control, second), Summary(control));
+    stays.clear();
+    Ranked const atWork = rankAt(work, atFirst, minute, dwell, Base(45));
+    Add(checks, "inn stay (NR2): bound at one inn, at work far from both: no inn is ordered",
+        !Has(atWork, GoalKind::Hearth), Summary(atWork));
+    rankAt(atSecond, atFirst, 2 * minute, dwell, Base(45));
+    Ranked const shortStay = rankAt(atSecond, atFirst, 4 * minute, dwell, Base(45));
+    Ranked const settled = rankAt(atSecond, atFirst, 2 * minute + dwell, dwell, Base(45));
+    Add(checks, "inn stay: near a new inn the order waits for the dwell, then comes",
+        !Has(shortStay, GoalKind::Hearth) && orders(settled, second), Summary(shortStay) + " | " + Summary(settled));
+    // Bound at the second inn now: back at the first for two minutes, at work, back again
+    Ranked const back = rankAt(atFirst, atSecond, 20 * minute, dwell, Base(45));
+    Ranked const stillBack = rankAt(atFirst, atSecond, 22 * minute, dwell, Base(45));
+    Ranked const workAgain = rankAt(work, atSecond, 30 * minute, dwell, Base(45));
+    Ranked const returned = rankAt(atFirst, atSecond, 40 * minute, dwell, Base(45));
+    Add(checks,
+        "inn stay (NR2): a short stay back near the first inn, at work, back again: no second order of the first",
+        !Has(back, GoalKind::Hearth) && !Has(stillBack, GoalKind::Hearth) && !Has(workAgain, GoalKind::Hearth) &&
+            !Has(returned, GoalKind::Hearth),
+        Summary(back) + " | " + Summary(workAgain) + " | " + Summary(returned));
+
+    RoutePlan route;
+    QuestOrder order;
+    order.mapId = atSecond.map;
+    order.x = atSecond.x;
+    order.y = atSecond.y;
+    route.orders = {order};
+    Situation routed = Base(45);
+    routed.onCircuit = false;
+    routed.route = &route;
+    stays.clear();
+    Ranked const nextRoute = rankAt(work, atFirst, minute, dwell, routed);
+    CircuitPlan moving;
+    moving.moveOn.reason = MoveReason::Bracket;
+    moving.moveOn.camp = 1;
+    moving.moveOn.place = atSecond;
+    Situation moves = Base(45);
+    moves.circuit = &moving;
+    stays.clear();
+    Ranked const nextMove = rankAt(work, atFirst, minute, dwell, moves);
+    Add(checks, "inn stay: an inn that holds the next planned goal (route order, circuit move) needs no stay",
+        orders(nextRoute, second) && orders(nextMove, second), Summary(nextRoute) + " | " + Summary(nextMove));
+}
+
 // WR13b: the planner's gather circuit (GatherRules.h CircuitOption) from a herbalist's place
 inline Gather::Node HerbAt(std::uint32_t id, float dx, float dy, std::uint32_t required, std::uint32_t pathCopper,
                            std::uint32_t respawnSecs = 300)
@@ -1868,23 +1975,27 @@ inline void RepairFirst(std::vector<Check>& checks)
     Add(checks, "repair: lowest 40 %, none broken, is not due", !due(worn(0, 40, 90, FLUSH)), "");
     Add(checks, "repair: gold below the cheapest worn item is not due", !due(worn(1, 0, 90, 10)), "");
 
-    // NE11 (NE.3): a sick bot's due repair opens once recover has handed it over (Snapshot::sickErrandOpen); until
-    // then, and without a due repair, the bot rests (forced) as before
+    // NR3 (NR.4): a sick bot takes a goal only once recover has handed it over (Snapshot::sickErrandOpen); then the
+    // sick gate passes an errand whose stops keep to the safe area it stands in, and the rest is its fallback. Until
+    // then, and with nothing the gate passes, it rests (forced) as before
     Snapshot sick = worn(1, 0, 90, FLUSH);
     sick.sickMs = 60000;
-    Ranked const rests = Rank(sick, situation);
+    Situation inside = situation;
+    inside.sickSafeHere = true;
+    inside.bags.repairer.safe = true;
+    Ranked const rests = Rank(sick, inside);
     Option const* restTop = Top(rests);
     Add(checks, "repair: a sick bot whose recover is not done (not clear or not restored) rests, no repair option",
         restTop && restTop->kind == GoalKind::Rest && restTop->forced && !Has(rests, GoalKind::Errand) &&
-            !rests.sickErrandOpen,
+            !rests.sickGoal,
         Summary(rests));
     Snapshot handed = sick;
     handed.sickErrandOpen = true;
-    Ranked const goes = Rank(handed, situation);
+    Ranked const goes = Rank(handed, inside);
     Option const* goTop = Top(goes);
-    Add(checks, "repair: a sick bot with a due repair recover handed over gets the errand, not rest",
+    Add(checks, "repair: a sick bot recover handed over gets the due repair in its safe area, the rest is the fallback",
         goTop && goTop->kind == GoalKind::Errand && goTop->reason == "repair" && goTop->due && !goTop->forced &&
-            goes.sickErrandOpen,
+            goes.sickGoal && Has(goes, GoalKind::Rest),
         Summary(goes));
     bool const onlyErrandAndRest =
         std::all_of(goes.options.begin(), goes.options.end(), [](Option const& option)
@@ -1893,9 +2004,14 @@ inline void RepairFirst(std::vector<Check>& checks)
                                           { return dropped.kind == GoalKind::Quest && dropped.reason == SICK_REASON; });
     Add(checks, "repair: the sick bot is offered only the errand and the rest: the quest hub is dropped (sick)",
         onlyErrandAndRest && questDropped && Has(goes, GoalKind::Rest) && Has(first, GoalKind::Quest), Summary(goes));
+    Ranked const outside = Rank(handed, situation);
+    Add(checks, "repair: the same repairer outside the bot's safe area is no errand: the bot rests (forced)",
+        Top(outside) && Top(outside)->kind == GoalKind::Rest && Top(outside)->forced && !Has(outside, GoalKind::Errand),
+        Summary(outside));
     Snapshot whole = worn(0, 90, 95, FLUSH);
     whole.sickMs = 60000;
-    Ranked const idle = Rank(whole, situation);
+    whole.sickErrandOpen = true;
+    Ranked const idle = Rank(whole, inside);
     Option const* idleTop = Top(idle);
     Add(checks, "repair: a sick bot with nothing due rests (forced) and gets no errand",
         idleTop && idleTop->kind == GoalKind::Rest && idleTop->forced && !Has(idle, GoalKind::Errand), Summary(idle));
@@ -1913,6 +2029,179 @@ inline void RepairFirst(std::vector<Check>& checks)
             staying.verdict == ReplanVerdict::Stay,
         std::string(ReplanWord(switched.verdict)) + " " + switched.reason + " / " + ReplanWord(staying.verdict) + " " +
             staying.reason);
+}
+
+// NR3 (NR.4, stage 1): where a sick bot is safe (Upkeep::SafeAreas, as the map thread fills them), the sick gate of
+// the goal model on those answers and the sick rest at a clear point
+inline void SickSafeAreas(std::vector<Check>& checks)
+{
+    constexpr std::uint32_t STORMWIND = 1519;
+    constexpr std::uint32_t LOW_ZONE = 40;    // an own side's zone whose range ends at 20
+    constexpr std::uint32_t LEVEL_ZONE = 44;  // a zone of the bot's level
+    constexpr std::uint32_t SANCTUARY = 3703;
+    auto const sickBot = [](std::uint8_t level)
+    {
+        Snapshot bot = Bot(level, FLUSH);
+        bot.sickMs = 300000;
+        bot.sickErrandOpen = true;
+        return bot;
+    };
+    auto const city = [](std::uint32_t zone)
+    {
+        Upkeep::SafeAreas areas;
+        areas.city = zone;
+        return areas;
+    };
+    auto const low = [](std::uint32_t zone, std::uint32_t high, bool own, std::uint32_t level)
+    {
+        Upkeep::SafeAreas areas;
+        areas.lowZone = Upkeep::LowZoneSafe(high, own, GreyLevel(level)) ? zone : 0;
+        return areas;
+    };
+    Upkeep::SafeAreas const nowhere;
+    // The bot's situation as the map thread fills it: its own areas and those of the vendor's spot
+    auto const placed = [](Situation situation, Upkeep::SafeAreas const& here, Upkeep::SafeAreas const& vendor)
+    {
+        situation.sickSafeHere = Upkeep::IsSafe(here);
+        bool const safe = Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, here, vendor);
+        situation.bags.vendor.safe = safe;
+        situation.bags.repairer.safe = safe;
+        return situation;
+    };
+    auto const onlySafeKinds = [](Ranked const& ranked)
+    {
+        return std::all_of(ranked.options.begin(), ranked.options.end(),
+                           [](Option const& option)
+                           {
+                               return option.kind == GoalKind::Errand || option.kind == GoalKind::Rest ||
+                                      option.kind == GoalKind::Hearth;
+                           });
+    };
+    auto const droppedSick = [](Ranked const& ranked, GoalKind kind)
+    {
+        return std::any_of(ranked.dropped.begin(), ranked.dropped.end(), [kind](Dropped const& dropped)
+                           { return dropped.kind == kind && dropped.reason == SICK_REASON; });
+    };
+
+    // The predicate's parts
+    Add(checks,
+        "safe: a hub of the other side is not safe, nor one without a flight master or an innkeeper, nor one "
+        "with a member hostile to the bot; its own or a neutral hub with an inn is",
+        !Upkeep::HubSafe(true, true, false) && !Upkeep::HubSafe(false, false, false) &&
+            !Upkeep::HubSafe(false, true, true) && Upkeep::HubSafe(false, true, false) && Upkeep::HostileMember(0) &&
+            Upkeep::HostileMember(1) && !Upkeep::HostileMember(2),
+        "");
+    Add(checks,
+        "safe: a zone ending at 20 is low for a level 60 bot of its side, not for the other side, not at level 20",
+        low(LOW_ZONE, 20, true, 60).lowZone == LOW_ZONE && !low(LOW_ZONE, 20, false, 60).lowZone &&
+            !low(LOW_ZONE, 20, true, 20).lowZone && !low(LOW_ZONE, 0, true, 60).lowZone,
+        "");
+    Add(checks, "safe: an own capital and a sanctuary (zone or area) are cities, the other side's capital is not",
+        Upkeep::SafeCity(STORMWIND, 0, true, false, false) == STORMWIND &&
+            Upkeep::SafeCity(SANCTUARY, 0, false, true, false) == SANCTUARY &&
+            Upkeep::SafeCity(LEVEL_ZONE, 7, false, false, true) == 7 && !Upkeep::SafeCity(1637, 0, false, false, false),
+        "");
+    Upkeep::SafeAreas hubA;
+    hubA.hubs = {3};
+    Upkeep::SafeAreas hubB;
+    hubB.hubs = {4};
+    Add(checks, "safe: a walk stays in one safe area; the stone needs only its end safe, a flight both ends",
+        Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, hubA, hubA) &&
+            !Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, hubA, hubB) &&
+            !Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, city(STORMWIND), nowhere) &&
+            Upkeep::SafeLeg(Upkeep::SafeLegKind::Hearthstone, nowhere, hubA) &&
+            !Upkeep::SafeLeg(Upkeep::SafeLegKind::Flight, nowhere, hubA) &&
+            Upkeep::SafeLeg(Upkeep::SafeLegKind::Flight, hubB, hubA),
+        "");
+
+    // A capital, a vendor stop due (full bags), no repair due: the errand (NE11 gave it rest)
+    Situation base = Base();
+    base.bags.sellableSlots = 10;
+    base.bags.vendor = {77, 1.0f, false};
+    base.spots = {Spot(11, 75.0f, 10.0f)};
+    Snapshot full = sickBot(10);
+    full.bagFree = 0;
+    CircuitPlan const circuit = Circuit(full, base, 1500.0f, 200.0f, 20.0f);
+    base.circuit = &circuit;
+    Situation const capital = placed(base, city(STORMWIND), city(STORMWIND));
+    Ranked const sells = Rank(full, capital);
+    Option const* sellTop = Top(sells);
+    Add(checks, "sick: in a capital with a vendor stop due and no repair due the bot gets the errand, rest below it",
+        sellTop && sellTop->kind == GoalKind::Errand && sellTop->reason.rfind("bags_full", 0) == 0 && !sellTop->due &&
+            !sellTop->forced && sells.sickGoal && Has(sells, GoalKind::Rest),
+        Summary(sells));
+    Add(checks, "sick: quest and grind options stay dropped while sick",
+        onlySafeKinds(sells) && droppedSick(sells, GoalKind::Quest) &&
+            (droppedSick(sells, GoalKind::Grind) || droppedSick(sells, GoalKind::Money)),
+        Summary(sells));
+
+    // A zone of its level outside every hub, a repair due 300 yd away: rest at the clear point recover walks it to
+    Snapshot outside = sickBot(20);
+    outside.brokenItems = 1;
+    outside.lowestDurabilityPercent = 0;
+    outside.repairCheapest = 40;
+    outside.position = {EASTERN, -9000.0f, -2000.0f, 50.0f};
+    Place const clear{EASTERN, -9010.0f, -2004.0f, 51.0f};
+    outside.sickRest = clear;
+    Situation away = Base(20);
+    away.bags.repairer = {78, WorldTravel::WalkMinutes(300.0f, 7.0f), true};
+    away = placed(away, low(LEVEL_ZONE, 25, true, 20), city(STORMWIND));
+    Ranked const rests = Rank(outside, away);
+    Option const* restTop = Top(rests);
+    bool const atClear =
+        restTop && restTop->place.map == clear.map && restTop->place.x == clear.x && restTop->place.y == clear.y;
+    Add(checks,
+        "sick: outside every hub in a zone of its level the bot rests at a clear point, also with a repair due "
+        "300 yd away",
+        restTop && restTop->kind == GoalKind::Rest && restTop->forced && atClear && !Has(rests, GoalKind::Errand) &&
+            !rests.sickGoal,
+        Summary(rests));
+
+    // The same bot with its stone ready and bound in a safe hub: the stone, then its errand at the inn
+    Snapshot stone = outside;
+    stone.hasHearthstone = true;
+    stone.hearthCooldownMs = 0;
+    stone.hearth = {EASTERN, -9460.0f, 42.0f, 0.0f};
+    Situation bound = away;
+    bound.sickHearthSafe = Upkeep::SafeLeg(Upkeep::SafeLegKind::Hearthstone, low(LEVEL_ZONE, 25, true, 20), hubA);
+    Ranked const hearths = Rank(stone, bound);
+    Option const* hearthTop = Top(hearths);
+    Add(checks, "sick: the same bot with its hearthstone ready and bound in a safe hub takes the stone to its errand",
+        hearthTop && hearthTop->kind == GoalKind::Errand && hearthTop->reason == SICK_HEARTH_REASON &&
+            hearthTop->place.x == stone.hearth.x && hearthTop->place.y == stone.hearth.y && hearths.sickGoal,
+        Summary(hearths));
+    Snapshot cooling = stone;
+    cooling.hearthCooldownMs = 600000;
+    Situation unbound = bound;
+    unbound.sickHearthSafe = false;
+    Ranked const cooled = Rank(cooling, bound);
+    Ranked const elsewhere = Rank(stone, unbound);
+    Add(checks, "sick: a stone on cooldown or bound outside every safe area gives no way in: the bot rests",
+        Top(cooled) && Top(cooled)->kind == GoalKind::Rest && Top(cooled)->forced && Top(elsewhere) &&
+            Top(elsewhere)->kind == GoalKind::Rest && Top(elsewhere)->forced,
+        Summary(cooled) + " / " + Summary(elsewhere));
+
+    // A level 60 bot in its side's zone that ends at 20: the zone is safe, its errand runs there
+    Snapshot old = sickBot(60);
+    old.bagFree = 0;
+    Situation lowZone = placed(base, low(LOW_ZONE, 20, true, 60), low(LOW_ZONE, 20, true, 60));
+    lowZone.circuit = nullptr;
+    Ranked const oldSells = Rank(old, lowZone);
+    Add(checks, "sick: a level 60 bot in a zone of its side that ends at level 20 gets its errand",
+        Top(oldSells) && Top(oldSells)->kind == GoalKind::Errand && oldSells.sickGoal, Summary(oldSells));
+
+    // A healthy bot's options do not read the sick facts
+    Snapshot healthy = full;
+    healthy.sickMs = 0;
+    healthy.sickErrandOpen = false;
+    Ranked const plain = Rank(healthy, base);
+    Ranked const flagged = Rank(healthy, capital);
+    bool same = plain.options.size() == flagged.options.size() && plain.dropped.size() == flagged.dropped.size();
+    for (std::size_t i = 0; same && i < plain.options.size(); ++i)
+        same = SameTarget(plain.options[i], flagged.options[i]) &&
+               plain.options[i].valuePerMinute == flagged.options[i].valuePerMinute;
+    Add(checks, "sick: a healthy bot's options are unchanged by the safe-area facts", same && !plain.sickGoal,
+        Summary(plain) + " / " + Summary(flagged));
 }
 
 // WN4: no option names the no-hub or no-camp marker (WN3's side fact: circuit rows quest:4294967295). Searched over
@@ -2166,6 +2455,198 @@ inline void HeldFromQuests(std::vector<Check>& checks)
         Summary(routedHeld));
 }
 
+// Questing only (questing WQ37, WQ.50 item 5): the keep list as the test's setting states it, written here and not
+// read from the rule. Quests (the circuit, the route, deliveries, hubs, class quests), a move to another zone, rest,
+// the hearthstone, a bag, an errand for full bags or a repair; money only while a due repair or training is unpayable
+inline bool QuestingKept(Option const& option, bool moneyAllowed)
+{
+    switch (option.kind)
+    {
+        case GoalKind::Quest:
+        case GoalKind::MoveZone:
+        case GoalKind::Rest:
+        case GoalKind::Hearth:
+        case GoalKind::BuyBag:
+            return true;
+        case GoalKind::Errand:
+            return option.reason == "bags_full" || option.reason == "bags_full_vendor_near" ||
+                   option.reason == "repair";
+        case GoalKind::Money:
+            return moneyAllowed;
+        default:
+            return false;
+    }
+}
+
+// With the setting no option outside the keep list is ranked, and each one the same bot is ranked without it is named
+// dropped as questing_only; over generated bots (money, wear, training, bags, health, questing inputs) that every
+// forbidden kind is offered without the setting, and every kept one ranked with it, so the check is not vacuous. The
+// model builds no TravelElsewhere option (only a bridge order sets one), so none is generated here
+inline void QuestingOnly(std::vector<Check>& checks)
+{
+    constexpr std::size_t KINDS = static_cast<std::size_t>(GoalKind::Count);
+    std::array<bool, KINDS> offered{};  // forbidden kinds ranked without the setting
+    std::array<bool, KINDS> kept{};     // kinds ranked with it
+    bool craftOffered = false;
+    bool repairKept = false;
+    bool keptOnly = true;
+    bool named = true;
+    std::string fault;
+    std::uint32_t cases = 0;
+    std::vector<GoalLog::Row> skippedRows;
+
+    Snapshot const fisherBot = Bot(10, FLUSH);
+    Weights const weights = FromTraits(fisherBot);
+    Need const need = NeedFor(fisherBot, weights, ReserveAt(fisherBot.level));
+    Fish::Fisher fisher;
+    fisher.skill = 100;
+    fisher.maxSkill = 150;
+    fisher.poleHeld = true;
+    fisher.rates.exchange = need.exchange;
+    fisher.rates.factor = need.factor;
+    fisher.rates.minuteValue = BAND_XP_PER_MINUTE[WorldTravel::LevelBand(fisherBot.level)];
+    fisher.rates.cautionWeight = CautionWeight(weights);
+    Fish::Water water;
+    water.area = 40;
+    water.baseSkill = 55;
+    water.pools = 12;
+    water.openYields = {{6291, 1.0, 0u, 1u, 0u}};
+    water.poolYields = {{6359, 1.0, 0u, 4u, 0u}};
+    GatherNode const fishing = Fish::TripOption(water, fisher, {}, true, {0, -9800.0f, 1820.0f, 0.0f}, 1.0f);
+    GatherNode herb;
+    herb.id = 81;
+    herb.skill = HERBALISM;
+    herb.required = 25;
+    herb.walkMinutes = 0.5f;
+    herb.copperWorth = 60.0f;
+
+    for (std::uint32_t const money : {0u, 300u, FLUSH})
+        for (int const worn : {0, 1, 2})  // none, a repair the gold pays, one it does not
+            for (bool const training : {false, true})
+                for (std::uint16_t const free : {std::uint16_t{8}, std::uint16_t{2}, std::uint16_t{0}})
+                    for (bool const hurt : {false, true})
+                        for (int const questing : {0, 1, 2})  // the circuit, the route, nothing to quest
+                        {
+                            Snapshot bot = Bot(10, money);
+                            bot.skills = {{HERBALISM, 40, 75}};
+                            bot.bagFree = free;
+                            bot.hearth = {1, 9950.0f, 2280.0f, 0.0f};  // Darnassus: a far bind
+                            if (worn)
+                            {
+                                bot.durabilityPercent = 5;
+                                bot.lowestDurabilityPercent = 0;
+                                bot.brokenItems = 1;
+                                bot.repairCheapest = worn == 1 ? 40 : FLUSH + 1;
+                            }
+                            Situation situation = Base();
+                            CircuitPlan const circuit = Circuit(bot, situation, 1500.0f, 200.0f, 20.0f);
+                            RoutePlan const route = SampleRoute(bot);
+                            if (questing == 0)
+                                situation.circuit = &circuit;
+                            if (questing == 1)
+                            {
+                                situation.route = &route;
+                                situation.onCircuit = false;
+                            }
+                            if (questing < 2)
+                            {
+                                situation.deliveries = {Carried(DELIVERY_QUEST, 300.0f, 5.0f, false)};
+                                situation.hubs = {Hub(21, ELWYNN, 100.0f, 5.0f), Hub(22, WESTFALL, 400.0f, 10.0f)};
+                                // The craft queue and the far bind outrank a grind: only beside the quest inputs
+                                situation.craft = {1000000.0f, 3.0f, 2.0f};
+                                situation.inns = {{701, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, false}};
+                                situation.bindSeconds = FAR_BIND_SECONDS;
+                            }
+                            situation.spots = {Spot(11, 150.0f, 10.0f), Spot(12, 45.0f, 50.0f)};
+                            situation.nodes = {herb};
+                            situation.waters = {fishing};
+                            situation.bags.sellableSlots = 10;
+                            situation.bags.vendor = {77, 1.0f, true};
+                            situation.bagOffers = {{4496, 77, 1.0f, 400, 6, 0}};
+                            situation.healthPercent = hurt ? 30.0f : 100.0f;
+                            situation.trainingUnpayable = training;
+                            Ranked const off = Rank(bot, situation);
+                            situation.questingOnly = true;
+                            Ranked const on = Rank(bot, situation);
+                            ++cases;
+                            bool const moneyAllowed = training || (worn != 0 && bot.repairCheapest > bot.money);
+                            for (Option const& option : off.options)
+                            {
+                                if (QuestingKept(option, moneyAllowed))
+                                    continue;
+                                offered[static_cast<std::size_t>(option.kind)] = true;
+                                craftOffered = craftOffered || option.reason == "craft";
+                                bool const dropped = std::any_of(on.dropped.begin(), on.dropped.end(),
+                                                                 [&option](Dropped const& entry)
+                                                                 {
+                                                                     return entry.kind == option.kind &&
+                                                                            entry.target == option.target &&
+                                                                            entry.reason == QUESTING_ONLY_REASON;
+                                                                 });
+                                if (!dropped && named)
+                                {
+                                    named = false;
+                                    fault += " not named: " + ChoiceWord(option) + " " + option.reason + ";";
+                                }
+                            }
+                            for (Option const& option : on.options)
+                            {
+                                kept[static_cast<std::size_t>(option.kind)] = true;
+                                repairKept =
+                                    repairKept || (option.kind == GoalKind::Errand && option.reason == "repair");
+                                if (!QuestingKept(option, moneyAllowed) && keptOnly)
+                                {
+                                    keptOnly = false;
+                                    fault += " ranked: " + Summary(on) + ";";
+                                }
+                            }
+                            if (skippedRows.empty() && !on.dropped.empty())
+                            {
+                                std::vector<GoalLog::Row> const rows = GoalLog::Rows(on);
+                                if (rows.size() > 1)
+                                    skippedRows = rows;
+                            }
+                        }
+
+    std::string missing;
+    for (GoalKind const kind : {GoalKind::Grind, GoalKind::Gather, GoalKind::Fish, GoalKind::Money})
+        if (!offered[static_cast<std::size_t>(kind)])
+            missing += std::string(" offered ") + KindWord(kind);
+    if (!craftOffered)
+        missing += " offered craft";
+    for (GoalKind const kind : {GoalKind::Quest, GoalKind::MoveZone, GoalKind::Rest, GoalKind::Hearth, GoalKind::BuyBag,
+                                GoalKind::Errand, GoalKind::Money})
+        if (!kept[static_cast<std::size_t>(kind)])
+            missing += std::string(" kept ") + KindWord(kind);
+    if (!repairKept)
+        missing += " kept repair";
+    Add(checks, "questing only: no forbidden option is ranked, each one is named dropped as questing_only",
+        keptOnly && named, std::to_string(cases) + " bots;" + fault);
+    Add(checks, "questing only: every forbidden kind is offered without the setting, every kept one ranked with it",
+        missing.empty(), missing.empty() ? std::to_string(cases) + " bots" : missing);
+
+    // The goal rows show the drop: one skipped:questing_only row after the ranking's, also after a none row when
+    // the setting dropped every option; without drops there is none (LogRows: one row per ranking)
+    bool const skipped = skippedRows.size() == 2 && skippedRows[1].choice == "skipped:questing_only" &&
+                         skippedRows[1].reason == QUESTING_ONLY_REASON && skippedRows[1].value >= 1.0f &&
+                         !skippedRows[1].alternatives.empty() &&
+                         skippedRows[1].alternatives.size() <= GoalLog::ALTERNATIVES &&
+                         skippedRows[1].alternatives[0].choice == LogWord(skippedRows[1].alternatives[0].choice);
+    Snapshot const grinder = Bot(10, FLUSH);
+    Situation only = Base();
+    only.spots = {Spot(11, 75.0f, 10.0f)};
+    only.questingOnly = true;
+    Ranked const none = Rank(grinder, only);
+    std::vector<GoalLog::Row> const noneRows = GoalLog::Rows(none);
+    bool const noneSkipped = none.options.empty() && noneRows.size() == 2 && noneRows[0].choice == "none:0" &&
+                             noneRows[1].choice == "skipped:questing_only" && noneRows[1].value == 1.0f &&
+                             noneRows[1].alternatives.size() == 1 && noneRows[1].alternatives[0].choice == "grind:11";
+    Add(checks, "questing only: the goal rows name the dropped options in a skipped:questing_only row",
+        skipped && noneSkipped,
+        std::to_string(skippedRows.size()) + " rows; only forbidden: " + Summary(none) + ", " +
+            std::to_string(noneRows.size()) + " rows");
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -2179,6 +2660,7 @@ inline std::vector<Check> SyntheticChecks()
     Outlevelled(checks);
     Busy(checks);
     RestAndHearth(checks);
+    HearthStays(checks);
     Gathering(checks);
     Fishing(checks);
     Robust(checks);
@@ -2189,9 +2671,11 @@ inline std::vector<Check> SyntheticChecks()
     TargetsAndRepairs(checks);
     RepairDuringQuest(checks);
     RepairFirst(checks);
+    SickSafeAreas(checks);
     Targets(checks);
     Routes(checks);
     HeldFromQuests(checks);
+    QuestingOnly(checks);
     return checks;
 }
 

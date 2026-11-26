@@ -558,7 +558,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
-        visit(WorldTravelFamily, 19, "World travel");
+        visit(WorldTravelFamily, 20, "World travel");
         visit(PvpGearFamily, 8, "PvP gear");
         visit(ArenaRecruitFamily, 8, "Arena recruit");
         visit(ArenaTeamFamily, 28, "Arena team");
@@ -1099,8 +1099,9 @@ void TestWorldFamilies()
                        got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
                        got.BagHorizonHours == want.BagHorizonHours;
     }
-    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 1,
-          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit is listed");
+    Check(
+        defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 2,
+        "travel: the default texts parse to DEFAULT_SLOT_BANDS; only InnDwellMinutes and Traits.AllowEdit are listed");
     FakeReader travelReader;
     travelReader.values = {{"Playerbots.WorldTravel.Slots.TripMinutes", "1,2,3,4,5"},
                            {"Playerbots.WorldTravel.Bags.HorizonHours", "1,2,3"},

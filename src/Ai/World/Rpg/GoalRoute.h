@@ -80,7 +80,7 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
     Clock::time_point const started = timer ? Clock::now() : Clock::time_point{};
     QuestIndex const& index = *context.quests;
     QuestFields::Pricing const pricing{context.weights, context.unlockBonus};
-    std::vector<QuestFields::Need> needs = QuestFields::Needs(index, bot.quests, bot.team, pricing);
+    std::vector<QuestFields::Need> needs = QuestFields::Needs(index, bot.quests, bot.team, pricing, bot.groupSize);
 
     std::vector<std::uint32_t> inLog;
     for (QuestSlot const& slot : bot.quests)

@@ -31,6 +31,9 @@ struct LoneKeys
     // Playerbots.Test.MissLog (test): log a skipped pre-gate step or check follower whose own guard passes
     // ("PreGate miss: <step>", "Live miss: <follower>")
     bool TestMissLog = false;
+    // Playerbots.Test.QuestingOnly (test): the planner keeps only the options that serve levelling, a planner bot's
+    // fallback is a rest (questing WQ37)
+    bool TestQuestingOnly = false;
 };
 
 template <typename Struct>
@@ -48,6 +51,8 @@ extern ConfigFamily<LoneKeys> const TestNamePrefixFamily;
 extern ConfigFamily<LoneKeys> const DebugThreadChecksFamily;
 // Playerbots.Test.MissLog
 extern ConfigFamily<LoneKeys> const TestMissLogFamily;
+// Playerbots.Test.QuestingOnly
+extern ConfigFamily<LoneKeys> const TestQuestingOnlyFamily;
 
 // The one instance (LoneKeys.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this: readers
 // use sPlayerbotAIConfig.Lone.

@@ -299,8 +299,45 @@ void CheckRideAndExit()
     adapter.Calls.clear();
     motion = Motion(MotionKind::Exit, PLATFORM);
     Maintain(cadence, 20, MAP, &motion, adapter);
-    Check(motion.Result == Outcome::Lost && !adapter.Aboard.Guid && adapter.Calls.size() == 1,
+    Check(motion.Result == Outcome::Lost && !adapter.Aboard.Guid &&
+              adapter.Calls == std::vector<std::string_view>{"read", "confirm_exit"},
           "a stale exit intent cannot reattach after core removed membership");
+
+    // G396: an exit that ran to its issued end while the vessel stood at the issued dock left, whoever cleared the
+    // membership before the sample (walked or jumped); away from its end or on another vessel it is lost
+    for (bool const jump : {false, true})
+    {
+        cadence = {};
+        adapter = {};
+        adapter.Spline.Local = true;
+        adapter.Spline.Position = PLATFORM;
+        adapter.Spline.Finalized = true;
+        motion = Motion(MotionKind::Exit, PLATFORM);
+        motion.Jump = jump;
+        Maintain(cadence, 20, MAP, &motion, adapter);
+        Check(motion.Result == Outcome::Exited && !adapter.Aboard.Guid &&
+                  adapter.Calls == std::vector<std::string_view>{"read", "confirm_exit"},
+              jump ? "a jump that landed at its end with membership already gone is an exit (G396)"
+                   : "an exit that reached its end with membership already gone is an exit (G396)");
+    }
+    cadence = {};
+    adapter = {};
+    adapter.Spline.Local = true;
+    adapter.Spline.Position = DECK;
+    adapter.Spline.Finalized = true;
+    motion = Motion(MotionKind::Exit, PLATFORM);
+    Maintain(cadence, 20, MAP, &motion, adapter);
+    Check(motion.Result == Outcome::Lost, "an exit that ended away from its end with membership gone is a loss");
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {NEARER_CAR, 17, true};
+    adapter.Spline.Local = true;
+    adapter.Spline.Position = PLATFORM;
+    adapter.Spline.Finalized = true;
+    motion = Motion(MotionKind::Exit, PLATFORM);
+    Maintain(cadence, 20, MAP, &motion, adapter);
+    Check(motion.Result == Outcome::Lost && adapter.Aboard.Guid == NEARER_CAR,
+          "an exit that ended on another vessel is a loss");
 
     cadence = {};
     adapter = {};

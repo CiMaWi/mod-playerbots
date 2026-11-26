@@ -12,9 +12,11 @@
 // piece or a trip is under way) or Failed (an end to read: its outcome and cause word). Five steps, in this order:
 //   1. within reach: There;
 //   2. a live refusal of this place: Failed with its cause, no path query, no request;
-//   3. an end of this place's trip waits unread: There (arrived) or Failed, read once;
+//   3. an end of this place's trip waits unread: There (arrived) or Failed, read once. An arrived end counts only while
+//      the bot is still where the trip left it (ArrivalHolds); once it has left, the end says nothing and is dropped;
 //   4. the place is on the bot's map within the local range and the mesh carries the path to it: order it, Going;
-//   5. else a trip to the place (farther, another map, or near but not carried): Going, and no move is ordered.
+//   5. else a trip to the place (farther, another map, or near but not carried): Going, and no move is ordered. While
+//      an arrival holds there is no second trip: Failed NO_SECOND_TRIP.
 // Each step is O(1) but one path query, asked only when the place or the bot's last move changed (State). A refusal
 // is never repaired by another move: it is a typed end. Nothing here names a status kind or a place: the holder passes
 // its place and reach, and the caller hands its status id to travel. tests/go-to-selftest.cpp drives every rule.
@@ -22,6 +24,7 @@
 // object (step 4 at any distance, no trip: a stand point not carried is a typed end), each roam sample (RoamCarried)
 // and the route follower's order on its leg (LegCarried).
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -43,6 +46,13 @@ constexpr float ROAM_REACH_YARDS = 5.0f;
 constexpr float LEG_GAIN_YARDS = 5.0f;
 // The cause word of an approach whose stand point the mesh does not carry
 constexpr char const* NOT_CARRIED = "no_path";
+// The cause word of a place whose trip arrived and whose last yards the mesh does not carry
+constexpr char const* NO_SECOND_TRIP = "unreachable_poi";
+// The follower's reached distance at a route's end (TravelLegs::GOAL_YARDS): this close, a bot is still where a trip
+// arrived
+constexpr float ARRIVED_YARDS = 10.0f;
+// The follower ends a trip as its bot walks onto the last point, which may lie this far from the place
+constexpr float ARRIVED_DRIFT_YARDS = 1.0f;
 
 enum class Answer : std::uint8_t
 {
@@ -242,6 +252,8 @@ struct State
     std::uint32_t judgedMove{0};
     bool judged{false};
     bool carried{false};
+    bool arrived{false};    // a trip to tripPlace arrived and the bot has not left
+    float leftYards{0.0f};  // where that trip left it: the yards to the place
 };
 
 struct Decision
@@ -255,6 +267,14 @@ struct Decision
     bool pathAsked{false};   // the judge ran this tick
 };
 
+// The bot has not left where a trip to the place arrived: on the place's map, within the holder's reach, ARRIVED_YARDS
+// or the distance the trip left it at (an arrival off a vessel can be farther; judged by the place alone, such a bot
+// would be sent on one trip after another)
+inline bool ArrivalHolds(Facts const& facts, float leftYards)
+{
+    return facts.sameMap && facts.yards <= std::max({facts.reach, ARRIVED_YARDS, leftYards + ARRIVED_DRIFT_YARDS});
+}
+
 // One tick of GoTo. takeEnd() -> std::optional<StatusEnd::TripEnd>: the holder's unread trip end, once
 // (TripHold::TakeEnd); judge() -> bool: the mesh carries the local piece (a path query and Carried). Each is called at
 // most once, and only by the step that needs it
@@ -263,12 +283,17 @@ Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& jud
 {
     Decision decision;
     if (!(facts.place == state.tripPlace))
+    {
         state.tripAsked = false;  // another place: the old trip's end is not this place's
+        state.arrived = false;
+    }
     if (facts.sameMap && facts.yards <= facts.reach)
     {
         state.tripAsked = false;
+        state.arrived = false;
         return decision;
     }
+    state.arrived = state.arrived && ArrivalHolds(facts, state.leftYards);
     if (facts.refused)
     {
         decision.step = Step::Refused;
@@ -282,11 +307,18 @@ Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& jud
         if (std::optional<StatusEnd::TripEnd> const end = takeEnd())
         {
             state.tripAsked = false;
-            decision.step = Step::EndRead;
-            decision.word = end->word;
-            decision.outcome = end->outcome;
-            decision.answer = end->outcome == StatusEnd::Outcome::Arrived ? Answer::There : Answer::Failed;
-            return decision;
+            bool const arrived = end->outcome == StatusEnd::Outcome::Arrived;
+            // An arrival read after the bot has left is no answer for where it stands now: the walk goes on below
+            if (!arrived || ArrivalHolds(facts, end->yards))
+            {
+                state.arrived = arrived;
+                state.leftYards = end->yards;
+                decision.step = Step::EndRead;
+                decision.word = end->word;
+                decision.outcome = end->outcome;
+                decision.answer = arrived ? Answer::There : Answer::Failed;
+                return decision;
+            }
         }
     }
     decision.answer = Answer::Going;
@@ -323,6 +355,14 @@ Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& jud
         return decision;
     }
     decision.step = Step::Trip;
+    if (state.arrived)
+    {
+        // The mesh does not carry the last yards from where the trip arrived
+        decision.answer = Answer::Failed;
+        decision.outcome = OutcomeOf(NO_SECOND_TRIP);
+        decision.word = NO_SECOND_TRIP;
+        return decision;
+    }
     decision.askTrip = true;
     state.tripAsked = true;
     state.tripPlace = facts.place;

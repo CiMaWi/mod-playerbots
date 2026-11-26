@@ -118,6 +118,13 @@ inline std::string SideWord(PlaceFact const& place)
     return place.noSide ? std::string() : BridgeTexts::Lookups::PLACE_SIDE_WORDS[static_cast<std::size_t>(place.side)];
 }
 
+// The bot's own side's capitals only (NR3, a sick bot's safe areas: Upkeep::SafeCity)
+inline bool IsOwnCapital(std::uint32_t zoneId, bool alliance)
+{
+    auto const& own = alliance ? ALLIANCE_CAPITALS : HORDE_CAPITALS;
+    return std::find(own.begin(), own.end(), zoneId) != own.end();
+}
+
 inline bool IsCapital(std::uint32_t zoneId)
 {
     return std::find(ALLIANCE_CAPITALS.begin(), ALLIANCE_CAPITALS.end(), zoneId) != ALLIANCE_CAPITALS.end() ||
