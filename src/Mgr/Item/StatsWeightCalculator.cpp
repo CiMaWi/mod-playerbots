@@ -7,6 +7,7 @@
 #include "StatsWeightCalculator.h"
 
 #include <array>
+#include <cmath>
 #include <initializer_list>
 #include <memory>
 #include <span>
@@ -48,6 +49,10 @@ constexpr float HEALER_RESISTANCE_WEIGHT = 1.0f;
 constexpr float CASTER_THREAT_REDUCTION_WEIGHT = 4.0f;
 constexpr float CASTER_RESISTANCE_WEIGHT = 0.5f;
 constexpr float TANK_THREAT_REDUCTION_WEIGHT = -4.0f;
+
+// Far below any unbalanced sum of weights times whole stats: a score this close to 0 is an exactly balanced item that
+// float rounding moved off 0, and the rule's "above 0" must not see it as positive
+constexpr float SCORE_ROUNDING = 0.0001f;
 
 // A bot specced for PvP: resilience per point by role, stamina scaled (not for tanks), spell penetration for casters
 constexpr float PVP_PHYSICAL_RESILIENCE_WEIGHT = 4.0f;
@@ -567,6 +572,8 @@ float StatsWeightCalculator::CalculateItem(uint32 itemId, int32 randomPropertyId
         if (stats_weights_[i] != 0.0f && collector_->stats[i] != 0.0f)
             weighted = true;
     }
+    if (std::fabs(weight_) < SCORE_ROUNDING)
+        weight_ = 0.0f;
     usefulStat_ = usefulPart > 0.0f || !weighted;
 
     // Value the tier on the stats that survive the clamp, on top of the item's own clamped

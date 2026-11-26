@@ -6,6 +6,7 @@
 
 #include "EquipAction.h"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <unordered_set>
@@ -352,7 +353,11 @@ std::vector<ObjectGuid> EquipAction::SelectInventoryItemsToEquip()
     CollectItemsVisitor visitor;
     IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
 
-    std::vector<ObjectGuid> items;
+    // Every candidate is judged against the worn items as they are before this pass, so two may claim one slot:
+    // equipped from the lowest score up, the best of them ends worn
+    StatsWeightCalculator calculator(bot);
+    calculator.SetUpForEquipCompare();
+    std::vector<std::pair<float, ObjectGuid>> candidates;
     std::unordered_set<std::string> judged;  // one copy per item and suffix
     for (auto i = visitor.items.begin(); i != visitor.items.end(); ++i)
     {
@@ -382,8 +387,15 @@ std::vector<ObjectGuid> EquipAction::SelectInventoryItemsToEquip()
 
         ItemUsage usage = AI_VALUE2(ItemUsage, "item upgrade", itemUsageParam);
         if (usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE || usage == ITEM_USAGE_BAD_EQUIP)
-            items.push_back(item->GetGUID());
+            candidates.emplace_back(calculator.CalculateItem(itemId, randomProperty), item->GetGUID());
     }
+
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::vector<ObjectGuid> items;
+    items.reserve(candidates.size());
+    for (auto const& candidate : candidates)
+        items.push_back(candidate.second);
     return items;
 }
 
