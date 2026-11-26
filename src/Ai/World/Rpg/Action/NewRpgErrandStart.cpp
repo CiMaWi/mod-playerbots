@@ -127,7 +127,8 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     uint32 carried = 0;
     for (BankMail::KeptEntry const& item : known.bank.carried.items)
-        carried += item.dueLevel > bot->GetLevel() ? item.count : 0;  // a due stack stays (auction stock, WA7b)
+        // A due stack stays (auction stock, WA7b), so does one the core will not bank
+        carried += item.dueLevel > bot->GetLevel() && !item.blocked ? item.count : 0;
     snapshot.Orderliness = BotTraitMgr::instance().Trait(bot->GetGUID().GetCounter(), TraitRules::Trait::Orderliness);
     snapshot.MailWaiting = known.mail.waiting;
     snapshot.MailDefaultWorth = sPlayerbotAIConfig.BankMail.MailDefaultWorthCopper;
@@ -542,6 +543,22 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
             snapshot.Stops, offers, [bot, &indexes, &here](WorldTravel::ErrandPlace const& place)
             { return Planner::SafeWalkTo(bot, *indexes, here, place.MapId, place.X, place.Y, place.Z); });
     }
+    // NR9: no stop at a place the record of failed attempts refuses (a trip's third death there, a route none): the
+    // next stop that serves is planned instead (the ordered stop below is not filtered)
+    std::vector<WorldTravel::Refusal> placeRefused;
+    FailedAttempts::Record const& failures = botAI->GetTravel().Failures();
+    if (failures.count)
+    {
+        uint32 const now = getMSTime();
+        placeRefused = WorldTravel::KeepUnrefusedErrands(
+            snapshot.Stops, offers,
+            [&failures, now](WorldTravel::ErrandPlace const& place)
+            {
+                return !FailedAttempts::IsPlaceRefused(
+                            failures, WorldTravel::SightPoint{place.MapId, place.X, place.Y, place.Z}, now)
+                            .empty();
+            });
+    }
     WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
@@ -640,8 +657,11 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                   bot->GetName(), nearest ? nearest->entry : 0, nearest ? nearestYards : 0.0f, walkMinutes,
                   sellableSlots, snapshot.FreeSlots, plan.Refused.size());
         // Without a vendor walkMinutes is 0
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", nearest ? "not_worth" : "no_vendor",
-                           walkMinutes * MINUTE, weighed);
+        // A trip that only refused places left without a stop says so (NR9), not not_worth
+        char const* const skip = !nearest                                        ? "no_vendor"
+                                 : !placeRefused.empty() && plan.Refused.empty() ? WorldTravel::PLACE_REFUSED
+                                                                                 : "not_worth";
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", skip, walkMinutes * MINUTE, weighed);
         return false;
     }
 
@@ -679,13 +699,18 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                                : order.reason                                   ? order.reason
                                                                                 : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
-    // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
-    // (detour_not_worth, too_far, no_stop)
+    // The bank and mail errands it takes, then the errands it leaves out: those at a place the record refuses
+    // (place_refused), the detour rule's refusals (detour_not_worth, too_far, no_stop)
     if (WorldLog::Active())
         for (std::pair<WorldTravel::ErrandOffer, char const*> const& errand : bankMail)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
                                WorldTravel::ErrandKindName(errand.first.Kind), errand.second, 0.0f,
                                {{"worth", errand.first.WorthCopper}});
+    if (WorldLog::Active())
+        for (WorldTravel::Refusal const& refusal : placeRefused)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
+                               WorldTravel::ErrandKindName(refusal.Offer.Kind), refusal.Reason, 0.0f,
+                               {{"worth", refusal.Offer.WorthCopper}});
     if (WorldLog::Active())
         for (WorldTravel::Refusal const& refusal : plan.Refused)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,

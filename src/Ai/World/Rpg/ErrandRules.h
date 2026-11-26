@@ -759,7 +759,7 @@ struct TripRequest
 struct Refusal
 {
     ErrandOffer Offer;
-    char const* Reason = "";  // detour_not_worth, too_far, no_stop
+    char const* Reason = "";  // detour_not_worth, too_far, no_stop; place_refused (KeepUnrefusedErrands)
     float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth)
     float WalkMinutes = 0.0f;
 };
@@ -779,6 +779,71 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
         return offer.Kind == ErrandKind::Craft;
 
     return (stop.Services & offer.Service) == offer.Service;
+}
+
+// The word of an errand left out because the record of failed attempts refuses its place (KeepUnrefusedErrands): its
+// own (R4), neither the entry's cause nor no_stop
+constexpr char const* PLACE_REFUSED = "place_refused";
+
+// NR9 (NR8: trips planned to a place where a trip had just died three times): no stop and no placed errand at a place
+// the record of failed attempts refuses (`refusedAt(place)`: a live entry there, FailedAttempts::IsPlaceRefused), so
+// the planner takes the next stop that serves; an errand that only refused stops took is left out too. What it leaves
+// out comes back as refusals with the word PLACE_REFUSED. The ordered stop never passes through it (an order names its
+// vendor); refusedAt is asked once per stop and placed errand
+template <typename RefusedAt>
+inline std::vector<Refusal> KeepUnrefusedErrands(std::vector<ServiceStop>& stops, std::vector<ErrandOffer>& offers,
+                                                 RefusedAt const& refusedAt)
+{
+    std::vector<ServiceStop> keptStops;
+    std::vector<TripStop> kept;  // the places left: the kept stops and the kept placed errands' own places
+    std::vector<TripStop> refused;
+    for (ServiceStop const& stop : stops)
+    {
+        TripStop const place{stop.Place, stop.Services, stop.Id, stop.Trainer, false, 0.0f, {}};
+        if (refusedAt(stop.Place))
+            refused.push_back(place);
+        else
+        {
+            kept.push_back(place);
+            keptStops.push_back(stop);
+        }
+    }
+    stops = std::move(keptStops);
+    std::vector<bool> placeRefused(offers.size(), false);
+    for (std::size_t i = 0; i < offers.size(); ++i)
+        if (offers[i].Placed)
+        {
+            placeRefused[i] = refusedAt(offers[i].Place);
+            if (!placeRefused[i])
+                kept.push_back({offers[i].Place, offers[i].Service, offers[i].Target, 0, false, 0.0f, {}});
+        }
+    auto const takenAt = [](std::vector<TripStop> const& places, ErrandOffer const& offer)
+    {
+        return std::any_of(places.begin(), places.end(),
+                           [&offer](TripStop const& place) { return StopTakes(place, offer); });
+    };
+    std::vector<Refusal> out;
+    std::vector<ErrandOffer> keptOffers;
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        ErrandOffer const& offer = offers[i];
+        bool const left = offer.Placed ? placeRefused[i] : takenAt(refused, offer) && !takenAt(kept, offer);
+        if (left)
+            out.push_back({offer, PLACE_REFUSED, 0.0f, 0.0f});
+        else
+            keptOffers.push_back(offer);
+    }
+    offers = std::move(keptOffers);
+    return out;
+}
+
+// NR9: the vendor part of a stop passed without a sale, by what stopped it: its vendor found neither near the stop nor
+// by its spawn (no_vendor), or the vendor found gone or dead before the bot stood at it (vendor_gone); nullptr while
+// it serves. The word of the `decision errand vendor` row (the skip row's no_vendor is the trip start's: no vendor in
+// reach at all)
+inline char const* VendorPassedWord(bool found, bool serving)
+{
+    return !found ? "no_vendor" : !serving ? "vendor_gone" : nullptr;
 }
 
 // A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that

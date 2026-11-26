@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ErrandRules.h"
+#include "FailedAttemptRules.h"
 #include "UpkeepNeedRules.h"
 
 // The trip planner's scenarios (travel plan WT15, the upkeep needs as providers WU12): synthetic bots and stops, one
@@ -1619,6 +1620,103 @@ inline void CraftTrips(std::vector<Check>& checks)
         Describe(both));
 }
 
+// ---- The record of failed attempts at the trip start (NR9; NR8: stops planned where a trip had just died) ----
+
+constexpr uint32_t RECORD_NOW_MS = 1000000;
+constexpr uint32_t RECORD_BASE_MS = 10 * 60 * 1000;
+
+inline std::string DescribeRefused(std::vector<Refusal> const& refused)
+{
+    std::string text = "record refused:";
+    for (Refusal const& refusal : refused)
+        text += std::string(" ") + ErrandKindName(refusal.Offer.Kind) + "/" + refusal.Reason;
+    return text;
+}
+
+inline bool PlanStopsAt(TripPlan const& plan, ErrandPlace const& place)
+{
+    for (TripStop const& stop : plan.Stops)
+        if (Yards(stop.Place, place) <= STOP_JOIN_YARDS)
+            return true;
+    return false;
+}
+
+// I1: a place a live trip_deaths entry refuses is never a planned stop, the next stop that serves is; what only the
+// refused place took is refused with its own word, and the place is planned again once the entry has expired
+inline void RecordRefusedStops(std::vector<Check>& checks)
+{
+    ErrandPlace const deaths = At(300.0f, 0.0f);
+    FailedAttempts::Record record;
+    FailedAttempts::Failure death;
+    death.goal = {deaths.MapId, deaths.X, deaths.Y, deaths.Z};
+    bool const noted =
+        FailedAttempts::NoteFailure(record, "trip_deaths", death, RECORD_NOW_MS, RECORD_BASE_MS).has_value();
+    auto const refusedAt = [&record](uint32_t nowMs)
+    {
+        return [&record, nowMs](ErrandPlace const& place)
+        {
+            return !FailedAttempts::IsPlaceRefused(record, SightPoint{place.MapId, place.X, place.Y, place.Z}, nowMs)
+                        .empty();
+        };
+    };
+    auto const filtered = [&refusedAt](ErrandSnapshot const& bot, uint32_t nowMs, std::vector<Refusal>& refused)
+    {
+        std::vector<ServiceStop> stops = bot.Stops;
+        std::vector<ErrandOffer> offers = CollectOffers(bot, TripProviders());
+        refused = KeepUnrefusedErrands(stops, offers, refusedAt(nowMs));
+        return PlanTrip(Request(bot), stops, offers);
+    };
+
+    // Seen mail worth both detours: the nearer mailbox wins unless the record refuses it
+    ErrandSnapshot two = GovernedBot(10, 0);
+    two.MailWaiting = 1;
+    two.MailSeenCopper = 5000;
+    WithServices(two, {}, {{MAILBOX_ID, deaths, SERVICE_MAILBOX}, {MAILBOX_ID + 1, At(450.0f, 0.0f), SERVICE_MAILBOX}});
+    TripPlan const unfiltered = Plan(two, Request(two), TripProviders());
+    std::vector<Refusal> refused;
+    TripPlan const next = filtered(two, RECORD_NOW_MS, refused);
+    bool const premise =
+        noted && two.Stops.size() == 2 && unfiltered.Stops.size() == 1 && unfiltered.Stops[0].Id == MAILBOX_ID;
+    bool const moved = next.Stops.size() == 1 && next.Stops[0].Id == MAILBOX_ID + 1 &&
+                       HasErrand(next.Stops[0], ErrandKind::Mail) && refused.empty() && !PlanStopsAt(next, deaths);
+    Add(checks, "record: a mailbox a live trip_deaths entry refuses is no stop, the next mailbox is (I1)",
+        premise && moved, Describe(unfiltered) + " | " + Describe(next) + " " + DescribeRefused(refused));
+
+    // The only mailbox refused, and a turn-in placed at that place: both are left out with place_refused, not no_stop
+    ErrandSnapshot one = two;
+    WithServices(one, {}, {{MAILBOX_ID, deaths, SERVICE_MAILBOX}});
+    one.Completed = {{FAR_QUEST, ENDER, false, At(300.0f, 5.0f), 50000.0f}};
+    TripPlan const none = filtered(one, RECORD_NOW_MS, refused);
+    bool words = refused.size() == 2;
+    for (Refusal const& refusal : refused)
+        words = words && std::string(refusal.Reason) == PLACE_REFUSED &&
+                (refusal.Offer.Kind == ErrandKind::Mail || refusal.Offer.Kind == ErrandKind::TurnIn);
+    bool noStop = false;
+    for (Refusal const& refusal : none.Refused)
+        noStop = noStop || std::string(refusal.Reason) == "no_stop";
+    Add(checks, "record: the only mailbox and a turn-in at a refused place are refused place_refused, no stop (I1)",
+        words && none.Stops.empty() && !noStop, Describe(none) + " " + DescribeRefused(refused));
+
+    // Past the entry's live time the place is planned again
+    uint32_t const later = RECORD_NOW_MS + 100 * RECORD_BASE_MS;
+    TripPlan const again = filtered(two, later, refused);
+    Add(checks, "record: an expired entry refuses nothing, the nearer mailbox is planned again",
+        refused.empty() && again.Stops.size() == 1 && again.Stops[0].Id == MAILBOX_ID,
+        Describe(again) + " " + DescribeRefused(refused));
+}
+
+// A stop's vendor part passed without a sale writes the word of what stopped it (NR9): not found (near the stop or by
+// its spawn) and found but gone or dead are two causes with two words; a serving vendor writes none
+inline void VendorPassedWords(std::vector<Check>& checks)
+{
+    char const* const missing = VendorPassedWord(false, false);
+    char const* const gone = VendorPassedWord(true, false);
+    bool const words = missing && gone && std::string(missing) == "no_vendor" && std::string(gone) == "vendor_gone" &&
+                       !VendorPassedWord(true, true);
+    Add(checks, "vendor: a stop whose vendor is not found writes no_vendor, one gone or dead vendor_gone", words,
+        std::string(missing ? missing : "-") + " / " + (gone ? gone : "-"));
+}
+
 constexpr uint64_t DEFAULT_SEED = 20261113;
 constexpr uint32_t SEARCH_ITERATIONS = 20000;
 
@@ -1658,6 +1756,8 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     TameTrip(checks);
     StableTrip(checks);
     TameOrder(checks);
+    RecordRefusedStops(checks);
+    VendorPassedWords(checks);
     return checks;
 }
 }  // namespace ErrandHarness
