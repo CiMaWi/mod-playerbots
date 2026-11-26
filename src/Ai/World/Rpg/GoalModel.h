@@ -383,6 +383,7 @@ struct GatherNode
     float takes{0.0f};
     float units{0.0f};
     float fightMinutes{0.0f};
+    bool observed{false};  // the circuit's minutes per take are an observed estimate (WPC13b), not the static prior
 };
 
 struct Vendor
@@ -515,6 +516,7 @@ struct Goal
     float takes{0.0f};  // a gather circuit's or fishing trip's estimate (GatherNode): the row WR25a writes at its start
     float units{0.0f};
     float fightMinutes{0.0f};
+    bool observed{false};  // GatherNode::observed: the estimate's minutes from the observed rate
 };
 
 // A goal with the numbers that rank it
@@ -1113,6 +1115,7 @@ private:
             option.takes = node.takes;
             option.units = node.units;
             option.fightMinutes = node.fightMinutes;
+            option.observed = node.observed;
             // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
             bool const skillUp = skill && skill->value < skill->max && node.skillPoints > 0.0f &&
                                  (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);

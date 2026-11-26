@@ -456,7 +456,8 @@ SkillPathBridge::Computed PathOf(Snapshot const& bot, UpkeepIndex const& index, 
                                {},
                                fault,
                                SkillPathBridge::ToolSourcesOf(ToolPrice),
-                               std::move(market)};
+                               std::move(market),
+                               {}};
     if (!sells)
         world.sellCopper = nullptr;
     SkillPath::PathInputs inputs;
@@ -840,7 +841,7 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     for (SkillPath::Fault const fault : {SkillPath::Fault::NoExpand, SkillPath::Fault::None})
     {
         SkillPath::PathWorld const world{
-            recipes, [](std::uint32_t spell) { return MayLearn(spell); }, nullptr, {}, {}, fault, {}, {}};
+            recipes, [](std::uint32_t spell) { return MayLearn(spell); }, nullptr, {}, {}, fault, {}, {}, {}};
         SkillPath::Weigher const weigher(smith, world);
         SkillPath::Claims const claims = weigher.Claim(bracers);
         std::vector<SkillPath::Want> const wants = weigher.Wants(bracers, claims);

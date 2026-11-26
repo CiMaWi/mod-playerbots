@@ -114,7 +114,7 @@ PathWorld WorldOf(RecipeIndex const& index, World const& world, Fault fault = Fa
         auto const found = world.sell.find(item);
         return found == world.sell.end() ? 0.0 : found->second;
     };
-    return PathWorld{index, mayLearn, sellCopper, world.skinnables, world.waters, fault, world.tools, {}};
+    return PathWorld{index, mayLearn, sellCopper, world.skinnables, world.waters, fault, world.tools, {}, {}};
 }
 
 // A market for a world (WA7b): three of four items priced from a hash of the item (nothing drawn from the search's
@@ -559,8 +559,8 @@ void CheckAbilityGuard()
     Trainer(recipe, 50, 100);
     recipe.trainerAbilities = {SPECIALIST};
     RecipeIndex const index = RecipeIndex::FromRecords({recipe}, {}, {}, {});
-    PathWorld const world{index, {}, {}, {}, {}, Fault::None, {}, {}};
-    PathWorld const ignoring{index, {}, {}, {}, {}, Fault::IgnoreAbility, {}, {}};
+    PathWorld const world{index, {}, {}, {}, {}, Fault::None, {}, {}, {}};
+    PathWorld const ignoring{index, {}, {}, {}, {}, Fault::IgnoreAbility, {}, {}, {}};
     PathBot bot = HandBot();
     Check(!Weigher(bot, world).LearnOf(recipe).ok, "WR.27: a recipe behind an ability the bot lacks is not learnable");
     Check(Weigher(bot, ignoring).LearnOf(recipe).ok,

@@ -347,6 +347,7 @@ struct PathWorld
     Fault fault{Fault::None};
     std::vector<ToolSource> tools;  // empty: a missing tool has no source
     Market::View market;            // the typical prices (auction house WA7a); empty: only vendors buy and sell
+    GatherRate::View gatherRates;   // minutes per take as bots get them (WPC13b); empty: the static rule
 };
 
 // A missing tool an option gets before its cast, in full: bought (maker 0) or made by a recipe of the profession,
@@ -498,6 +499,7 @@ public:
         materials.level = _bot.level;
         materials.side = _bot.side;
         materials.auctionCopper = _world.market.BuyCopperOf();
+        materials.gatherRates = _world.gatherRates;
         return materials;
     }
 
