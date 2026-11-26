@@ -13,7 +13,6 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "LootObjectStack.h"
-#include "MarketRules.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -39,15 +38,14 @@ bool AddLootAction::Execute(Event event)
 bool AddAllLootAction::Execute(Event /*event*/)
 {
     bool added = false;
-    std::optional<Market::View> market;
 
     GuidVector gos = context->GetValue<GuidVector>("nearest game objects")->Get();
     for (GuidVector::iterator i = gos.begin(); i != gos.end(); i++)
-        added |= AddLoot(*i, market);
+        added |= AddLoot(*i);
 
     GuidVector corpses = context->GetValue<GuidVector>("nearest corpses")->Get();
     for (GuidVector::iterator i = corpses.begin(); i != corpses.end(); i++)
-        added |= AddLoot(*i, market);
+        added |= AddLoot(*i);
 
     return added;
 }
@@ -56,23 +54,23 @@ bool AddLootAction::isUseful() { return true; }
 
 bool AddAllLootAction::isUseful() { return true; }
 
-bool AddAllLootAction::AddLoot(ObjectGuid guid, std::optional<Market::View>& market)
+bool AddAllLootAction::AddLoot(ObjectGuid guid)
 {
     if (guid.IsGameObject() && sPlayerbotAIConfig.DisallowedGameObjects.contains(guid.GetEntry()))
         return false;
 
     // A gather node or a skinnable corpse passes the gather rules first (professions WR13c)
     float reach = 0.0f;
-    if (!GatherPassBy::Admit(botAI, guid, reach, market))
+    if (!GatherPassBy::Admit(botAI, guid, reach))
         return false;
     return AI_VALUE(LootObjectStack*, "available loot")->Add(guid, reach);
 }
 
-bool AddGatheringLootAction::AddLoot(ObjectGuid guid, std::optional<Market::View>& market)
+bool AddGatheringLootAction::AddLoot(ObjectGuid guid)
 {
     LootObject loot(bot, guid);
     if (loot.IsEmpty() || !loot.IsLootPossible(bot) || loot.skillId == SKILL_NONE)
         return false;
 
-    return AddAllLootAction::AddLoot(guid, market);
+    return AddAllLootAction::AddLoot(guid);
 }

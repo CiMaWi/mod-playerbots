@@ -245,8 +245,6 @@ struct SkillLevel
     std::uint16_t skill{0};
     std::uint32_t value{0};
     std::uint32_t max{0};
-
-    bool operator==(SkillLevel const&) const = default;
 };
 
 // Creatures of a level in a zone that a skinner meets
@@ -328,8 +326,6 @@ struct PathBot
     // a test's fixture (constraint anypath): every learnable recipe is a milestone and an open stretch is worth one
     // minute per point it climbs, so the fastest climb is taken whatever it brings
     bool anyStretch{false};
-
-    bool operator==(PathBot const&) const = default;  // every input of the bot, by value (the reuse, WPC14b)
 };
 
 // A tool the recipes ask for (WR.12, PLAN 3.4): the item, the totem category it covers (0: asked for as the item), and
@@ -341,101 +337,6 @@ struct ToolSource
     std::uint32_t copper{0};
 };
 
-// What a weigh read of the two published inputs, each call with its answer (professions WPC14b, DECISIONS WPC.14): a
-// kept path is reused while every call answers the same on the newest market and rate book (Reusable)
-struct Reads
-{
-    enum class Call : std::uint8_t
-    {
-        Empty,
-        Buy,       // the auction's unit price (Market::View::BuyCopperOf)
-        Proceeds,  // arg: the vendor's price
-        Sale       // arg: the vendor's price
-    };
-
-    struct Price
-    {
-        Call call{Call::Empty};
-        std::uint32_t item{0};
-        double arg{0.0};
-        double answer{0.0};
-    };
-
-    // The selftest's negative controls: one kind of call left out of the reads
-    enum class Skip : std::uint8_t
-    {
-        None,
-        Empty,
-        Buy,
-        Proceeds,
-        Sale,
-        Rates
-    };
-
-    std::vector<Price> market;
-    std::vector<GatherRate::Read> rates;
-    Skip skip{Skip::None};
-
-    [[nodiscard]] static double Answer(Market::View const& view, Call call, std::uint32_t item, double arg)
-    {
-        switch (call)
-        {
-            case Call::Empty:
-                return view.Empty() ? 1.0 : 0.0;
-            case Call::Buy:
-            {
-                AuctionIndex::ItemEntry const* entry = view.Empty() ? nullptr : view.snapshot->Find(item);
-                return entry ? entry->typical.unitPrice : 0.0;
-            }
-            case Call::Proceeds:
-                return view.ProceedsOf(item, static_cast<std::uint32_t>(arg));
-            default:
-                return view.SaleOf(item, arg);
-        }
-    }
-
-    double Ask(Market::View const& view, Call call, std::uint32_t item, double arg)
-    {
-        double const answer = Answer(view, call, item, arg);
-        if (static_cast<std::uint8_t>(skip) != static_cast<std::uint8_t>(call) + 1)
-            market.push_back({call, item, arg, answer});
-        return answer;
-    }
-
-    // Once the weigh is done: each call once (the same call answers the same within one weigh)
-    void Settle()
-    {
-        std::sort(market.begin(), market.end(), [](Price const& a, Price const& b)
-                  { return std::tie(a.call, a.item, a.arg) < std::tie(b.call, b.item, b.arg); });
-        market.erase(std::unique(market.begin(), market.end(), [](Price const& a, Price const& b)
-                                 { return a.call == b.call && a.item == b.item && a.arg == b.arg; }),
-                     market.end());
-        std::sort(rates.begin(), rates.end(), [](GatherRate::Read const& a, GatherRate::Read const& b)
-                  { return std::tie(a.zone, a.way, a.prior) < std::tie(b.zone, b.way, b.prior); });
-        rates.erase(std::unique(rates.begin(), rates.end(), [](GatherRate::Read const& a, GatherRate::Read const& b)
-                                { return a.zone == b.zone && a.way == b.way && a.prior == b.prior; }),
-                    rates.end());
-        market.shrink_to_fit();
-        rates.shrink_to_fit();
-    }
-
-    [[nodiscard]] bool SameMarket(Market::View const& view) const
-    {
-        return std::all_of(market.begin(), market.end(), [&view](Price const& read)
-                           { return Answer(view, read.call, read.item, read.arg) == read.answer; });
-    }
-
-    [[nodiscard]] bool SameRates(GatherRate::View const& view) const
-    {
-        return std::all_of(rates.begin(), rates.end(),
-                           [&view](GatherRate::Read const& read)
-                           {
-                               GatherRate::Estimate const answer = view.Answer(read.zone, read.way, read.prior);
-                               return answer.minutes == read.answer.minutes && answer.observed == read.answer.observed;
-                           });
-    }
-};
-
 struct PathWorld
 {
     Recipes::RecipeIndex const& index;
@@ -445,60 +346,9 @@ struct PathWorld
     std::vector<Water> waters;
     Fault fault{Fault::None};
     std::vector<ToolSource> tools;  // empty: a missing tool has no source
-    // The typical prices (auction house WA7a); empty: only vendors buy and sell. Read only through the calls below,
-    // so that a kept path's reads hold every price its weigh asked for (WPC14b)
-    Market::View market;
-    GatherRate::View gatherRates;  // minutes per take as bots get them (WPC13b); empty: the static rule
-    Reads* reads{nullptr};         // what the weigh reads of both is added here (Record); null: none kept
-
-    // Every read of the market and the rate book from now on is added to into
-    void Record(Reads* into)
-    {
-        reads = into;
-        gatherRates.reads = into && into->skip != Reads::Skip::Rates ? &into->rates : nullptr;
-    }
-
-    [[nodiscard]] double Ask(Reads::Call call, std::uint32_t item, double arg) const
-    {
-        return reads ? reads->Ask(market, call, item, arg) : Reads::Answer(market, call, item, arg);
-    }
-
-    [[nodiscard]] bool MarketEmpty() const { return Ask(Reads::Call::Empty, 0, 0.0) != 0.0; }
-
-    // Market::View::ProceedsOf and SaleOf, read
-    [[nodiscard]] double Proceeds(std::uint32_t item, std::uint32_t sellPrice) const
-    {
-        return Ask(Reads::Call::Proceeds, item, sellPrice);
-    }
-
-    [[nodiscard]] double Sale(std::uint32_t item, double vendorCopper) const
-    {
-        return Ask(Reads::Call::Sale, item, vendorCopper);
-    }
-
-    // Market::View::BuyCopperOf, read; valid while the world is
-    [[nodiscard]] std::function<std::uint32_t(std::uint32_t)> BuyCopper() const
-    {
-        if (MarketEmpty())
-            return {};
-        return [this](std::uint32_t item) { return static_cast<std::uint32_t>(Ask(Reads::Call::Buy, item, 0.0)); };
-    }
+    Market::View market;            // the typical prices (auction house WA7a); empty: only vendors buy and sell
+    GatherRate::View gatherRates;   // minutes per take as bots get them (WPC13b); empty: the static rule
 };
-
-// What a path was weighed from (WPC14b): its bot and the world's reads. The weigh is a pure function of the bot, the
-// world's static parts and the answers its calls got, so a weigh of an equal bot whose calls answer the same on the
-// newest market and rate book gives the same path
-struct Basis
-{
-    PathBot bot;
-    Reads reads;
-};
-
-inline bool Reusable(Basis const& kept, PathBot const& bot, Market::View const& market,
-                     GatherRate::View const& gatherRates)
-{
-    return kept.bot == bot && kept.reads.SameMarket(market) && kept.reads.SameRates(gatherRates);
-}
 
 // A missing tool an option gets before its cast, in full: bought (maker 0) or made by a recipe of the profession,
 // learned first when learn is set
@@ -648,7 +498,7 @@ public:
         materials.reach.assign(_zones.begin(), _zones.end());  // a std::set: sorted
         materials.level = _bot.level;
         materials.side = _bot.side;
-        materials.auctionCopper = _world.BuyCopper();
+        materials.auctionCopper = _world.market.BuyCopperOf();
         materials.gatherRates = _world.gatherRates;
         return materials;
     }
@@ -1024,7 +874,7 @@ public:
         path.materials = std::move(materials);
         path.useWorth = claims.useWorth;
         path.foodUnits = claims.foodUnits;
-        if (_world.fault == Fault::SaleFirst || _world.MarketEmpty())
+        if (_world.fault == Fault::SaleFirst || _world.market.Empty())
             return;
         std::map<std::uint32_t, std::uint32_t> spare;
         for (auto const& [item, held] : _held)
@@ -1401,7 +1251,7 @@ public:
     [[nodiscard]] std::vector<Craft> SaleCrafts(Path const& path, std::map<std::uint32_t, std::uint32_t>& spare) const
     {
         std::vector<Craft> crafts;
-        if (_world.MarketEmpty())
+        if (_world.market.Empty())
             return crafts;
         std::set<std::uint32_t> kept;  // products the bot keeps
         for (Material const& material : path.materials)
@@ -1445,7 +1295,7 @@ public:
                     continue;
                 double const vendor = _world.sellCopper ? _world.sellCopper(recipe.product) : 0.0;
                 double const proceeds =
-                    _world.Proceeds(recipe.product, static_cast<std::uint32_t>(std::max(vendor, 0.0))) *
+                    _world.market.ProceedsOf(recipe.product, static_cast<std::uint32_t>(std::max(vendor, 0.0))) *
                     std::max<std::uint32_t>(recipe.productCount, 1);
                 if (!(proceeds > 0.0))
                     continue;
@@ -1532,9 +1382,11 @@ private:
     [[nodiscard]] double Sell(std::uint32_t item) const
     {
         double const vendor = _world.sellCopper ? _world.sellCopper(item) : 0.0;
+        if (_world.market.Empty())
+            return vendor;
         auto const [at, added] = _sold.try_emplace(item, vendor);
         if (added)
-            at->second = _world.Sale(item, vendor);  // the vendor's alone without a market
+            at->second = _world.market.SaleOf(item, vendor);
         return at->second;
     }
 

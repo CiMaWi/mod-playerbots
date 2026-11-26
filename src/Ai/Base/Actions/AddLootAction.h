@@ -7,17 +7,10 @@
 #ifndef PLAYERBOTS_ADDLOOTACTION_H
 #define PLAYERBOTS_ADDLOOTACTION_H
 
-#include <optional>
-
 #include "Action.h"
 
 class ObjectGuid;
 class PlayerbotAI;
-
-namespace Market
-{
-struct View;
-}
 
 class AddLootAction : public Action
 {
@@ -35,8 +28,7 @@ public:
     bool isUseful() override;
 
 protected:
-    // market: the scan's one market view, taken at the first target priced (GatherPassBy::Admit)
-    virtual bool AddLoot(ObjectGuid guid, std::optional<Market::View>& market);
+    virtual bool AddLoot(ObjectGuid guid);
 };
 
 class AddGatheringLootAction : public AddAllLootAction
@@ -45,7 +37,7 @@ public:
     AddGatheringLootAction(PlayerbotAI* botAI) : AddAllLootAction(botAI, "add gathering loot") {}
 
 protected:
-    bool AddLoot(ObjectGuid guid, std::optional<Market::View>& market) override;
+    bool AddLoot(ObjectGuid guid) override;
 };
 
 #endif

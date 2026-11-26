@@ -156,8 +156,6 @@ struct PlaceRisk
     float eliteShare{0.0f};
     float deathsPerHour{0.0f};
     float enemyShare{0.0f};
-
-    bool operator==(PlaceRisk const&) const = default;
 };
 
 // The planner's own measures for this bot (GoalModel.h Need and ReferenceRate), in value units
@@ -169,8 +167,6 @@ struct Rates
     float cautionWeight{1.0f};
     std::uint8_t groupSize{1};
     float runSpeed{Planner::Circuit::DEFAULT_RUN_SPEED};  // yards per second
-
-    bool operator==(Rates const&) const = default;
 };
 
 struct Bot

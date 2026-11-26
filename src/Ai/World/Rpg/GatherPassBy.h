@@ -8,16 +8,10 @@
 #define _PLAYERBOT_GATHERPASSBY_H
 
 #include <cstdint>
-#include <optional>
 
 #include "ObjectGuid.h"
 
 class PlayerbotAI;
-
-namespace Market
-{
-struct View;
-}
 
 // Passing by (professions plan WR13c, DECISIONS WR.14): the gather rules (GatherRules.h JudgeNode, JudgeHide) in front
 // of the loot stack, for a persistent bot whose newest plan brought gather rates (in every status, a trip's too);
@@ -25,9 +19,8 @@ struct View;
 namespace GatherPassBy
 {
 // AddAllLootAction::AddLoot, on the bot's map thread: false when the target stays off the loot stack; reach: the
-// yards it may be fetched from beyond the loot distance (0: none); market: the scan's one view, taken here at the
-// first target priced (professions WPC14b)
-bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach, std::optional<Market::View>& market);
+// yards it may be fetched from beyond the loot distance (0: none)
+bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach);
 
 // OpenLootAction::RequestLoot, at a harvest or a skin cast: the take row of a target the gate let through
 void NoteTake(PlayerbotAI* botAI, ObjectGuid guid, bool skin);

@@ -67,8 +67,6 @@ struct ItemCount
 {
     std::uint32_t item{0};
     std::uint32_t count{0};
-
-    bool operator==(ItemCount const&) const = default;
 };
 
 struct Yield

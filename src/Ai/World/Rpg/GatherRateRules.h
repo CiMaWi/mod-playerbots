@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
-#include <vector>
 
 #include "GatherRateTypes.h"
 
@@ -111,31 +110,12 @@ struct Snapshot
     }
 };
 
-// One estimate a reader asked for and its answer (the skill path's reuse, professions WPC14b)
-struct Read
-{
-    std::uint32_t zone{0};
-    Way way{Way::None};
-    double prior{0.0};
-    Estimate answer;
-};
-
 // What the planner reads: one published snapshot; null is the static rule
 struct View
 {
     std::shared_ptr<Snapshot const> snapshot;
-    std::vector<Read>* reads{nullptr};  // every estimate asked is added here; null: none kept
 
     [[nodiscard]] Estimate Of(std::uint32_t zone, Way way, double prior) const
-    {
-        Estimate const answer = Answer(zone, way, prior);
-        if (reads)
-            reads->push_back({zone, way, prior, answer});
-        return answer;
-    }
-
-    // The estimate, not added to the reads
-    [[nodiscard]] Estimate Answer(std::uint32_t zone, Way way, double prior) const
     {
         if (!snapshot || way == Way::None || !zone)
             return {prior, false};

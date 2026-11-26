@@ -1219,11 +1219,11 @@ std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
 
 Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
                      Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates,
-                     SkillPath::PathInputs pathInputs, std::shared_ptr<PathRecord const> lastPath)
+                     SkillPath::PathInputs pathInputs)
 {
     CircuitData data = CircuitDataNow();
     return [data = std::move(data), route = RouteCostInputsNow(), protectedQuests, progress, situation, rates,
-            pathInputs = std::move(pathInputs), lastPath = std::move(lastPath), pathData = PathDataNow(),
+            pathInputs = std::move(pathInputs), pathData = PathDataNow(),
             upkeep = CurrentUpkeepIndex()](Snapshot const& snapshot) -> std::optional<Payload>
     {
         // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
@@ -1234,7 +1234,6 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
         std::shared_ptr<Goals::GoalPlan const> plan;
         std::shared_ptr<SkillPath::Path const> path;
         std::shared_ptr<Materials::Rates const> gatherRates;
-        std::shared_ptr<PathRecord const> pathRecord;
         try
         {
             // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10); the
@@ -1249,9 +1248,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
             if (upkeep)
             {
                 UpkeepNeeds::NeedList needs;
-                // The bot's kept path while nothing it was computed from changed (WPC14b)
-                pathRecord = lastPath;
-                path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs, &pathRecord);
+                path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs);
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(needs));
                 // The gather circuit at the path's prices (professions WR13b), against the zone's other gatherers
                 uint32 competing = 0;
@@ -1287,7 +1284,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
                     .count(),
                 0)));
-        return Payload{GoalsAnswer{std::move(plan), std::move(path), std::move(gatherRates), std::move(pathRecord)}};
+        return Payload{GoalsAnswer{std::move(plan), std::move(path), std::move(gatherRates)}};
     };
 }
 }  // namespace Planner

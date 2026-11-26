@@ -229,14 +229,14 @@ inline bool HoldsSkill(Snapshot const& snapshot, ProfessionRules::Skill skill)
 // ProceedsOf). False without a market: only vendors buy, and the second gatherer's hold of WR11 stands
 inline bool MarketPays(SkillPath::PathWorld const& world, ProfessionRules::Skill gatherer)
 {
-    if (world.MarketEmpty())
+    if (world.market.Empty())
         return false;
     if (world.fault == SkillPath::Fault::AnyMarket)
         return true;
     auto const pays = [&world](std::uint32_t item)
     {
         double const vendor = world.sellCopper ? world.sellCopper(item) : 0.0;
-        return world.Proceeds(item, static_cast<std::uint32_t>(std::max(vendor, 0.0))) > 0.0;
+        return world.market.ProceedsOf(item, static_cast<std::uint32_t>(std::max(vendor, 0.0))) > 0.0;
     };
     std::uint16_t const skill = static_cast<std::uint16_t>(gatherer);
     if (gatherer == ProfessionRules::Skill::Skinning)
@@ -318,57 +318,36 @@ inline bool ShortOfGold(Snapshot const& snapshot, UpkeepNeeds::NeedList const& b
 }
 
 // The worker's order (WR11): the needs without the path, the path and the second choice from them, the needs with the
-// path's recipes and ranks and the second choice (the reserve and the shortfall see them). First part: the needs
-// without the path and the path's bot from them; the second choice reads the shortfall too
-struct Base
-{
-    UpkeepNeeds::NeedList needs;
-    bool shortOfGold{false};
-    SkillPath::PathBot bot;
-};
-
-inline Base BaseOf(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep, UpkeepNeeds::NeedRates const& rates,
-                   SkillPath::PathInputs const& inputs, std::vector<ZoneBracket> const& zones,
-                   std::vector<std::uint32_t> const& categories)
-{
-    Base base;
-    base.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithoutPath(rates));
-    base.shortOfGold = ShortOfGold(snapshot, base.needs);
-    base.bot = BotOf(snapshot, inputs, base.needs, zones, categories);
-    return base;
-}
-
-// The last part, for a path computed now or kept (WPC14b): the needs with its recipes and ranks
-inline UpkeepNeeds::NeedList NeedsWith(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep,
-                                       UpkeepNeeds::NeedRates const& rates, SkillPath::Path const& path)
-{
-    return UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithPath(WithoutPath(rates), path));
-}
-
-// The path and its second choice weighed from the first part (professions WPC14a's rows: the parts' microseconds)
+// path's recipes and ranks and the second choice (the reserve and the shortfall see them)
 struct Computed
 {
+    UpkeepNeeds::NeedList needs;
     SkillPath::Path path;
+    // The parts' microseconds, for their PerfMonitor rows: both needs lists, and the weigh with the second choice
+    std::uint64_t needsMicros{0};
     std::uint64_t weighMicros{0};
-    std::uint64_t secondMicros{0};
 };
 
-inline Computed Compute(Snapshot const& snapshot, UpkeepNeeds::NeedRates const& rates, Base const& base,
-                        SkillPath::PathWorld const& world)
+inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep,
+                        UpkeepNeeds::NeedRates const& rates, SkillPath::PathInputs const& inputs,
+                        SkillPath::PathWorld const& world, std::vector<ZoneBracket> const& zones,
+                        std::vector<std::uint32_t> const& categories)
 {
     using Clock = std::chrono::steady_clock;
     auto const micros = [](Clock::time_point from, Clock::time_point to)
-    {
-        return static_cast<std::uint64_t>(
-            std::max<long long>(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count(), 0));
-    };
+    { return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count()); };
+    UpkeepNeeds::NeedRates const base = WithoutPath(rates);
     Computed computed;
     Clock::time_point const started = Clock::now();
-    computed.path = SkillPath::Weigh(base.bot, world);
+    computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, base);
+    Clock::time_point const needed = Clock::now();
+    SkillPath::PathBot const bot = BotOf(snapshot, inputs, computed.needs, zones, categories);
+    computed.path = SkillPath::Weigh(bot, world);
+    computed.path.second = SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world);
     Clock::time_point const weighed = Clock::now();
-    computed.path.second = SecondOf(snapshot, base.bot, base.shortOfGold, rates.gathererLevel, world);
-    computed.weighMicros = micros(started, weighed);
-    computed.secondMicros = micros(weighed, Clock::now());
+    computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithPath(base, computed.path));
+    computed.needsMicros = micros(started, needed) + micros(weighed, Clock::now());
+    computed.weighMicros = micros(needed, weighed);
     return computed;
 }
 

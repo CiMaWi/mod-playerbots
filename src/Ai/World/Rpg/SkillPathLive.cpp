@@ -7,11 +7,7 @@
 #include "SkillPathLive.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <string>
-#include <string_view>
-#include <utility>
 #include <vector>
 
 #include "AuctionIndex.h"
@@ -44,18 +40,6 @@
 
 namespace Planner
 {
-struct PathRecord
-{
-    std::shared_ptr<SkillPath::Path const> path;
-    SkillPath::Basis basis;  // the path bot by value, and what the market's and rate book's calls answered
-    // what the second choice reads besides: the person's main professions, the shortfall, the gatherer's level
-    std::array<std::uint16_t, 2> mains{};
-    bool shortOfGold{false};
-    std::uint32_t gathererLevel{0};
-    std::weak_ptr<Recipes::RecipeIndex const> recipes;
-    std::uint32_t computedMs{0};  // getMSTime of the computation: the reuse's age
-};
-
 namespace
 {
 constexpr std::uint8_t TEAM_ALLIANCE_SNAPSHOT = 0;  // Snapshot::team
@@ -190,58 +174,16 @@ constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps
 
 uint64 MicrosSince(std::chrono::steady_clock::time_point started)
 {
-    return static_cast<uint64>(std::max<long long>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(), 0));
+    return static_cast<uint64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
 }
 
-void CountRow(std::string_view name, uint64 value)
+void RecordMicros(char const* name, uint64 micros)
 {
     if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, name))
-        row->Record(value);
-}
-
-// A kept path is computed again after this, though nothing it read changed (professions WPC14b)
-constexpr uint32 PATH_REUSE_MS = 10 * MINUTE * IN_MILLISECONDS;
-
-template <class T>
-bool SameObject(std::weak_ptr<T> const& a, std::shared_ptr<T> const& b)
-{
-    return !a.owner_before(b) && !b.owner_before(a);
-}
-
-std::array<std::uint16_t, 2> MainsOf(Snapshot const& snapshot)
-{
-    return {static_cast<std::uint16_t>(snapshot.person->Mains[0]),
-            static_cast<std::uint16_t>(snapshot.person->Mains[1])};
-}
-
-// Why the bot's kept path is not reused (DECISIONS WPC.14: nothing it read changed; SkillPath::Reusable), or null
-char const* RefusalOf(PathRecord const& last, SkillPathBridge::Base const& base, Snapshot const& snapshot,
-                      std::uint32_t gathererLevel, PathData const& data, Market::View const& market)
-{
-    if (getMSTimeDiff(last.computedMs, getMSTime()) >= PATH_REUSE_MS)
-        return "age";
-    if (!SameObject(last.recipes, data.recipes))
-        return "recipe index";
-    if (last.mains != MainsOf(snapshot) || last.shortOfGold != base.shortOfGold || last.gathererLevel != gathererLevel)
-        return "second choice";
-    if (SkillPath::Reusable(last.basis, base.bot, market, data.gatherRates))
-        return nullptr;
-    if (!(last.basis.bot == base.bot))
-        return "bot";
-    bool const marketSame = last.basis.reads.SameMarket(market);
-    bool const ratesSame = last.basis.reads.SameRates(data.gatherRates);
-    return !marketSame && !ratesSame ? "market and gather rates" : !marketSame ? "market" : "gather rates";
+        row->Record(micros);
 }
 }  // namespace
-
-Market::View CountedMarketView(char const* row)
-{
-    auto const started = std::chrono::steady_clock::now();
-    Market::View market = MarketView();
-    CountRow(row, MicrosSince(started));
-    return market;
-}
 
 Market::View MarketView()
 {
@@ -359,52 +301,20 @@ SkillPath::Path const* KeptPath(PlayerbotAI* botAI)
 std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, UpkeepIndex const& upkeep,
                                                      UpkeepNeeds::NeedRates const& rates,
                                                      SkillPath::PathInputs const& inputs, PathData const& data,
-                                                     UpkeepNeeds::NeedList& needs,
-                                                     std::shared_ptr<PathRecord const>* record)
+                                                     UpkeepNeeds::NeedList& needs)
 {
-    std::shared_ptr<PathRecord const> const last = record ? std::exchange(*record, nullptr) : nullptr;
     if (!data.recipes || !snapshot.person)
     {
         needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, SkillPathBridge::WithoutPath(rates));
         return nullptr;
     }
     auto const started = std::chrono::steady_clock::now();
-    SkillPathBridge::Base base =
-        SkillPathBridge::BaseOf(snapshot, upkeep, rates, inputs, BracketsOf(data.indexes.get(), snapshot.team),
-                                CategoriesOf(snapshot.toolsHeld));
-    uint64 const baseMicros = MicrosSince(started);
-    Market::View market = MarketView();
-    // WPC14b: the kept path while nothing it read changed; its needs are this job's
-    if (record)
-    {
-        char const* refusal = last ? RefusalOf(*last, base, snapshot, rates.gathererLevel, data, market) : "first";
-        if (!refusal)
-        {
-            needs = SkillPathBridge::NeedsWith(snapshot, upkeep, rates, *last->path);
-            *record = last;
-            CountRow("profession path reused", MicrosSince(started));
-            return last->path;
-        }
-        CountRow(std::string("profession path computed because: ") + refusal, 0);
-    }
-
-    PathRecord made;
-    SkillPath::PathWorld world{*data.recipes,
-                               [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
-                               SellCopper,
-                               {},
-                               {},
-                               SkillPath::Fault::None,
-                               ToolSources(),
-                               std::move(market),
-                               data.gatherRates};
-    if (record)
-        world.Record(&made.basis.reads);
     // The creatures a skinner meets (WR20a), from the drop rows; read only for skinning: a skinner's stretches, or the
     // second gatherer a bot short of gold may take where the market buys skins (SkillPathBridge::MarketPays)
-    auto const skinsStarted = std::chrono::steady_clock::now();
+    Market::View market = MarketView();
+    std::vector<SkillPath::Skinnable> skinnables;
     bool const skins =
-        !world.MarketEmpty() ||
+        !market.Empty() ||
         std::any_of(
             snapshot.skills.begin(), snapshot.skills.end(), [](Planner::Skill const& skill)
             { return skill.value > 0 && skill.id == static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning); });
@@ -413,40 +323,31 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         Materials::Bot killer;
         killer.level = snapshot.level;
         killer.side = Materials::SideBit(snapshot.team);
-        world.skinnables = SkillPath::SkinnablesOf(
-            *data.recipes, killer, [&world](std::uint32_t item) { return world.Sale(item, SellCopper(item)); });
+        skinnables = SkillPath::SkinnablesOf(
+            *data.recipes, killer, [&market](std::uint32_t item) { return market.SaleOf(item, SellCopper(item)); });
     }
-    uint64 const skinnablesMicros = MicrosSince(skinsStarted);
-    SkillPathBridge::Computed computed = SkillPathBridge::Compute(snapshot, rates, base, world);
-    auto const neededWith = std::chrono::steady_clock::now();
-    needs = SkillPathBridge::NeedsWith(snapshot, upkeep, rates, computed.path);
-    uint64 const needsMicros = baseMicros + MicrosSince(neededWith);
+    uint64 const skinnablesMicros = MicrosSince(started);
+    SkillPath::PathWorld const world{*data.recipes,
+                                     [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
+                                     SellCopper,
+                                     std::move(skinnables),
+                                     {},
+                                     SkillPath::Fault::None,
+                                     ToolSources(),
+                                     std::move(market),
+                                     data.gatherRates};
+    SkillPathBridge::Computed computed =
+        SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
+                                 CategoriesOf(snapshot.toolsHeld));
+    needs = std::move(computed.needs);
     auto path = std::make_shared<SkillPath::Path const>(std::move(computed.path));
-    if (record)
-    {
-        made.basis.reads.Settle();
-        CountRow("profession path reads: market", made.basis.reads.market.size());
-        CountRow("profession path reads: gather rates", made.basis.reads.rates.size());
-        made.path = path;
-        made.basis.bot = std::move(base.bot);
-        made.mains = MainsOf(snapshot);
-        made.shortOfGold = base.shortOfGold;
-        made.gathererLevel = rates.gathererLevel;
-        made.recipes = data.recipes;
-        made.computedMs = getMSTime();
-        *record = std::make_shared<PathRecord const>(std::move(made));
-    }
-    CountRow("profession path computed", MicrosSince(started));
-    // WPC14a: the parts (the skinnables, both needs lists, the weigh, the second choice's weigh)
-    CountRow("profession path computed: skinnables", skinnablesMicros);
-    CountRow("profession path computed: needs", needsMicros);
-    CountRow("profession path computed: weigh", computed.weighMicros);
-    if (path->second.craft)
-        CountRow("profession path computed: second weigh", computed.secondMicros);
+    RecordMicros("profession path computed", MicrosSince(started));
+    // Its parts: the skinnables with the market view, both needs lists, the weigh with the second choice
+    RecordMicros("profession path computed: skinnables", skinnablesMicros);
+    RecordMicros("profession path computed: needs", computed.needsMicros);
+    RecordMicros("profession path computed: weigh", computed.weighMicros);
     return path;
 }
-
-bool RecordsPath(PathRecord const& record, SkillPath::Path const* path) { return record.path.get() == path; }
 
 void AddKeptPath(PlayerbotAI* botAI, UpkeepNeeds::NeedRates& rates)
 {

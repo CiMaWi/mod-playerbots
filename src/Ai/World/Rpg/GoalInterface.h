@@ -35,11 +35,6 @@
 // A goal has a source: the planner's own, or an external one (the bridge, WT18). An external goal outranks
 // the planner's until it is done or cancelled. The planner leads every bot that keeps its possessions and whose
 // planner no test holds (Owns; questing WQ.39); any other bot keeps upstream's pick, accept and drop.
-namespace Planner
-{
-struct PathRecord;  // SkillPathLive.h
-}
-
 namespace Planner::GoalApply
 {
 constexpr std::uint32_t PLAN_WAIT_MS = 10000;    // an idle planner bot waits this long for a late plan, then falls back
@@ -812,8 +807,7 @@ struct BotGoals
     QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
-    std::uint32_t pathMs{0};                       // its snapshot's time
-    std::shared_ptr<PathRecord const> pathRecord;  // what the path was computed from (WPC14b): the next job's reuse
+    std::uint32_t pathMs{0};  // its snapshot's time
     // The newest plan's gather rates (professions WR13c), null: none yet, so nothing is gated; and the nodes and
     // hides the pass-by gate judged in the running status (GatherPassBy.h)
     std::shared_ptr<Materials::Rates const> gatherRates;
