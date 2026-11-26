@@ -116,6 +116,7 @@ struct AuctionVisitData
     uint32 awaitingEntry{0};
     uint32 ask{0};  // its buyout, copper
     uint32 floor{0};
+    uint32 listingsBefore{0};   // the add hook's count of the bot's listings when it was queued (AuctionMemory::Taken)
     uint32 moneyBefore{0};      // the bot's copper when it was queued
     bool relist{false};         // listed again after an expiry
     std::vector<uint32> tried;  // item low guids listed, held or refused on this visit

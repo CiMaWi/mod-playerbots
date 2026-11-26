@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <random>
 #include <set>
 #include <string>
@@ -25,7 +26,8 @@
 // Every state is crossed with every event, then seeded random sequences look for a counterexample to the invariant; the
 // wirings before WB7c, WBL2 and WR7 must yield one. The kinds the visit driver runs (Visit.h, consolidation CS28) share
 // its one state; the wiring of separate states ends every sequence as the one state does, and the one stepper (one
-// action and trigger, consolidation CS28f) as a stepper per kind does.
+// action and trigger, consolidation CS28f) as a stepper per kind does. The auction visit's renewed limit (auction
+// house AH4) has its own check, which drives the watch and the renewal through whole visits.
 namespace BankMail
 {
 namespace VisitLifecycleDetail
@@ -627,6 +629,100 @@ inline void CheckEveryStateAndEvent(Checker& checker)
                  std::to_string(EVENT_COUNT) + " events = " + std::to_string(cases) + " cases");
 }
 
+constexpr uint32_t AUCTION_LIMIT_MS = 6000;  // the auction visit's first limit, and one step's time
+constexpr uint32_t AUCTION_ANSWER_MS = 2000;
+constexpr uint32_t AUCTION_WALK_MS = 3000;
+constexpr uint32_t AUCTION_STEPS = 60;
+constexpr uint32_t AUCTION_NEVER = UINT32_MAX;
+
+struct AuctionRun
+{
+    std::optional<VisitEnd> end;
+    uint32_t endMs = 0;
+    uint32_t queuedMs = 0;  // when the step last queued went out
+};
+
+// One auction visit in AI updates: the watch first (PlayerbotAI::UpdateAI), then the step. The bot comes into reach at
+// reachMs (AUCTION_NEVER: never) and queues its first step there; the core answers `answered` steps, each
+// AUCTION_ANSWER_MS after it went out, and the next one never. A visit with AUCTION_STEPS answered is done. Without
+// renewal the one limit covers the whole visit, the rule before AH4
+inline AuctionRun DriveAuction(uint32_t reachMs, uint32_t answered, bool renews, bool combat = false)
+{
+    AuctionRun run;
+    uint32_t limitMs = AUCTION_LIMIT_MS;
+    uint32_t done = 0;
+    bool reached = false;
+    for (uint32_t now = UPDATE_MS; !run.end; now += UPDATE_MS)
+    {
+        run.endMs = now;
+        run.end = WatchVisit(VisitWatchIn{true, combat, true, now, limitMs, reached});
+        if (run.end || now < reachMs)
+            continue;
+        if (!reached)
+        {
+            reached = true;
+            run.queuedMs = now;
+        }
+        else if (done < answered && now - run.queuedMs >= AUCTION_ANSWER_MS)
+        {
+            if (renews)
+                limitMs = RenewedLimitMs(now, AUCTION_LIMIT_MS);
+            if (++done == AUCTION_STEPS)
+                run.end = VisitEnd::Done;
+            else
+                run.queuedMs = now;
+        }
+    }
+    return run;
+}
+
+// The auction visit's limit (AH.9): it covers the walk and every answered step renews it; a step never answered ends
+// the visit `timeout`; a visit that never came into reach ends `unreached`
+inline void CheckRenewal(Checker& checker)
+{
+    uint32_t started = 0;
+    std::array<uint32_t, VISIT_END_COUNT> ends{};
+    auto const drive = [&](uint32_t reachMs, uint32_t answered, bool renews, bool combat)
+    {
+        ++started;
+        AuctionRun const run = DriveAuction(reachMs, answered, renews, combat);
+        ++ends[static_cast<size_t>(*run.end)];
+        return run;
+    };
+    auto const word = [](AuctionRun const& run)
+    { return std::string(VisitEndWord(VisitKind::Auction, *run.end)) + " at " + std::to_string(run.endMs) + " ms"; };
+
+    AuctionRun const longVisit = drive(AUCTION_WALK_MS, AUCTION_STEPS, true, false);
+    checker.Check(*longVisit.end == VisitEnd::Done && longVisit.endMs > AUCTION_LIMIT_MS,
+                  "a visit of 60 answered steps ends done: " + word(longVisit));
+    AuctionRun const unrenewed = drive(AUCTION_WALK_MS, AUCTION_STEPS, false, false);
+    checker.Check(*unrenewed.end == VisitEnd::Timeout && unrenewed.endMs == AUCTION_LIMIT_MS,
+                  "negative control, no renewal: the 60-step visit times out: " + word(unrenewed));
+    for (uint32_t answered : {0u, 1u, AUCTION_STEPS / 2})
+    {
+        AuctionRun const silent = drive(AUCTION_WALK_MS, answered, true, false);
+        checker.Check(*silent.end == VisitEnd::Timeout && silent.endMs - silent.queuedMs <= AUCTION_LIMIT_MS,
+                      "step " + std::to_string(answered + 1) + " never answered, sent at " +
+                          std::to_string(silent.queuedMs) + " ms: timeout within one step's limit: " + word(silent));
+    }
+    AuctionRun const never = drive(AUCTION_NEVER, 0, true, false);
+    checker.Check(*never.end == VisitEnd::Unreached && never.endMs == AUCTION_LIMIT_MS,
+                  "never in reach: unreached at the first limit: " + word(never));
+    AuctionRun const fighting = drive(AUCTION_NEVER, 0, true, true);
+    checker.Check(*fighting.end == VisitEnd::Combat,
+                  "never in reach, in combat at the limit: combat: " + word(fighting));
+
+    uint32_t ended = 0;
+    for (uint32_t count : ends)
+        ended += count;
+    auto const count = [&ends](VisitEnd end) { return std::to_string(ends[static_cast<size_t>(end)]); };
+    std::string const sum = "auction visits: started " + std::to_string(started) + ", done " + count(VisitEnd::Done) +
+                            ", timeout " + count(VisitEnd::Timeout) + ", unreached " + count(VisitEnd::Unreached) +
+                            ", combat " + count(VisitEnd::Combat);
+    checker.Note(sum);
+    checker.Check(started == ended, "started = the sum of the ends: " + sum);
+}
+
 // The end each interruption writes, and one visit at a time
 inline void CheckWords(Checker& checker)
 {
@@ -679,7 +775,7 @@ inline void CheckWords(Checker& checker)
     // NE5: a failed approach ends unreached, a spot without its NPC or box still ends no_banker / no_mailbox
     bool unreachedOk = IsInterruption(VisitEnd::Unreached) == false && EquipsAfter(VisitEnd::Unreached) &&
                        VisitEnd::Unreached < VisitEnd::Combat && ApproachFailedEnd() == VisitEnd::Unreached;
-    for (VisitKind kind : {VisitKind::Mail, VisitKind::Bank, VisitKind::Craft})
+    for (VisitKind kind : {VisitKind::Mail, VisitKind::Bank, VisitKind::Craft, VisitKind::Auction})
     {
         std::set<std::string> words;
         for (size_t end = 0; end < static_cast<size_t>(VisitEnd::Count); ++end)
@@ -877,6 +973,7 @@ inline VisitLifecycleDetail::Result RunVisitLifecycleSelftest(std::vector<std::s
     Result result;
     Checker checker(lines, result);
     CheckWords(checker);
+    CheckRenewal(checker);
     CheckEveryStateAndEvent(checker);
     CheckSearch(checker);
     CheckOneState(checker);

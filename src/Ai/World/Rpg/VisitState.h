@@ -35,7 +35,7 @@ struct VisitState
     ObjectGuid object;    // found once the bot stands near the spawn; resolved at each use
     bool inPlace{false};  // no object: the kind acts where the bot stands (a craft without a spell focus)
     uint32 startedMs{0};
-    uint32 limitMs{0};  // the visit's whole time, the walk included
+    uint32 limitMs{0};  // from startedMs, the walk included; the auction visit renews it (RenewedLimitMs)
 };
 
 // A visit of the kind runs in the one state

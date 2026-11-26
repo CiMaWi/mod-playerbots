@@ -507,9 +507,12 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::TaxiWalk(WorldPosition const& to, 
     return Away(to, reach).value_or(true) ? TaxiStart::Moving : TaxiStart::Stalled;
 }
 
-std::optional<bool> NewRpgBaseAction::Away(WorldPosition const& place, float reach)
+std::optional<bool> NewRpgBaseAction::Away(WorldPosition const& place, float reach, ::GoTo::Answer* answer)
 {
-    if (GoTo(place, reach) == ::GoTo::Answer::There)
+    ::GoTo::Answer const walked = GoTo(place, reach);
+    if (answer)
+        *answer = walked;
+    if (walked == ::GoTo::Answer::There)
         return std::nullopt;
     return goTo->spent;
 }
