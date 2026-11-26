@@ -314,7 +314,8 @@ void TestAuctionWalk()
     Check(LoadConfigFamily(AuctionFamily, config, empty, warn) == 0 && warnings.empty(), "Auction: no key, no warning");
     Check(config.PublishSeconds == 60 && config.SaveSeconds == 300 && config.HistoryDays == 7 &&
               config.OpenBidsMax == 3 && config.UndercutPercent == 3 && config.RelistStepPercent == 10 &&
-              config.RelistLimit == 3 && config.FirstDurationHours == 24 && config.RelistDurationHours == 48,
+              config.RelistLimit == 3 && config.FirstDurationHours == 24 && config.RelistDurationHours == 48 &&
+              config.ChanceEvenHours == 24 && config.ChanceKindPriorHours == 48 && config.ChanceItemPriorHours == 48,
           "Auction: the walk resets to the initializers");
 
     FakeReader probe;
@@ -322,8 +323,10 @@ void TestAuctionWalk()
     Check(LoadConfigFamily(AuctionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.OpenBidsMax == 5 && config.FirstDurationHours == 48,
           "Auction: a value in range kept, one above its bound clamped with a warning");
-    Check(AuctionFamily.Rows.size() == 9, "Auction: nine rows");
+    Check(AuctionFamily.Rows.size() == 13, "Auction: thirteen rows");
     Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Chance) == "chance" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Factor) == "factor" &&
               AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
           "Auction: the decision words");
 }

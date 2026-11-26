@@ -416,6 +416,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     snapshot.Money = bot->GetMoney();
     snapshot.Rates = WorldTravel::CurrentRates(measure, band);
     snapshot.BagHorizonHours = band.BagHorizonHours;
+    snapshot.Weight = Planner::CopperWeightOf(botAI);
     snapshot.FreeSlots = freeSlots;
     snapshot.SellableSlots = sellableSlots;
     snapshot.MinutesToNextStop = static_cast<float>(config.ErrandNextStopMinutes);

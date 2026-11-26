@@ -29,7 +29,9 @@
 #include "AuctionIndexRules.h"
 #include "AuctionMemory.h"
 #include "AuctionPricing.h"
+#include "GoalModel.h"
 #include "ItemWorthRules.h"
+#include "PlannerSnapshot.h"
 
 // The auction market simulation (auction house round 2 AH2, PLAN 3.2, AH.3): model bots trade through the real pure
 // headers in rounds of the house's publish interval. Every ask, floor, chance, ceiling and choice is a call into
@@ -54,14 +56,18 @@ struct Goods
     std::uint32_t quality{0};
     std::uint32_t sellPrice{0};  // per unit
     std::uint64_t reference{0};  // per unit, ItemReference::copper; 0 none
+    std::uint32_t requiredLevel{0};
+    std::uint32_t itemLevel{0};
 };
 
-// A bag of the ladder (PlannerUpkeep.cpp BagCandidates): its slots and the template's buy price
+// A bag of the ladder (PlannerUpkeep.cpp BagCandidates): its slots, the template's buy price and whether a spawned
+// vendor stocks it (AuctionRules::ItemInput::vendorStocked)
 struct BagRung
 {
     std::uint32_t item{0};
     std::uint32_t slots{0};
     std::uint32_t buyCopper{0};
+    bool stocked{false};
 };
 
 // One way a lot comes by: the item, the units of the lot and its share of the band's lots
@@ -99,7 +105,9 @@ struct BotSetup
     std::uint32_t smallestBag{0};              // slots of the smallest equipped bag; 0 an empty bag slot
     std::vector<AuctionRules::BuyLine> lines;  // lines of any owner (use, path, gear); bag lines come at each visit
     std::vector<Lot> stock;                    // lots carried at the start
-    std::uint32_t pathSlot{0};                 // the band's path the bot follows (PathSource)
+    std::vector<AuctionRules::BuyLine> laterLines;  // lines the bot takes up at its first visit from laterFromHours on
+    double laterFromHours{0.0};
+    std::uint32_t pathSlot{0};  // the band's path the bot follows (PathSource)
 };
 
 // The bots' skill paths (PlannerUpkeep.cpp:1051-1065): Weigh is called with the published snapshot at the start and
@@ -134,7 +142,8 @@ enum class Fault : std::uint8_t
     None,
     CutNotPaid,      // a sale pays the seller the price and the deposit without taking the cut
     CeilingIgnored,  // the buy step hands the rule the line without its ceiling
-    ExpirySkipped    // the settlement leaves an unsold auction standing past its end
+    ExpirySkipped,   // the settlement leaves an unsold auction standing past its end
+    KeptIgnored      // the buy step's purse ignores what the market keeps
 };
 
 enum class Invariant : std::uint8_t
@@ -144,11 +153,12 @@ enum class Invariant : std::uint8_t
     Items,    // bags, the house and what buyers received and vendors took = the units that came by
     Ceiling,  // no purchase or bid above its line's ceiling
     Floor,    // no listing below its floor
-    Ends      // after a settlement every listing stands with its end in the future
+    Ends,     // after a settlement every listing stands with its end in the future
+    Kept      // no purchase leaves the purse below what the market keeps (AuctionVisit.cpp MarketKeptNow)
 };
-constexpr std::size_t INVARIANT_COUNT = 5;
-constexpr std::array<std::string_view, INVARIANT_COUNT> INVARIANT_WORDS = {"copper", "items", "ceiling", "floor",
-                                                                           "ends"};
+constexpr std::size_t INVARIANT_COUNT = 6;
+constexpr std::array<std::string_view, INVARIANT_COUNT> INVARIANT_WORDS = {"copper", "items", "ceiling",
+                                                                           "floor",  "ends",  "kept"};
 
 // Why the core refused a buyout or a bid
 enum class Refusal : std::uint8_t
@@ -219,11 +229,36 @@ struct ItemTally
     std::uint64_t listings{0};
     std::uint64_t sales{0};
     std::array<std::uint64_t, AuctionWords::REASON_COUNT> skips{};
+    // By the buyer's level band: its sales, and its path lines' buyouts and bids the core took, those it refused and
+    // the lines the buy rule skipped by reason
+    std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> bandSales{};
+    std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> pathPlaced{};
+    std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> pathRefused{};
+    std::array<std::array<std::uint64_t, AuctionWords::REASON_COUNT>, WorldTravel::LEVEL_BAND_COUNT> pathSkips{};
+    std::array<std::array<std::uint64_t, AuctionWords::REASON_COUNT>, WorldTravel::LEVEL_BAND_COUNT> bagSkips{};
+};
+
+// One kind of the sale chance (class, quality and level band, AuctionIndex::KindOf) in one model hour
+struct LevelKindTally
+{
+    std::uint64_t listings{0};
+    std::uint64_t sales{0};
+    std::uint64_t vendored{0};  // lots a vendor took
+    std::uint64_t standing{0};  // lots in the house at the hour's end
+};
+
+// An item's typical price in a publication
+struct PricePoint
+{
+    std::uint32_t unitPrice{0};
+    AuctionIndex::PriceBasis basis{AuctionIndex::PriceBasis::None};
 };
 
 struct HourTally
 {
-    std::map<std::uint32_t, KindTally> kinds;  // by item class
+    std::map<std::uint32_t, KindTally> kinds;            // by item class
+    std::map<std::uint32_t, LevelKindTally> levelKinds;  // by AuctionIndex::KindKey::code
+    std::map<std::uint32_t, PricePoint> prices;          // the market's priced items at the hour's end, by item
 };
 
 struct Result
@@ -248,6 +283,13 @@ struct Result
     std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> bandListings{};  // by the seller's band
     std::array<std::uint64_t, WorldTravel::LEVEL_BAND_COUNT> bandBuys{};      // sales by the buyer's band
     std::map<std::uint32_t, ItemTally> items;                                 // by item, over the run
+    // At the end, by KindKey::code: each standing lot's buyout over the vendor price (sell price x units), the
+    // standing lots without a sell price, and the kind's record in the last publication
+    std::map<std::uint32_t, std::vector<double>> endAsks;
+    std::map<std::uint32_t, std::uint64_t> endUnpriced;
+    std::map<std::uint32_t, AuctionIndex::Record> endRecords;
+    std::uint64_t gearUnitsWanted{0};  // units of the gear lines the bots held or took up
+    std::uint64_t gearUnitsLeft{0};    // units of them unbought at the end
 
     bool Clean() const
     {
@@ -297,6 +339,9 @@ public:
             model.lines = bot.lines;
             model.stock = bot.stock;
             model.pathSlot = bot.pathSlot;
+            model.laterLines = bot.laterLines;
+            model.laterFrom = bot.laterFromHours * static_cast<double>(HOUR_SECONDS);
+            _result.gearUnitsWanted += GearUnits(bot.lines);
             for (Lot const& lot : bot.stock)
                 _result.unitsStart += lot.units;
             _bots.push_back(std::move(model));
@@ -351,9 +396,24 @@ public:
             Flow(bot, _end);
         Audit(settled);
         for (Bot const& bot : _bots)
+        {
             _result.moneyEnd += bot.money;
+            _result.gearUnitsLeft += GearUnits(bot.lines);
+        }
         for (auto const& [id, auction] : _house)
+        {
             ++_result.houseLots[ClassOf(auction.facts.item)];
+            std::uint32_t const kind = LevelKindOf(auction.facts.item).code;
+            double const vendor = static_cast<double>(GoodsOf(auction.facts.item).sellPrice) *
+                                  std::max<std::uint32_t>(auction.facts.count, 1);
+            if (vendor > 0.0)
+                _result.endAsks[kind].push_back(static_cast<double>(auction.facts.buyout) / vendor);
+            else
+                ++_result.endUnpriced[kind];
+        }
+        for (HourTally const& hour : _result.hours)
+            for (auto const& [kind, tally] : hour.levelKinds)
+                _result.endRecords[kind] = _snapshot.KindRecord({kind});
         return _result;
     }
 
@@ -368,6 +428,8 @@ private:
         std::vector<AuctionRules::BuyLine> lines;
         std::vector<Lot> stock;  // lots the bot carries to sell
         std::uint32_t pathSlot{0};
+        std::vector<AuctionRules::BuyLine> laterLines;
+        double laterFrom{0.0};  // model seconds
         AuctionMemory::SellerMemory memory;
         std::unordered_map<std::uint32_t, std::uint32_t> received;  // units bought and received, by item
         std::uint64_t owned{0};                                     // units bought and received
@@ -401,6 +463,15 @@ private:
 
     static std::uint32_t BotOf(std::uint64_t guid) { return static_cast<std::uint32_t>(guid - 1); }
 
+    static std::uint64_t GearUnits(std::vector<AuctionRules::BuyLine> const& lines)
+    {
+        std::uint64_t units = 0;
+        for (AuctionRules::BuyLine const& line : lines)
+            if (line.owner == AuctionRules::LineOwner::Gear)
+                units += line.units;
+        return units;
+    }
+
     // The core's money fields are uint32 (AuctionVisit.cpp Clamped)
     static std::uint32_t Copper32(std::uint64_t copper)
     {
@@ -415,11 +486,27 @@ private:
 
     std::uint32_t ClassOf(std::uint32_t item) const { return GoodsOf(item).classId; }
 
-    KindTally& Tally(std::int64_t now, std::uint32_t item)
+    // The item's kind of the sale chance, from its template values as the server's callers resolve it
+    AuctionIndex::KindKey LevelKindOf(std::uint32_t item) const
+    {
+        Goods const& goods = GoodsOf(item);
+        if (goods.classId == UNKNOWN_CLASS)
+            return {};
+        return AuctionIndex::KindOf(goods.classId, goods.quality, goods.requiredLevel, goods.itemLevel);
+    }
+
+    HourTally& HourAt(std::int64_t now)
     {
         std::size_t const hour =
             std::min(static_cast<std::size_t>(std::max<std::int64_t>(now, 0) / HOUR_SECONDS), _result.hours.size() - 1);
-        return _result.hours[hour].kinds[ClassOf(item)];
+        return _result.hours[hour];
+    }
+
+    KindTally& Tally(std::int64_t now, std::uint32_t item) { return HourAt(now).kinds[ClassOf(item)]; }
+
+    LevelKindTally& LevelTally(std::int64_t now, std::uint32_t item)
+    {
+        return HourAt(now).levelKinds[LevelKindOf(item).code];
     }
 
     void Violate(Invariant invariant, std::string const& what)
@@ -482,9 +569,10 @@ private:
             Vendor(bot, lot, now);
     }
 
-    // The ask's input as the server builds it (AuctionVisit.cpp:279-296 at the auctioneer; BankRulesInput.cpp:366-379
-    // away, without the offers): the lot, the template's sell price, the vendor's payout, the reference value, the
-    // published typical price, the seller's memory, the house's fees
+    // The ask's input as the server builds it (AuctionVisit.cpp AskFor at the auctioneer; BankRulesInput.cpp
+    // ReadAuction away, without the offers): the lot, the template's sell price, the vendor's payout, the reference
+    // value, the published evidence (typical price, the item's record and its kind's), the seller's memory, the
+    // house's fees
     AuctionRules::AskInput AskOf(Bot const& bot, Lot const& lot, bool atAuctioneer) const
     {
         Goods const& goods = GoodsOf(lot.item);
@@ -493,12 +581,12 @@ private:
         in.sellPrice = goods.sellPrice;
         in.vendorPayout = AuctionRules::VendorPayout(goods.sellPrice, in.count, 0, 0, 1.0f);
         in.reference = goods.reference;
-        if (AuctionIndex::ItemEntry const* entry = _snapshot.Find(lot.item))
-        {
-            in.typical = entry->typical;
-            if (atAuctioneer)
-                in.cheapestUnitBuyout = entry->offers.cheapestUnitBuyout;
-        }
+        AuctionIndex::Evidence const evidence = _snapshot.EvidenceOf(lot.item, LevelKindOf(lot.item));
+        in.typical = evidence.typical;
+        in.itemRecord = evidence.item;
+        in.kindRecord = evidence.kind;
+        if (atAuctioneer)
+            in.cheapestUnitBuyout = evidence.cheapestUnitBuyout;
         AuctionMemory::ItemMemory const memory = bot.memory.Of(lot.item);
         in.expiredSteps = memory.expiredSteps;
         in.quickSale = memory.quickSale;
@@ -506,8 +594,8 @@ private:
         return in;
     }
 
-    // BankRulesInput.cpp:380-382: away from the auctioneer a lot is stock while listing it is worth more than what a
-    // vendor pays; else it is the vendor's
+    // BankRulesInput.cpp ReadAuction: away from the auctioneer a lot is stock while listing it is worth more than what
+    // a vendor pays; else it is the vendor's
     bool Stock(Bot const& bot, Lot const& lot) const
     {
         AuctionRules::AskInput const in = AskOf(bot, lot, false);
@@ -522,6 +610,7 @@ private:
         _result.vendorIncome += payout;
         _result.unitsVendored += lot.units;
         ++Tally(now, lot.item).vendored;
+        ++LevelTally(now, lot.item).vendored;
     }
 
     // The bags' plan over the whole stock after a visit or a returned lot: what is no stock any more goes to a vendor
@@ -573,7 +662,7 @@ private:
     }
 
     // The core lists the lot for the ask's duration scaled by the time rate (ExpirySeconds) and takes the deposit;
-    // the index's hook adds it and the seller's memory notes it (AuctionVisit.cpp:83-97)
+    // the index's hook adds it under its kind and the seller's memory notes it (AuctionVisit.cpp Listed)
     void List(std::uint32_t index, Lot const& lot, AuctionRules::AskResult const& ask, std::int64_t now)
     {
         Bot& bot = _bots[index];
@@ -588,22 +677,46 @@ private:
         facts.buyout = Copper32(ask.ask);
         facts.endTime = now + AuctionRules::ExpirySeconds(_market.fees, ask.hours);
         facts.houseId = _market.houseId;
+        facts.added = now;
         bool const relist = bot.memory.Of(lot.item).expiredSteps != 0;
         bot.money -= ask.deposit;
         _house[facts.id] = {facts, index, ask.deposit, ask};
-        _book.Add(facts);
+        _book.Add(facts, LevelKindOf(lot.item));
         bot.memory.Listed(facts.id, now, facts.endTime);
         _endings.push({facts.endTime, facts.id});
         KindTally& tally = Tally(now, lot.item);
         ++(relist ? tally.relists : tally.posts);
         ++_result.items[lot.item].listings;
+        ++LevelTally(now, lot.item).listings;
         tally.depositsPaid += ask.deposit;
         ++_result.bandListings[bot.band];
     }
 
-    // PlannerUpkeep.cpp:1030-1047: the ladder's bags the index knows that add slots, each by its worth to the bot,
-    // the ceiling at most the template's buy price
-    void AddBagLines(Bot const& bot, std::vector<AuctionRules::BuyLine>& lines) const
+    // PlannerUpkeep.cpp CopperWeightOf: the need factor at the purse now against the bot's reserve (the market's kept
+    // copper stands in for upkeep's reserve), neutral traits, the band's top level
+    static AuctionRules::CopperWeight WeightOf(Bot const& bot)
+    {
+        Planner::Snapshot snapshot;
+        snapshot.level = static_cast<std::uint8_t>(WorldTravel::LEVEL_BAND_TOP[bot.band]);
+        snapshot.money =
+            static_cast<std::uint32_t>(std::min<std::uint64_t>(bot.money, std::numeric_limits<std::uint32_t>::max()));
+        Planner::Goals::Need const need = Planner::Goals::NeedFor(snapshot, Planner::Goals::Weights{}, bot.reserve);
+        return {need.exchange, need.factor};
+    }
+
+    // A setup's use line holds copper at the reserve's share (built with CopperWeight{}): priced again at the bot's
+    // weight now, as PlannerUpkeep.cpp BuyListOf builds it at every visit
+    static AuctionRules::BuyLine AtWeight(AuctionRules::BuyLine const& line, AuctionRules::CopperWeight weight)
+    {
+        double const vendor = line.ceiling.gettingValue;
+        return AuctionRules::UseLine(line.item, line.units, static_cast<std::uint32_t>(line.ceiling.worthValue),
+                                     vendor > 0.0 ? static_cast<std::uint32_t>(vendor) : 0,
+                                     static_cast<std::uint32_t>(line.excessUnitWorth), weight);
+    }
+
+    // PlannerUpkeep.cpp BuyListOf: the ladder's bags the index knows that add slots, each by its worth to the bot at
+    // its weight, the ceiling at most the price of a vendor that stocks the bag
+    void AddBagLines(Bot const& bot, AuctionRules::CopperWeight weight, std::vector<AuctionRules::BuyLine>& lines) const
     {
         WorldTravel::SlotBand const& band = _market.bands[bot.band].slots;
         WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(WorldTravel::SlotMeasure{}, band);
@@ -614,7 +727,7 @@ private:
             std::uint32_t const worth =
                 WorldTravel::BagWorth(rates, bot.freeSlots, rung.slots, bot.smallestBag, band.BagHorizonHours);
             if (worth)
-                lines.push_back(AuctionRules::BagLine(rung.item, worth, rung.buyCopper));
+                lines.push_back(AuctionRules::BagLine(rung.item, worth, rung.stocked ? rung.buyCopper : 0, weight));
         }
     }
 
@@ -627,14 +740,23 @@ private:
         return line;
     }
 
-    // AuctionVisit.cpp BuyNext (411-446) and AwaitPurchase (330-357): the buy list once per visit at the published
-    // offers, one decision per item, one bag per visit, the purse re-read at every line above the reserve, the
+    // AuctionVisit.cpp BuyNext and AwaitPurchase: the buy list once per visit at the published offers and the bot's
+    // weight then, one decision per item, one bag per visit, the purse re-read at every line above the reserve, the
     // house's offers without leaving out the bot's own (the core refuses them); a bid the core took counts as open
     void Buy(std::uint32_t index, std::int64_t now)
     {
         Bot& bot = _bots[index];
-        std::vector<AuctionRules::BuyLine> lines = bot.lines;
-        AddBagLines(bot, lines);
+        if (!bot.laterLines.empty() && static_cast<double>(now) >= bot.laterFrom)
+        {
+            _result.gearUnitsWanted += GearUnits(bot.laterLines);
+            bot.lines.insert(bot.lines.end(), bot.laterLines.begin(), bot.laterLines.end());
+            bot.laterLines.clear();
+        }
+        AuctionRules::CopperWeight const weight = WeightOf(bot);
+        std::vector<AuctionRules::BuyLine> lines;
+        for (AuctionRules::BuyLine const& line : bot.lines)
+            lines.push_back(line.owner == AuctionRules::LineOwner::Use ? AtWeight(line, weight) : line);
+        AddBagLines(bot, weight, lines);
         if (_market.paths)
         {
             auto const held = [&bot](std::uint32_t item)
@@ -660,7 +782,7 @@ private:
             if (bag && bagTaken)
                 continue;
             AuctionRules::BuyInput buyer;
-            buyer.spendable = AuctionRules::Spendable(bot.money, bot.reserve, 0);
+            buyer.spendable = AuctionRules::Spendable(bot.money, _fault == Fault::KeptIgnored ? 0 : bot.reserve, 0);
             buyer.openBids = openBids;
             buyer.openBidsMax = _market.config.OpenBidsMax;
             buyer.now = now;
@@ -673,9 +795,19 @@ private:
             {
                 ++Tally(now, line.item).skips[Slot(line.owner)][Slot(choice.reason)];
                 ++_result.items[line.item].skips[Slot(choice.reason)];
+                if (line.owner == AuctionRules::LineOwner::Path)
+                    ++_result.items[line.item].pathSkips[bot.band][Slot(choice.reason)];
+                if (bag)
+                    ++_result.items[line.item].bagSkips[bot.band][Slot(choice.reason)];
                 continue;
             }
-            if (!Place(index, line, choice, now))
+            bool const placed = Place(index, line, choice, now);
+            if (line.owner == AuctionRules::LineOwner::Path)
+            {
+                ItemTally& item = _result.items[line.item];
+                ++(placed ? item.pathPlaced : item.pathRefused)[bot.band];
+            }
+            if (!placed)
                 continue;
             bagTaken = bagTaken || bag;
             if (choice.kind == AuctionRules::BuyKind::Bid)
@@ -718,6 +850,10 @@ private:
                                             std::to_string(price) + " over its ceiling " +
                                             std::to_string(AuctionRules::CeilingOf(line)) + " per unit");
         bot.money -= due;
+        if (bot.money < bot.reserve)
+            Violate(Invariant::Kept, "item " + std::to_string(line.item) + " paid " + std::to_string(due) +
+                                         " and left " + std::to_string(bot.money) + " under the kept " +
+                                         std::to_string(bot.reserve));
         if (!leads && auction.facts.bidder)
             _bots[BotOf(auction.facts.bidder)].money += auction.facts.bid;
         auction.facts.bid = Copper32(price);
@@ -734,7 +870,7 @@ private:
     }
 
     // A sale at the auction's bid (the core sets the bid to the buyout): the seller gets the bid and the deposit less
-    // the cut, the buyer the lot; the index's hooks record the sale and remove it (AuctionVisit.cpp:100-112)
+    // the cut, the buyer the lot; the index's hooks record the sale and remove it (AuctionVisit.cpp Sold)
     void Sell(std::uint32_t id, std::int64_t now)
     {
         auto const found = _house.find(id);
@@ -755,11 +891,13 @@ private:
         ++tally.sales;
         tally.gold += price;
         ++_result.items[auction.facts.item].sales;
+        ++_result.items[auction.facts.item].bandSales[buyer.band];
+        ++LevelTally(now, auction.facts.item).sales;
         tally.cuts += cut;
     }
 
     // An unsold end: the house keeps the deposit, the lot goes back to the seller (the core mails it), the hooks
-    // record the expiry and remove it (AuctionVisit.cpp:115-125)
+    // record the expiry and remove it (AuctionVisit.cpp Expired)
     void Expire(std::uint32_t id, std::int64_t now)
     {
         auto const found = _house.find(id);
@@ -823,7 +961,9 @@ private:
         }
     }
 
-    // AuctionIndex.cpp:86-104 Publish: the alive auctions' bid and bidder, the history's window, a new snapshot
+    // AuctionIndex.cpp Publish: the alive auctions' bid and bidder, the standing prices (AH8), the history's window, a
+    // new snapshot; and the listing hours of the lots standing for the model time since the last publication (the
+    // server's own from AH6)
     void Publish(std::int64_t now)
     {
         _book.Refresh(
@@ -838,7 +978,10 @@ private:
             });
         std::int64_t const window =
             static_cast<std::int64_t>(_market.config.HistoryDays) * AuctionIndex::SECONDS_PER_DAY;
+        _book.TakeStanding(now, static_cast<std::int64_t>(_market.config.StandingSeconds));
         _book.Prune(now, window);
+        _book.AccrueListingHours(now, now - _publishedAt, window);
+        _publishedAt = now;
         _snapshot = AuctionIndex::Snapshot{};
         _book.Fill(_snapshot, now, window);
         _snapshot.sequence = ++_result.publishes;
@@ -854,7 +997,13 @@ private:
     {
         HourTally& tally = _result.hours[std::min(static_cast<std::size_t>(hour), _result.hours.size() - 1)];
         for (auto const& [id, auction] : _house)
+        {
             ++tally.kinds[ClassOf(auction.facts.item)].standing;
+            ++tally.levelKinds[LevelKindOf(auction.facts.item).code].standing;
+        }
+        for (auto const& [item, goods] : _goods)
+            if (AuctionIndex::ItemEntry const* entry = _snapshot.Find(item); entry && entry->typical.unitPrice)
+                tally.prices[item] = {entry->typical.unitPrice, entry->typical.basis};
     }
 
     // The invariants over the whole market after a settlement
@@ -904,6 +1053,7 @@ private:
     std::unordered_map<std::uint32_t, Auction> _house;
     AuctionIndex::Book _book;
     AuctionIndex::Snapshot _snapshot;
+    std::int64_t _publishedAt{0};  // the last publication, model seconds
     std::priority_queue<Event, std::vector<Event>, std::greater<Event>> _events;
     std::priority_queue<Ending, std::vector<Ending>, std::greater<Ending>> _endings;
     std::uint64_t _order{0};
