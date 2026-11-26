@@ -165,19 +165,22 @@ void EquipAction::EquipItems(std::vector<ObjectGuid> const& guids)
         LogEquips(bot, before);
 }
 
-// Anything fills an empty slot and anything that scores above 0 replaces a broken item, as the upgrade rule counts
-// them. A worn item this pass equipped yields to any better candidate: the pass judged every candidate against the
-// slots as it found them and equips them from the lowest score up, so the best of them stays worn.
+// Anything fills an empty slot. An equip asked for (chat command, outfit, script) replaces on any higher score. In
+// the bot's own pass anything that scores above 0 replaces a broken item, as the upgrade rule counts it, and a worn
+// item this pass equipped yields to any better candidate: the pass judged every candidate against the slots as it
+// found them and equips them from the lowest score up, so the best of them stays worn.
 bool EquipAction::Replaces(float score, Item const* worn, float wornScore) const
 {
     if (!worn)
         return true;
 
+    if (!_passCandidates)
+        return score > wornScore;
+
     if (worn->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && worn->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0)
         return score > 0.0f;
 
-    if (_passCandidates &&
-        std::find(_passCandidates->begin(), _passCandidates->end(), worn->GetGUID()) != _passCandidates->end())
+    if (std::find(_passCandidates->begin(), _passCandidates->end(), worn->GetGUID()) != _passCandidates->end())
         return score > wornScore;
 
     return ItemUsageValue::BeatsWornScore(score, wornScore);
