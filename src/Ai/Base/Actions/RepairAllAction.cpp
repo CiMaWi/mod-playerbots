@@ -10,9 +10,12 @@
 #include "EventLog.h"
 #include "Playerbots.h"
 
-bool RepairAllAction::Execute(Event /*event*/)
+bool RepairAllAction::Execute(Event event)
 {
-    GuidVector npcs = AI_VALUE(GuidVector, "nearest npcs");
+    // An errand visit names the repairer it stands at (NR3c, as the sale since WR30): the nearest npcs filter by line
+    // of sight, which a bot beside its repairer can lack (NR1 group C; run 1 of ne-sick-repair: found none at 1668)
+    ObjectGuid const named = event.getObject();
+    GuidVector const npcs = named.IsEmpty() ? AI_VALUE(GuidVector, "nearest npcs") : GuidVector{named};
     for (ObjectGuid const guid : npcs)
     {
         Creature* unit = bot->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_REPAIR);

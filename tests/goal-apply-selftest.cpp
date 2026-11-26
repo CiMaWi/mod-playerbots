@@ -1187,6 +1187,31 @@ int main()
         Active quest = GoalOf(Goals::GoalKind::Quest, 1, Source::Planner);
         Check(!PlannedEnd(quest, fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS)).planned,
               "a status with a goal is no fallback's (mutant: a goal's wander ends at the fallback's length)");
+
+        // NR3: a sick bot's stone in (the errand sick_hearth, its cast in a rest) arrives at the bind, is overrun when
+        // the cast never took it there, and runs on until then; a sick bot's other errand has no planned end
+        Active hearth = GoalOf(Goals::GoalKind::Errand, 0, Source::Planner);
+        hearth.reason = Goals::SICK_HEARTH_REASON;
+        hearth.minutes = 1.0f;
+        hearth.startedMs = 1000;
+        PlannedFacts cast;
+        cast.status = STATUS_REST;
+        cast.owns = true;
+        cast.sick = true;
+        cast.nowMs = 1000 + 30000;
+        PlannedAnswer const casting = PlannedEnd(hearth, cast);
+        PlannedFacts home = cast;
+        home.atBind = true;
+        PlannedAnswer const arrived = PlannedEnd(hearth, home);
+        PlannedFacts late = cast;
+        late.nowMs = 1000 + static_cast<std::uint32_t>(ORDER_OVERRUN_FACTOR * 60000.0f);
+        PlannedAnswer const overrun = PlannedEnd(hearth, late);
+        Active errand = hearth;
+        errand.reason = "repair";
+        Check(casting.planned && !casting.ends && arrived.ends && arrived.outcome == StatusEnd::Outcome::Arrived &&
+                  std::string(arrived.word) == "hearth_bind" && overrun.ends &&
+                  overrun.outcome == StatusEnd::Outcome::TimedOut && !PlannedEnd(errand, home).planned,
+              "NR3: the sick hearth's rest ends at the bind (mutant: it rests until the sickness ends)");
     }
 
     // WN4: the no-option loop's bound (WN3's G3: rest, ask, rank nothing, rest again, all night at one spot). OnIdle's
@@ -1510,6 +1535,19 @@ int main()
             bool const lost = BagSlotsChanged(seen, 16);
             Check(!firstLook && !same && grown && lost && seen.bagSlotsSeen == 16,
                   "the bag capacity's change only is an edge (mutant: every look, or never)");
+        }
+
+        // NR3: recover's hand-over of a sick bot is an edge only where it turns open; a healthy look closes it, so the
+        // next death's hand-over is an edge again
+        {
+            BotGoals seen;
+            bool const closed = SickOpenChanged(seen, false);
+            bool const opened = SickOpenChanged(seen, true);
+            bool const still = SickOpenChanged(seen, true);
+            bool const healthy = SickOpenChanged(seen, false);
+            bool const again = SickOpenChanged(seen, true);
+            Check(!closed && opened && !still && !healthy && again,
+                  "NR3: the sick hand-over is told the planner once per opening (mutant: every check, or once ever)");
         }
 
         // The limit holds per goal, not per plan: a new plan at every idle keeps the goal's progress
@@ -2383,8 +2421,8 @@ int main()
         Check(OnFreshPlan(goals, true) == FreshPlan::Keep, "an external goal is never switched");
     }
 
-    // NE11: a goal-less sickness rest yields to a plan made with the due repair recover handed over, when the due
-    // errand is its best option; any other plan keeps it, as it keeps a command
+    // NR3: a goal-less sickness rest yields to a plan whose best option passed the sick gate (Ranked::sickGoal, set by
+    // the goal model: GoalModelHarness SickSafeAreas); any other plan keeps it, as it keeps a command
     {
         BotGoals goals;
         std::shared_ptr<Goals::GoalPlan> const plan = std::make_shared<Goals::GoalPlan>();
@@ -2397,15 +2435,15 @@ int main()
         goals.plan = plan;
         Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
               "a due errand of a plan not made for a sick bot does not cut a goal-less status (a command)");
-        plan->ranked.sickErrandOpen = true;
-        Check(
-            OnFreshPlan(goals, true) == FreshPlan::Take,
-            "NE11: the sickness rest yields to the handed-over repair (mutant: kept, the bot rests out the sickness)");
+        plan->ranked.sickGoal = true;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Take,
+              "NR3: the sickness rest yields to the option the sick gate passed (mutant: kept, the bot rests out the "
+              "sickness)");
         Check(OnFreshPlan(goals, false) == FreshPlan::Keep, "a status a switch may not cut stays");
         plan->ranked.options.front().due = false;
-        Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
-              "a sick plan whose best option is no due errand keeps the rest");
-        plan->ranked.options.front().due = true;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Take,
+              "NR3: an errand that is not due (full bags in a capital) replaces the sickness rest too");
+        plan->ranked.sickGoal = false;
         plan->ranked.options.front().kind = Goals::GoalKind::Rest;
         Check(OnFreshPlan(goals, true) == FreshPlan::Keep, "a sick plan whose best option is a rest keeps the rest");
     }

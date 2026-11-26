@@ -25,6 +25,7 @@ struct VendorSeen
     std::uint32_t entry{0};
     float yards{0.0f};
     bool repairs{false};
+    bool safe{false};  // NR3, a sick bot's only: in its safe area (Vendor::safe)
 };
 
 // A bag on a bag vendor's list that trades with the bot
@@ -46,9 +47,9 @@ inline void FillErrandInputs(Situation& situation, std::vector<VendorSeen> const
     {
         float const minutes = WorldTravel::WalkMinutes(vendor.yards, runSpeed);
         if (situation.bags.vendor.walkMinutes < 0.0f)
-            situation.bags.vendor = {vendor.entry, minutes, vendor.repairs};
+            situation.bags.vendor = {vendor.entry, minutes, vendor.repairs, vendor.safe};
         if (vendor.repairs && situation.bags.repairer.walkMinutes < 0.0f)
-            situation.bags.repairer = {vendor.entry, minutes, true};
+            situation.bags.repairer = {vendor.entry, minutes, true, vendor.safe};
     }
     for (BagSeen const& bag : bags)
     {

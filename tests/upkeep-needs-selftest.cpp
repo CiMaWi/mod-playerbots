@@ -2412,6 +2412,47 @@ void MarketKeptNeeds(UpkeepIndex const& index)
     }
 }
 
+// NR3 (NR.4): a sick hunter's trip takes no errand that fights (the tame, the stable's swap) and no stop or placed
+// errand outside its safe area; the same hunter healthy keeps the tame and the sale (its trip never calls the filter)
+void SickTrip()
+{
+    using WorldTravel::ErrandKind;
+    std::vector<WorldTravel::ErrandOffer> offers(3);
+    offers[0].Kind = ErrandKind::Sell;
+    offers[0].Service = WorldTravel::SERVICE_VENDOR;
+    offers[1].Kind = ErrandKind::Tame;
+    offers[1].Placed = true;
+    offers[1].Place = {0, 10.0f, 10.0f, 0.0f};  // inside the safe area: the fight alone leaves it out
+    offers[1].Due = true;
+    offers[2].Kind = ErrandKind::TurnIn;
+    offers[2].Placed = true;
+    offers[2].Place = {0, 900.0f, 900.0f, 0.0f};
+    std::vector<WorldTravel::ServiceStop> stops(2);
+    stops[0].Id = 1;
+    stops[0].Place = {0, 5.0f, 5.0f, 0.0f};
+    stops[0].Services = WorldTravel::SERVICE_VENDOR;
+    stops[1].Id = 2;
+    stops[1].Place = {0, 800.0f, 800.0f, 0.0f};
+    stops[1].Services = WorldTravel::SERVICE_VENDOR;
+    auto const safeAt = [](WorldTravel::ErrandPlace const& place) { return place.X < 100.0f && place.Y < 100.0f; };
+    auto const has = [](std::vector<WorldTravel::ErrandOffer> const& list, ErrandKind kind)
+    {
+        return std::any_of(list.begin(), list.end(),
+                           [kind](WorldTravel::ErrandOffer const& offer) { return offer.Kind == kind; });
+    };
+    std::vector<WorldTravel::ErrandOffer> sick = offers;
+    std::vector<WorldTravel::ServiceStop> sickStops = stops;
+    WorldTravel::KeepSickErrands(sickStops, sick, safeAt);
+    Check(has(offers, ErrandKind::Tame) && has(offers, ErrandKind::Sell) && stops.size() == 2,
+          "a healthy hunter with a tame due keeps the tame stop and the sale");
+    Check(!has(sick, ErrandKind::Tame) && has(sick, ErrandKind::Sell) && !has(sick, ErrandKind::TurnIn) &&
+              sickStops.size() == 1 && sickStops.front().Id == 1,
+          "a sick hunter's trip has no tame stop and no stop outside its safe area (mutant: the tame stays)");
+    Check(WorldTravel::ErrandStartsFight(ErrandKind::Tame) && WorldTravel::ErrandStartsFight(ErrandKind::Stable) &&
+              !WorldTravel::ErrandStartsFight(ErrandKind::Sell) && !WorldTravel::ErrandStartsFight(ErrandKind::Repair),
+          "the tame and the stable's swap start a fight, a sale and a repair do not");
+}
+
 int main(int argc, char** argv)
 {
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
@@ -2440,6 +2481,7 @@ int main(int argc, char** argv)
     PetSwap();
     TameSteps();
     TameSiteRules();
+    SickTrip();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);

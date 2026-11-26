@@ -41,6 +41,11 @@ namespace AuctionRules
 struct BuyLine;
 }  // namespace AuctionRules
 
+namespace Upkeep
+{
+struct SafeAreas;
+}  // namespace Upkeep
+
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
@@ -97,6 +102,15 @@ void NoteBagSlots(PlayerbotAI* botAI);
 // (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. So is
 // a stay near an inn that reached its dwell under a far bind (NR.5); the stays the bot left end here. O(1): a few inns
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
+// The errand trigger's edge for a sick planner bot (NR3): recover's hand-over that turned open
+// (GoalApply::SickOpenChanged) is a changed situation, the plan that rested until then goes; its upkeep row sick_area
+// names the safe area the bot stands in (Upkeep::SafeAreaWord). O(1) but at the edge
+void NoteSickOpen(PlayerbotAI* botAI, bool open);
+// NR3 (NR.4), map thread: the safe areas a sick bot stands in, and whether its walk to a place stays in one of them
+// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start
+Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes);
+bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,
+                float y, float z);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
 // (NoteBagBought) 0, so the trip's later stops buy no second one (WT63e). O(1)

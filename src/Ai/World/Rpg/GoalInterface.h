@@ -795,6 +795,7 @@ struct BotGoals
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
     std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
     std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
+    bool sickOpenSeen{false};  // recover's hand-over of a sick bot as the errand trigger last saw it (SickOpenChanged)
     std::vector<Goals::InnStay> innStays;  // the inns the bot is near and since when (NR.5)
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
@@ -814,6 +815,10 @@ inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
     std::uint16_t const seen = std::exchange(goals.bagSlotsSeen, slots);
     return seen && seen != slots;
 }
+
+// Recover's hand-over of a sick bot now (Planner::NoteSickOpen, NR3): true only where it turned open, so the planner
+// plans from the hand-over once and not at every check; a healthy bot or one not handed over is seen closed
+inline bool SickOpenChanged(BotGoals& goals, bool open) { return !std::exchange(goals.sickOpenSeen, open) && open; }
 
 // The bind now (Planner::NoteBindFar): true when a bind seen near turned far or one seen far turned near (a plan
 // taken before the bind is then stale); the first look records it (the goals' first snapshot weighs the bind as it is)
@@ -1147,6 +1152,7 @@ struct PlannedFacts
     std::uint32_t statusMs{0};  // how long the status runs (a fallback's length)
     float healthPercent{100.0f};
     float manaPercent{-1.0f};  // -1: no mana
+    bool atBind{false};        // the bot stands at its hearthstone's bind (NR3: the sick bot's stone took it there)
 };
 
 struct PlannedAnswer
@@ -1175,6 +1181,20 @@ inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
                    ? PlannedAnswer{true, in.statusMs >= FALLBACK_STATUS_MS, StatusEnd::Outcome::TimedOut,
                                    "fallback_time"}
                    : PlannedAnswer{};
+    // NR3 (NR.4): a sick bot's stone in (the errand option sick_hearth, its cast in a rest) has arrived once the bot
+    // stands at its bind: the errand there is planned from the new place. A cast the bot never finished (a fight broke
+    // it) is overrun
+    constexpr float MS_PER_MINUTE = 60000.0f;
+    if (in.owns && goal.source == Source::Planner && goal.kind == GoalKind::Errand &&
+        goal.reason == Goals::SICK_HEARTH_REASON && in.status == StatusEnd::STATUS_REST)
+    {
+        if (in.atBind)
+            return {true, true, StatusEnd::Outcome::Arrived, "hearth_bind"};
+        float const minutes = static_cast<float>(in.nowMs - goal.startedMs) / MS_PER_MINUTE;
+        if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
+            return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};
+        return {true, false};
+    }
     if (!in.owns || in.sick || goal.source != Source::Planner || goal.minutes <= 0.0f)
         return {};
     bool const spot = in.status == StatusEnd::STATUS_WANDER_RANDOM;
@@ -1185,7 +1205,6 @@ inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
                          (goal.kind == GoalKind::Rest && in.status == StatusEnd::STATUS_REST);
     if (!planned)
         return {};
-    constexpr float MS_PER_MINUTE = 60000.0f;
     float const minutes = static_cast<float>(in.nowMs - goal.startedMs) / MS_PER_MINUTE;
     if (goal.kind == GoalKind::Rest)
     {
@@ -1345,7 +1364,7 @@ inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
 // What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
 // during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
 // sickness rest, a command, a test's order) and an external goal stay; a sickness rest yields to a plan whose best
-// option is the due repair recover handed over (NE11, Ranked::sickErrandOpen)
+// option passed the sick gate (NR3, Ranked::sickGoal: an errand in the safe area, the bind, the stone in)
 enum class FreshPlan : std::uint8_t
 {
     Keep,
@@ -1362,10 +1381,7 @@ inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
         return FreshPlan::Replan;
     if (!goals.plan || !goals.plan->ranked.ok)
         return FreshPlan::Keep;
-    Goals::Ranked const& ranked = goals.plan->ranked;
-    bool const sickErrand = ranked.sickErrandOpen && !ranked.options.empty() &&
-                            ranked.options.front().kind == Goals::GoalKind::Errand && ranked.options.front().due;
-    return goals.inFallback || sickErrand ? FreshPlan::Take : FreshPlan::Keep;
+    return goals.inFallback || goals.plan->ranked.sickGoal ? FreshPlan::Take : FreshPlan::Keep;
 }
 
 // The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way

@@ -22,6 +22,7 @@
 #include "GoalModel.h"
 #include "GoalModelLog.h"
 #include "InterludeInputs.h"
+#include "UpkeepRules.h"
 
 // The goal model's scenarios (travel plan WT14): synthetic bots and places, one check per decision. Proof is
 // functional (WT.21): each check is about the chosen goal and its reason word, never a number of our own. Shared by
@@ -1973,23 +1974,27 @@ inline void RepairFirst(std::vector<Check>& checks)
     Add(checks, "repair: lowest 40 %, none broken, is not due", !due(worn(0, 40, 90, FLUSH)), "");
     Add(checks, "repair: gold below the cheapest worn item is not due", !due(worn(1, 0, 90, 10)), "");
 
-    // NE11 (NE.3): a sick bot's due repair opens once recover has handed it over (Snapshot::sickErrandOpen); until
-    // then, and without a due repair, the bot rests (forced) as before
+    // NR3 (NR.4): a sick bot takes a goal only once recover has handed it over (Snapshot::sickErrandOpen); then the
+    // sick gate passes an errand whose stops keep to the safe area it stands in, and the rest is its fallback. Until
+    // then, and with nothing the gate passes, it rests (forced) as before
     Snapshot sick = worn(1, 0, 90, FLUSH);
     sick.sickMs = 60000;
-    Ranked const rests = Rank(sick, situation);
+    Situation inside = situation;
+    inside.sickSafeHere = true;
+    inside.bags.repairer.safe = true;
+    Ranked const rests = Rank(sick, inside);
     Option const* restTop = Top(rests);
     Add(checks, "repair: a sick bot whose recover is not done (not clear or not restored) rests, no repair option",
         restTop && restTop->kind == GoalKind::Rest && restTop->forced && !Has(rests, GoalKind::Errand) &&
-            !rests.sickErrandOpen,
+            !rests.sickGoal,
         Summary(rests));
     Snapshot handed = sick;
     handed.sickErrandOpen = true;
-    Ranked const goes = Rank(handed, situation);
+    Ranked const goes = Rank(handed, inside);
     Option const* goTop = Top(goes);
-    Add(checks, "repair: a sick bot with a due repair recover handed over gets the errand, not rest",
+    Add(checks, "repair: a sick bot recover handed over gets the due repair in its safe area, the rest is the fallback",
         goTop && goTop->kind == GoalKind::Errand && goTop->reason == "repair" && goTop->due && !goTop->forced &&
-            goes.sickErrandOpen,
+            goes.sickGoal && Has(goes, GoalKind::Rest),
         Summary(goes));
     bool const onlyErrandAndRest =
         std::all_of(goes.options.begin(), goes.options.end(), [](Option const& option)
@@ -1998,9 +2003,14 @@ inline void RepairFirst(std::vector<Check>& checks)
                                           { return dropped.kind == GoalKind::Quest && dropped.reason == SICK_REASON; });
     Add(checks, "repair: the sick bot is offered only the errand and the rest: the quest hub is dropped (sick)",
         onlyErrandAndRest && questDropped && Has(goes, GoalKind::Rest) && Has(first, GoalKind::Quest), Summary(goes));
+    Ranked const outside = Rank(handed, situation);
+    Add(checks, "repair: the same repairer outside the bot's safe area is no errand: the bot rests (forced)",
+        Top(outside) && Top(outside)->kind == GoalKind::Rest && Top(outside)->forced && !Has(outside, GoalKind::Errand),
+        Summary(outside));
     Snapshot whole = worn(0, 90, 95, FLUSH);
     whole.sickMs = 60000;
-    Ranked const idle = Rank(whole, situation);
+    whole.sickErrandOpen = true;
+    Ranked const idle = Rank(whole, inside);
     Option const* idleTop = Top(idle);
     Add(checks, "repair: a sick bot with nothing due rests (forced) and gets no errand",
         idleTop && idleTop->kind == GoalKind::Rest && idleTop->forced && !Has(idle, GoalKind::Errand), Summary(idle));
@@ -2018,6 +2028,179 @@ inline void RepairFirst(std::vector<Check>& checks)
             staying.verdict == ReplanVerdict::Stay,
         std::string(ReplanWord(switched.verdict)) + " " + switched.reason + " / " + ReplanWord(staying.verdict) + " " +
             staying.reason);
+}
+
+// NR3 (NR.4, stage 1): where a sick bot is safe (Upkeep::SafeAreas, as the map thread fills them), the sick gate of
+// the goal model on those answers and the sick rest at a clear point
+inline void SickSafeAreas(std::vector<Check>& checks)
+{
+    constexpr std::uint32_t STORMWIND = 1519;
+    constexpr std::uint32_t LOW_ZONE = 40;    // an own side's zone whose range ends at 20
+    constexpr std::uint32_t LEVEL_ZONE = 44;  // a zone of the bot's level
+    constexpr std::uint32_t SANCTUARY = 3703;
+    auto const sickBot = [](std::uint8_t level)
+    {
+        Snapshot bot = Bot(level, FLUSH);
+        bot.sickMs = 300000;
+        bot.sickErrandOpen = true;
+        return bot;
+    };
+    auto const city = [](std::uint32_t zone)
+    {
+        Upkeep::SafeAreas areas;
+        areas.city = zone;
+        return areas;
+    };
+    auto const low = [](std::uint32_t zone, std::uint32_t high, bool own, std::uint32_t level)
+    {
+        Upkeep::SafeAreas areas;
+        areas.lowZone = Upkeep::LowZoneSafe(high, own, GreyLevel(level)) ? zone : 0;
+        return areas;
+    };
+    Upkeep::SafeAreas const nowhere;
+    // The bot's situation as the map thread fills it: its own areas and those of the vendor's spot
+    auto const placed = [](Situation situation, Upkeep::SafeAreas const& here, Upkeep::SafeAreas const& vendor)
+    {
+        situation.sickSafeHere = Upkeep::IsSafe(here);
+        bool const safe = Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, here, vendor);
+        situation.bags.vendor.safe = safe;
+        situation.bags.repairer.safe = safe;
+        return situation;
+    };
+    auto const onlySafeKinds = [](Ranked const& ranked)
+    {
+        return std::all_of(ranked.options.begin(), ranked.options.end(),
+                           [](Option const& option)
+                           {
+                               return option.kind == GoalKind::Errand || option.kind == GoalKind::Rest ||
+                                      option.kind == GoalKind::Hearth;
+                           });
+    };
+    auto const droppedSick = [](Ranked const& ranked, GoalKind kind)
+    {
+        return std::any_of(ranked.dropped.begin(), ranked.dropped.end(), [kind](Dropped const& dropped)
+                           { return dropped.kind == kind && dropped.reason == SICK_REASON; });
+    };
+
+    // The predicate's parts
+    Add(checks,
+        "safe: a hub of the other side is not safe, nor one without a flight master or an innkeeper, nor one "
+        "with a member hostile to the bot; its own or a neutral hub with an inn is",
+        !Upkeep::HubSafe(true, true, false) && !Upkeep::HubSafe(false, false, false) &&
+            !Upkeep::HubSafe(false, true, true) && Upkeep::HubSafe(false, true, false) && Upkeep::HostileMember(0) &&
+            Upkeep::HostileMember(1) && !Upkeep::HostileMember(2),
+        "");
+    Add(checks,
+        "safe: a zone ending at 20 is low for a level 60 bot of its side, not for the other side, not at level 20",
+        low(LOW_ZONE, 20, true, 60).lowZone == LOW_ZONE && !low(LOW_ZONE, 20, false, 60).lowZone &&
+            !low(LOW_ZONE, 20, true, 20).lowZone && !low(LOW_ZONE, 0, true, 60).lowZone,
+        "");
+    Add(checks, "safe: an own capital and a sanctuary (zone or area) are cities, the other side's capital is not",
+        Upkeep::SafeCity(STORMWIND, 0, true, false, false) == STORMWIND &&
+            Upkeep::SafeCity(SANCTUARY, 0, false, true, false) == SANCTUARY &&
+            Upkeep::SafeCity(LEVEL_ZONE, 7, false, false, true) == 7 && !Upkeep::SafeCity(1637, 0, false, false, false),
+        "");
+    Upkeep::SafeAreas hubA;
+    hubA.hubs = {3};
+    Upkeep::SafeAreas hubB;
+    hubB.hubs = {4};
+    Add(checks, "safe: a walk stays in one safe area; the stone needs only its end safe, a flight both ends",
+        Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, hubA, hubA) &&
+            !Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, hubA, hubB) &&
+            !Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, city(STORMWIND), nowhere) &&
+            Upkeep::SafeLeg(Upkeep::SafeLegKind::Hearthstone, nowhere, hubA) &&
+            !Upkeep::SafeLeg(Upkeep::SafeLegKind::Flight, nowhere, hubA) &&
+            Upkeep::SafeLeg(Upkeep::SafeLegKind::Flight, hubB, hubA),
+        "");
+
+    // A capital, a vendor stop due (full bags), no repair due: the errand (NE11 gave it rest)
+    Situation base = Base();
+    base.bags.sellableSlots = 10;
+    base.bags.vendor = {77, 1.0f, false};
+    base.spots = {Spot(11, 75.0f, 10.0f)};
+    Snapshot full = sickBot(10);
+    full.bagFree = 0;
+    CircuitPlan const circuit = Circuit(full, base, 1500.0f, 200.0f, 20.0f);
+    base.circuit = &circuit;
+    Situation const capital = placed(base, city(STORMWIND), city(STORMWIND));
+    Ranked const sells = Rank(full, capital);
+    Option const* sellTop = Top(sells);
+    Add(checks, "sick: in a capital with a vendor stop due and no repair due the bot gets the errand, rest below it",
+        sellTop && sellTop->kind == GoalKind::Errand && sellTop->reason.rfind("bags_full", 0) == 0 && !sellTop->due &&
+            !sellTop->forced && sells.sickGoal && Has(sells, GoalKind::Rest),
+        Summary(sells));
+    Add(checks, "sick: quest and grind options stay dropped while sick",
+        onlySafeKinds(sells) && droppedSick(sells, GoalKind::Quest) &&
+            (droppedSick(sells, GoalKind::Grind) || droppedSick(sells, GoalKind::Money)),
+        Summary(sells));
+
+    // A zone of its level outside every hub, a repair due 300 yd away: rest at the clear point recover walks it to
+    Snapshot outside = sickBot(20);
+    outside.brokenItems = 1;
+    outside.lowestDurabilityPercent = 0;
+    outside.repairCheapest = 40;
+    outside.position = {EASTERN, -9000.0f, -2000.0f, 50.0f};
+    Place const clear{EASTERN, -9010.0f, -2004.0f, 51.0f};
+    outside.sickRest = clear;
+    Situation away = Base(20);
+    away.bags.repairer = {78, WorldTravel::WalkMinutes(300.0f, 7.0f), true};
+    away = placed(away, low(LEVEL_ZONE, 25, true, 20), city(STORMWIND));
+    Ranked const rests = Rank(outside, away);
+    Option const* restTop = Top(rests);
+    bool const atClear =
+        restTop && restTop->place.map == clear.map && restTop->place.x == clear.x && restTop->place.y == clear.y;
+    Add(checks,
+        "sick: outside every hub in a zone of its level the bot rests at a clear point, also with a repair due "
+        "300 yd away",
+        restTop && restTop->kind == GoalKind::Rest && restTop->forced && atClear && !Has(rests, GoalKind::Errand) &&
+            !rests.sickGoal,
+        Summary(rests));
+
+    // The same bot with its stone ready and bound in a safe hub: the stone, then its errand at the inn
+    Snapshot stone = outside;
+    stone.hasHearthstone = true;
+    stone.hearthCooldownMs = 0;
+    stone.hearth = {EASTERN, -9460.0f, 42.0f, 0.0f};
+    Situation bound = away;
+    bound.sickHearthSafe = Upkeep::SafeLeg(Upkeep::SafeLegKind::Hearthstone, low(LEVEL_ZONE, 25, true, 20), hubA);
+    Ranked const hearths = Rank(stone, bound);
+    Option const* hearthTop = Top(hearths);
+    Add(checks, "sick: the same bot with its hearthstone ready and bound in a safe hub takes the stone to its errand",
+        hearthTop && hearthTop->kind == GoalKind::Errand && hearthTop->reason == SICK_HEARTH_REASON &&
+            hearthTop->place.x == stone.hearth.x && hearthTop->place.y == stone.hearth.y && hearths.sickGoal,
+        Summary(hearths));
+    Snapshot cooling = stone;
+    cooling.hearthCooldownMs = 600000;
+    Situation unbound = bound;
+    unbound.sickHearthSafe = false;
+    Ranked const cooled = Rank(cooling, bound);
+    Ranked const elsewhere = Rank(stone, unbound);
+    Add(checks, "sick: a stone on cooldown or bound outside every safe area gives no way in: the bot rests",
+        Top(cooled) && Top(cooled)->kind == GoalKind::Rest && Top(cooled)->forced && Top(elsewhere) &&
+            Top(elsewhere)->kind == GoalKind::Rest && Top(elsewhere)->forced,
+        Summary(cooled) + " / " + Summary(elsewhere));
+
+    // A level 60 bot in its side's zone that ends at 20: the zone is safe, its errand runs there
+    Snapshot old = sickBot(60);
+    old.bagFree = 0;
+    Situation lowZone = placed(base, low(LOW_ZONE, 20, true, 60), low(LOW_ZONE, 20, true, 60));
+    lowZone.circuit = nullptr;
+    Ranked const oldSells = Rank(old, lowZone);
+    Add(checks, "sick: a level 60 bot in a zone of its side that ends at level 20 gets its errand",
+        Top(oldSells) && Top(oldSells)->kind == GoalKind::Errand && oldSells.sickGoal, Summary(oldSells));
+
+    // A healthy bot's options do not read the sick facts
+    Snapshot healthy = full;
+    healthy.sickMs = 0;
+    healthy.sickErrandOpen = false;
+    Ranked const plain = Rank(healthy, base);
+    Ranked const flagged = Rank(healthy, capital);
+    bool same = plain.options.size() == flagged.options.size() && plain.dropped.size() == flagged.dropped.size();
+    for (std::size_t i = 0; same && i < plain.options.size(); ++i)
+        same = SameTarget(plain.options[i], flagged.options[i]) &&
+               plain.options[i].valuePerMinute == flagged.options[i].valuePerMinute;
+    Add(checks, "sick: a healthy bot's options are unchanged by the safe-area facts", same && !plain.sickGoal,
+        Summary(plain) + " / " + Summary(flagged));
 }
 
 // WN4: no option names the no-hub or no-camp marker (WN3's side fact: circuit rows quest:4294967295). Searched over
@@ -2295,6 +2478,7 @@ inline std::vector<Check> SyntheticChecks()
     TargetsAndRepairs(checks);
     RepairDuringQuest(checks);
     RepairFirst(checks);
+    SickSafeAreas(checks);
     Targets(checks);
     Routes(checks);
     HeldFromQuests(checks);

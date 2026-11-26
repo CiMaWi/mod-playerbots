@@ -107,7 +107,11 @@ constexpr float DEATH_CHANCE_AT_ZERO = 0.5f;
 constexpr float DEATH_MINUTES = 5.0f;  // a corpse run
 constexpr float REST_MINUTES = 0.5f;
 constexpr float MINUTE_MS = 60000.0f;
-constexpr char const* SICK_REASON = "sick";  // a sick bot rests; every other option is dropped (upkeep §3.5, WU16)
+constexpr char const* SICK_REASON = "sick";  // a sick bot rests; the sick gate drops what it may not take (NR3)
+// NR3 (NR.4): a sick bot outside every safe area with an errand wanted, its hearthstone ready and bound in a safe area:
+// it uses the stone, then runs its errand at the inn (the errand option's place is the bind)
+constexpr char const* SICK_HEARTH_REASON = "sick_hearth";
+constexpr float HEARTH_CAST_MINUTES = 10.0f / 60.0f;  // the hearthstone's cast
 
 constexpr float HEARTH_USES = 1.0f;
 constexpr float BIND_MINUTES = 0.5f;
@@ -389,6 +393,8 @@ struct Vendor
     std::uint32_t id{0};
     float walkMinutes{-1.0f};  // < 0: none known
     bool repairs{false};
+    bool safe{
+        false};  // NR3, a sick bot's only: the walk to it stays in a safe area the bot stands in (Upkeep::SafeLeg)
 };
 
 struct Bags
@@ -408,6 +414,7 @@ struct CraftQueue
     float worth{0.0f};         // value units (SkillPath::QueueWorth); 0: no queued craft the bags allow now
     float walkMinutes{-1.0f};  // to the station; < 0: none within the errand walk
     float minutes{0.0f};       // the visit's casts
+    bool safe{false};          // NR3, a sick bot's only: the station lies in the bot's safe area (Vendor::safe)
 };
 
 struct BagOffer
@@ -428,6 +435,7 @@ struct Inn
     bool fits{false};      // its zone fits the bot's level
     bool usual{false};     // the bind is not far from it: a bind there saves nothing (InterludeInputs.h UsualInn)
     bool unstayed{false};  // the bot has not stayed near it for the dwell (InterludeInputs.h MarkUnstayed, NR.5)
+    bool safe{false};      // NR3, a sick bot's only: the inn lies in the bot's safe area (Vendor::safe)
 };
 
 // A carried quest's turn-in at another hub or map (CircuitPlan::carried): its reward over the journey
@@ -478,6 +486,10 @@ struct Situation
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
     std::vector<Inn> inns;
+    // NR3 (NR.4), a sick bot's only (Upkeep::SafeAreas on the map thread): it stands in a safe area; its bind lies in
+    // one
+    bool sickSafeHere{false};
+    bool sickHearthSafe{false};
     float healthPercent{100.0f};
     float manaPercent{-1.0f};        // < 0: no mana
     std::uint64_t reserveCopper{0};  // upkeep's reserve (NeedGoalBridge, WU16), unscaled: the model scales it by thrift
@@ -531,6 +543,10 @@ struct Option : Goal
     float bonus{0.0f};   // the class-quest unlock bonus in valuePerMinute (AddClassQuests); the stay test takes it off
     bool forced{false};  // ranks above everything and replaces any goal: a sick bot's rest (AddSickRest)
     bool due{false};     // ranks right after forced and replaces any goal but itself: a due repair (NE.3, AddErrand)
+    // The sick gate's facts (NR3, NR.4): the option starts no fight, and every stop of its route keeps to the safe area
+    // (Upkeep::SafeLeg). Only the options that set both pass while the bot is sick; a healthy bot's ignore them
+    bool peaceful{false};
+    bool safeStops{false};
     std::vector<std::string> traitNotes;
 };
 
@@ -572,9 +588,9 @@ struct Ranked
     std::uint32_t considered{0};
     std::vector<Option> options;  // the best RANK_KEEP, best first
     std::vector<Dropped> dropped;
-    // Made for a sick bot whose due repair recover handed over (NE11): a sickness rest yields to the plan's best
-    // option when that is the due errand (GoalApply::OnFreshPlan)
-    bool sickErrandOpen{false};
+    // A sick bot's plan whose best option passed the sick gate (NR3): the sickness rest yields to it
+    // (GoalApply::OnFreshPlan)
+    bool sickGoal{false};
 };
 
 struct RiskInput
@@ -686,12 +702,12 @@ public:
         _ranked.referenceRate = ReferenceRate();
         AddErrand();
         AddBagOffers();
-        if (Sick())
-            AddSickRest();
-        else
+        if (!Sick())
             AddRest();
         AddHearth();
         AddClassQuests();
+        if (Sick())
+            AddSickRest();
         return Finish();
     }
 
@@ -747,8 +763,9 @@ private:
             Drop(option, "noquest");
             return;
         }
-        // Resurrection sickness drops every option but the due repair recover handed over (NE11)
-        if (Sick() && !(_bot.sickErrandOpen && option.kind == GoalKind::Errand && option.due))
+        // The sick gate (NR3, NR.4): once recover has handed the bot over, an option passes when it starts no fight and
+        // its stops keep to the safe area; every other option of a sick bot is dropped
+        if (Sick() && !(_bot.sickErrandOpen && option.peaceful && option.safeStops))
         {
             Drop(option, SICK_REASON);
             return;
@@ -1187,17 +1204,16 @@ private:
     void AddErrand()
     {
         Bags const& bags = _situation.bags;
-        auto const known = [](Vendor const& vendor)
-        { return vendor.walkMinutes >= 0.0f && std::isfinite(vendor.walkMinutes); };
+        // A sick bot (NR3, NR.4) walks only to the vendors, the repairer and the station in the safe area it stands in
+        // (their `safe`); outside every safe area its errand goes by the hearthstone (AddSickHearthErrand)
+        bool const sick = Sick();
+        auto const known = [sick](Vendor const& vendor)
+        { return vendor.walkMinutes >= 0.0f && std::isfinite(vendor.walkMinutes) && (!sick || vendor.safe); };
         Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
-        bool const repair = known(repairer) && repairer.repairs &&
-                            UpkeepNeeds::RepairErrandDue(_bot.brokenItems, _bot.lowestDurabilityPercent,
-                                                         _bot.repairCheapest, _bot.money) &&
+        bool const repairWanted = UpkeepNeeds::RepairErrandDue(_bot.brokenItems, _bot.lowestDurabilityPercent,
+                                                               _bot.repairCheapest, _bot.money);
+        bool const repair = known(repairer) && repairer.repairs && repairWanted &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
-        // A sick bot's errand is the due repair alone (NE11): full bags name no trip of their own; the trip takes the
-        // other errands on its way
-        if (Sick() && !repair)
-            return;
         // The craft queue counts only when the errand rules would take its station stop: its worth in copper above the
         // detour of a trip of its own (WorldTravel::CollectOffers' test; WR14b run 2: a chosen craft errand whose stop
         // the errand plan then refused as detour_not_worth)
@@ -1205,7 +1221,17 @@ private:
         CraftQueue const& queue = _situation.craft;
         bool const craft = queue.worth > 0.0f && queue.walkMinutes >= 0.0f &&
                            queue.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES && _model.need.exchange > 0.0f &&
-                           queue.worth / _model.need.exchange > WorldTravel::DetourCost(rates, queue.walkMinutes);
+                           queue.worth / _model.need.exchange > WorldTravel::DetourCost(rates, queue.walkMinutes) &&
+                           (!sick || queue.safe);
+        std::uint32_t const usedPercent = _bot.bagSlots ? (_bot.bagSlots - std::min(_bot.bagFree, _bot.bagSlots)) *
+                                                              WorldTravel::PERCENT / _bot.bagSlots
+                                                        : 0;
+        bool const bagsPressed = _bot.bagSlots && usedPercent >= ErrandPressurePercent(W());
+        if (sick && !_situation.sickSafeHere)
+        {
+            AddSickHearthErrand(repairWanted, bagsPressed, rates);
+            return;
+        }
         if (!known(bags.vendor) && !repair && !craft)
             return;
 
@@ -1213,21 +1239,21 @@ private:
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
         option.minutes = bags.vendor.walkMinutes + VISIT_MINUTES;
-        if (!Sick() && _bot.bagSlots && known(bags.vendor))
+        // The trip starts no fight while the bot is sick (WorldTravel::KeepSickErrands leaves the tame out) and its
+        // stops are the safe vendors above
+        option.peaceful = true;
+        option.safeStops = true;
+        if (bagsPressed && known(bags.vendor))
         {
-            std::uint32_t const used = _bot.bagSlots - std::min(_bot.bagFree, _bot.bagSlots);
-            std::uint32_t const usedPercent = used * WorldTravel::PERCENT / _bot.bagSlots;
             WorldTravel::TripInput in;
             in.Rates = rates;
             in.FreeSlots = _bot.bagFree;
             in.SellableSlots = bags.sellableSlots;
             in.WalkMinutes = bags.vendor.walkMinutes;
             in.MinutesToNextStop = bags.minutesToNextStop;
-            if (usedPercent >= ErrandPressurePercent(W()) && WorldTravel::TripWorthIt(in))
+            if (WorldTravel::TripWorthIt(in))
             {
-                float const saved = WorldTravel::SlotsWorthPerHour(rates, _bot.bagFree, bags.sellableSlots) *
-                                    bags.minutesToNextStop / WorldTravel::MINUTES_PER_HOUR;
-                option.expected += saved * _model.need.exchange;
+                option.expected += BagsSaved(rates) * _model.need.exchange;
                 option.reason = bags.vendor.walkMinutes <= NEAR_VENDOR_MINUTES ? "bags_full_vendor_near" : "bags_full";
                 if (std::abs(W().orderliness) >= NOTICEABLE_UNIT)
                     option.traitNotes.emplace_back(W().orderliness > 0.0f ? "orderly" : "untidy");
@@ -1258,6 +1284,35 @@ private:
         }
         if (!option.reason.empty())
             Add(std::move(option), {});
+    }
+
+    // The worth of the bag slots a vendor stop frees until the bot passes a vendor anyway, in copper
+    float BagsSaved(WorldTravel::SlotRates const& rates) const
+    {
+        Bags const& bags = _situation.bags;
+        return WorldTravel::SlotsWorthPerHour(rates, _bot.bagFree, bags.sellableSlots) * bags.minutesToNextStop /
+               WorldTravel::MINUTES_PER_HOUR;
+    }
+
+    // NR3 (NR.4): a sick bot outside every safe area takes the one safe way in, its hearthstone, when the stone is
+    // ready and bound in a safe area and an errand is wanted (the repair rule, or bags at the pressure); its errand
+    // then runs at the inn, planned there from the new place. No stone: no option, the bot rests at a clear point.
+    // Never a walk to the nearest safe area
+    void AddSickHearthErrand(bool repairWanted, bool bagsPressed, WorldTravel::SlotRates const& rates)
+    {
+        if (!_bot.hasHearthstone || _bot.hearthCooldownMs || !_situation.sickHearthSafe ||
+            !(repairWanted || bagsPressed))
+            return;
+        Option option;
+        option.kind = GoalKind::Errand;
+        option.place = _bot.hearth;
+        option.minutes = HEARTH_CAST_MINUTES + VISIT_MINUTES;
+        option.expected =
+            repairWanted ? REPAIR_MINUTES_SAVED * _ranked.referenceRate : BagsSaved(rates) * _model.need.exchange;
+        option.reason = SICK_HEARTH_REASON;
+        option.peaceful = true;
+        option.safeStops = true;
+        Add(std::move(option), {});
     }
 
     // A bag bought by WT2's rule: price within its worth and the budget after the reserve; the price is paid either way
@@ -1324,21 +1379,21 @@ private:
         Add(std::move(option), {});
     }
 
-    // A sick bot rests until the sickness ends (upkeep §3.5): forced, so it ranks above everything, a bridge goal
-    // too; its worth is the time at the reference rate the sickness would cost in a fight. Once recover has handed a
-    // due repair over (NE11) it is not forced: the due errand ranks above it, and the rest stays the plan's fallback
+    // A sick bot rests at a clear point until the sickness ends (upkeep §3.5, NR3): the one recover walks it to
+    // (Snapshot::sickRest), else where it stands. Added last: with no option the sick gate passed it is forced, so it
+    // ranks above everything, a bridge goal too, its worth the time at the reference rate the sickness would cost in a
+    // fight. With one (NR.4: an errand, the bind, the stone in) it is the plan's fallback and ranks below them
     void AddSickRest()
     {
         Option option;
         option.kind = GoalKind::Rest;
-        option.place = _bot.position;
+        option.place = _bot.sickRest.value_or(_bot.position);
         option.minutes = std::max(static_cast<float>(_bot.sickMs) / MINUTE_MS, REST_MINUTES);
-        option.expected = option.minutes * _ranked.referenceRate;
+        option.forced = _options.empty();
+        option.expected = option.forced ? option.minutes * _ranked.referenceRate : 0.0f;
         option.value = option.expected;
-        option.valuePerMinute = _ranked.referenceRate;
-        option.forced = !_bot.sickErrandOpen;
+        option.valuePerMinute = option.forced ? _ranked.referenceRate : 0.0f;
         option.reason = SICK_REASON;
-        _ranked.sickErrandOpen = _bot.sickErrandOpen;
         ++_ranked.considered;
         _options.push_back(std::move(option));
     }
@@ -1410,6 +1465,9 @@ private:
         option.minutes = WorldTravel::WalkMinutes(inn.yards, _model.runSpeed) + BIND_MINUTES;
         option.expected = savedMinutes * HEARTH_USES * _ranked.referenceRate;
         option.reason = "bind_far";
+        // The walk to the inn and the bind start no fight; a sick bot takes it only for an inn in its safe area
+        option.peaceful = true;
+        option.safeStops = inn.safe;
         Add(std::move(option), {});
     }
 
@@ -1425,6 +1483,8 @@ private:
             if (!seen)
                 _ranked.options.push_back(std::move(option));
         }
+        // While sick the only rest is the sickness rest (AddSickRest): any other best option passed the sick gate
+        _ranked.sickGoal = Sick() && !_ranked.options.empty() && _ranked.options.front().kind != GoalKind::Rest;
         _ranked.ok = true;
         return std::move(_ranked);
     }
