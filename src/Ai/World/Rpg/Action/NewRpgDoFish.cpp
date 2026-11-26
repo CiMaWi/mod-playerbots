@@ -402,14 +402,40 @@ void Click(PlayerbotAI* botAI, NewRpgInfo::DoFish& data, GameObject* bobber)
     }
     CastOver(data);
 }
+
+// Why a trip is still on at its deadline (profession coverage WPC12): both clocks and the plan, the branch its last
+// tick waited in and what holds the bot there
+void TraceDeadline(PlayerbotAI* botAI, NewRpgInfo::DoFish const& data, char const* word)
+{
+    Player* const bot = botAI->GetBot();
+    Fish::Trip const trip = Clocks(botAI, data);
+    LOG_INFO("playerbots",
+             "[Professions] {} fishing trip deadline trace: word {}, status {:.1f} min, water {:.1f} min (cast {}), "
+             "plan {:.1f} min, wait {}, last tick {} s ago, combat {}, mounted {}, flying {}, fly aura {}, moving {}, "
+             "at ({:.1f}, {:.1f}, {:.1f}), stand ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd, on mesh {}, probes {}, refused {}",
+             bot->GetName(), word, trip.statusMinutes, trip.minutes, trip.cast ? 1 : 0, trip.planMinutes,
+             data.waitAt ? data.waitAt : "none",
+             data.tickMs ? static_cast<int32>(GetMSTimeDiffToNow(data.tickMs) / IN_MILLISECONDS) : -1,
+             bot->IsInCombat(), bot->IsMounted(), bot->IsFlying(), bot->HasFlyAura(), bot->isMoving(),
+             bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), data.stand.GetPositionX(),
+             data.stand.GetPositionY(), data.stand.GetPositionZ(),
+             bot->GetExactDist(data.stand.GetPositionX(), data.stand.GetPositionY(), data.stand.GetPositionZ()),
+             data.standOnMesh, data.probes, data.refusedCasts);
+}
 }  // namespace
 
 bool NewRpgDoFishAction::Execute(Event /*event*/)
 {
     auto* dataPtr = std::get_if<NewRpgInfo::DoFish>(&botAI->rpgInfo.data);
-    if (!dataPtr || !bot->IsAlive() || bot->IsInCombat())
+    if (!dataPtr)
         return false;
     NewRpgInfo::DoFish& data = *dataPtr;
+    data.tickMs = std::max<uint32>(getMSTime(), 1);
+    if (!bot->IsAlive() || bot->IsInCombat())
+    {
+        data.waitAt = bot->IsAlive() ? "combat" : "dead";
+        return false;
+    }
 
     if (bot->GetMapId() != data.shore.GetMapId())
     {
@@ -640,8 +666,9 @@ bool NewRpgDoFishAction::PastDeadline(PlayerbotAI* botAI)
     return data && Fish::PastDeadline(Clocks(botAI, *data));
 }
 
-void NewRpgDoFishAction::Trace(NewRpgInfo::DoFish const& data, char const* where)
+void NewRpgDoFishAction::Trace(NewRpgInfo::DoFish& data, char const* where)
 {
+    data.waitAt = where;
     if (!botAI->testConstraints || where == traced)
         return;
     traced = where;
@@ -766,6 +793,8 @@ void NewRpgDoFishAction::EndTrip(PlayerbotAI* botAI, NewRpgInfo::DoFish const& d
         weaponBack = !IsPole(MainHand(bot));
     }
     char const* const source = outcome == StatusEnd::Outcome::TimedOut ? DEADLINE : word;
+    if (outcome == StatusEnd::Outcome::TimedOut)
+        TraceDeadline(botAI, data, word);
     uint32 const area = bot->GetAreaId();
     LOG_INFO("playerbots",
              "[Professions] {} fishing trip {}: area {}, {} casts, {} catches, {} at a pool, chance {:.2f}, weapon "
