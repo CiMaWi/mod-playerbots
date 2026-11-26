@@ -24,6 +24,7 @@
 #include "FieldMap.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
+#include "QuestFailRows.h"
 #include "QuestLogRules.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -800,6 +801,7 @@ struct BotGoals
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
+    QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
     std::uint32_t pathMs{0};  // its snapshot's time

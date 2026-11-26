@@ -15,6 +15,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -291,6 +292,9 @@ struct QuestRecord
     // 0: it does every objective. Set after the build by QuestExec::MarkRefusals (QuestExecRules.h), 0 in synthetic
     // records; Eligible reads it, so the planner's feed offers no quest the executor cannot do
     std::array<std::uint8_t, SIDES> refused{};
+    // WQ38: the cause word of its row in playerbots_quest_impossible (read at startup); empty: not listed. A listed
+    // quest gives no need and no take, and the readings leave it out
+    std::string impossible;
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };
@@ -1154,14 +1158,18 @@ inline std::uint8_t SideOfRace(std::uint8_t race)
 // WT36a: whether the executor refuses the quest for that side (QuestRecord::refused)
 inline bool RefusedFor(QuestRecord const& quest, std::uint8_t side) { return side < SIDES && quest.refused[side]; }
 
+// WQ38: whether the quest is on the list of quests known to be impossible (QuestRecord::impossible)
+inline bool Listed(QuestRecord const& quest) { return !quest.impossible.empty(); }
+
 // Whether a character of this race, class and level may take the quest (the template's limits; chain and
-// reputation rules are not here). WT36a: and the executor does every objective of it for the race's side
+// reputation rules are not here). WT36a: and the executor does every objective of it for the race's side; WQ38: and
+// it is not listed as impossible
 inline bool Eligible(QuestRecord const& quest, std::uint8_t race, std::uint8_t classId, std::uint8_t level)
 {
     auto const allows = [](std::uint32_t mask, std::uint8_t id)
     { return !mask || (id >= 1 && id <= 32 && (mask & (1u << (id - 1)))); };
     return allows(quest.raceMask, race) && allows(quest.classMask, classId) && level >= quest.minLevel &&
-           (!quest.maxLevel || level <= quest.maxLevel) && !RefusedFor(quest, SideOfRace(race));
+           (!quest.maxLevel || level <= quest.maxLevel) && !RefusedFor(quest, SideOfRace(race)) && !Listed(quest);
 }
 
 // The services hub a camp belongs to: the nearest hub whose core (its radius, at most HUB_CORE_YARDS from its

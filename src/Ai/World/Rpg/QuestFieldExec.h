@@ -617,6 +617,16 @@ inline std::int64_t RowAmount(std::uint32_t placeCredits, std::uint32_t wayCredi
                                      coordinate(FieldCellXOf(cell)) << 36 | coordinate(FieldCellYOf(cell)) << 46);
 }
 
+// WQ38: the QuestStall row's amount: the stall sum's whole minutes (12 bits, capped) and the order's cell (10 bits a
+// coordinate, two's complement, as RowAmount's), minutes | x << 12 | y << 22; never negative
+inline std::int64_t StallRowAmount(std::uint32_t minutes, std::uint64_t cell)
+{
+    auto const coordinate = [](std::int32_t c)
+    { return static_cast<std::uint64_t>(static_cast<std::uint32_t>(c)) & ROW_CELL_MASK; };
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(std::min(minutes, ROW_COUNT_MAX)) |
+                                     coordinate(FieldCellXOf(cell)) << 12 | coordinate(FieldCellYOf(cell)) << 22);
+}
+
 // The QuestOrder row's source: the order's word and its end, "field:done"
 inline char const* RowSource(QuestOrderWord word, QuestOrderEnd end)
 {

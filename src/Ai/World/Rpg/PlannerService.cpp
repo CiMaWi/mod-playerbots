@@ -1448,6 +1448,8 @@ void SituationChanged(PlayerbotAI* botAI)
         state.goals->situationChanged = true;
 }
 
+QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot) { return GoalsOf(botAI, bot).questStalls; }
+
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
 {
     Planner::BotState& state = botAI->planner;

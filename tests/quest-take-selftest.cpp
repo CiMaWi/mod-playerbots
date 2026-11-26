@@ -240,6 +240,8 @@ void Table()
         });
     add("maximum level", "limits", [](QuestRecord& q) { q.maxLevel = 19; });
     add("refused for the side", "unsupported", [](QuestRecord& q) { q.refused[0] = 1; });
+    add("listed as impossible", "impossible", [](QuestRecord& q) { q.impossible = "far_trip"; });  // WQ38
+    add("listed and in the log", "in_log", [](QuestRecord& q) { q.impossible = "data"; }, InLog({100}));
     add("refused for the other side", "yes", [](QuestRecord& q) { q.refused[1] = 1; });
     add("3 levels above", "yes", [](QuestRecord& q) { q.level = 23; });
     add("4 levels above", "too_high", [](QuestRecord& q) { q.level = 24; });
@@ -341,7 +343,7 @@ void Table()
     for (std::size_t i = 0; i < seen.size(); ++i)
         Check(seen[i], std::string("table: no case for ") + Take::WORDS[i]);
     std::array<std::string, static_cast<std::size_t>(Reason::Count)> const words = {
-        "done",     "in_log", "given_up", "repeatable",  "level",        "limits",    "unsupported",
+        "done",     "in_log", "given_up", "impossible",  "repeatable",   "level",     "limits",    "unsupported",
         "too_high", "grey",   "kind",     "elite_group", "prerequisite", "exclusive", "breadcrumb"};
     for (std::size_t i = 0; i < words.size(); ++i)
         Check(words[i] == Take::WORDS[i], std::string("word ") + std::to_string(i) + ": " + Take::WORDS[i]);
@@ -359,6 +361,7 @@ void Skips()
         {Reason::Done, "rewarded"},
         {Reason::InLog, "in log"},
         {Reason::GivenUp, "race/class/max level"},
+        {Reason::Impossible, "race/class/max level"},
         {Reason::Repeatable, "repeatable"},
         {Reason::Level, "too high"},
         {Reason::Limits, "race/class/max level"},
@@ -412,6 +415,8 @@ QuestRecord Generated(std::mt19937& rng, std::uint32_t id)
         quest.breadcrumbFor = pick(1, QUESTS + 1);
     quest.refused[0] = static_cast<std::uint8_t>(roll(5));
     quest.refused[1] = static_cast<std::uint8_t>(roll(5));
+    if (roll(5))
+        quest.impossible = "data";  // WQ38
     return quest;
 }
 
@@ -464,11 +469,16 @@ void GeneratedCases(std::uint32_t seed)
             bool const logOrDone = Take::Holds(lists.rewarded, quest.id) || Take::Holds(lists.inLog, quest.id);
             Check(!logOrDone || (why && (*why == Reason::Done || *why == Reason::InLog)),
                   what + ": in the log or rewarded, answer " + Answer(why));
-            bool const refused = RefusedFor(quest, SideOfRace(bot.race)) || Take::Holds(lists.givenUp, quest.id);
-            Check(!refused || why.has_value(), what + ": refused or given up, taken");
+            bool const refused =
+                RefusedFor(quest, SideOfRace(bot.race)) || Take::Holds(lists.givenUp, quest.id) || Listed(quest);
+            Check(!refused || why.has_value(), what + ": refused, given up or listed, taken");
 
             std::optional<Reason> const forCircuit = Take::May(quest, circuit, index);
-            std::optional<SkipReason> const before = OldTakeable(quest, old, index);
+            // WQ38: the old rule knew no list; a listed quest it would not skip as rewarded or in the log is skipped
+            // as one the executor refuses (Limits)
+            std::optional<SkipReason> before = OldTakeable(quest, old, index);
+            if (Listed(quest) && !(before && (*before == SkipReason::Rewarded || *before == SkipReason::InLog)))
+                before = SkipReason::Limits;
             std::optional<SkipReason> const after =
                 forCircuit ? std::optional<SkipReason>(SkipOf(*forCircuit)) : std::nullopt;
             Check(after == before, what + ": the circuit's skip " + (after ? SkipName(*after) : "none") +
