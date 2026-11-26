@@ -167,12 +167,45 @@ bool CastBlinkBackAction::Execute(Event event)
     return CastSpellAction::Execute(event);
 }
 
+// The highest known rank, from the "spell id" pick down, whose item the bot can use, or 0. A mage levelled down keeps
+// its higher ranks: their items need a level it lacks, the trigger (FindFoodVisitor's CanUseItem) does not count
+// them, and it would conjure them again at every trigger (NR6)
+uint32 CastConjureConsumableAction::UsableRank()
+{
+    for (uint32 spellId = AI_VALUE2(uint32, "spell id", spell); spellId;
+         spellId = sSpellMgr->GetPrevSpellInChain(spellId))
+    {
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || !bot->HasSpell(spellId))
+            continue;
+
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(spellInfo->Effects[0].ItemType);
+        if (proto && bot->CanUseItem(proto) == EQUIP_ERR_OK)
+            return spellId;
+    }
+
+    return 0;
+}
+
+// CastBuffSpellAction::Execute with the usable rank in place of the highest
+bool CastConjureConsumableAction::Execute(Event /*event*/)
+{
+    botAI->forceRebuff.NoteBuffWork();
+
+    uint32 const spellId = UsableRank();
+    if (!spellId || !botAI->CastSpell(spellId, bot))
+        return false;
+
+    context->GetValue<time_t>("last spell cast time", spell)->Set(time(nullptr));
+    return true;
+}
+
 bool CastConjureConsumableAction::isPossible()
 {
     if (!CastBuffSpellAction::isPossible())
         return false;
 
-    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(AI_VALUE2(uint32, "spell id", spell));
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(UsableRank());
     return spellInfo &&
            static_cast<int32>(bot->GetPower(POWER_MANA)) >= spellInfo->CalcPowerCost(bot, spellInfo->GetSchoolMask());
 }

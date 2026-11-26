@@ -6,6 +6,7 @@
 
 #include "LootAction.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "BankRulesInput.h"
@@ -33,11 +34,15 @@
 #include "PvpGearMgr.h"
 #include "ServerFacade.h"
 #include "TestConstraints.h"
+#include "TravelLegRules.h"
 #include "UseItemAction.h"
 #include "WorldTravelConfig.h"
 
 namespace
 {
+// ItemLimitCategory.dbc's "Mana Gem": the mage's six conjured mana gems (and the unused 36799), nothing else
+constexpr uint32 MANA_GEM_LIMIT_CATEGORY = 4;
+
 // Slots the stored loot newly takes; merging into a stack takes none
 float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
 {
@@ -80,7 +85,13 @@ bool DestroyForLoot(PlayerbotAI* botAI, AiObjectContext* context, uint32 lootWor
     for (Item* item : visitor.items)
     {
         WorldTravel::SpaceCandidate candidate;
-        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item);
+        // A conjured food, water, healthstone or mana gem the bot can use is kept: worth nothing at a vendor, it
+        // would be the first victim, and its caster conjures it again as soon as a slot is free (NR6); an unusable
+        // one may go. Mana gems carry no conjured flag; their limit category (ItemLimitCategory.dbc 4) holds them all
+        ItemTemplate const* proto = item->GetTemplate();
+        bool const conjured = proto->IsConjuredConsumable() || proto->ItemLimitCategory == MANA_GEM_LIMIT_CATEGORY;
+        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item) ||
+                              (conjured && bot->CanUseItem(proto) == EQUIP_ERR_OK);
         if (!candidate.Protected)
         {
             ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
@@ -300,6 +311,18 @@ struct OpenLootAction::InteractionAdapter
     void Defer() { Stack.Cancel("dry"); }
 };
 
+// In the air: falling, or flying by the flag and above the floor (the higher of ground and water). A bot on its flying
+// mount keeps the flag on the ground; it is dismounted for the loot like any mounted bot
+static bool LootInTheAir(Player* bot)
+{
+    if (bot->Unit::IsFalling())
+        return true;
+    if (!bot->IsFlying())
+        return false;
+    auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+    return TravelLegs::InTheAir(bot->GetPositionZ(), std::max(groundZ, waterZ));
+}
+
 LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
 {
     LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
@@ -307,8 +330,8 @@ LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
         return LootInteraction::Attempt::Prepared;
 
     if (availableLoot->IsLootPending() || bot->GetLootGUID() || bot->IsNonMeleeSpellCast(false) ||
-        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->IsFlying() ||
-        bot->Unit::IsFalling() || bot->GetTransport() || bot->GetVehicle())
+        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->GetTransport() ||
+        bot->GetVehicle() || LootInTheAir(bot))
         return LootInteraction::Attempt::Failed;
 
     InteractionAdapter adapter{*this, *bot, *availableLoot, AI_VALUE(LootObject, "loot target"), encounter};

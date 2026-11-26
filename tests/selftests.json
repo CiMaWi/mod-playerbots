@@ -283,6 +283,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "move-to-loot-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Base/Actions"
+            ],
+            "success": "move-to-loot-rules: \\d+ passed, 0 failed"
+        },
+        {
             "file": "flight-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
