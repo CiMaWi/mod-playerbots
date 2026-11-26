@@ -144,10 +144,11 @@ public:
     }
 
     // An exit is confirmed where the vessel still stands as it did when the crossing was issued (WT70c: the
-    // crossing is a stored row's, so no geometry is checked again)
+    // crossing is a stored row's, so no geometry is checked again). The vessel by the move's guid, so the check holds
+    // after the membership is gone too (G396)
     bool ExitAtIssuedDock(TravelLifecycle::PassengerMotion const& motion) const
     {
-        Transport const* const transport = _player.GetTransport();
+        Transport const* const transport = Resolve(motion.Transport);
         return transport && TravelTransportGeometry::AtIssuedDock(_player, *transport, motion);
     }
 

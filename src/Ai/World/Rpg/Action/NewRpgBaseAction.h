@@ -176,7 +176,6 @@ private:
         uint32 moveSeq{0};    // the move stamp: counts the ends of the local orders given
         uint32 lastMs{0};     // the last tick the local piece was served
         bool ordered{false};  // a local order is under way
-        bool arrived{false};  // a trip to this place arrived
         bool local{false};    // a local piece was ordered and its end is not seen yet (walkflush)
         bool spent{false};    // Away's answer for the last tick
         ObjectGuid object;    // an approach's object, the place it was picked at and its stand point
