@@ -8,15 +8,24 @@
 
 #include "BankMailState.h"
 #include "Log.h"
+#include "MoveSpline.h"
 #include "PlayerbotAI.h"
 #include "Transport.h"
 #include "Visit.h"
+#include "VisitLifecycle.h"
 
 namespace
 {
 char const* WalkWord(::GoTo::Answer answer)
 {
     return answer == ::GoTo::Answer::There ? "there" : answer == ::GoTo::Answer::Going ? "going" : "failed";
+}
+
+// A unit under a move (its flags, or a spline not yet finished); an object never moves
+bool Moving(WorldObject const* object)
+{
+    Unit const* unit = object ? object->ToUnit() : nullptr;
+    return unit && (unit->isMoving() || !unit->movespline->Finalized());
 }
 }  // namespace
 
@@ -43,11 +52,14 @@ bool NewRpgVisitAction::Execute(Event /*event*/)
         return away.value_or(true);
     }
     // The last yards into the kind's reach (WT64g, WT68): an object whose stand point the mesh does not carry ends the
-    // visit (its Stuck row); no other move is tried
+    // visit (its Stuck row); no other move is tried. The step found the object out of reach: an approach that answers
+    // there with both standing still ends it too (NR9: a stand point a floor away), unreached
     ::GoTo::Answer const answer = Approach(step.object, step.reach);
     if (botAI->testConstraints)
         ProbeWalk("reach", WalkWord(answer));
-    if (answer == ::GoTo::Answer::Failed)
+    bool const there = answer == ::GoTo::Answer::There;
+    if (BankMail::ApproachEndsVisit(answer == ::GoTo::Answer::Failed, there, there && Moving(bot),
+                                    there && Moving(botAI->GetWorldObject(step.object))))
         BankMail::EndVisits(botAI, step.unreached);
     return true;
 }

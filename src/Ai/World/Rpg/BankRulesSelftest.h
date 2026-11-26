@@ -946,6 +946,31 @@ inline KeepItemIn UsedMaterial(uint32_t entry, uint32_t count, uint32_t used, ui
     return item;
 }
 
+// NR9 W1 (NR8: 20 bank visits that found nothing due; why they were planned is not shown): a bank stack the skill path
+// uses, its step reached (due now), stored in the knowledge; then the path no longer uses it (materialUsed cleared:
+// the step is past or the path changed) and the bot levels. Observed, not fixed: DueAt reads only the stored due
+// level, so the stored entry still counts as due at the next level while the live rule keeps nothing due there
+inline void CheckMaterialDueAfterPathChange(Checker& checker)
+{
+    BankIn in = MakeIn(10, {}, {UsedMaterial(2840, 10, 10, 0)}, 4, 27);
+    in.bot.skills = {{SMITHING, SMITH_SKILL}};
+    std::vector<KeptEntry> const known = KeptInBank(in);
+    DueTotal const storedNow = DueAt(known, in.bot.level);
+    in.bank[0].item.materialUsed = 0;
+    in.bot.level = 11;
+    std::vector<KeptEntry> const liveKept = KeptInBank(in);
+    DueTotal const live = DueAt(liveKept, in.bot.level);
+    DueTotal const read = DueAt(known, in.bot.level);
+    checker.Note("W1: a used bank material, path step reached: kept " + std::to_string(known.size()) + ", due " +
+                 std::to_string(storedNow.count) + " at level 10; path cleared, level 11: live kept " +
+                 std::to_string(liveKept.size()) + " due " + std::to_string(live.count) +
+                 ", the stored knowledge read at 11 due " + std::to_string(read.count));
+    checker.Check(known.size() == 1 && storedNow.count == 10, "W1: a material its path uses now is kept and due now");
+    checker.Check(live.count == 0 && read.count == 10,
+                  "W1 observed: after the path stops using it, the stored entry still reads due at the next level "
+                  "(a bank visit with nothing due), the live rule none");
+}
+
 inline KeepItemIn RecipeItem(uint32_t entry, uint16_t skill, uint16_t rank, bool known = false)
 {
     KeepItemIn item;
@@ -1741,6 +1766,7 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckSettled(checker);
     CheckReplan(checker);
     CheckDueAfterLevelChange(checker);
+    CheckMaterialDueAfterPathChange(checker);
     CheckCarried(checker);
     CheckCarriedReleased(checker);
     CheckCarriedSpace(checker);

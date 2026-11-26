@@ -29,6 +29,7 @@
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "MailVisit.h"
+#include "Map.h"
 #include "ModelIgnoreFlags.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
@@ -90,6 +91,30 @@ UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
     Planner::FillStockWants(demand, botAI, true);
     UpkeepNeeds::DemandLevels(levels, demand);
     return levels;
+}
+
+// NR9 (NR8: Felika walks her path up to 229 yd from her spawn, past the near search): the stop's vendor by its indexed
+// spawn at the stop's place, wherever it walks on the bot's map (a creature the map has loaded); nullptr when the index
+// is not ready, the stop is no indexed vendor's spawn or the creature is not in the world. Once per stop, on arrival
+Creature* SpawnedVendor(Player* bot, NewRpgInfo::ErrandStop const& stop)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!indexes || stop.pos.GetMapId() != bot->GetMapId())
+        return nullptr;
+    uint32 const entry = stop.vendorEntry;
+    std::vector<Planner::Nearby> const spawns = indexes->NearestWhere(
+        Planner::ServiceKind::Vendor, stop.pos.GetMapId(), stop.pos.GetPositionX(), stop.pos.GetPositionY(),
+        stop.pos.GetPositionZ(), 1, [entry](Planner::Service const& service)
+        { return service.entry == entry && service.spawnId; }, WorldTravel::STOP_JOIN_YARDS);
+    if (spawns.empty())
+        return nullptr;
+    auto const bounds =
+        bot->GetMap()->GetCreatureBySpawnIdStore().equal_range(indexes->services[spawns[0].index].spawnId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+        if (it->second && it->second->IsInWorld())
+            return it->second;
+    return nullptr;
 }
 
 // A bank, mail or auction errand at the stop: the visit's own action (relevance 13, any status) walks to the box or
@@ -260,8 +285,13 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         {
             Creature* found =
                 bot->FindNearestCreature(stop.vendorEntry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
+            // A vendor that walks a path is found by its spawn wherever it walks (NR9) and approached below
+            if (!found)
+                found = SpawnedVendor(bot, stop);
             if (!found)
             {
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor",
+                                   WorldTravel::VendorPassedWord(false, false), 0.0f, {}, stop.vendorEntry);
                 data->vendorDone = true;
                 return true;
             }
@@ -272,6 +302,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         Creature* vendor = object ? object->ToCreature() : nullptr;
         if (!vendor || !vendor->IsAlive())
         {
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor",
+                               WorldTravel::VendorPassedWord(true, false), 0.0f, {}, stop.vendorEntry);
             data->vendorDone = true;
             return true;
         }
