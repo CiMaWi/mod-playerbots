@@ -6,6 +6,7 @@
 
 #include "EquipAction.h"
 
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -166,12 +167,15 @@ void EquipAction::EquipItem(Item* item)
             calculator.SetItemSetBonus(false);
             calculator.SetOverflowPenalty(false);
 
-            // Calculate item scores once and store them
+            // Calculate item scores once and store them; an empty hand scores below any item, so a weapon scoring
+            // 0 or less still fills it
             float newItemScore = calculator.CalculateItem(itemId, item->GetItemRandomPropertyId());
-            float mainHandScore = mainHandItem
-                ? calculator.CalculateItem(mainHandItem->GetTemplate()->ItemId, mainHandItem->GetItemRandomPropertyId()) : 0.0f;
-            float offHandScore = offHandItem
-                ? calculator.CalculateItem(offHandItem->GetTemplate()->ItemId, offHandItem->GetItemRandomPropertyId()) : 0.0f;
+            float mainHandScore = mainHandItem ? calculator.CalculateItem(mainHandItem->GetTemplate()->ItemId,
+                                                                          mainHandItem->GetItemRandomPropertyId())
+                                               : std::numeric_limits<float>::lowest();
+            float offHandScore = offHandItem ? calculator.CalculateItem(offHandItem->GetTemplate()->ItemId,
+                                                                        offHandItem->GetItemRandomPropertyId())
+                                             : std::numeric_limits<float>::lowest();
 
             // Determine where this weapon can go
             bool canGoMain = (invType == INVTYPE_WEAPON ||
