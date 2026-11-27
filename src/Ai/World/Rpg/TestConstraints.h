@@ -99,6 +99,9 @@ constexpr Set FREEWALK = 2147483648u;
 // the bot's `often` trigger fires at every check, with no random roll and no repeat delay: a timed case does not wait
 // for the roll of a held bot whose engine runs few ticks (shared-tools ST7; the first bit past 32)
 constexpr Set OFTEN = Set{1} << 32;
+// the bot's errand plan gets no profession offer and no tool shop offer: a held pool bot's inn trip is not replaced by
+// its profession's trainer or tool vendor (shared-tools ST27c)
+constexpr Set NOPROFESSION = Set{1} << 33;
 constexpr Set FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -167,6 +170,7 @@ constexpr Row ROWS[] = {
     {"freewalk", Kind::Other, FREEWALK,
      "route follower: a walk leg's rest is one teleport to its last waypoint, its rows a walk's"},
     {"often", Kind::Other, OFTEN, "often trigger (OftenTrigger::IsActive): fires at every check, no roll, no delay"},
+    {"noprofession", Kind::Other, NOPROFESSION, "errand start: no profession offer and no tool shop offer in the plan"},
 };
 
 constexpr Set BitsOf(Kind kind)
@@ -316,6 +320,9 @@ inline bool WalksFree(Set set) { return (set & FREEWALK) != 0; }
 // often, read by the `often` trigger (OftenTrigger::IsActive, GenericTriggers.cpp; nothing to apply or undo): it fires
 // at every check. `very often` shares the trigger's name and stays random
 inline bool OftenFires(Set set) { return (set & OFTEN) != 0; }
+// noprofession, read by the errand start (NewRpgErrandStart.cpp, after CollectOffers; nothing to apply or undo): the
+// plan gets neither the profession offers nor the tool shop offer
+inline bool ProfessionErrandsOffered(Set set) { return !(set & NOPROFESSION); }
 // walkflush, read where a walk is ordered and where it ends (TravelOrders::FlushWalk: `route start` ahead of the
 // order's Status row, a held trip's end after its Travel row, the end of GoTo's local piece; nothing to apply or
 // undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's
