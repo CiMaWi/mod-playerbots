@@ -378,6 +378,7 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
             // After a stable swap (WU21c) the source says so; the old pet's entry is the row's alternative stabled
             EventLog::Emit(bot, EventLog::EventType::PetTamed, stop.tameStabled ? "stabled" : word.c_str(),
                            pet->GetEntry(), int64(pet->GetLevel()));
+            Planner::NoteOwnStopDone(botAI);
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "tamed",
                                static_cast<float>(pet->GetLevel()),
                                {{"tries", static_cast<float>(stop.tameTries)},

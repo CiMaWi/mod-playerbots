@@ -2737,6 +2737,26 @@ int main()
                   !repairEnd(GoalKind::BuyBag, Outcome::Finished, true, NOW + 1),
               "a due repair stamps only a finished errand: an end from outside and a bag trip with its bag stamp "
               "nothing");
+        // NR14: an errand to a stop of its own (riding, training, the tame) that finished without what it went for
+        // waits out the retry time as the due repair does: the due stop ranks first and would start the trip again
+        auto const ownEnd = [](char const* reason, bool done, Outcome outcome)
+        {
+            BotGoals goals;
+            Active errand = GoalOf(GoalKind::Errand, 4732, Source::Planner);
+            errand.reason = reason;
+            goals.slot.Set(std::move(errand));
+            goals.ownStopDone = done;
+            NoteInterludeEnd(goals, GoalKind::Errand, outcome, NOW);
+            return RetryWaits(goals, GoalKind::Errand, NOW + 1);
+        };
+        bool ownMissed = true;
+        for (char const* reason : {Goals::TRAINING_REASON, Goals::RIDING_REASON, Goals::PET_REASON})
+            ownMissed = ownMissed && ownEnd(reason, false, Outcome::Finished) &&
+                        !ownEnd(reason, true, Outcome::Finished) && !ownEnd(reason, false, Outcome::Interrupted);
+        Check(ownMissed && !ownEnd("bags_full", false, Outcome::Finished),
+              "an errand to a stop of its own that finished without its result waits out the retry time, one that got "
+              "it clears; an end from outside and a sale errand read nothing of it (mutant: any finish clears, the "
+              "due stop restarts the trip at once)");
         bool rest = true;
         for (Outcome outcome : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned, Outcome::Finished})
             rest = rest && !stamps(GoalKind::Rest, outcome, false);

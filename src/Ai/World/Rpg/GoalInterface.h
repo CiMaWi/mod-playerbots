@@ -803,6 +803,9 @@ struct BotGoals
     std::vector<Goals::InnStay> innStays;  // the inns the bot is near and since when (NR.5)
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
+    // NR14: the planner's errand to a stop of its own (Goals::OwnStopReason) got what it went for there (the spells,
+    // the rank or its mount, the tame); a goal's start clears it
+    bool ownStopDone{false};
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
     QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
@@ -1130,7 +1133,8 @@ inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 // (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
 // failure (PlannedEnd). An interlude that finished without its result missed it, as a failure: a bag trip without its
 // bag (bagBought unset), an errand with the repair still due (repairDue, read at that end: a repairer dead or gone, a
-// stand point off the mesh; the due repair ranks first and would start the same trip again at once)
+// stand point off the mesh; the due repair ranks first and would start the same trip again at once), an errand to a
+// stop of its own without what it went for (ownStopDone unset, NR14: the due stop ranks first as the repair does)
 inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs,
                              bool repairDue = false)
 {
@@ -1138,8 +1142,9 @@ inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::O
         return;
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
     bool const finished = outcome == StatusEnd::Outcome::Finished;
+    bool const ownStop = Goals::OwnStopReason(goals.slot.Query().reason) && !goals.ownStopDone;
     bool const missed = finished && ((kind == Goals::GoalKind::BuyBag && !goals.bagBought) ||
-                                     (kind == Goals::GoalKind::Errand && repairDue));
+                                     (kind == Goals::GoalKind::Errand && (repairDue || ownStop)));
     if (!missed && (outcome == StatusEnd::Outcome::Arrived || finished))
         failed = 0;
     else if (StatusEnd::Judged(outcome))

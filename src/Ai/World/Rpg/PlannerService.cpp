@@ -684,7 +684,10 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             if (goal.source == GoalApply::Source::Planner)
             {
                 order.reason = goal.reason.c_str();
-                order.vendor = goal.target;
+                // A stop of its own (NR14) names a trainer key, a mount vendor or a beast: the trip plans it as the
+                // due need it is, not as an ordered vendor
+                if (!Goals::OwnStopReason(goal.reason))
+                    order.vendor = goal.target;
                 if (goal.kind == Goals::GoalKind::BuyBag)
                 {
                     std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr;
@@ -769,6 +772,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
         return result;
     }
     goals.bagBought = false;  // a new order buys its own bag (OrderedBag)
+    goals.ownStopDone = false;
     goals.slot.Set(std::move(goal));
     if (goals.plan)
         LogGoal(bot, GoalApply::ChosenFirst(goals.plan->ranked, index));
@@ -1129,6 +1133,60 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
                : 0.0f;
 }
 
+// NR14: the stops of the planner's errands of their own within the errand walk that trade with the bot, nearest
+// first, as the errand start finds them (TrainerSpawns, its mount vendors in reach): the class trainers of the bot's
+// class and the riding trainers, the vendors that sell a mount for gold; a sick bot's (`sick`, NR3) safe when its
+// walk stays in its safe area. Two index queries and a pass over the trainers and the mount offers per snapshot, at
+// most STOPS_SEEN of each; the job's NeedBridge::PlaceOwnStops picks the due stop's walk from them
+void FillOwnStopsSeen(Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation,
+                      Upkeep::SafeAreas const* sick)
+{
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!index)
+        return;
+    constexpr std::size_t STOPS_SEEN = 16;
+    float const runSpeed = bot->GetSpeed(MOVE_RUN);
+    float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
+    std::vector<UpkeepTrainer const*> trainers;
+    for (UpkeepTrainer const& trainer : index->trainers)
+        if (trainer.kind == TrainerKind::Mount ||
+            (trainer.kind == TrainerKind::Class && trainer.requirement == bot->getClass()))
+            trainers.push_back(&trainer);
+    std::vector<uint32> mountVendors;
+    for (VendorOffer const& offer : index->Offers(UpkeepStock::Mount))
+        if (offer.GoldOnly())
+            mountVendors.push_back(offer.vendorEntry);
+    std::sort(mountVendors.begin(), mountVendors.end());
+    mountVendors.erase(std::unique(mountVendors.begin(), mountVendors.end()), mountVendors.end());
+    auto const seen = [&](ServiceKind kind, auto const& serves, std::vector<Goals::StopSeen>& out)
+    {
+        for (Nearby const& found : indexes.NearestAll(kind, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                                      bot->GetPositionZ(), reach))
+        {
+            Service const& spawn = indexes.services[found.index];
+            if (!serves(spawn.entry) || !Trades(bot, spawn))
+                continue;
+            out.push_back({spawn.entry, WorldTravel::WalkMinutes(found.distance, runSpeed),
+                           sick && SafeWalk(bot, indexes, *sick, spawn)});
+            if (out.size() == STOPS_SEEN)
+                break;
+        }
+    };
+    seen(
+        ServiceKind::Trainer,
+        [&trainers](uint32 entry)
+        {
+            return std::any_of(trainers.begin(), trainers.end(), [entry](UpkeepTrainer const* trainer)
+                               { return std::binary_search(trainer->entries.begin(), trainer->entries.end(), entry); });
+        },
+        situation.trainersSeen);
+    if (!mountVendors.empty())
+        seen(
+            ServiceKind::Vendor, [&mountVendors](uint32 entry)
+            { return std::binary_search(mountVendors.begin(), mountVendors.end(), entry); },
+            situation.mountVendorsSeen);
+}
+
 // The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the
 // model weighs a bind at an inn only then (GoalModel AddHearth). The stays near inns (NR.5) are noted either way. A
 // sick bot's (`sick`, NR3) inn is safe when its walk there stays in its safe area
@@ -1240,6 +1298,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
                                            bindZone, bot->m_homebindAreaId, nullptr));
         }
         FillErrandSeen(botAI, bot, *indexes, situation, sick ? &*sick : nullptr);
+        FillOwnStopsSeen(bot, *indexes, situation, sick ? &*sick : nullptr);
         FillInnSeen(botAI, bot, *indexes, situation, sick ? &*sick : nullptr);
     }
     return situation;
@@ -1708,6 +1767,12 @@ void NoteBagBought(PlayerbotAI* botAI)
 {
     if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
         goals->bagBought = true;
+}
+
+void NoteOwnStopDone(PlayerbotAI* botAI)
+{
+    if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
+        goals->ownStopDone = true;
 }
 
 bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)

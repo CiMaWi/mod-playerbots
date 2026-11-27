@@ -127,6 +127,9 @@ std::uint32_t OrderedBag(PlayerbotAI* botAI);
 // The errand's vendor visit bought the ordered bag: the order is done, and its trip's end clears the retry stamp
 // (GoalApply::NoteInterludeEnd: a bag trip that finished without its bag stamps it). O(1)
 void NoteBagBought(PlayerbotAI* botAI);
+// NR14: a trip's trainer taught the spells or the riding rank, a vendor sold the mount, or the tame took: an errand to
+// a stop of its own got what it went for, and its trip's end clears the retry stamp (GoalApply::NoteInterludeEnd). O(1)
+void NoteOwnStopDone(PlayerbotAI* botAI);
 // The status core's end check of a status a planner goal may run (GO_GRIND, WANDER_RANDOM, DO_GATHER, REST), on the
 // bot's map thread every update: a planned status ends by its order (GoalApply::PlannedEnd, its outcome and word),
 // any other one when `timerOver` (upstream's timer; a sick bot's Upkeep::RestEnds). True when it ended. O(1)
