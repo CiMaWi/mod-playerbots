@@ -298,6 +298,9 @@ struct Seen
     std::uint8_t playerClass = 0;  // a player's class, 0 for a creature
     Side side = Side::Neither;
     Kind kind = Kind::None;
+    // A creature with the guard flag, of either side: an ally's readers take it from kind, known danger's live check
+    // an enemy's (AW36b)
+    bool guard = false;
     bool canAttackNow = false;   // a player of the other faction: the two may attack each other now
     std::int16_t levelDiff = 0;  // its level minus the bot's
     Rank rank = Rank::Normal;

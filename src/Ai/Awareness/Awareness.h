@@ -14,6 +14,8 @@
 #include <string_view>
 
 #include "AwarenessRules.h"
+#include "DangerRules.h"
+#include "SharedDefines.h"
 
 class ChatHandler;
 class Corpse;
@@ -172,6 +174,19 @@ bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_vi
 bool HandleSafeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // `playerbots aw stats`: the counters since the server started
 bool HandleStatsCommand(ChatHandler* handler);
+// Known danger (AW36b, INTERFACE.md §4.3): the ground at a place for a bot of this level and side, by the world data
+// alone (DangerRules::JudgeGround over the layers within reach of the height). Lock-free, from any thread; a map the
+// table does not cover, a cell without rows and a height no layer reaches are quiet
+DangerRules::Ground GroundAt(std::uint32_t mapId, float x, float y, float z, std::uint8_t level, TeamId side,
+                             DangerRules::Condition condition = DangerRules::HEALTHY);
+// The facts GroundAt judges: those of the layers within reach of the height, merged
+DangerRules::CellFacts GroundFactsAt(std::uint32_t mapId, float x, float y, float z, TeamId side);
+// `playerbots aw danger [<player>] | <map> <x> <y> <z> <alliance|horde> <level>`: the cell, height and side, the
+// layers read, the facts, both thresholds, the answer healthy and as the player is (sick, for a place), and the mean
+// cost of GroundAt over DANGER_TIMED_CALLS calls. Naming a player is for game masters: it shows where that player is.
+// `<bot> check [expect=<same|near|apart|close|away|full|dead,..>]` (scenario aw-danger) judges the place by the bot's
+// picture too (DangerRules::FactsOfPicture) and, with expect=, replies a FIXTURE check line
+bool HandleDangerCommand(ChatHandler* handler, std::string_view rest);
 // The record (AW5): world log rows FightScene, FightEnemy and DeathScene, read off the picture; bots only, while the
 // world log wants the type. The bot's own attack on a target it picked (AttackAction::Attack, the action's name)
 void NoteAttack(PlayerbotAI* botAI, std::uint64_t targetGuid, std::string_view action);

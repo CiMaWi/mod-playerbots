@@ -44,7 +44,9 @@
 #include "Timer.h"
 #include "UpkeepRules.h"
 #include "Util.h"
+#include "WaypointMgr.h"
 #include "World.h"
+#include "WorldSession.h"
 
 namespace Awareness
 {
@@ -233,6 +235,7 @@ struct Worker
 
         seen.levelDiff = static_cast<std::int16_t>(int(unit->GetLevel()) - int(bot->GetLevel()));
         seen.rank = creature && !pet ? RankOf(creature) : Rank::Normal;
+        seen.guard = creature && !pet && creature->IsGuard();
         seen.casts = player ? CastsByClass(seen.playerClass) : unit->GetMaxPower(POWER_MANA) > 0;
         seen.creatureType = unit->GetCreatureType();
         seen.healthPct = unit->GetHealthPct();
@@ -1356,6 +1359,258 @@ bool HandleStatsCommand(ChatHandler* handler)
 {
     handler->PSendSysMessage("AW stats: reads {} {} fill_us {}", reads.load(std::memory_order_relaxed), TotalsText(),
                              fillMicros.load(std::memory_order_relaxed));
+    return true;
+}
+
+namespace
+{
+// The table's side of a team, SIDE_COUNT for none
+std::uint8_t SideIndex(TeamId side)
+{
+    return side == TEAM_ALLIANCE ? 0 : side == TEAM_HORDE ? 1 : DangerRules::SIDE_COUNT;
+}
+
+char const* GroundWord(DangerRules::Ground ground)
+{
+    switch (ground)
+    {
+        case DangerRules::Ground::Quiet:
+            return "quiet";
+        case DangerRules::Ground::Passable:
+            return "passable";
+        case DangerRules::Ground::Deadly:
+            return "deadly";
+    }
+    return "?";
+}
+
+std::string FactsText(DangerRules::CellFacts const& facts)
+{
+    std::string text;
+    static constexpr std::array<char const*, DangerRules::RANK_COUNT> RANKS{"normal", "elite", "rare", "boss"};
+    for (std::size_t r = 0; r < DangerRules::RANK_COUNT; ++r)
+        if (facts.count[r])
+            text += Acore::StringFormat("{}{} {} x{}", text.empty() ? "" : ", ", RANKS[r],
+                                        static_cast<unsigned>(facts.level[r]), static_cast<unsigned>(facts.count[r]));
+    if (facts.guards)
+        text += text.empty() ? "guards" : ", guards";
+    return text.empty() ? "none" : text;
+}
+
+constexpr char const* DANGER_USAGE =
+    "Usage: .playerbots aw danger [<player>] | <bot> check [expect=<same|near|apart|close|away|path|full|dead,..>] | "
+    "<map> <x> <y> <z> <alliance|horde> <level 1..255>";
+// `aw danger` times GroundAt over this many calls: the PerfMonitor row's count is known and the reply gives the mean
+constexpr int DANGER_TIMED_CALLS = 1000;
+}  // namespace
+
+DangerRules::CellFacts GroundFactsAt(std::uint32_t mapId, float x, float y, float z, TeamId side)
+{
+    return DangerRules::ReadPlace(DangerRules::Published(), mapId, x, y, z, SideIndex(side)).read.facts;
+}
+
+DangerRules::Ground GroundAt(std::uint32_t mapId, float x, float y, float z, std::uint8_t level, TeamId side,
+                             DangerRules::Condition condition)
+{
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness ground", nullptr) : nullptr;
+    DangerRules::Ground const ground = DangerRules::JudgeGround(GroundFactsAt(mapId, x, y, z, side), level, condition);
+    if (pmo)
+        pmo->finish();
+    return ground;
+}
+
+bool HandleDangerCommand(ChatHandler* handler, std::string_view rest)
+{
+    std::vector<std::string_view> words = Words(rest);
+    std::vector<std::string_view> expect;
+    if (!words.empty() && words.back().substr(0, 7) == "expect=")
+    {
+        if (!ParseExpect(words.back().substr(7), expect,
+                         {"same", "near", "apart", "close", "away", "path", "full", "dead"}))
+        {
+            handler->SendErrorMessage(DANGER_USAGE);
+            return false;
+        }
+        words.pop_back();
+    }
+    bool const check = words.size() == 2 && words[1] == "check";
+    if (!expect.empty() && !check)
+    {
+        handler->SendErrorMessage(DANGER_USAGE);
+        return false;
+    }
+    if (check)
+        words.pop_back();
+    PlayerbotAI* botAI = nullptr;
+    std::uint32_t mapId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    std::uint32_t level = 0;
+    TeamId side = TEAM_NEUTRAL;
+    DangerRules::Condition now = DangerRules::SICK;
+    std::string who = "place";
+    bool const place = words.size() == 6;
+    if (place)
+    {
+        Optional<std::uint32_t> const map = Acore::StringTo<std::uint32_t>(words[0]);
+        Optional<float> const px = Acore::StringTo<float>(words[1]);
+        Optional<float> const py = Acore::StringTo<float>(words[2]);
+        Optional<float> const pz = Acore::StringTo<float>(words[3]);
+        Optional<std::uint32_t> const lvl = Acore::StringTo<std::uint32_t>(words[5]);
+        side = words[4] == "alliance" || words[4] == "0" ? TEAM_ALLIANCE
+               : words[4] == "horde" || words[4] == "1"  ? TEAM_HORDE
+                                                         : TEAM_NEUTRAL;
+        if (!map || !px || !py || !pz || !lvl || *lvl < 1 || *lvl > 255 || side == TEAM_NEUTRAL)
+        {
+            handler->SendErrorMessage(DANGER_USAGE);
+            return false;
+        }
+        mapId = *map;
+        x = *px;
+        y = *py;
+        z = *pz;
+        level = *lvl;
+    }
+    else if (words.size() <= 1)
+    {
+        WorldSession* session = handler->GetSession();
+        if (!words.empty() && session && session->GetSecurity() < SEC_GAMEMASTER)
+        {
+            handler->SendErrorMessage("AW danger: naming a player is for game masters (it shows where that player is)");
+            return false;
+        }
+        Player* player = words.empty() ? handler->getSelectedPlayerOrSelf()
+                                       : ObjectAccessor::FindPlayerByName(std::string(words[0]));
+        botAI = player && check ? GET_PLAYERBOT_AI(player) : nullptr;
+        if (!player || !player->IsInWorld() || (check && !botAI))
+        {
+            handler->SendErrorMessage(DANGER_USAGE);
+            return false;
+        }
+        mapId = player->GetMapId();
+        x = player->GetPositionX();
+        y = player->GetPositionY();
+        z = player->GetPositionZ();
+        level = player->GetLevel();
+        side = player->GetTeamId();
+        now.healthPct = static_cast<std::uint8_t>(std::clamp(std::lround(player->GetHealthPct()), 0L, 100L));
+        now.sick = player->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+        who = player->GetName();
+    }
+    else
+    {
+        handler->SendErrorMessage(DANGER_USAGE);
+        return false;
+    }
+
+    std::uint8_t const botLevel = static_cast<std::uint8_t>(level);
+    DangerRules::Known const* known = DangerRules::Published();
+    DangerRules::PlaceReading const reading = DangerRules::ReadPlace(known, mapId, x, y, z, SideIndex(side));
+    std::string layers;
+    for (std::uint8_t i = 0; i < reading.layerCount; ++i)
+    {
+        DangerRules::Layer const& layer = reading.layers[i];
+        bool const read = i >= reading.read.firstRead && i < reading.read.firstRead + reading.read.readCount;
+        layers += Acore::StringFormat("{}{} {}..{}{}", layers.empty() ? "" : ", ", i, layer.zLo, layer.zHi,
+                                      read ? " read" : "");
+    }
+    auto const started = std::chrono::steady_clock::now();
+    for (int call = 0; call < DANGER_TIMED_CALLS; ++call)
+        GroundAt(mapId, x, y, z, botLevel, side);
+    double const nanos = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count() /
+                         DANGER_TIMED_CALLS;
+    DangerRules::CellFacts const& facts = reading.read.facts;
+    std::string const asIs =
+        place ? Acore::StringFormat("sick {}", GroundWord(DangerRules::JudgeGround(facts, botLevel, now)))
+              : Acore::StringFormat("now {} (health {} %, sick {})",
+                                    GroundWord(DangerRules::JudgeGround(facts, botLevel, now)),
+                                    static_cast<unsigned>(now.healthPct), now.sick ? 1 : 0);
+    std::string const cell = reading.cell ? Acore::StringFormat("cell {} {}", reading.cx, reading.cy) : "no cell";
+    std::string const line = Acore::StringFormat(
+        "AW danger {}: map {} {} z {:.1f} {} level {} | build {} | layers {} of {}{}{} | facts {} | deadlyBelow {} "
+        "passableBelow {} | healthy {}, {} | ground {:.0f} ns per call over {} calls",
+        who, mapId, cell, z,
+        side == TEAM_ALLIANCE ? "alliance"
+        : side == TEAM_HORDE  ? "horde"
+                              : "neutral",
+        level, known ? known->build : "none", static_cast<unsigned>(reading.read.readCount),
+        static_cast<unsigned>(reading.layerCount), layers.empty() ? "" : ": ", layers, FactsText(facts),
+        static_cast<unsigned>(DangerRules::DeadlyBelow(facts)),
+        static_cast<unsigned>(DangerRules::PassableBelow(facts)),
+        GroundWord(DangerRules::JudgeGround(facts, botLevel, DangerRules::HEALTHY)), asIs, nanos, DANGER_TIMED_CALLS);
+    if (!check)
+    {
+        LOG_INFO("playerbots", "{}", line);
+        handler->SendSysMessage(line);
+        return true;
+    }
+
+    // The check: the same place judged by the picture's facts, both for the bot healthy (scenario aw-danger)
+    Picture const& picture = Read(botAI, true);
+    Player* bot = botAI->GetBot();
+    // A patrol's way: the engine's waypoint path of a creature walking one, read by guid (no grid visit)
+    std::array<bool, AwarenessRules::PICTURE_SIZE> pathReaches{};
+    std::vector<float> points;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (unit.type != UnitType::Creature || unit.side != Side::Enemy)
+            continue;
+        Creature* creature = ObjectAccessor::GetCreature(*bot, ObjectGuid(unit.guid));
+        if (!creature || creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != WAYPOINT_MOTION_TYPE)
+            continue;
+        WaypointPath const* path = sWaypointMgr->GetPath(creature->GetWaypointPath());
+        if (!path)
+            continue;
+        points.clear();
+        for (WaypointNode const& node : path->Nodes)
+            points.insert(points.end(), {node.X, node.Y, node.Z});
+        pathReaches[i] = DangerRules::PathReaches(points, reading.cx, reading.cy, z);
+    }
+    DangerRules::PictureFacts const seen = DangerRules::FactsOfPicture(picture, reading.cx, reading.cy, z, pathReaches);
+    DangerRules::Ground const byFacts = DangerRules::JudgeGround(facts, botLevel, DangerRules::HEALTHY);
+    DangerRules::Ground const byPicture = DangerRules::JudgeGround(seen.facts, botLevel, DangerRules::HEALTHY);
+    DangerRules::Agreement const agreement = DangerRules::Agree(byFacts, byPicture);
+    std::string units;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        int const how = DangerRules::PictureCounts(unit, reading.cx, reading.cy, z, pathReaches[i]);
+        if (!how)
+            continue;
+        units += Acore::StringFormat(
+            "{}#{} lvl {} {} home {:.0f} yd dz {:+.0f}{}{}", units.empty() ? "" : ", ", unit.entry,
+            std::clamp(int(picture.self.level) + int(unit.levelDiff), 1, 255), AwarenessRules::Word(unit.rank),
+            DangerRules::SquareDistance(reading.cx, reading.cy, unit.homeX, unit.homeY), unit.homeZ - z,
+            how == 2   ? " place"
+            : how == 3 ? " path"
+                       : "",
+            unit.guard ? " guard" : "");
+    }
+    LOG_INFO("playerbots", "AW danger units {}: {}", who, units.empty() ? "none" : units);
+    std::uint16_t const enemiesLeftOut = picture.leftOut[SideIndex(Side::Enemy)];
+    std::uint32_t const dead = botAI->awareness ? botAI->awareness->deadSkipped : 0;
+    static constexpr std::array<std::string_view, 3> AGREEMENTS{"same", "near", "apart"};
+    std::vector<std::string_view> got{AGREEMENTS[static_cast<std::size_t>(agreement)]};
+    if (agreement != DangerRules::Agreement::Apart)
+        got.push_back("close");
+    if (seen.byPlace)
+        got.push_back("away");
+    if (seen.byPath)
+        got.push_back("path");
+    if (enemiesLeftOut)
+        got.push_back("full");
+    if (dead)
+        got.push_back("dead");
+    std::string const checkLine = Acore::StringFormat(
+        "AW danger check {}: facts {} picture {}: {} | picture facts {} by home {} by place {} by path {} | units {} "
+        "left out e{} dead {} || {}",
+        who, GroundWord(byFacts), GroundWord(byPicture), AGREEMENTS[static_cast<std::size_t>(agreement)],
+        FactsText(seen.facts), static_cast<unsigned>(seen.byHome), static_cast<unsigned>(seen.byPlace),
+        static_cast<unsigned>(seen.byPath), picture.count, enemiesLeftOut, dead, line);
+    Reply(handler, bot, checkLine, expect, got);
     return true;
 }
 
