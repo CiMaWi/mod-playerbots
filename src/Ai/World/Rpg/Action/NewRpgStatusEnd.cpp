@@ -277,7 +277,7 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
                                     farTeleport ? "teleport" : "reset");
     if (gathering && !std::holds_alternative<NewRpgInfo::DoGather>(info.data))
         Planner::NoteGatherSpan(gathering->first, gathering->second);
-    StatusEnd::ApplyReset(list.planner, botAI->planner);
+    Planner::ResetPlanner(botAI, list);
     StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
     botAI->GetTravel().ResetFailures(list.rpgMemos);  // the record of failed attempts with the memos
     StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);

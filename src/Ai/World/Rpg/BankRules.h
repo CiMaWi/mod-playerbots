@@ -40,6 +40,7 @@
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
 //   uint32_t BankedStockGain(BankIn const& in);                           // the banked sale stock's gain (NR12b)
 //   void AssignStock(entries, laterBySlot, bags, bank);                   // demand's use stock per stack (WI9b)
+//   void ClaimPathUnits(bags, bank, tried = {});                          // the path's units once per entry (NR19)
 //   void JudgeStock(bags, bank, market);                                  // sale stock per entry (NR12a)
 //   CarriedKeeps KeptInBags(BankIn const& in);                            // the bag items kept for a later level
 //   bool ListsStack(CarriedKeeps const&, uint32_t itemGuid);              // the auction visit lists this bag stack
@@ -110,6 +111,9 @@ struct KeepItemIn
     float score = 0.0f;
     float wornScore = 0.0f;
     bool slotEmpty = false;
+    // A relic (idol, libram, totem, sigil) fits by its kind alone, as the random gear's relics skip the stat table
+    // (RandomItemMgr::CanEquipArmor): no score, kept only for an empty relic slot
+    bool relic = false;
     // The item usage (WearAnswer::ItemUsage): its answer for the item now (ItemUsage's number), read instead of the
     // prediction's fields
     WearAnswer wearAnswer = WearAnswer::Predicted;
@@ -121,8 +125,9 @@ struct KeepItemIn
     bool stockCarried = false;
     bool stockLater = false;
     bool stockKept = false;
-    // Professions WR12: a material the bot's skill path uses (SkillPath::Material): its units, one unit's worth, the
-    // profession and the skill of the first step that uses it (0: now)
+    // Professions WR12: a material the bot's skill path uses (SkillPath::Material): the units of this stack the path
+    // keeps (the readers fill in the whole use, ClaimPathUnits shares it out), one unit's worth, the profession and the
+    // skill of the first step that uses it (0: now)
     uint32_t materialUsed = 0;
     uint32_t materialCopperEach = 0;
     uint16_t materialSkill = 0;
@@ -202,7 +207,7 @@ inline KeepAnswer GearForLaterLevel(KeepItemIn const& item, KeepBotIn const& bot
             return {};
         return {true, item.useWorth, std::max(item.requiredLevel, uint8_t{1}), "gear_for_level"};
     }
-    if (!item.wearable || item.score <= 0.0f)
+    if (!item.wearable || (item.relic ? !item.slotEmpty : item.score <= 0.0f))
         return {};
     if (item.requiredLevel > bot.level && item.requiredLevel - bot.level > bot.horizon)
         return {};
@@ -250,8 +255,7 @@ inline KeepAnswer PathMaterial(KeepItemIn const& item, KeepBotIn const& bot)
     if (!item.materialUsed)
         return {};
 
-    uint64_t const worth =
-        static_cast<uint64_t>(item.materialCopperEach) * std::min(std::max<uint32_t>(item.count, 1), item.materialUsed);
+    uint64_t const worth = static_cast<uint64_t>(item.materialCopperEach) * item.materialUsed;
     uint32_t const laterWorth = static_cast<uint32_t>(std::min<uint64_t>(worth, std::numeric_limits<uint32_t>::max()));
     uint8_t const dueLevel =
         SkillOf(bot, item.materialSkill) >= item.materialDueSkill ? std::max(bot.level, uint8_t{1}) : STOCK_LATER_LEVEL;
@@ -265,8 +269,9 @@ inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& b
 }
 
 // The units of a stack auction stock may take: those beyond the units the bot's skill path uses of its entry, none
-// when the stack holds no more (auction house WA7b, PLAN 3.7; the visit lists those units, not the stack). Every stack
-// of an entry keeps the path's units, so after a listing the bags hold at least what the path uses (WA3-4 review B1)
+// when the stack holds no more (auction house WA7b, PLAN 3.7; the visit lists those units, not the stack). The stacks
+// of an entry claim the path's units once between them (ClaimPathUnits), so after a listing the bags hold at least what
+// the path uses (WA3-4 review B1)
 inline uint32_t StockUnits(KeepItemIn const& item)
 {
     if (item.countUsed)
@@ -786,6 +791,36 @@ inline std::vector<EntryStack> StacksOf(std::vector<BankItemIn>& bags, std::vect
     return stacks;
 }
 
+// A skill path's units are kept once per entry (NR19). Every stack of a material comes in with the path's whole use in
+// materialUsed and leaves with its claim: in the order the stacks are carried in, min(count, use - claimed so far).
+// tried: the stacks an auction visit already looked at claim first, in that order, so a partly listed stack keeps the
+// units it was left with although it now sorts behind a larger one
+inline void ClaimPathUnits(std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank,
+                           std::span<uint32_t const> tried = {})
+{
+    std::vector<uint32_t> entries;
+    for (std::vector<BankItemIn>* side : {&bags, &bank})
+        for (BankItemIn const& stack : *side)
+            if (stack.item.materialUsed && std::find(entries.begin(), entries.end(), stack.item.entry) == entries.end())
+                entries.push_back(stack.item.entry);
+    auto const rank = [tried](EntryStack const& stack)
+    { return std::find(tried.begin(), tried.end(), stack.item->item.itemGuid) - tried.begin(); };
+    for (uint32_t const entry : entries)
+    {
+        std::vector<EntryStack> stacks =
+            StacksOf(bags, bank, [entry](KeepItemIn const& item) { return item.entry == entry && item.materialUsed; });
+        std::stable_sort(stacks.begin(), stacks.end(),
+                         [&rank](EntryStack const& a, EntryStack const& b) { return rank(a) < rank(b); });
+        uint32_t left = stacks.front().item->item.materialUsed;
+        for (EntryStack const& stack : stacks)
+        {
+            KeepItemIn& item = stack.item->item;
+            item.materialUsed = std::min(std::max<uint32_t>(item.count, 1), left);
+            left -= item.materialUsed;
+        }
+    }
+}
+
 // Needs and errands NR12a: what the reader answers for an entry's sale stock. auctionable: the item usage sells it at
 // the auction house, asked with the bank's units counted (ItemUsageValue::BANK_COUNT_QUALIFIER); countKeep: the units
 // its needed-by-count branch keeps carried (2 stacks, 0: the branch does not apply); usage: its number, for the rows
@@ -854,10 +889,12 @@ inline void JudgeStock(std::vector<BankItemIn>& bags, std::vector<BankItemIn>& b
         KeepItemIn const& first = std::find_if(stacks.begin(), stacks.end(),
                                                [](EntryStack const& stack) { return stack.item->item.stockCandidate; })
                                       ->item->item;
+        bool const material = std::any_of(stacks.begin(), stacks.end(),
+                                          [](EntryStack const& stack) { return stack.item->item.materialUsed > 0; });
         uint32_t worth = market.Worth(first, units, payout, 0);
         StockUsage answer;
         if (worth > payout)
-            answer = first.materialUsed ? StockUsage{true, 0, 0} : market.Usage(first);
+            answer = material ? StockUsage{true, 0, 0} : market.Usage(first);
         if (answer.auctionable && answer.countKeep)
         {
             uint64_t kept = 0;

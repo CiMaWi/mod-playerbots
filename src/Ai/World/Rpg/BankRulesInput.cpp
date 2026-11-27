@@ -60,53 +60,9 @@ bool IsPlainBag(Bag const* bag)
            bag->GetTemplate()->SubClass == ITEM_SUBCLASS_CONTAINER;
 }
 
-// Bots learn dual wield (warriors, hunters) at 20 and plate or mail at 40 (PlayerbotFactory::InitSkills), as players
-// learn them from their trainers
+// Bots learn dual wield (warriors, hunters) at 20 (PlayerbotFactory::InitSkills), as players learn it from their
+// trainers
 constexpr uint32 DUAL_WIELD_LEVEL = 20;
-constexpr uint32 HEAVY_ARMOR_LEVEL = 40;
-
-// The relic kind a class wears in its ranged slot, as Player::CanUseItem checks it (warlocks: the misc kind);
-// MAX_ITEM_SUBCLASS_ARMOR (none) for the others
-uint32 RelicSubClassFor(uint8 playerClass)
-{
-    switch (playerClass)
-    {
-        case CLASS_PALADIN:
-            return ITEM_SUBCLASS_ARMOR_LIBRAM;
-        case CLASS_DRUID:
-            return ITEM_SUBCLASS_ARMOR_IDOL;
-        case CLASS_SHAMAN:
-            return ITEM_SUBCLASS_ARMOR_TOTEM;
-        case CLASS_DEATH_KNIGHT:
-            return ITEM_SUBCLASS_ARMOR_SIGIL;
-        case CLASS_WARLOCK:
-            return ITEM_SUBCLASS_ARMOR_MISC;
-        default:
-            return MAX_ITEM_SUBCLASS_ARMOR;
-    }
-}
-
-// The heaviest armor kind a class wears at a level; it wears every lighter kind too
-uint32 HeaviestArmorFor(uint8 playerClass, uint32 level)
-{
-    bool const heavy = level >= HEAVY_ARMOR_LEVEL;
-    switch (playerClass)
-    {
-        case CLASS_DEATH_KNIGHT:
-            return ITEM_SUBCLASS_ARMOR_PLATE;
-        case CLASS_WARRIOR:
-        case CLASS_PALADIN:
-            return heavy ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL;
-        case CLASS_HUNTER:
-        case CLASS_SHAMAN:
-            return heavy ? ITEM_SUBCLASS_ARMOR_MAIL : ITEM_SUBCLASS_ARMOR_LEATHER;
-        case CLASS_ROGUE:
-        case CLASS_DRUID:
-            return ITEM_SUBCLASS_ARMOR_LEATHER;
-        default:
-            return ITEM_SUBCLASS_ARMOR_CLOTH;
-    }
-}
 
 bool DualWieldsAt(Player const* bot, uint32 level)
 {
@@ -116,9 +72,8 @@ bool DualWieldsAt(Player const* bot, uint32 level)
 }
 
 // Whether the equip logic would wear the item at `level` (its required level, or the bot's when higher), by the gates
-// that stop an equip there: the core's masks and skills (Player::CanUseItem) as bots hold them at that level and the
-// class's weapon kinds. No stat or exact armor kind gate: the item usage only labels with CanEquipArmor, the score
-// decides, as it does here
+// that stop an equip there: the core's masks and skills (Player::CanUseItem) as bots hold them at that level, the
+// class's weapon kinds and the upgrade rule's armor kind. No stat gate: the score decides
 bool IsWearable(Player const* bot, ItemTemplate const* proto, uint32 level)
 {
     if (!(proto->AllowableClass & bot->getClassMask()) || !(proto->AllowableRace & bot->getRaceMask()))
@@ -131,26 +86,7 @@ bool IsWearable(Player const* bot, ItemTemplate const* proto, uint32 level)
 
     if (proto->Class == ITEM_CLASS_WEAPON)
         return proto->SubClass != ITEM_SUBCLASS_WEAPON_MISC && sRandomItemMgr.CanEquipWeapon(proto, bot->getClass());
-    if (proto->Class != ITEM_CLASS_ARMOR)
-        return false;
-    if (proto->InventoryType == INVTYPE_RELIC)
-        return proto->SubClass == RelicSubClassFor(bot->getClass());
-
-    uint8 const playerClass = bot->getClass();
-    switch (proto->SubClass)
-    {
-        // Cloaks are cloth
-        case ITEM_SUBCLASS_ARMOR_CLOTH:
-        case ITEM_SUBCLASS_ARMOR_LEATHER:
-        case ITEM_SUBCLASS_ARMOR_MAIL:
-        case ITEM_SUBCLASS_ARMOR_PLATE:
-            return proto->SubClass <= HeaviestArmorFor(playerClass, level);
-        case ITEM_SUBCLASS_ARMOR_SHIELD:
-            return playerClass == CLASS_WARRIOR || playerClass == CLASS_PALADIN || playerClass == CLASS_SHAMAN;
-        // Necks, rings, trinkets, held off-hands, shirts and tabards: no armor skill, any class the masks allow
-        default:
-            return true;
-    }
+    return sRandomItemMgr.CanEquipArmorKind(proto, bot->getClass(), level);
 }
 
 struct WornSlots
@@ -273,6 +209,43 @@ std::optional<BankReason> DepositBlockOf(Player const* bot, uint8 bag, uint8 slo
     }
 }
 
+// Every item in the backpack and the plain bags, with its bag and slot
+template <typename Visit>
+void ForEachBagItem(Player const* bot, Visit visit)
+{
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            visit(item, INVENTORY_SLOT_BAG_0, slot);
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag const* bag = bot->GetBagByPos(bagSlot);
+        if (!IsPlainBag(bag))
+            continue;
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+            if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                visit(item, bagSlot, static_cast<uint8>(slot));
+    }
+}
+
+// Every slot of the bank's 28 item slots and of its bags (professions WR17), empty or not, with its bag and slot;
+// plain: the slot is an item slot or lies in a plain bag (a special bag takes only its kind, so its room is not
+// counted)
+template <typename Visit>
+void ForEachBankSlot(Player const* bot, Visit visit)
+{
+    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+        visit(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), INVENTORY_SLOT_BAG_0, slot, true);
+    for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag const* bag = bot->GetBagByPos(bagSlot);
+        if (!bag)
+            continue;
+        bool const plain = IsPlainBag(bag);
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+            visit(bag->GetItemByPos(static_cast<uint8>(slot)), bagSlot, static_cast<uint8>(slot), plain);
+    }
+}
+
 class ItemReader
 {
 public:
@@ -324,6 +297,12 @@ public:
         keep.wearable = slots.first != NULL_SLOT && IsWearable(bot, proto, dueLevel);
         if (!keep.wearable)
             return in;
+        if (proto->InventoryType == INVTYPE_RELIC)
+        {
+            keep.relic = true;
+            keep.slotEmpty = !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slots.first);
+            return in;
+        }
 
         StatsWeightCalculator& calculator = Calculator();
         keep.score = calculator.CalculateItem(proto->ItemId, randomPropertyId);
@@ -404,12 +383,51 @@ public:
     }
 
 private:
+    // NR19: the units of a material's stack the path keeps, claimed over every stack of the path's materials in the
+    // bags and the bank (ClaimPathUnits), whichever of them this reader reads; once per reader, at its first material
+    uint32 PathClaimOf(uint32 itemGuid)
+    {
+        if (!_claims)
+        {
+            std::vector<BankItemIn> bags;
+            std::vector<BankItemIn> bank;
+            auto const add = [this](std::vector<BankItemIn>& side, Item const* item, uint8 bag, uint8 slot)
+            {
+                SkillPath::Material const* material = SkillPath::MaterialOf(*_path, item->GetEntry());
+                if (!material)
+                    return;
+                BankItemIn& stack = side.emplace_back();
+                stack.bag = bag;
+                stack.slot = slot;
+                stack.item.itemGuid = item->GetGUID().GetCounter();
+                stack.item.entry = item->GetEntry();
+                stack.item.count = item->GetCount();
+                stack.item.materialUsed = material->used;
+            };
+            Player const* bot = _botAI->GetBot();
+            ForEachBagItem(bot, [&](Item const* item, uint8 bag, uint8 slot) { add(bags, item, bag, slot); });
+            ForEachBankSlot(bot,
+                            [&](Item const* item, uint8 bag, uint8 slot, bool /*plain*/)
+                            {
+                                if (item)
+                                    add(bank, item, bag, slot);
+                            });
+            ClaimPathUnits(bags, bank);
+            bags.insert(bags.end(), bank.begin(), bank.end());
+            _claims = std::move(bags);
+        }
+        for (BankItemIn const& stack : *_claims)
+            if (stack.item.itemGuid == itemGuid)
+                return stack.item.materialUsed;
+        return 0;
+    }
+
     // Professions WR12: the path's material of the item, and a recipe item's profession, rank and whether it is known
-    void ReadProfession(ItemTemplate const* proto, KeepItemIn& keep) const
+    void ReadProfession(ItemTemplate const* proto, KeepItemIn& keep)
     {
         if (SkillPath::Material const* material = _path ? SkillPath::MaterialOf(*_path, proto->ItemId) : nullptr)
         {
-            keep.materialUsed = material->used;
+            keep.materialUsed = PathClaimOf(keep.itemGuid);
             keep.materialCopperEach = material->copperEach;
             keep.materialSkill = material->skill;
             keep.materialDueSkill = material->dueSkill;
@@ -464,26 +482,8 @@ private:
     std::shared_ptr<AuctionIndex::Snapshot const> _index;
     AuctionRules::Fees _fees;
     std::optional<StatsWeightCalculator> _calculator;
+    std::optional<std::vector<BankItemIn>> _claims;  // the materials' stacks with their claims (PathClaimOf)
 };
-
-// Every slot of the bank's 28 item slots and of its bags (professions WR17), empty or not, with its bag and slot;
-// plain: the slot is an item slot or lies in a plain bag (a special bag takes only its kind, so its room is not
-// counted)
-template <typename Visit>
-void ForEachBankSlot(Player const* bot, Visit visit)
-{
-    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
-        visit(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), INVENTORY_SLOT_BAG_0, slot, true);
-    for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
-    {
-        Bag const* bag = bot->GetBagByPos(bagSlot);
-        if (!bag)
-            continue;
-        bool const plain = IsPlainBag(bag);
-        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-            visit(bag->GetItemByPos(static_cast<uint8>(slot)), bagSlot, static_cast<uint8>(slot), plain);
-    }
-}
 
 // The bank's item slots and its bags (professions WR17: the bank bags count; a deposit fills them, CanBankItem)
 void ReadBank(Player const* bot, ItemReader& reader, BankIn& in)
@@ -584,24 +584,6 @@ void FillStock(PlayerbotAI* botAI, std::vector<BankItemIn>& bags, std::vector<Ba
         later[s] = static_cast<uint32_t>(
             std::min(std::ceil(answer.lines[s].wantedStock * static_cast<double>(BANK_STOCK_SHARE)), 1000000.0));
     AssignStock(entries, later, bags, bank);
-}
-
-// Every item in the backpack and the plain bags, with its bag and slot
-template <typename Visit>
-void ForEachBagItem(Player const* bot, Visit visit)
-{
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            visit(item, INVENTORY_SLOT_BAG_0, slot);
-    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
-    {
-        Bag const* bag = bot->GetBagByPos(bagSlot);
-        if (!IsPlainBag(bag))
-            continue;
-        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-            if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
-                visit(item, bagSlot, static_cast<uint8>(slot));
-    }
 }
 
 // The bags' stacks of the entries the bank holds as possible sale stock, so the bank's lots are judged whole

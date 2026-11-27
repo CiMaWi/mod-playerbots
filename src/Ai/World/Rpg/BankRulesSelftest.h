@@ -183,6 +183,13 @@ inline void CheckUpgrade(Checker& checker)
     checker.Check(!slight.keeps && clear.keeps, "an upgrade must beat the worn score times the threshold");
     checker.Check(DecideKeep(empty, bot).keeps, "an empty slot: any score above 0 is an upgrade");
     checker.Check(!DecideKeep(nothing, bot).keeps, "an item that scores 0 is never kept");
+    KeepItemIn relic = Gear(116, 12, 0.0f, 0.0f);
+    relic.relic = true;
+    relic.slotEmpty = true;
+    KeepItemIn relicWorn = Gear(117, 12, BETTER, 0.0f);
+    relicWorn.relic = true;
+    checker.Check(DecideKeep(relic, bot).keeps && !DecideKeep(relicWorn, bot).keeps,
+                  "a relic is kept for an empty relic slot without a score, never with a relic worn");
     checker.Check(!DecideKeep(cannot, bot).keeps, "an item the class does not wear is not kept");
 }
 
@@ -1080,6 +1087,7 @@ inline uint32_t MaterialViolations(uint32_t seed, bool skillBlind, uint32_t& kep
             (next(2) ? bags : bank).push_back(item);
         }
         BankIn in = MakeIn(level, bags, bank, 2 + next(6), next(10));
+        ClaimPathUnits(in.bags, in.bank);
         if (skill)
             in.bot.skills = {{SMITHING, skill}};
         auto check = [&](KeepItemIn const& item)
@@ -1489,7 +1497,7 @@ inline void CheckAuctionStock(Checker& checker)
                                             worn,
                                             recipe,
                                             known,
-                                            UsedMaterial(1205, 10, 20, SMITH_SKILL + 50),
+                                            UsedMaterial(1205, 10, 10, SMITH_SKILL + 50),
                                             Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4)),
                                             Stock(1206, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(1, 2)),
                                             Belt(equal)};
@@ -1518,43 +1526,104 @@ inline void CheckAuctionStock(Checker& checker)
                   "sample: sold at a vendor stop only the gear the usage equips first and the linen at p 1/2");
 
     // "50 linen, the path uses 20" (WA3-4 review B1, auction house WA7b): the visit lists the units beyond the path's
-    // use, never the path's. Stacks of 20, 20 and 10 hold no more than the path uses: the path's. The stack of 50
-    // lists its 30 units beyond for 700 against their payout and keeps the path's 20 with the path's due
+    // use, never the path's. Of stacks of 20, 20, 10 and 50 the 50 claims the 20 (NR19): it lists its 30 units beyond
+    // and keeps the path's 20 with the path's due; the others are stock whole, due at no level
     KeepBotIn const smith = SmithIn(SMITH_SKILL, {}, {}).bot;
-    bool pathOnly = true;
     std::vector<KeepItemIn> linen;
     for (uint32_t const count : {20u, 20u, 10u, 50u})
     {
         KeepItemIn stack = UsedMaterial(LINEN, count, 20, SMITH_SKILL + 50);
         stack.itemGuid = 100 + static_cast<uint32_t>(linen.size());
         stack.stackMax = 100;
-        stack.auctionable = true;
-        stack.vendorPayout = StockUnits(stack) * CASE_VENDOR_EXIT / LINEN_LOT;
-        stack.auctionWorth = count == 50 ? 700 : stack.vendorPayout * 2;
-        KeepAnswer const answer = DecideKeep(stack, smith);
-        KeepAnswer const path = PathMaterial(stack, smith);
-        checker.Show("50 linen, the path uses 20: a stack of " + std::to_string(count) + ", listing worth " +
-                         std::to_string(stack.auctionWorth),
-                     answer);
-        pathOnly = pathOnly && answer.keeps && answer.unsold && answer.dueLevel == path.dueLevel &&
-                   answer.dueSkill == path.dueSkill &&
-                   std::string(answer.provider) == (count > 20 ? AUCTION_STOCK : "materials") &&
-                   (count > 20 || !AuctionStock(stack, smith).keeps);
         linen.push_back(stack);
     }
-    checker.Check(pathOnly, "B1. a stack within the path's use is the path's; the 50 is stock with the path's due");
-    BankIn const linenBags = SmithIn(SMITH_SKILL, linen, {});
+    BankIn linenBags = SmithIn(SMITH_SKILL, linen, {});
+    ClaimPathUnits(linenBags.bags, linenBags.bank);
+    bool claimedOnce = true;
+    for (BankItemIn& item : linenBags.bags)
+    {
+        KeepItemIn& stack = item.item;
+        bool const claims = stack.count == 50;
+        stack.auctionable = true;
+        stack.vendorPayout = StockUnits(stack) * CASE_VENDOR_EXIT / LINEN_LOT;
+        stack.auctionWorth = claims ? 700 : stack.vendorPayout * 2;
+        KeepAnswer const answer = DecideKeep(stack, smith);
+        checker.Show("50 linen, the path uses 20: a stack of " + std::to_string(stack.count) + ", listing worth " +
+                         std::to_string(stack.auctionWorth),
+                     answer);
+        claimedOnce = claimedOnce && stack.materialUsed == (claims ? 20u : 0u) && IsStock(answer) && answer.unsold &&
+                      answer.dueLevel == (claims ? PathMaterial(stack, smith).dueLevel : STOCK_LATER_LEVEL);
+    }
+    checker.Check(claimedOnce, "B1. the 50 claims the path's 20 and its due; the other stacks are stock whole");
     CarriedKeeps const linenKept = KeptInBags(linenBags);
     std::vector<uint32_t> const linenListed = ListedAtVisit(linenBags, linenKept);
     KeepProvider const unusedOnly[] = {GearForLaterLevel, StockForLater, ProfessionMaterials, StockOfUnusedEntries};
     std::vector<uint32_t> const wholeListed = ListedAtVisit(linenBags, KeptInBags(linenBags, unusedOnly));
-    checker.Note("  the visit lists " + std::to_string(linenListed.size()) + " of the 4 linen stacks (" +
-                 std::to_string(StockUnits(linen[3])) + " units of the 50), keeping " +
-                 std::to_string(LeftAfterListing(linenBags, linenKept, LINEN)) + " of 100; the WA3-4 rule lists " +
-                 std::to_string(wholeListed.size()));
-    checker.Check(linenListed == std::vector<uint32_t>{103} && StockUnits(linen[3]) == 30 &&
-                      LeftAfterListing(linenBags, linenKept, LINEN) == 70 && wholeListed.empty(),
-                  "B1. the visit lists the 30 units beyond the path's use of the 50, no unit of the others");
+    checker.Note("  the visit lists " + std::to_string(linenListed.size()) + " of the 4 linen stacks, keeping " +
+                 std::to_string(LeftAfterListing(linenBags, linenKept, LINEN)) +
+                 " of 100; never listing a claiming stack lists " + std::to_string(wholeListed.size()));
+    checker.Check(linenListed.size() == 4 && StockUnits(linenBags.bags[3].item) == 30 &&
+                      LeftAfterListing(linenBags, linenKept, LINEN) == 20 && wholeListed.size() == 3,
+                  "B1. the visit lists every unit beyond the path's use of 20, once for the entry");
+
+    // NR19, two stacks of 20 with a use of 7: claims of 7 and 0, stock of 13 and 20, 7 units left after both are listed
+    constexpr uint32_t PAIR_USE = 7;
+    std::vector<KeepItemIn> pair;
+    for (uint32_t const guid : {120u, 121u})
+    {
+        KeepItemIn stack = UsedMaterial(LINEN, STACK_20, PAIR_USE, 0);
+        stack.itemGuid = guid;
+        pair.push_back(stack);
+    }
+    BankIn pairBags = SmithIn(SMITH_SKILL, pair, {});
+    ClaimPathUnits(pairBags.bags, pairBags.bank);
+    for (BankItemIn& item : pairBags.bags)
+    {
+        item.item.auctionable = true;
+        item.item.vendorPayout = StockUnits(item.item);
+        item.item.auctionWorth = item.item.vendorPayout * 2;
+    }
+    KeepItemIn const& first = pairBags.bags[0].item;
+    KeepItemIn const& second = pairBags.bags[1].item;
+    uint32_t const pairLeft = LeftAfterListing(pairBags, KeptInBags(pairBags), LINEN);
+    checker.Note("  two stacks of 20, the path uses 7: claims " + std::to_string(first.materialUsed) + " and " +
+                 std::to_string(second.materialUsed) + ", stock " + std::to_string(StockUnits(first)) + " and " +
+                 std::to_string(StockUnits(second)) + ", left " + std::to_string(pairLeft));
+    checker.Check(first.materialUsed == PAIR_USE && second.materialUsed == 0 && StockUnits(first) == 13 &&
+                      StockUnits(second) == STACK_20 && pairLeft == PAIR_USE,
+                  "NR19. two stacks of 20 claim 7 and 0, list 13 and 20 and keep 7");
+
+    // The visit reads a stack's units as it lists it (AuctionVisit.cpp ListUnits): once the first is down to 7 it sorts
+    // behind the untouched 20, and keeps its claim only because the tried stacks claim first
+    auto const liveUnits =
+        [&pair](std::vector<uint32_t> const& counts, uint32_t guid, std::vector<uint32_t> const& tried)
+    {
+        std::vector<BankItemIn> bags;
+        std::vector<BankItemIn> bank;
+        for (size_t i = 0; i < counts.size(); ++i)
+        {
+            BankItemIn& stack = bags.emplace_back();
+            stack.item = pair[i];
+            stack.item.count = counts[i];
+            stack.slot = static_cast<uint8_t>(i);
+        }
+        ClaimPathUnits(bags, bank, tried);
+        for (BankItemIn const& stack : bags)
+            if (stack.item.itemGuid == guid)
+                return StockUnits(stack.item);
+        return uint32_t{0};
+    };
+    uint32_t const firstListed = liveUnits({STACK_20, STACK_20}, 120, {});
+    std::vector<uint32_t> const after{STACK_20 - firstListed, STACK_20};
+    uint32_t const secondListed = liveUnits(after, 121, {120});
+    uint32_t const unordered = liveUnits(after, 121, {});
+    checker.Note("  listed in turn: " + std::to_string(firstListed) + " and " + std::to_string(secondListed) +
+                 "; without the tried stacks first the second lists " + std::to_string(unordered));
+    checker.Check(firstListed == 13 && secondListed == STACK_20 &&
+                      STACK_20 * 2 - firstListed - secondListed == PAIR_USE && !liveUnits(after, 120, {120, 121}),
+                  "NR19. listed one after the other the visit leaves the path's 7");
+    checker.Check(STACK_20 * 2 - firstListed - unordered > PAIR_USE,
+                  "NR19. control: claiming without the tried stacks first keeps more than the path uses (caught)");
 
     // The single stack of 50 the path uses 20 of, due now: it stays in the bags (due, as the path's) and is listed;
     // listing it whole, as the WA3a visit did, starves the path
@@ -1624,15 +1693,21 @@ inline StockTally StockSearch(uint32_t seed, KeepProvider stock, bool pathBlind)
         std::vector<KeepItemIn> bags;
         std::vector<uint32_t> heldWorth;  // the worth of each stack's stock units (StockUnits)
         uint32_t const count = 1 + next(8);
+        uint32_t use[6];  // the path's use of each entry
+        for (uint32_t& units : use)
+            units = 1 + next(30);
+        std::vector<bool> material;
         for (uint32_t i = 0; i < count; ++i)
         {
             uint32_t const entry = 6000 + next(6);  // repeated entries: several stacks of one item
             KeepItemIn item;
-            switch (next(5))
+            uint32_t const kind = next(5);
+            material.push_back(kind == 0);
+            switch (kind)
             {
                 case 0:
-                    item =
-                        UsedMaterial(entry, 1 + next(20), 1 + next(30), static_cast<uint16_t>(next(2) ? 0 : next(300)));
+                    item = UsedMaterial(entry, 1 + next(20), use[entry - 6000],
+                                        static_cast<uint16_t>(next(2) ? 0 : next(300)));
                     break;
                 case 1:
                     item = Gear(entry, 0);
@@ -1653,15 +1728,20 @@ inline StockTally StockSearch(uint32_t seed, KeepProvider stock, bool pathBlind)
                     break;
             }
             item.itemGuid = round * 16 + i + 1;
+            bags.push_back(item);
+        }
+        BankIn in = MakeIn(level, bags, {}, 4, BANK_ITEM_SLOTS);
+        ClaimPathUnits(in.bags, in.bank);
+        for (BankItemIn& stack : in.bags)
+        {
+            KeepItemIn& item = stack.item;
             uint32_t const units = pathBlind ? std::max<uint32_t>(item.count, 1) : StockUnits(item);
             uint32_t const worthEach = next(80);
             item.auctionable = next(6) != 0;
             item.vendorPayout = (1 + next(40)) * units;
             item.auctionWorth = worthEach * units;
-            bags.push_back(item);
             heldWorth.push_back(worthEach * StockUnits(item));
         }
-        BankIn in = MakeIn(level, bags, {}, 4, BANK_ITEM_SLOTS);
         if (next(2))
             in.bot.skills = {{SMITHING, static_cast<uint16_t>(1 + next(300))}};
         for (size_t i = 0; i < in.bags.size(); ++i)
@@ -1685,20 +1765,19 @@ inline StockTally StockSearch(uint32_t seed, KeepProvider stock, bool pathBlind)
         }
         CarriedKeeps const carried = KeptInBags(in);
         CarriedKeeps const listed = KeptInBags(in, providers);
-        // An entry the path uses, every stack of it read with the path's units (as the bags' reader reads them)
+        // An entry of which every stack is a material keeps its use, once between them
         for (BankItemIn const& item : in.bags)
         {
             uint32_t held = 0;
-            bool same = true;
-            for (BankItemIn const& other : in.bags)
-                if (other.item.entry == item.item.entry)
+            bool all = true;
+            for (size_t i = 0; i < in.bags.size(); ++i)
+                if (in.bags[i].item.entry == item.item.entry)
                 {
-                    held += std::max<uint32_t>(other.item.count, 1);
-                    same = same && other.item.materialUsed == item.item.materialUsed;
+                    held += std::max<uint32_t>(in.bags[i].item.count, 1);
+                    all = all && material[i];
                 }
-            tally.starved +=
-                same && item.item.materialUsed &&
-                LeftAfterListing(in, listed, item.item.entry, pathBlind) < std::min(held, item.item.materialUsed);
+            tally.starved += all && LeftAfterListing(in, listed, item.item.entry, pathBlind) <
+                                        std::min(held, use[item.item.entry - 6000]);
         }
         for (KeptEntry const& kept : carried.items)
         {
