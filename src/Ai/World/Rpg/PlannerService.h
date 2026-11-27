@@ -104,6 +104,10 @@ void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
 // Questing WQ38: the bot's stall sums (QuestFailRows.h), kept with its goals so that they outlive an order (the goals
 // are made on first use, as for every reader of them). Map thread only. O(1)
 QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot);
+// The bot's thread, at a reset (RpgStatus::Reset): the planner's view as the reset list's planner entry says and the
+// skill path as its own: a kept path goes into the fresh goals, so its materials stay kept until the next plan, which
+// the fresh view's due snapshot asks for, replaces it. O(1)
+void ResetPlanner(PlayerbotAI* botAI, StatusEnd::ResetList const& list);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);

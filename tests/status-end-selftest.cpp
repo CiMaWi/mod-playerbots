@@ -120,7 +120,7 @@ int main()
     }
 
     // The reset list (RpgStatus::Reset): the status starts over unless a far teleport keeps a trip, which keeps its
-    // start; the planner's view and the RPG memos start fresh; a test's constraints stay
+    // start; the planner's view and the RPG memos start fresh; a test's constraints and the skill path stay (NR15b)
     struct StatusModel
     {
         std::uint32_t startT{0};
@@ -136,10 +136,12 @@ int main()
             int memos = 2;
             std::uint64_t const testSet = 0x21 | (std::uint64_t{1} << 40);  // a test's set, a bit past 31 in it
             std::uint64_t constraints = testSet;
+            int path = 5;
             StatusEnd::ApplyReset(list.status, status);
             StatusEnd::ApplyReset(list.planner, planner);
             StatusEnd::ApplyReset(list.rpgMemos, memos);
             StatusEnd::ApplyReset(list.testConstraints, constraints);
+            StatusEnd::ApplyReset(list.skillPath, path);
             bool const kept = farTeleport != 0 && isTravel != 0;
             std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: status %s, start %u", farTeleport,
                           isTravel, kept ? "kept" : "fresh", static_cast<unsigned>(status.startT));
@@ -148,6 +150,9 @@ int main()
             std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: planner %d, memos %d, constraints %llx",
                           farTeleport, isTravel, planner, memos, static_cast<unsigned long long>(constraints));
             counts.Check(planner == 0 && memos == 0 && constraints == testSet, "reset list", detail);
+            std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: skill path %d", farTeleport, isTravel,
+                          path);
+            counts.Check(path == 5, "reset list", detail);
             // The held trip follows its holder's status (WT64f): kept with it, else ended as Interrupted
             StatusEnd::TripHold<int> hold;
             if (isTravel != 0)
