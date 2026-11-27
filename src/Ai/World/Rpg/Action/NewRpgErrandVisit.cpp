@@ -359,7 +359,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
         if (shopping)
         {
-            ShopAtVendor(botAI, vendor, repaired);
+            ShopAtVendor(botAI, vendor, repaired, stop.mountRank);
             BuyOrderedBag(botAI, vendor);
         }
 

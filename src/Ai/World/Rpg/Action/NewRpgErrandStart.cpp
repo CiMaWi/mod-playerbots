@@ -602,6 +602,10 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 case WorldTravel::ErrandKind::TurnIn:
                     stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
                     break;
+                case WorldTravel::ErrandKind::Ride:
+                    if (errand.Service == WorldTravel::SERVICE_MOUNT_VENDOR)
+                        stop.mountRank = errand.Id;
+                    break;
                 case WorldTravel::ErrandKind::Tame:
                     stop.tameEntry = errand.Target;
                     break;

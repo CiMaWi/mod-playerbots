@@ -1182,6 +1182,26 @@ inline RankValue const* BoughtRank(NeedList const& list, std::uint32_t spellId)
     return nullptr;
 }
 
+// A rank the bot lacks (not known, or known without its mount) by its spell; nullptr once it has both
+inline RankValue const* RankOf(NeedList const& list, std::uint32_t spellId)
+{
+    for (RankValue const& value : list.ranks)
+        if (value.rank.spellId == spellId)
+            return &value;
+    return nullptr;
+}
+
+// Why the stop the trip planned for a rank's mount buys none when the needs, read after the stop's earlier purchases,
+// hold no purchase this vendor makes. sold: the vendor sells a mount of the rank; price: the mount's at this vendor
+inline char const* MountStopEnd(RankValue const& rank, bool sold, std::uint64_t price, std::uint64_t money)
+{
+    if (!rank.known)
+        return "mount_no_rank";
+    if (!sold)
+        return "not_sold";
+    return money < price ? "money" : "not_due";
+}
+
 // The reserve's thrift scale applied to a sum of prices
 inline std::uint64_t Scaled(NeedList const& list, std::uint64_t copper)
 {

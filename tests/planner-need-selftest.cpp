@@ -184,6 +184,21 @@ void ShortForRiding(UpkeepIndex const& index)
           "the bot quests again");
 }
 
+// NR17: the stop planned for a mount ends with a word; money is what the earlier purchases left
+void MountStopWords()
+{
+    std::cout << "the planned mount stop's end:\n";
+    RankValue rank;
+    rank.known = true;
+    std::uint64_t const price = GOLD;
+    // A bag of 50 s bought first out of the mount's money
+    Check(std::string(MountStopEnd(rank, true, price, price - 50 * 100)) == "money", "money spent before: money");
+    Check(std::string(MountStopEnd(rank, false, price, price)) == "not_sold", "no mount of the rank sold: not_sold");
+    Check(std::string(MountStopEnd(rank, true, price, price)) == "not_due", "gold there, no purchase due: not_due");
+    rank.known = false;
+    Check(std::string(MountStopEnd(rank, true, price, price)) == "mount_no_rank", "rank not learned: mount_no_rank");
+}
+
 void ReserveCovered(UpkeepIndex const& index)
 {
     std::cout << "reserve covered:\n";
@@ -1296,6 +1311,7 @@ int main(int argc, char** argv)
     if (!root.empty())
         PathLive(index, root);
     ShortForRiding(index);
+    MountStopWords();
     ReserveCovered(index);
     FrugalSavesEarlier(index);
     SickRests(index);

@@ -74,8 +74,10 @@ uint32 BuyLots(Player* bot, Creature* vendor, uint32 slot, uint32 item, uint32 l
 // gold), the rank bought by worth whose mount this vendor sells, bought through the core's purchase at its gold-only
 // row within the need's funded share and learned as the item's own use learns it (the learning spell in its second
 // spell; the item is used up). A rank not known yet waits, as the core's item test wants the riding skill: the next
-// errand check sends the bot for the mount alone. A mount item the bot carries already is learned, not bought again
-void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner::UpkeepIndex const> const& shared)
+// errand check sends the bot for the mount alone. A mount item the bot carries already is learned, not bought again.
+// planned: the rank whose mount the trip planned at this stop (0 none): that purchase always ends with a word
+void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner::UpkeepIndex const> const& shared,
+                   uint32 planned)
 {
     Player* bot = botAI->GetBot();
     Planner::UpkeepIndex const& index = *shared;
@@ -99,7 +101,20 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner
         }
     }
     if (!need || !value || !item)
+    {
+        // Nothing to buy here: only the stop planned for a mount says why (MountStopEnd)
+        UpkeepNeeds::RankValue const* const rank = UpkeepNeeds::RankOf(needs, planned);
+        if (!rank)
+            return;
+        uint32 const sold = UpkeepNeeds::MountSoldBy(index, snapshot.race, snapshot.cls, *rank, entry);
+        uint64 const price =
+            static_cast<uint64>(std::floor(static_cast<float>(rank->mount) * bot->GetReputationPriceDiscount(vendor)));
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip",
+                           UpkeepNeeds::MountStopEnd(*rank, sold != 0, price, bot->GetMoney()),
+                           static_cast<float>(price), {{"gold", static_cast<float>(bot->GetMoney())}},
+                           sold ? sold : rank->mountItem);
         return;
+    }
 
     auto const skip = [bot, need, item](char const* reason)
     {
@@ -192,7 +207,7 @@ namespace NewRpgInternal
 // profession tool's rows are the profession's (WR5b): `tool` when bought, else `skip` with gold_short, no_source (this
 // vendor does not sell it) or access (the core refused). A failed purchase skips the item; the bot goes on. At most
 // one row per stock kind
-void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
+void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired, uint32 mountRank)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
@@ -310,8 +325,9 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
 
     // The riding need's mount, when this vendor sells it (WU14), with the gold the stock left: MountAtVendor takes
     // this vendor's own mount for the bought rank, so any vendor of the errand may be the one
-    if (std::any_of(needs.needs.begin(), needs.needs.end(),
-                    [](UpkeepNeeds::Need const& need) { return need.kind == UpkeepKind::Riding; }))
-        MountAtVendor(botAI, vendor, index);
+    // A planned stop runs it without a need too: the money may be spent since the trip was planned
+    if (mountRank || std::any_of(needs.needs.begin(), needs.needs.end(),
+                                 [](UpkeepNeeds::Need const& need) { return need.kind == UpkeepKind::Riding; }))
+        MountAtVendor(botAI, vendor, index, mountRank);
 }
 }  // namespace NewRpgInternal
