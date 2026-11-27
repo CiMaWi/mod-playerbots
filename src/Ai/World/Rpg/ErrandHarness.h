@@ -889,8 +889,8 @@ inline void AuctionScenarios(std::vector<Check>& checks)
     Add(checks, "auction: little stock joins the town stop; sale, listing, deposit, mailbox in that order",
         ordered && OrderHolds(townPlan), order);
 
-    // NR12b: banked sale stock draws the auctioneer, and the stock's withdrawal rides along at a banker before it,
-    // 100 yd apart as in Stormwind and Orgrimmar; never at a banker after the auction, never without one
+    // NR12b: banked sale stock is one errand of a banker and an auctioneer after it, 100 yd apart as in Stormwind and
+    // Orgrimmar, weighed against the detour of both; never a banker after the auction, never one stop without the other
     auto const stockStops = [](TripPlan const& plan, std::size_t& bankAt, std::size_t& auctionAt)
     {
         bankAt = auctionAt = plan.Stops.size();
@@ -952,6 +952,101 @@ inline void AuctionScenarios(std::vector<Check>& checks)
         "one (the auction's refusal says why)",
         !fetchedAlone && noAuctioneerPlan.Stops.empty() && littlePlanBanked.Stops.empty(),
         Describe(noAuctioneerPlan) + "; " + Describe(littlePlanBanked));
+
+    // The review's probes: an auctioneer with no banker in reach, or one beyond the walk limit, makes no trip; the
+    // refusal is the auction's, worth the stock's gain
+    auto const refusedAs = [](TripPlan const& plan, char const* reason)
+    {
+        return plan.Stops.empty() && plan.Refused.size() == 1 && plan.Refused[0].Offer.Kind == ErrandKind::Auction &&
+               std::string(plan.Refused[0].Reason) == reason && plan.Refused[0].Offer.WorthCopper == 5000.0f;
+    };
+    ErrandSnapshot noBanker = banked;
+    WithServices(noBanker, {}, {{AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const noBankerPlan = Plan(noBanker, Request(noBanker), TripProviders());
+    Add(checks, "NR12b: banked stock, an auctioneer and no banker: no trip, the auction refused no_stop",
+        refusedAs(noBankerPlan, "no_stop"), Describe(noBankerPlan));
+
+    ErrandSnapshot farBanker = banked;
+    WithServices(
+        farBanker, {},
+        {{BANKER_ID, At(-3500.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const farBankerPlan = Plan(farBanker, Request(farBanker), TripProviders());
+    Add(checks, "NR12b: the banker 3500 yd behind, beyond the walk limit: no trip, the auction refused too_far",
+        refusedAs(farBankerPlan, "too_far"), Describe(farBankerPlan));
+
+    // The banker's detour counts: 1200 c banked with the banker 2000 yd behind is refused as 1200 c in the bags is at
+    // 2000 yd; with the banker beside the auctioneer (one stop) the same gain pays, and with it 100 yd away (a stop of
+    // its own, a second detour) 2500 c do
+    ErrandSnapshot behind = banked;
+    behind.BankStockWorth = 1200;
+    WithServices(
+        behind, {},
+        {{BANKER_ID, At(-2000.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const behindPlan = Plan(behind, Request(behind), TripProviders());
+    ErrandSnapshot bagsFar = GovernedBot(10, 0);
+    bagsFar.AuctionStockWorth = 1200;
+    WithServices(bagsFar, {}, {{AUCTIONEER_ID, At(2000.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const bagsFarPlan = Plan(bagsFar, Request(bagsFar), TripProviders());
+    ErrandSnapshot beside = behind;
+    WithServices(
+        beside, {},
+        {{BANKER_ID, At(390.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const besidePlan = Plan(beside, Request(beside), TripProviders());
+    ErrandSnapshot onWay = behind;
+    WithServices(
+        onWay, {},
+        {{BANKER_ID, At(300.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const onWayLittle = Plan(onWay, Request(onWay), TripProviders());
+    onWay.BankStockWorth = 2500;
+    TripPlan const onWayPlan = Plan(onWay, Request(onWay), TripProviders());
+    stockStops(onWayPlan, bankAt, auctionAt);
+    Add(checks,
+        "NR12b: 1200 c banked pays no 9.5 min bank detour (refused detour_not_worth, as 1200 c in the bags far away); "
+        "it pays at a banker beside the auctioneer, 2500 c pay at one 100 yd before it, 1200 c do not",
+        behindPlan.Stops.empty() && behindPlan.Refused.size() == 1 &&
+            std::string(behindPlan.Refused[0].Reason) == "detour_not_worth" &&
+            behindPlan.Refused[0].CostCopper > behindPlan.Refused[0].Offer.WorthCopper && bagsFarPlan.Stops.empty() &&
+            besidePlan.Stops.size() == 1 && PlanHasKind(besidePlan, ErrandKind::BankWithdraw) &&
+            onWayLittle.Stops.empty() && onWayPlan.Stops.size() == 2 && bankAt == 0 && auctionAt == 1,
+        Describe(behindPlan) + "; " + Describe(bagsFarPlan) + "; " + Describe(besidePlan) + "; " +
+            Describe(onWayLittle) + "; " + Describe(onWayPlan));
+
+    // An auction stop the bags' stock earns: the banker in front of it is a detour of its own, worth the banked gain
+    ErrandSnapshot bagsAndBank = behind;
+    bagsAndBank.AuctionStockWorth = 5000;
+    TripPlan const bagsOnlyPlan = Plan(bagsAndBank, Request(bagsAndBank), TripProviders());
+    stockStops(bagsOnlyPlan, bankAt, auctionAt);
+    bool const bagsOnly = bagsOnlyPlan.Stops.size() == 1 && auctionAt == 0 && bankAt == 1 &&
+                          bagsOnlyPlan.Refused.size() == 1 &&
+                          bagsOnlyPlan.Refused[0].Offer.Kind == ErrandKind::BankWithdraw;
+    bagsAndBank.BankStockWorth = 20000;
+    TripPlan const bagsBankPlan = Plan(bagsAndBank, Request(bagsAndBank), TripProviders());
+    stockStops(bagsBankPlan, bankAt, auctionAt);
+    Add(checks,
+        "NR12b: with 5000 c in the bags the auction stop opens alone; the banker 2000 yd behind joins in front of it "
+        "for 20000 c banked, not for 1200 c",
+        bagsOnly && bagsBankPlan.Stops.size() == 2 && bankAt == 0 && auctionAt == 1 && bagsBankPlan.Refused.empty(),
+        Describe(bagsOnlyPlan) + "; " + Describe(bagsBankPlan));
+
+    // The banker counts against MAX_DETOUR_STOPS: two turn-ins worth more open two detours, and the pair needing two
+    // more stays out; with one turn-in the pair fills the trip's three
+    ErrandSnapshot capped = banked;
+    capped.BankStockWorth = 20000;
+    capped.Completed = {{HUB_QUEST, ENDER, false, At(0.0f, 600.0f), 50000.0f},
+                        {FAR_QUEST, ENDER, false, At(0.0f, -600.0f), 50000.0f}};
+    WithServices(
+        capped, {},
+        {{BANKER_ID, At(600.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(700.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const cappedPlan = Plan(capped, Request(capped), TripProviders());
+    ErrandSnapshot oneQuest = capped;
+    oneQuest.Completed.pop_back();
+    TripPlan const oneQuestPlan = Plan(oneQuest, Request(oneQuest), TripProviders());
+    stockStops(oneQuestPlan, bankAt, auctionAt);
+    Add(checks, "NR12b: the banker is a detour of the cap: no fourth stop for the pair, three with one turn-in",
+        DetourStops(cappedPlan) == 2 && !PlanHasKind(cappedPlan, ErrandKind::BankWithdraw) &&
+            !PlanHasKind(cappedPlan, ErrandKind::Auction) && DetourStops(oneQuestPlan) == 3 && bankAt < auctionAt &&
+            auctionAt < oneQuestPlan.Stops.size(),
+        Describe(cappedPlan) + "; " + Describe(oneQuestPlan));
 
     // The running trip's flags: the bank visit finds the stock due for an auction ahead, not for one that ran
     struct FlagStop
