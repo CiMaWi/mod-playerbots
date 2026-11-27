@@ -8,22 +8,30 @@
 
 #include <variant>
 
+#include "GoalInterface.h"
+#include "PlannerService.h"
 #include "Playerbots.h"
 #include "TestConstraints.h"
 #include "UpkeepRules.h"
 
-float NewRpgQuestGiverMultiplier::GetValue(Action* action)
+float NewRpgGrindMultiplier::GetValue(Action* action)
 {
     if (!action || action->getName() != "attack anything")
         return 1.0f;
-    // A test's nofight bot picks no mob (TestConstraints::StartsFights): neither could hit the other
-    if (!TestConstraints::StartsFights(botAI->testConstraints))
-        return 0.0f;
 
     NewRpgStatus const status = botAI->rpgInfo.GetStatus();
-    // A bot on a trip picks no mob: it fights what attacks it, then its walk goes on (WT44: on a walk past a camp a bot
-    // pulled mob after mob off its route and did not arrive in five minutes)
-    if (status == RPG_TRAVEL)
+    Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    Planner::GoalApply::Active const none;
+    Planner::GoalApply::GrindPick const pick = Planner::GoalApply::GrindPickOf(
+        Planner::Owns(botAI), !bot->GetMap()->Instanceable(), goals ? goals->slot.Query() : none,
+        TestConstraints::StartsFights(botAI->testConstraints), bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS),
+        status == RPG_TRAVEL);
+    if (pick != Planner::GoalApply::GrindPick::Upstream)
+        return pick == Planner::GoalApply::GrindPick::Allow ? 1.0f : 0.0f;
+
+    // Upstream's bots: the quest executor's target is the one it attacks, not whatever stands near
+    auto const* doQuest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    if (doQuest && !doQuest->targetGuid.IsEmpty())
         return 0.0f;
 
     switch (status)
@@ -43,21 +51,4 @@ float NewRpgQuestGiverMultiplier::GetValue(Action* action)
     // the engine orders by base relevance and applies multipliers after the pop. So grinding is dropped for the
     // tick instead. SearchQuestGiverAndAcceptOrReward gives up on a giver after a minute, which empties the value.
     return AI_VALUE(ObjectGuid, "new rpg quest giver").IsEmpty() ? 1.0f : 0.0f;
-}
-
-float NewRpgSickMultiplier::GetValue(Action* action)
-{
-    if (!action || action->getName() != "attack anything")
-        return 1.0f;
-
-    return bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) ? 0.0f : 1.0f;
-}
-
-float NewRpgDoQuestMultiplier::GetValue(Action* action)
-{
-    if (!action || action->getName() != "attack anything")
-        return 1.0f;
-
-    auto const* doQuest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
-    return doQuest && !doQuest->targetGuid.IsEmpty() ? 0.0f : 1.0f;
 }

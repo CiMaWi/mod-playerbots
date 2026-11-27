@@ -10,6 +10,7 @@
 #include "Playerbots.h"
 #include "SharedValueContext.h"
 #include <array>
+#include <limits>
 
 // What kind of a relation does this entry have with this quest.
 entryQuestRelationMap EntryQuestRelationMapValue::Calculate()
@@ -248,8 +249,12 @@ std::vector<GuidPosition> ActiveQuestObjectivesValue::Calculate()
 
 uint8 FreeQuestLogSlotValue::Calculate()
 {
+    // A log without a limit is never nearly full
+    if (bot->HasUnlimitedQuestLog())
+        return std::numeric_limits<uint8>::max();
+
     uint8 numQuest = 0;
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
 
@@ -263,7 +268,7 @@ uint8 FreeQuestLogSlotValue::Calculate()
         numQuest++;
     }
 
-    return MAX_QUEST_LOG_SIZE - numQuest;
+    return static_cast<uint8>(bot->GetQuestLogSize() - numQuest);
 }
 
 uint32 DialogStatusValue::getDialogStatus(Player* bot, int32 questgiver, uint32 questId)

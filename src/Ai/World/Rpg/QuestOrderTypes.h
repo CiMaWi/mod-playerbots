@@ -121,6 +121,7 @@ struct QuestOrderOpen
     std::uint32_t quest{0};
     std::uint32_t objective{ORDER_HAND_IN};
     std::uint32_t left{0};
+    std::uint8_t refusals{0};  // WQ33: refused stand points or walks at its targets (QuestFieldExec::RefuseNeed)
 };
 
 // WQ19a: one entry the executor's look seeks for an open need; one look per kind (creatures, objects) covers the
@@ -153,6 +154,8 @@ struct QuestOrderRun
     std::uint32_t arrivedAt{0};         // the bot came within the arrival yards of the place
     std::uint32_t lastFound{0};         // a candidate it may take was seen or a credit came: the dry clock restarts
     std::uint32_t lastCount{0};         // the open needs were counted: the start and after each credit
+    std::uint32_t closerAt{0};          // WQ43: before the arrival, the bot came nearer its aim than ever before
+    float bestYards{0.0f};              // and that distance (QuestFieldExec::NoteCloser); a new aim forgets both
     bool replaced{false};               // a newer order asks for the bot: the next tick ends this one
     std::vector<QuestOrderOpen> open;   // the log's open needs at the last count
     std::vector<QuestOrderSeek> seeks;  // what the looks seek, for those needs

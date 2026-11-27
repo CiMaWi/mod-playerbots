@@ -4,11 +4,13 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of the quest-log rules of a bot on an order (questing WQ31, QuestLogRules.h): a table with one case
-// per rule word, then generated logs, failure records and offers (the seed is printed; argv[1] replays it) checked
-// against the invariants: no quest is accepted and abandoned by the same log state; the rules applied twice change
-// nothing more; a ready quest without a failed hand-in is never abandoned; a full log accepts nothing and nothing is
-// dropped for room; the plan is due exactly when the round's givers offer nothing more or its time has run out.
+// Offline proof of the quest log's one accept and one drop (questing WQ31, WQ34, QuestLogRules.h): a table with one
+// case per rule word, then generated logs, failure records and offers (the seed is printed; argv[1] replays it)
+// checked against the invariants: no quest is accepted and abandoned by the same log state; the rules applied twice
+// change nothing more; a ready quest is never abandoned; nothing is refused or dropped for room; the plan is due
+// exactly when the round's givers offer nothing more or its time has run out. Questing WQ34: the one accept and the
+// one drop against the calls' spec (namespace Wq34: invariants A, I1-I3), and the rules before WQ34 as mutants the
+// invariants must catch.
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel tests/quest-log-selftest.cpp
 
@@ -22,6 +24,7 @@
 #include <vector>
 
 #include "QuestLogRules.h"
+#include "QuestTakeFixture.h"
 
 using namespace Planner;
 using QuestLog::Drop;
@@ -95,60 +98,58 @@ QuestRecord Plain(std::uint32_t id, std::int32_t level = 20)
     return quest;
 }
 
-// A bot's log state: what Take::Facts views and Abandon reads
+// The game's grey line: a copy of Acore::XP::GetGrayLevel (Formulas.h), which the live callers read
+std::int32_t GrayLevel(std::uint8_t level)
+{
+    if (level <= 5)
+        return 0;
+    if (level <= 39)
+        return level - 5 - level / 10;
+    if (level <= 59)
+        return level - 1 - level / 5;
+    return level - 9;
+}
+
+// A bot's log state: what the game's answer, the accept and Abandon read
 struct State
 {
     std::uint8_t race{HUMAN};
     std::uint8_t cls{WARRIOR};
     std::uint8_t level{20};
-    std::uint32_t greyDiff{Take::GREY_DIFF};
     Ids rewarded;  // sorted
     Ids inLog;     // sorted
     Ids ready;     // sorted, a part of inLog
     QuestLog::Record record;
 };
 
-std::vector<std::int32_t> GroupsOf(State const& state, QuestIndex const& index)
+// The game's answer for the state (WQ41: a fact of the take test), as the fixtures model it
+Ids AnswerOf(State const& state, QuestIndex const& index)
 {
-    std::vector<std::int32_t> groups;
-    for (Ids const* ids : {&state.inLog, &state.rewarded})
-        for (std::uint32_t const id : *ids)
-            if (QuestRecord const* quest = index.Find(id); quest && quest->exclusiveGroup > 0)
-                groups.push_back(quest->exclusiveGroup);
-    std::sort(groups.begin(), groups.end());
-    return groups;
+    return TakeFixture::Answer(index, state.race, state.cls, state.level, state.rewarded, state.inLog);
 }
 
-Take::Facts FactsOf(State const& state, std::vector<std::int32_t> const& groups)
+QuestLog::Facts FactsOf(State const& state)
 {
-    Take::Facts facts;
-    facts.race = state.race;
-    facts.cls = state.cls;
-    facts.level = state.level;
-    facts.greyDiff = state.greyDiff;
-    facts.eliteGroup = false;  // WQ.43: as the accept at a giver
-    facts.rewarded = state.rewarded;
-    facts.inLog = state.inLog;
-    facts.givenUp = state.record.givenUp;
-    facts.takenGroups = groups;
-    return facts;
+    return {.grayLevel = GrayLevel(state.level), .givenUp = state.record.givenUp};
 }
 
-std::size_t FreeSlots(State const& state)
+// A client's log: the generated logs reach past it, and the rules know no room (questing WQ40)
+constexpr std::size_t CLIENT_SLOTS = 25;
+
+bool MayAcceptNow(QuestRecord const& quest, State const& state, QuestIndex const& index)
 {
-    return QuestLog::LOG_SLOTS - std::min(QuestLog::LOG_SLOTS, state.inLog.size());
+    Ids const answer = AnswerOf(state, index);
+    return QuestLog::Accepts(QuestLog::OfferOf(quest, Has(answer, quest.id), false), FactsOf(state));
 }
 
-bool MayAcceptNow(QuestRecord const& quest, State const& state, QuestIndex const& index, std::size_t freeSlots)
+QuestLog::Held HeldOf(QuestRecord const& quest, bool ready, bool failed = false, bool holidayEnded = false)
 {
-    std::vector<std::int32_t> const groups = GroupsOf(state, index);
-    return QuestLog::MayAccept(quest, FactsOf(state, groups), index, freeSlots);
+    return {.id = quest.id, .level = quest.level, .ready = ready, .failed = failed, .holidayEnded = holidayEnded};
 }
 
 Drop AbandonNow(QuestRecord const& quest, State const& state, bool ready)
 {
-    return QuestLog::Abandon(QuestLog::HeldOf(quest, state.record, SideOfRace(state.race), ready), state.level,
-                             state.greyDiff);
+    return QuestLog::Abandon(HeldOf(quest, ready), GrayLevel(state.level));
 }
 
 struct Outcome
@@ -164,7 +165,7 @@ struct Outcome
     }
 };
 
-// One application of the rules: the upkeep's drops by Abandon, then the accepts by MayAccept over the offers until
+// One application of the rules: the upkeep's drops by Abandon, then the accepts by Accepts over the offers until
 // none passes (the executor's search runs every tick while a giver offers a quest)
 Outcome Apply(State& state, Ids const& offers, QuestIndex const& index)
 {
@@ -189,7 +190,7 @@ Outcome Apply(State& state, Ids const& offers, QuestIndex const& index)
         for (std::uint32_t const id : offers)
         {
             QuestRecord const* quest = index.Find(id);
-            if (!quest || !MayAcceptNow(*quest, state, index, FreeSlots(state)))
+            if (!quest || !MayAcceptNow(*quest, state, index))
                 continue;
             outcome.accepted.push_back(id);
             Insert(state.inLog, id);
@@ -204,22 +205,38 @@ Outcome Apply(State& state, Ids const& offers, QuestIndex const& index)
 void Table()
 {
     constexpr std::uint32_t PLAIN = 1;
-    constexpr std::uint32_t GREY = 2;     // level 15 for a level-20 bot: grey at 4, not at 6
+    constexpr std::uint32_t GREY = 2;     // level 13 for a level-20 bot: the game's grey level is 13
     constexpr std::uint32_t REFUSED = 3;  // the capability table refuses it for the Alliance
     constexpr std::uint32_t ELITE = 4;
     constexpr std::uint32_t TAKE_REFUSED = 5;  // a planned take ended without the accept once (WQ18c)
     constexpr std::uint32_t ONCE = 6;          // given up once (timeout)
     constexpr std::uint32_t TWICE = 7;         // given up twice, the last a refused take overwritten by a timeout
     constexpr std::uint32_t NO_ENDER = 8;      // its hand-in failed at its ender
-    constexpr std::uint32_t EDGE = 9;          // level 16: not grey for a level-20 bot at 4
+    constexpr std::uint32_t EDGE = 9;          // level 14: one above the grey level of a level-20 bot
     constexpr std::uint32_t TAKE_TWICE = 10;   // a planned take ended without the accept twice
+    constexpr std::uint32_t DUNGEON = 11;
+    constexpr std::uint32_t DAILY = 12;
+    constexpr std::uint32_t REPEATABLE = 13;
+    constexpr std::uint32_t HOLIDAY = 14;  // a holiday's quest (seasonal), its holiday running or ended
+    constexpr std::uint32_t HIGH = 15;     // 6 levels above the bot, the game lets it take it
 
     QuestRecord refused = Plain(REFUSED);
     refused.refused[0] = 1;
     QuestRecord elite = Plain(ELITE);
-    elite.flags = QuestFlag::ELITE;
-    QuestIndex const index = IndexOf({Plain(PLAIN), Plain(GREY, 15), refused, elite, Plain(TAKE_REFUSED), Plain(ONCE),
-                                      Plain(TWICE), Plain(NO_ENDER), Plain(EDGE, 16), Plain(TAKE_TWICE)});
+    elite.flags = QuestFlag::ELITE | QuestFlag::GROUP;
+    QuestRecord dungeon = Plain(DUNGEON);
+    dungeon.flags = QuestFlag::DUNGEON;
+    QuestRecord daily = Plain(DAILY);
+    daily.flags = QuestFlag::DAILY;
+    QuestRecord repeatable = Plain(REPEATABLE);
+    repeatable.flags = QuestFlag::REPEATABLE | QuestFlag::WEEKLY;
+    QuestRecord holiday = Plain(HOLIDAY);
+    holiday.flags = QuestFlag::SEASONAL;
+    QuestRecord high = Plain(HIGH, 26);
+    high.minLevel = 18;
+    QuestIndex const index =
+        IndexOf({Plain(PLAIN), Plain(GREY, 13), refused, elite, Plain(TAKE_REFUSED), Plain(ONCE), Plain(TWICE),
+                 Plain(NO_ENDER), Plain(EDGE, 14), Plain(TAKE_TWICE), dungeon, daily, repeatable, holiday, high});
 
     Rows const rows = {{NO_ENDER, RowOf(1, "no_ender")},
                        {TWICE, RowOf(2, "timeout")},
@@ -235,62 +252,72 @@ void Table()
 
     State bot;
     bot.record = record;
-    auto const may = [&](std::uint32_t id, std::size_t freeSlots)
-    { return MayAcceptNow(*index.Find(id), bot, index, freeSlots); };
-    Check(may(PLAIN, 3), "accept: a plain quest with free slots");
-    Check(may(PLAIN, 1), "accept: a plain quest with one free slot");
-    Check(!may(PLAIN, 0), "accept: a full log accepts nothing");
-    Check(!may(GREY, 3), "accept: grey");
-    Check(may(EDGE, 3), "accept: four levels below is not grey");
-    Check(!may(REFUSED, 3), "accept: the executor cannot do it");
-    Check(!may(ELITE, 3), "accept: elite");
-    Check(may(TAKE_REFUSED, 3), "accept: a take refused once is taken again, as any cause given up once");
-    Check(!may(TAKE_TWICE, 3) &&
-              Take::May(*index.Find(TAKE_TWICE), FactsOf(bot, GroupsOf(bot, index)), index) == Take::Reason::GivenUp,
-          "accept: a take refused twice is given up (the take test answers GivenUp)");
-    Check(may(ONCE, 3), "accept: given up once by a timeout");
-    Check(!may(TWICE, 3), "accept: given up twice");
-    Check(!may(NO_ENDER, 3), "accept: its hand-in failed");
-    bot.inLog = {PLAIN};
-    Check(!may(PLAIN, 3), "accept: in the log");
-    bot.inLog.clear();
-
-    auto const drop = [](QuestLog::Held held, std::uint32_t greyDiff = Take::GREY_DIFF)
-    { return QuestLog::Word(QuestLog::Abandon(held, 20, greyDiff)); };
-    auto const held = [](std::int32_t level, bool ready, bool handInFailed, bool givenUp, bool cannotDo)
+    auto const may = [&](std::uint32_t id) { return MayAcceptNow(*index.Find(id), bot, index); };
+    Check(may(PLAIN), "accept: a plain quest");
+    // No rule for room (questing WQ40, WQ.46 item 1): a log of 25, 30 or 60 quests accepts as an empty one
+    for (std::uint32_t const held : {25u, 30u, 60u})
     {
-        QuestLog::Held quest;
-        quest.id = 1;
-        quest.level = level;
-        quest.ready = ready;
-        quest.handInFailed = handInFailed;
-        quest.givenUp = givenUp;
-        quest.cannotDo = cannotDo;
-        return quest;
+        State crowded = bot;
+        for (std::uint32_t id = 0; id < held; ++id)
+            crowded.inLog.push_back(5000 + id);
+        Check(MayAcceptNow(*index.Find(PLAIN), crowded, index),
+              "accept: a plain quest into a log of " + std::to_string(held) + " quests");
+    }
+    auto const refusal = [&](std::uint32_t id, bool holidayEnded = false)
+    {
+        Ids const answer = AnswerOf(bot, index);
+        QuestRecord const& quest = *index.Find(id);
+        return QuestLog::Word(QuestLog::Refuses(QuestLog::OfferOf(quest, Has(answer, id), holidayEnded), FactsOf(bot)));
     };
     auto const is = [](char const* got, char const* want) { return std::string(got) == want; };
-    Check(is(drop(held(20, false, false, false, false)), "keep"), "abandon: a plain quest is kept");
-    Check(is(drop(held(15, false, false, false, false)), "outlevelled"), "abandon: grey");
-    Check(is(drop(held(16, false, false, false, false)), "keep"), "abandon: four levels below is kept");
-    Check(is(drop(held(15, false, false, false, false), 6), "keep"), "abandon: the server's grey line");
-    Check(is(drop(held(0, false, false, false, false)), "keep"), "abandon: the bot's level");
-    Check(is(drop(held(-1, false, false, false, false)), "keep"), "abandon: the bot's level (-1)");
-    Check(is(drop(held(20, false, false, true, false)), "given_up"), "abandon: given up");
-    Check(is(drop(held(20, false, false, false, true)), "cannot_do"), "abandon: cannot do");
-    Check(is(drop(held(20, true, true, false, false)), "no_ender"), "abandon: ready, its hand-in failed");
-    Check(is(drop(held(20, true, true, true, true)), "no_ender"), "abandon: ready, hand-in failed and more");
-    Check(is(drop(held(15, true, false, false, false)), "keep"), "abandon: a ready grey quest is kept");
-    Check(is(drop(held(20, true, false, true, false)), "keep"), "abandon: a ready given-up quest is kept");
-    Check(is(drop(held(20, true, false, false, true)), "keep"), "abandon: a ready quest it cannot do is kept");
-    Check(is(drop(held(20, false, true, false, false)), "keep"), "abandon: a failed hand-in alone, not ready");
-    Check(is(drop(held(15, false, false, true, true)), "outlevelled"), "abandon: grey before given up");
-    Check(is(drop(held(20, false, false, true, true)), "given_up"), "abandon: given up before cannot do");
-    Check(QuestLog::HeldOf(refused, record, 0, false).cannotDo && !QuestLog::HeldOf(refused, record, 1, false).cannotDo,
-          "held: cannot do for its side only");
-    Check(QuestLog::HeldOf(*index.Find(NO_ENDER), record, 0, true).handInFailed &&
-              QuestLog::HeldOf(*index.Find(TWICE), record, 0, false).givenUp &&
-              !QuestLog::HeldOf(*index.Find(ONCE), record, 0, false).givenUp,
-          "held: the record's lists");
+    Check(is(refusal(GREY), "grey"), "accept: grey by the game's line (13 for a level-20 bot)");
+    Check(may(EDGE), "accept: one level above the game's grey line is not grey (the 4-level setting is gone)");
+    Check(may(REFUSED), "accept: a quest the executor cannot do is taken (WQ.46 item 2)");
+    Check(may(ELITE), "accept: an elite group quest is taken");
+    Check(may(DUNGEON), "accept: a dungeon quest is taken");
+    Check(may(HIGH), "accept: a quest the game lets it take is taken however high its level");
+    Check(is(refusal(DAILY), "repeats") && is(refusal(REPEATABLE), "repeats"),
+          "accept: no daily, weekly or repeatable quest (WQ.46 item 5)");
+    Check(may(HOLIDAY), "accept: a holiday's quest while its holiday runs");
+    Check(is(refusal(HOLIDAY, true), "holiday_ended"), "accept: a holiday's quest after its holiday");
+    Check(may(TAKE_REFUSED), "accept: a take refused once is taken again, as any cause given up once");
+    Check(!may(TAKE_TWICE) && is(refusal(TAKE_TWICE), "given_up"), "accept: a take refused twice is given up");
+    Check(may(ONCE), "accept: given up once by a timeout");
+    Check(!may(TWICE), "accept: given up twice");
+    Check(!may(NO_ENDER), "accept: its hand-in failed");
+    bot.inLog = {PLAIN};
+    Check(!may(PLAIN) && is(refusal(PLAIN), "game"), "accept: in the log (the game's answer)");
+    bot.inLog.clear();
+    State low = bot;
+    low.level = 5;
+    Check(MayAcceptNow(Plain(PLAIN, 1), low, IndexOf({Plain(PLAIN, 1)})), "accept: at level 5 nothing is grey");
+
+    // The drop: grey, holiday ended or failed, never a complete quest; a give-up, a quest the executor cannot do and
+    // a failed hand-in are no drop (WQ.46 item 4)
+    auto const drop = [](std::int32_t level, bool ready, bool failed, bool holidayEnded, std::uint8_t botLevel = 20)
+    {
+        QuestLog::Held const held{
+            .id = 1, .level = level, .ready = ready, .failed = failed, .holidayEnded = holidayEnded};
+        return QuestLog::Word(QuestLog::Abandon(held, GrayLevel(botLevel)));
+    };
+    Check(is(drop(20, false, false, false), "keep"), "abandon: a plain quest is kept");
+    Check(is(drop(13, false, false, false), "grey"), "abandon: grey by the game's line");
+    Check(is(drop(14, false, false, false), "keep"), "abandon: one above the game's grey line is kept");
+    Check(is(drop(1, false, false, false, 5), "keep"), "abandon: at level 5 nothing is grey");
+    Check(is(drop(51, false, false, false, 60), "grey") && is(drop(52, false, false, false, 60), "keep"),
+          "abandon: the grey line of level 60 is 51");
+    Check(is(drop(0, false, false, false), "keep"), "abandon: the bot's level");
+    Check(is(drop(-1, false, false, false), "keep"), "abandon: the bot's level (-1)");
+    Check(is(drop(20, false, true, false), "failed"), "abandon: the game marks it failed");
+    Check(is(drop(20, false, false, true), "holiday_ended"), "abandon: its holiday has ended");
+    Check(is(drop(13, true, false, false), "keep"), "abandon: a ready grey quest is kept, to be handed in");
+    Check(is(drop(20, true, false, true), "keep"), "abandon: a ready quest after its holiday is kept");
+    Check(is(drop(13, false, true, true), "grey"), "abandon: grey before holiday and failed");
+    Check(is(drop(20, false, true, true), "holiday_ended"), "abandon: holiday before failed");
+    Check(QuestLog::Abandon(HeldOf(*index.Find(TWICE), false), GrayLevel(20)) == Drop::Keep &&
+              QuestLog::Abandon(HeldOf(*index.Find(NO_ENDER), true), GrayLevel(20)) == Drop::Keep &&
+              QuestLog::Abandon(HeldOf(refused, false), GrayLevel(20)) == Drop::Keep,
+          "abandon: given up, a failed hand-in and cannot do are kept");
 
     QuestLog::Round round;
     Check(!QuestLog::PlanDue(round, 5000, false), "due: no accept, no plan");
@@ -351,11 +378,9 @@ State GeneratedState(std::mt19937& rng)
     state.race = static_cast<std::uint8_t>(1 + rng() % 11);  // 9: no side
     state.cls = static_cast<std::uint8_t>(1 + rng() % 11);
     state.level = static_cast<std::uint8_t>(1 + rng() % 30);
-    if (rng() % 4 == 0)
-        state.greyDiff = 2 + rng() % 6;
     state.rewarded = SomeQuests(rng, 10);
     std::uint32_t const shape = rng() % 10;
-    std::size_t const size = shape < 3 ? QuestLog::LOG_SLOTS : shape == 3 ? 23 + rng() % 2 : rng() % 12;
+    std::size_t const size = shape < 3 ? CLIENT_SLOTS + rng() % 36 : shape == 3 ? 23 + rng() % 2 : rng() % 12;
     Ids open;
     for (std::uint32_t id = 1; id <= QUESTS; ++id)
         if (!Has(state.rewarded, id))
@@ -403,15 +428,9 @@ bool Justified(Drop drop, QuestRecord const& quest, State const& state)
     bool const ready = Has(state.ready, quest.id);
     switch (drop)
     {
-        case Drop::Outlevelled:
-            return !ready && Take::IsGrey(quest, state.level, state.greyDiff);
-        case Drop::GivenUp:
-            return !ready && Has(state.record.givenUp, quest.id);
-        case Drop::CannotDo:
-            return !ready && RefusedFor(quest, SideOfRace(state.race));
-        case Drop::NoEnder:
-            return ready && Has(state.record.handInFailed, quest.id);
-        default:
+        case Drop::Grey:
+            return !ready && QuestLog::IsGrey(quest.level, GrayLevel(state.level));
+        default:  // the generated states hold no failed quest and no holiday (Wq34's logs do)
             return false;
     }
 }
@@ -428,7 +447,6 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
     State again = before;
     Check(Apply(again, offers, index) == outcome, who + ": the same input, another outcome");
     Check(!outcome.endless, who + ": accepts without end");
-    Check(after.inLog.size() <= QuestLog::LOG_SLOTS, who + ": more quests than slots");
 
     Ids accepted = outcome.accepted;
     std::sort(accepted.begin(), accepted.end());
@@ -446,7 +464,7 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
                                                                  std::to_string(second.dropped.size()) + ", accepted " +
                                                                  std::to_string(second.accepted.size()));
 
-    // Every drop has its reason; a quest without one is kept, ready ones without a failed hand-in too
+    // Every drop has its reason; a quest without one is kept, ready ones always
     for (std::size_t i = 0; i < outcome.dropped.size(); ++i)
     {
         Check(Justified(outcome.why[i], *index.Find(outcome.dropped[i]), before),
@@ -457,9 +475,7 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
     {
         QuestRecord const& quest = *index.Find(id);
         bool const ready = Has(before.ready, id);
-        bool const reason = ready ? Has(before.record.handInFailed, id)
-                                  : Take::IsGrey(quest, before.level, before.greyDiff) ||
-                                        Has(before.record.givenUp, id) || RefusedFor(quest, SideOfRace(before.race));
+        bool const reason = !ready && QuestLog::IsGrey(quest.level, GrayLevel(before.level));
         bool const dropped = std::find(outcome.dropped.begin(), outcome.dropped.end(), id) != outcome.dropped.end();
         Check(dropped == reason,
               who + ": quest " + std::to_string(id) + (ready ? " (ready)" : "") + (dropped ? " dropped" : " kept"));
@@ -467,14 +483,11 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
             ++counts.drops[static_cast<std::size_t>(Drop::Keep)];
     }
 
-    // A full log accepts nothing (a drop may free a slot) and drops nothing for room
-    for (std::uint32_t const id : offers)
-        if (QuestRecord const* quest = index.Find(id))
-            Check(!MayAcceptNow(*quest, before, index, 0), who + ": quest " + std::to_string(id) + " with no slot");
-    if (before.inLog.size() == QuestLog::LOG_SLOTS)
+    // No rule for room (questing WQ40): `full` counts the logs of a client's 25 quests or more, which accept as any
+    // other (Wq34's invariant A checks the accept itself)
+    if (before.inLog.size() >= CLIENT_SLOTS)
     {
         ++counts.full;
-        Check(outcome.accepted.size() <= outcome.dropped.size(), who + ": a full log accepted more than it freed");
         if (!outcome.accepted.empty())
             ++counts.fullAccepts;
     }
@@ -525,10 +538,303 @@ void GeneratedCases(std::uint32_t seed)
         std::printf(" %s=%u", QuestLog::WORDS[i], counts.drops[i]);
     std::printf(" rounds=%zu due=%u\n", ROUNDS, due);
     Check(counts.full > 0 && counts.accepted > 0 && counts.fullAccepts > 0, "generated: no full log, accept or both");
-    for (std::size_t i = 0; i < counts.drops.size(); ++i)
-        Check(counts.drops[i] > 0, std::string("generated: no case answered ") + QuestLog::WORDS[i]);
+    for (Drop const drop : {Drop::Keep, Drop::Grey})
+        Check(counts.drops[static_cast<std::size_t>(drop)] > 0,
+              std::string("generated: no case answered ") + QuestLog::Word(drop));
     Check(due > 0 && due < ROUNDS, "generated: rounds all due or none");
 }
+
+// Questing WQ34 (written first and seen red on the rules before it, WQ34a): the one accept and the one drop of the log
+// as the coordinator's calls fix them (scratchpad/questing/WQ34-record.md, calls 1-6). The spec below is the oracle;
+// the paths are what each way into the log asks (every one QuestLogRules' Accepts since WQ34b) and LogDrop is the drop
+// a bot's log gets (Abandon). The rules before WQ34 stay here as mutants (Old): each must break an invariant.
+//   A   every path accepts exactly the one accept: the game's answer, not grey by the game's line
+//       (Acore::XP::GetGrayLevel), not repeatable, daily or weekly, not of an ended holiday, not given up
+//   I1  a quest any path accepted is not dropped in the same state (a start item that is also the required item
+//       makes the quest complete at once: 8471, 9594)
+//   I2  a quest leaves the log exactly when it is not complete and grey by the game's line, its holiday has ended or
+//       the game marks it failed
+//   I3  a complete quest is never dropped
+namespace Wq34
+{
+enum class Path : std::uint8_t
+{
+    OrderGiver,  // a giver met on an order (NewRpgQuest.cpp InteractWithNpcOrGameObjectForQuest)
+    FreeGiver,   // a giver met by a planner bot off an order (the same, NewRpgHelpers::LogAccept since WQ34b)
+    Item,        // a start item's use (UseItemAction.cpp UseStartQuestItem through QuestAction::CanAcceptQuest)
+    Count
+};
+constexpr std::array<char const*, static_cast<std::size_t>(Path::Count)> PATHS = {"order_giver", "free_giver", "item"};
+constexpr std::array<char const*, 4> RULES = {"A", "I1", "I2", "I3"};
+constexpr std::uint16_t NO_REPEAT = QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE;
+
+// The log as the drop reads it: the generated state, the quests the game marks failed and the quests whose holiday
+// ended (any quest: an offered one too)
+struct Log
+{
+    State state;
+    Ids failed;        // sorted, open quests of inLog
+    Ids holidayEnded;  // sorted
+};
+
+bool GameGrey(QuestRecord const& quest, std::uint8_t level)
+{
+    return quest.level > 0 && quest.level <= GrayLevel(level);
+}
+
+bool SpecAccept(QuestRecord const& quest, Log const& log, Ids const& answer)
+{
+    return Has(answer, quest.id) && !GameGrey(quest, log.state.level) && !(quest.flags & NO_REPEAT) &&
+           !Has(log.holidayEnded, quest.id) && !Has(log.state.record.givenUp, quest.id);
+}
+
+bool SpecDrop(QuestRecord const& quest, Log const& log, bool ready)
+{
+    return !ready && (GameGrey(quest, log.state.level) || Has(log.holidayEnded, quest.id) || Has(log.failed, quest.id));
+}
+
+// What each path asks: the one accept, whatever the path (WQ34b)
+bool PathAccepts(Path /*path*/, QuestRecord const& quest, Log const& log, Ids const& answer)
+{
+    return QuestLog::Accepts(QuestLog::OfferOf(quest, Has(answer, quest.id), Has(log.holidayEnded, quest.id)),
+                             FactsOf(log.state));
+}
+
+// The drop of a bot's log: the one drop
+bool LogDrops(QuestRecord const& quest, Log const& log, bool ready)
+{
+    return QuestLog::Abandon(HeldOf(quest, ready, Has(log.failed, quest.id), Has(log.holidayEnded, quest.id)),
+                             GrayLevel(log.state.level)) != Drop::Keep;
+}
+
+// The rules before WQ34, put back as mutants: the invariants must catch each (the step's exit)
+namespace Old
+{
+constexpr std::int32_t ITEM_BAND = 10;  // QuestAction::GREY_QUEST_LEVEL_BAND
+
+bool Grey4(QuestRecord const& quest, State const& state)
+{
+    return static_cast<std::int32_t>(state.level) >
+           Take::QuestLevel(quest, state.level) + 4;  // the old Take::GREY_DIFF
+}
+
+// OrderTake::MayAccept (the take test), FreeBotTakes (upstream's filter, no failure record) and CanAcceptQuest (the
+// game and a 10-level band)
+bool PathAccepts(Path path, QuestRecord const& quest, Log const& log, Ids const& answer)
+{
+    State const& state = log.state;
+    bool const game = Has(answer, quest.id);
+    std::int32_t const level = Take::QuestLevel(quest, state.level);
+    switch (path)
+    {
+        case Path::OrderGiver:
+        {
+            Take::Facts facts;
+            facts.race = state.race;
+            facts.level = state.level;
+            facts.rewarded = state.rewarded;
+            facts.inLog = state.inLog;
+            facts.givenUp = state.record.givenUp;
+            facts.takeable = answer;
+            return !Take::May(quest, facts).has_value();
+        }
+        case Path::FreeGiver:
+            return game && !Grey4(quest, state) && !(quest.flags & Take::REPEAT_FLAGS) &&
+                   !(quest.flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) &&
+                   level <= static_cast<std::int32_t>(state.level) + Take::MAX_LEVELS_ABOVE &&
+                   !RefusedFor(quest, SideOfRace(state.race));
+        case Path::Item:
+            return game && static_cast<std::int32_t>(state.level) <= level + ITEM_BAND;
+        default:
+            return false;
+    }
+}
+
+// OrganizeOrderQuestLog's Abandon: a ready quest only for a failed hand-in; else grey at 4, given up, cannot do (a
+// failed quest read as one it cannot do); no holiday
+bool LogDrops(QuestRecord const& quest, Log const& log, bool ready)
+{
+    State const& state = log.state;
+    if (ready)
+        return Has(state.record.handInFailed, quest.id);
+    return Grey4(quest, state) || Has(state.record.givenUp, quest.id) || RefusedFor(quest, SideOfRace(state.race)) ||
+           Has(log.failed, quest.id);
+}
+}  // namespace Old
+
+// One set of rules the invariants judge; `gate` false: a mutant, counted and not reported
+struct Rules
+{
+    char const* name;
+    bool (*accepts)(Path, QuestRecord const&, Log const&, Ids const&);
+    bool (*drops)(QuestRecord const&, Log const&, bool);
+    bool gate;
+};
+constexpr Rules ONE = {"one", &PathAccepts, &LogDrops, true};
+constexpr Rules OLD_ACCEPT = {"old_accept", &Old::PathAccepts, &LogDrops, false};
+constexpr Rules OLD_DROP = {"old_drop", &PathAccepts, &Old::LogDrops, false};
+
+struct Counts
+{
+    std::uint32_t logs{0};
+    std::uint32_t accepts{0};
+    std::uint32_t drops{0};
+    std::array<std::uint32_t, RULES.size()> broken{};
+    std::array<std::uint32_t, static_cast<std::size_t>(Drop::Count)> words{};
+};
+
+void Rule(Counts& counts, Rules const& rules, std::size_t rule, bool ok, std::string const& what)
+{
+    if (rules.gate)
+        Check(ok, std::string(RULES[rule]) + " " + what);
+    if (!ok)
+        ++counts.broken[rule];
+}
+
+std::string Facts(QuestRecord const& quest, Log const& log, bool ready)
+{
+    State const& state = log.state;
+    return "quest " + std::to_string(quest.id) + " L" + std::to_string(quest.level) + " flags " +
+           std::to_string(quest.flags) + " bot L" + std::to_string(state.level) + (ready ? " ready" : "") +
+           (GameGrey(quest, state.level) ? " grey" : "") + (Has(log.failed, quest.id) ? " failed" : "") +
+           (Has(log.holidayEnded, quest.id) ? " holiday_ended" : "") +
+           (Has(state.record.givenUp, quest.id) ? " given_up" : "") +
+           (Has(state.record.handInFailed, quest.id) ? " no_ender" : "");
+}
+
+// I2 and I3 over the log as it is, then A and I1 for every quest by every path
+void OneLog(Log const& log, QuestIndex const& index, std::mt19937& rng, std::string const& who, Rules const& rules,
+            Counts& counts)
+{
+    State const& state = log.state;
+    for (std::uint32_t const id : state.inLog)
+    {
+        QuestRecord const& quest = *index.Find(id);
+        bool const ready = Has(state.ready, id);
+        bool const dropped = rules.drops(quest, log, ready);
+        counts.drops += dropped ? 1 : 0;
+        if (rules.gate)
+        {
+            Drop const drop = QuestLog::Abandon(HeldOf(quest, ready, Has(log.failed, id), Has(log.holidayEnded, id)),
+                                                GrayLevel(state.level));
+            ++counts.words[static_cast<std::size_t>(drop)];
+        }
+        std::string const what = who + ": " + Facts(quest, log, ready) + (dropped ? " dropped" : " kept");
+        if (ready)
+            Rule(counts, rules, 3, !dropped, what);
+        else
+            Rule(counts, rules, 2, dropped == SpecDrop(quest, log, ready), what);
+    }
+    Ids const answer = AnswerOf(state, index);
+    for (QuestRecord const& quest : index.quests)
+        for (std::size_t p = 0; p < PATHS.size(); ++p)
+        {
+            Path const path = static_cast<Path>(p);
+            bool const accepts = rules.accepts(path, quest, log, answer);
+            Rule(counts, rules, 0, accepts == SpecAccept(quest, log, answer),
+                 who + " " + PATHS[p] + ": " + Facts(quest, log, false) + (accepts ? " accepted" : " refused"));
+            if (!accepts)
+                continue;
+            ++counts.accepts;
+            bool const ready = path == Path::Item && rng() % 2 == 0;
+            Log after = log;
+            Insert(after.state.inLog, quest.id);
+            if (ready)
+                Insert(after.state.ready, quest.id);
+            Rule(counts, rules, 1, !rules.drops(quest, after, ready),
+                 who + " " + PATHS[p] + ": " + Facts(quest, after, ready) + " accepted, then dropped");
+        }
+}
+
+// The night's three loops (lab5-20261125-175728) as cases; WQ34a's traces name the paths and the rules
+Counts Loops(Rules const& rules)
+{
+    QuestIndex const index = IndexOf({Plain(9594, 14), Plain(8471, 56), Plain(8304, 60)});
+    Counts counts;
+    auto const bot = [](std::uint8_t level, Rows const& rows)
+    {
+        Log log;
+        log.state.level = level;
+        log.state.record = QuestLog::Read(rows);
+        return log;
+    };
+    auto const accepted = [&index, &rules](Log log, std::uint32_t id, bool ready)
+    {
+        Insert(log.state.inLog, id);
+        if (ready)
+            Insert(log.state.ready, id);
+        return !rules.drops(*index.Find(id), log, ready);
+    };
+    // 9594: a level 20 bot uses the start item (also the required one); grey at 13 by the game's line, so it is kept
+    Log const plate = bot(20, {});
+    Ids const plateAnswer = AnswerOf(plate.state, index);
+    Rule(counts, rules, 0, rules.accepts(Path::Item, *index.Find(9594), plate, plateAnswer),
+         "loop 9594: item path refuses a quest the game's line shows not grey");
+    Rule(counts, rules, 1, accepted(plate, 9594, false), "loop 9594: accepted by its item, then dropped");
+    Rule(counts, rules, 3, accepted(plate, 9594, true), "loop 9594: complete at once, then dropped");
+    // 8471: its hand-in failed once (no_ender: given up); the item path takes it again, complete at once
+    Log const totem = bot(56, {{8471, RowOf(1, "no_ender")}});
+    Ids const totemAnswer = AnswerOf(totem.state, index);
+    Rule(counts, rules, 0, !rules.accepts(Path::Item, *index.Find(8471), totem, totemAnswer),
+         "loop 8471: item path accepts a given-up quest");
+    Rule(counts, rules, 3, accepted(totem, 8471, true), "loop 8471: complete quest dropped after a failed hand-in");
+    // 8304: given up twice; a planner bot off an order meets its giver, the next order drops it
+    Log const letter = bot(60, {{8304, RowOf(2, "no_target")}});
+    Ids const letterAnswer = AnswerOf(letter.state, index);
+    Rule(counts, rules, 0, !rules.accepts(Path::FreeGiver, *index.Find(8304), letter, letterAnswer),
+         "loop 8304: free giver path accepts a given-up quest");
+    Rule(counts, rules, 2, accepted(letter, 8304, false), "loop 8304: an open quest dropped for a give-up");
+    std::printf("wq34 loops %s: A=%u I1=%u I2=%u I3=%u broken\n", rules.name, counts.broken[0], counts.broken[1],
+                counts.broken[2], counts.broken[3]);
+    return counts;
+}
+
+Counts GeneratedLogs(std::uint32_t seed, Rules const& rules)
+{
+    std::mt19937 rng(seed + 34);  // apart from GeneratedCases' draws, so its counts stay as they were
+    std::vector<QuestRecord> records;
+    for (std::uint32_t id = 1; id <= QUESTS; ++id)
+        records.push_back(Generated(rng, id));
+    QuestIndex const index = IndexOf(records);
+    Counts counts;
+    for (std::size_t l = 0; l < LOGS; ++l)
+    {
+        Log log;
+        log.state = GeneratedState(rng);
+        for (std::uint32_t const id : log.state.inLog)
+            if (!Has(log.state.ready, id) && rng() % 100 < 10)
+                log.failed.push_back(id);
+        for (std::uint32_t id = 1; id <= QUESTS; ++id)
+            if (rng() % 100 < 8)
+                log.holidayEnded.push_back(id);
+        OneLog(log, index, rng, "wq34 seed " + std::to_string(seed) + " log " + std::to_string(l), rules, counts);
+        ++counts.logs;
+    }
+    std::printf("wq34 %s seed=%u logs=%u accepts=%u drops=%u broken A=%u I1=%u I2=%u I3=%u\n", rules.name, seed,
+                counts.logs, counts.accepts, counts.drops, counts.broken[0], counts.broken[1], counts.broken[2],
+                counts.broken[3]);
+    return counts;
+}
+
+// The one rule passes; each old rule put back breaks the invariants it should: the old accept A, the old drop I1-I3
+void Run(std::uint32_t seed)
+{
+    Loops(ONE);
+    Counts const one = GeneratedLogs(seed, ONE);
+    Check(one.accepts > 0 && one.drops > 0, "wq34 generated: no accept or no drop");
+    for (std::size_t i = 0; i < one.words.size(); ++i)
+        Check(one.words[i] > 0, std::string("wq34 generated: no case answered ") + QuestLog::WORDS[i]);
+    Counts const oldAcceptLoops = Loops(OLD_ACCEPT);
+    Counts const oldAccept = GeneratedLogs(seed, OLD_ACCEPT);
+    Check(oldAccept.broken[0] > 0 && oldAcceptLoops.broken[0] > 0,
+          "wq34 mutant: the old accept put back breaks no A (the invariant cannot tell the rules apart)");
+    Counts const oldDropLoops = Loops(OLD_DROP);
+    Counts const oldDrop = GeneratedLogs(seed, OLD_DROP);
+    Check(oldDrop.broken[1] > 0 && oldDrop.broken[2] > 0 && oldDrop.broken[3] > 0 && oldDropLoops.broken[2] > 0 &&
+              oldDropLoops.broken[3] > 0,
+          "wq34 mutant: the old drop put back breaks not each of I1, I2 and I3");
+}
+}  // namespace Wq34
 }  // namespace
 
 // Questing WQ18b: a reader that keeps what it made of a bot's rows reads the book again only after a write
@@ -575,15 +881,9 @@ void FailBookView()
               held->handInFailed.empty(),
           "fail book: reads and the forget of a bot without rows move no version; a restore and a forget do, and the "
           "forgotten bot's copy is empty");
-    // The order's `bags` end writes no failure row, so the record has no failed hand-in and the ready quest stays
-    QuestLog::Held ready;
-    ready.id = 100;
-    ready.level = 10;
-    ready.ready = true;
-    QuestLog::Held handInFailed = ready;
-    handInFailed.handInFailed = true;
-    Check(QuestLog::Abandon(ready, 10, 5) == Drop::Keep && QuestLog::Abandon(handInFailed, 10, 5) == Drop::NoEnder,
-          "abandon: a ready quest stays unless a failed hand-in is on record (full bags put none there)");
+    // A ready quest stays whatever the record holds (WQ34: a failed hand-in is no drop), a grey one too
+    QuestLog::Held const ready{.id = 100, .level = 4, .ready = true};
+    Check(QuestLog::Abandon(ready, GrayLevel(20)) == Drop::Keep, "abandon: a ready quest stays, grey or not");
 }
 
 int main(int argc, char** argv)
@@ -594,6 +894,7 @@ int main(int argc, char** argv)
     Table();
     FailBookView();
     GeneratedCases(seed);
+    Wq34::Run(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

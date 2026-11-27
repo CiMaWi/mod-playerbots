@@ -654,7 +654,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
             {
                 std::vector<uint32> availableQuests;
                 std::vector<uint32> const givenUp = NewRpgInternal::GivenUpQuests(bot);
-                for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+                for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
                 {
                     uint32 questId = bot->GetQuestSlotQuestId(slot);
                     if (QuestFail::IsGivenUp(givenUp, questId))
@@ -753,7 +753,7 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
         case RPG_DO_QUEST:
         {
             std::vector<uint32> const givenUp = NewRpgInternal::GivenUpQuests(bot);
-            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
             {
                 uint32 questId = bot->GetQuestSlotQuestId(slot);
                 if (QuestFail::IsGivenUp(givenUp, questId))

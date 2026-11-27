@@ -106,7 +106,7 @@ void ReadInventory(Player* bot, std::vector<BotStateItem>& items)
 void ReadQuests(Player* bot, std::vector<BotStateItem>& items)
 {
     QuestStatusMap& statuses = bot->getQuestStatusMap();
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 const questId = bot->GetQuestSlotQuestId(slot);
         Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
@@ -570,7 +570,7 @@ void ReadWho(Player* bot, PlayerbotAI* ai, std::string const& argument, std::vec
 std::vector<Quest const*> LogQuestTemplates(Player* bot)
 {
     std::vector<Quest const*> quests;
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
         if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
             if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
                 quests.push_back(quest);
@@ -586,7 +586,7 @@ Knowledge::QuestFact QuestOf(Planner::PlannerIndexes const& index, Player* bot, 
     fact.title = quest.GetTitle();
     fact.level = quest.GetQuestLevel() > 0 ? static_cast<uint32>(quest.GetQuestLevel()) : quest.GetMinLevel();
     uint32 const id = quest.GetQuestId();
-    bool const inLog = bot->FindQuestSlot(id) < MAX_QUEST_LOG_SIZE;
+    bool const inLog = bot->FindQuestSlot(id) < bot->GetQuestLogSize();
     if (inLog)
         fact.state = Knowledge::QuestState::InLog;
     else if (bot->GetQuestRewardStatus(id))

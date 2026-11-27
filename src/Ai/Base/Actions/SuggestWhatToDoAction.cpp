@@ -66,7 +66,7 @@ std::vector<uint32> SuggestWhatToDoAction::GetIncompletedQuests()
 {
     std::vector<uint32> result;
 
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)

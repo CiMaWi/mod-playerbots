@@ -372,6 +372,11 @@ void FailureRows(Rules const& rules)
               !rules.writes(true, Outcome::Finished, "done"),
           "an order writes no row for anything else: a dry or time end's refused takes are written by the order's "
           "end (QuestFieldExec::RefusedTakes, WQ18c), never a row of the end's word");
+    Check(AbandonOf(NO_ENDER) == AbandonCount::CannotTurnIn && AbandonOf(TIMEOUT) == AbandonCount::NoProgress &&
+              AbandonOf("no_item") == AbandonCount::NoProgress && AbandonOf(nullptr) == AbandonCount::NoProgress,
+          "a failed hand-in counts a quest that could not be turned in, any other give-up one without progress");
+    Check(AbandonOf(CANNOT_TAKE) == AbandonCount::None && AbandonOf("cannot_take") == AbandonCount::None,
+          "cannot_take counts no abandon: the quest was never in the log (WQ43, L8)");
     Check(IsGiveUpWord("refused:level") && IsGiveUpWord("locked") && !IsGiveUpWord("refuse") &&
               !IsGiveUpWord(nullptr) && !IsGiveUpWord("deadline"),
           "the give-up words are the check's");

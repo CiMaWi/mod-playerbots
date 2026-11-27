@@ -192,7 +192,7 @@ void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& c
         return;
 
     uint32 const mapId = bot->GetMapId();
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 const questId = bot->GetQuestSlotQuestId(slot);
         if (!questId || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)

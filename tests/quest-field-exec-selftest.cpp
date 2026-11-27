@@ -14,6 +14,8 @@
 // WQ20: on the way (Detour, OnOrder): before the arrival a field order with an allowance and a way (WayOrder) take
 // what lies within the allowance on the way, generated walks from 150 to 600 yards off; cases shaped as way-kill,
 // way-far and way-trip.
+// WQ33: the bound on a need whose targets give the bot no stand point (StandRefused, RefuseNeed, CarryRefusals):
+// a model of the look and the hold over hand-built fields, against the rules and against mutants that remove them.
 // WQ38: the stall sum and its rows (QuestFailRows.h): hand cases on the rule's edges and generated timelines checked
 // against the harness's own count; the abandon's done share and the two rows' amounts.
 // Build (Git Bash, module root):
@@ -24,6 +26,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <optional>
 #include <random>
@@ -1084,6 +1087,7 @@ Walked WalkOrder(QuestOrderRun& run, float x, float y, std::vector<X::Candidate>
         float const left = std::hypot(run.order.x - x, run.order.y - y);
         if (!run.arrivedAt && left <= ARRIVE_YARDS)
             run.arrivedAt = X::Stamp(now);
+        X::NoteCloser(run, left, now);
         bool finding = fighting > 0;
         if (fighting && !--fighting)
         {
@@ -2093,6 +2097,307 @@ void StallRows(std::uint32_t seed)
 }
 
 // WQ38: the abandon's done share and the two rows' amounts
+// questing WQ33: a model of the order's look and hold over one field. The look takes the nearest target the order
+// takes (X::Pick over the open needs) that is not one of the last four passed over (the executor's ring of
+// QuestExec::PASSED_TARGETS); a target without a stand point is refused and passed over (the rules count it), one
+// with a stand point is worked (its act clears the count) and credits its need (the recount carries the counts). The
+// night lab5-20261125-175728 held one refused crate after another for hours: more of them than the ring holds
+struct StandTarget
+{
+    std::uint32_t need{0};
+    float yards{0.0f};
+    bool stands{false};
+    bool credits{true};  // worked: its act brings a credit (false: a loot without the item)
+};
+
+struct StandBound
+{
+    std::function<bool(std::span<QuestOrderOpen>, std::size_t)> refuse =
+        [](std::span<QuestOrderOpen> open, std::size_t need) { return X::RefuseNeed(open, need); };
+    std::function<void(std::span<QuestOrderOpen const>, std::span<QuestOrderOpen>)> carry =
+        [](std::span<QuestOrderOpen const> before, std::span<QuestOrderOpen> after)
+    { X::CarryRefusals(before, after); };
+    std::function<void(std::uint8_t&)> worked = [](std::uint8_t& refusals) { X::StandWorked(refusals); };
+};
+
+struct StandSeen
+{
+    std::vector<int> holds;                 // per need: targets held
+    std::vector<int> refused;               // per need: targets refused
+    std::vector<int> heldClosed;            // per need: targets held after it closed
+    std::vector<int> firstWorked;           // per need: refusals before its first worked target (-1: none worked)
+    std::map<std::uint32_t, int> failures;  // per quest: failure rows
+    std::vector<QuestOrderOpen> open;
+    int looks{0};
+};
+
+constexpr int STAND_LOOKS = 200;  // the night's loop ran on: a bound far above the rule's three
+constexpr std::size_t STAND_RING = 4;
+
+StandSeen RunStand(std::vector<QuestOrderOpen> open, std::vector<StandTarget> const& targets, StandBound const& bound)
+{
+    QuestOrder order;
+    order.mapId = MAP_A;
+    order.x = 50.0f;
+    order.y = 50.0f;
+    order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+    X::PickAsk ask;
+    ask.x = order.x;
+    ask.y = order.y;
+    ask.level = 70;
+    StandSeen seen;
+    std::size_t const needs = open.size();
+    seen.holds.assign(needs, 0);
+    seen.refused.assign(needs, 0);
+    seen.heldClosed.assign(needs, 0);
+    seen.firstWorked.assign(needs, -1);
+    std::vector<bool> used(targets.size(), false);
+    std::array<std::size_t, STAND_RING> ring;
+    ring.fill(targets.size());
+    std::size_t next = 0;
+    for (; seen.looks < STAND_LOOKS; ++seen.looks)
+    {
+        std::vector<X::Candidate> candidates;
+        std::vector<std::size_t> of;
+        for (std::size_t at = 0; at < targets.size(); ++at)
+            if (!used[at] && std::find(ring.begin(), ring.end(), at) == ring.end())
+            {
+                candidates.push_back(
+                    {targets[at].need, FieldKind::Object, 0, MAP_A, order.x + targets[at].yards, order.y});
+                of.push_back(at);
+            }
+        std::optional<std::size_t> const pick = X::Pick(candidates, open, order, ask);
+        if (!pick)
+            break;
+        std::size_t const at = of[*pick];
+        std::uint32_t const need = targets[at].need;
+        ++seen.holds[need];
+        if (X::StandClosed(open[need].refusals))
+            ++seen.heldClosed[need];
+        if (!targets[at].stands)
+        {
+            ++seen.refused[need];
+            ring[next] = at;
+            next = (next + 1) % STAND_RING;
+            if (bound.refuse(open, need))
+                ++seen.failures[open[need].quest];
+            continue;
+        }
+        if (seen.firstWorked[need] < 0)
+            seen.firstWorked[need] = seen.refused[need];
+        bound.worked(open[need].refusals);
+        used[at] = true;
+        std::vector<QuestOrderOpen> const before = open;
+        if (open[need].left && targets[at].credits)
+            --open[need].left;
+        // the recount after a credit: the log's needs counted again, the counts carried by the rule
+        std::vector<QuestOrderOpen> recount = open;
+        for (QuestOrderOpen& fresh : recount)
+            fresh.refusals = 0;
+        bound.carry(before, recount);
+        open = recount;
+    }
+    seen.open = open;
+    return seen;
+}
+
+// The invariant over the cases; `report` false: the cases are only judged (a mutant's run)
+bool StandCases(StandBound const& bound, bool report)
+{
+    bool all = true;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        all = all && ok;
+        if (report)
+            Check(ok, what);
+    };
+    // Six crates without a stand point (more than the ring holds) and, farther, a reachable target of a second quest
+    std::vector<StandTarget> crates;
+    for (int i = 0; i < 6; ++i)
+        crates.push_back({0, 10.0f + 8.0f * static_cast<float>(i), false});
+    std::vector<StandTarget> field = crates;
+    field.push_back({1, 95.0f, true});
+    StandSeen lost = RunStand({{1, 0, 10}, {2, 0, 1}}, field, bound);
+    check(lost.refused[0] == X::STAND_REFUSALS, "WQ33: six refused crates: three refusals, then the need is closed");
+    check(X::StandClosed(lost.open[0].refusals), "WQ33: the crates' need is closed");
+    check(lost.heldClosed[0] == 0, "WQ33: no crate is held after the need closed");
+    check(lost.failures[1] == 1 && lost.failures.size() == 1, "WQ33: exactly one no_stand failure row, its quest's");
+    check(lost.open[1].left == 0, "WQ33: the order's other need goes on and is met");
+    check(lost.looks < STAND_LOOKS, "WQ33: the look runs out of targets (the order's own end follows)");
+    // A reachable crate behind two refused ones is taken before the bound, and its act clears the count (it brings no
+    // credit: the act alone clears it)
+    std::vector<StandTarget> const mixed = {{0, 10.0f, false}, {0, 18.0f, false}, {0, 26.0f, true, false},
+                                            {0, 34.0f, false}, {0, 42.0f, false}, {0, 50.0f, false},
+                                            {0, 58.0f, false}};
+    StandSeen found = RunStand({{1, 0, 10}}, mixed, bound);
+    check(found.firstWorked[0] == 2, "WQ33: the reachable crate is taken after two refusals, before the bound");
+    check(found.refused[0] == 2 + X::STAND_REFUSALS, "WQ33: its act cleared the count: three more refusals close it");
+    check(found.failures[1] == 1, "WQ33: one failure row after the later three");
+    // Two objectives of one quest, both without a stand point: both close, the quest's failure row once
+    std::vector<StandTarget> two = crates;
+    for (int i = 0; i < 6; ++i)
+        two.push_back({1, 12.0f + 8.0f * static_cast<float>(i), false});
+    StandSeen both = RunStand({{1, 0, 10}, {1, 1, 5}}, two, bound);
+    check(X::StandClosed(both.open[0].refusals) && X::StandClosed(both.open[1].refusals),
+          "WQ33: both objectives of the quest close");
+    check(both.failures[1] == 1, "WQ33: one failure row for the quest, not one per objective");
+    // A credit of the need between refusals (another target counted) starts the count again
+    std::vector<QuestOrderOpen> const before = {{1, 0, 10, 2}};
+    std::vector<QuestOrderOpen> credited = {{1, 0, 9, 0}};
+    std::vector<QuestOrderOpen> same = {{1, 0, 10, 0}};
+    bound.carry(before, credited);
+    bound.carry(before, same);
+    check(credited[0].refusals == 0, "WQ33: a credit clears the need's count");
+    check(same[0].refusals == 2, "WQ33: a recount without a credit keeps it");
+    return all;
+}
+
+void StandBounds()
+{
+    StandCases(StandBound{}, true);
+    StandBound none;  // today's code before WQ33: a refusal only passes the target over
+    none.refuse = [](std::span<QuestOrderOpen>, std::size_t) { return false; };
+    Check(!StandCases(none, false), "WQ33: mutant without the bound (the night's endless hold) is caught");
+    StandBound forgets;
+    forgets.carry = [](std::span<QuestOrderOpen const>, std::span<QuestOrderOpen>) {};
+    Check(!StandCases(forgets, false), "WQ33: mutant that forgets the counts at a recount is caught");
+    StandBound keeps;
+    keeps.carry = [](std::span<QuestOrderOpen const> before, std::span<QuestOrderOpen> after)
+    {
+        for (std::size_t at = 0; at < after.size() && at < before.size(); ++at)
+            after[at].refusals = before[at].refusals;
+    };
+    Check(!StandCases(keeps, false), "WQ33: mutant that keeps the count over a credit is caught");
+    StandBound perQuest;
+    perQuest.refuse = [](std::span<QuestOrderOpen> open, std::size_t need)
+    { return X::StandRefused(open[need].refusals); };
+    Check(!StandCases(perQuest, false), "WQ33: mutant writing a failure row per objective is caught");
+    StandBound lasting;
+    lasting.worked = [](std::uint8_t&) {};
+    Check(!StandCases(lasting, false), "WQ33: mutant whose act keeps the count is caught");
+}
+
+// WQ43 (L4): no `time` end while the bot still closes on its aim (it fights on the way and walks on between two
+// fights); every order ends: one that stops closing one walk bound after its last new best, one that drifts, walks
+// away or fights at random within (start yards / CLOSER_YARDS + 2) bounds plus its fights, one that arrives by its stay
+void WalkWhileClosing(std::uint32_t seed)
+{
+    QuestOrder order;
+    order.word = QuestOrderWord::HandIn;
+    order.minutes = 0.5f;
+    order.walkMinutes = 2.0f;
+    order.expected.push_back({7, HAND_IN, 1});
+    std::uint32_t const boundMs =
+        X::MinutesMs(X::WALK_SLACK * order.walkMinutes + order.minutes) + X::NpcSlackMs(order);
+    QuestOrderRun run;
+    run.order = order;
+    run.open.push_back({7, HAND_IN, 1});
+    run.startedAt = 0xFFFFFFFFu - 30000;  // wraps during the walk
+    std::uint32_t now = run.startedAt;
+    float yards = 1300.0f;
+    bool early = false;
+    for (int fight = 0; fight < 40 && !early; ++fight)  // a fight of five minutes, then 30 yd on: 200 minutes
+    {
+        X::NoteCloser(run, yards, now);
+        early = X::End(run, now, false).has_value() || X::End(run, now + 5 * X::MS_PER_MINUTE, false).has_value();
+        now += 5 * X::MS_PER_MINUTE;
+        yards -= 30.0f;
+    }
+    Check(!early && now - run.startedAt > 3 * boundMs,
+          "L4: no time end while the bot closes on its ender between fights of five minutes (bound " +
+              std::to_string(boundMs / 1000) + " s)");
+    std::uint32_t const last = run.closerAt;
+    X::NoteCloser(run, run.bestYards - X::CLOSER_YARDS + 1.0f, last + 1000);
+    X::NoteCloser(run, run.bestYards + 50.0f, last + 2000);
+    Check(run.closerAt == last && !X::End(run, last + boundMs - 1, false).has_value() &&
+              X::End(run, last + boundMs, false) == QuestOrderEnd::Time,
+          "L4: nearer by less than a step or walking away restarts nothing: time one bound after the last new best");
+    run.arrivedAt = X::Stamp(last + 3000);
+    X::NoteCloser(run, 1.0f, last + 3000);
+    Check(run.closerAt == last, "L4: after the arrival the walk's bound is not asked");
+
+    Gen gen{std::mt19937(seed ^ 0x43C105E5u)};
+    constexpr std::uint32_t MAX_FIGHT_TICKS = 200;
+    int unended = 0;
+    int closing = 0;
+    for (int one = 0; one < 400; ++one)
+    {
+        QuestOrderRun walk;
+        walk.order = order;
+        walk.open.push_back({7, HAND_IN, 1});
+        walk.startedAt = static_cast<std::uint32_t>(gen.Int(0, 0x7FFFFFFF)) * 2u;
+        float const start = gen.Real(20.0f, 2000.0f);
+        float const pull = gen.Real(-2.0f, 4.0f);  // yards a tick towards the aim on average; below 0 it walks away
+        float left = start;
+        std::uint32_t const cap = static_cast<std::uint32_t>(start / X::CLOSER_YARDS + 2.0f) * boundMs +
+                                  X::MinutesMs(order.minutes) + X::LOOK_MS + 2 * MAX_FIGHT_TICKS * TICK_MS + TICK_MS;
+        std::uint32_t elapsed = 0;
+        std::optional<QuestOrderEnd> end;
+        int fighting = 0;
+        while (!end && elapsed <= cap)
+        {
+            elapsed += TICK_MS;
+            if (fighting > 0)
+            {
+                --fighting;  // a fight holds the executor: no tick of its own
+                continue;
+            }
+            if (gen.Chance(0.02f))
+                fighting = gen.Int(10, static_cast<int>(MAX_FIGHT_TICKS));
+            left = std::max(0.0f, left - pull + gen.Real(-6.0f, 6.0f));
+            std::uint32_t const at = walk.startedAt + elapsed;
+            if (!walk.arrivedAt && left <= 10.0f)
+                walk.arrivedAt = X::Stamp(at);
+            X::NoteCloser(walk, left, at);
+            end = X::End(walk, at, false);
+            if (end == QuestOrderEnd::Time && !walk.arrivedAt && at - walk.closerAt < boundMs)
+                ++closing;
+        }
+        unended += end ? 0 : 1;
+    }
+    Check(unended == 0, "L4: every generated walk ends within its bound (" + std::to_string(unended) + " of 400 not)");
+    Check(closing == 0,
+          "L4: no generated walk ends time within a bound of its last new best (" + std::to_string(closing) + ")");
+}
+
+// WQ43 (L2): a ready quest the order would hand in leaves the log without its reward (the log upkeep or a player
+// drops it): the log is counted again, so the quest is in no NoEnderQuests; a ready quest still held, or one handed
+// in, counts nothing each tick
+void HandInLeftLog()
+{
+    std::set<std::uint32_t> log = {871, 55};
+    std::set<std::uint32_t> rewarded;
+    QuestOrderRun run;
+    run.order.expected = {{871, HAND_IN, 1}, {55, 0, 2}};
+    auto const recount = [&log, &run]
+    {
+        run.open.clear();
+        if (log.count(871))
+            run.open.push_back({871, HAND_IN, 1});
+        if (log.count(55))
+            run.open.push_back({55, 0, 2});
+    };
+    recount();
+    auto const worked = [&log](std::uint32_t quest) { return !log.count(quest); };  // complete or gone
+    auto const gone = [&log, &rewarded](std::uint32_t quest) { return !log.count(quest) && !rewarded.count(quest); };
+    Check(!X::CountAgain(run.open, worked, gone), "L2: a ready quest held and a quest worked count nothing each tick");
+    log.erase(871);
+    bool const counted = X::CountAgain(run.open, worked, gone);
+    if (counted)
+        recount();
+    std::vector<std::uint32_t> const quests = X::NoEnderQuests(run);
+    Check(counted && std::find(quests.begin(), quests.end(), 871u) == quests.end(),
+          "L2: a quest gone from the log is in no NoEnderQuests (the log is counted again)");
+    log.insert(871);
+    recount();
+    run.open[0].left = 0;  // handed in: NoteHandIns closed its need
+    log.erase(871);
+    rewarded.insert(871);
+    Check(!X::CountAgain(run.open, worked, gone), "L2: a quest handed in counts nothing again");
+    log.erase(55);
+    Check(X::CountAgain(run.open, worked, gone), "L2: a worked quest that left the log counts again, as before");
+}
+
 void ShareAndAmounts()
 {
     namespace F = Planner::QuestFailRows;
@@ -2151,6 +2456,9 @@ int main(int argc, char** argv)
     RefusedTakeCases();
     StallRows(seed);
     ShareAndAmounts();
+    StandBounds();
+    WalkWhileClosing(seed);
+    HandInLeftLog();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

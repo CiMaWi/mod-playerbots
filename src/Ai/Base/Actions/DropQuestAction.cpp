@@ -23,7 +23,7 @@ bool DropQuestAction::Execute(Event event)
     uint32 entry = handler.extractQuestId(link);
 
     // remove all quest entries for 'entry' from quest log
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 logQuest = bot->GetQuestSlotQuestId(slot);
 
@@ -84,7 +84,7 @@ bool CleanQuestLogAction::Execute(Event event)
 
     uint8 botLevel = bot->GetLevel();  // Get bot's level
 
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)
@@ -160,8 +160,8 @@ bool CleanQuestLogAction::Execute(Event event)
 
 void CleanQuestLogAction::DropQuestType(uint8& numQuest, uint8 wantNum, bool isGreen, bool hasProgress, bool isComplete)
 {
-    std::vector<uint8> slots;
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    std::vector<uint16> slots;
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
         slots.push_back(slot);
 
     if (wantNum < 100)
@@ -171,7 +171,7 @@ void CleanQuestLogAction::DropQuestType(uint8& numQuest, uint8 wantNum, bool isG
         std::shuffle(slots.begin(), slots.end(), g);
     }
 
-    for (uint8 slot : slots)
+    for (uint16 slot : slots)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)

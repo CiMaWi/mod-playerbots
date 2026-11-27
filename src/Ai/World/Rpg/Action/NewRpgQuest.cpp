@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <list>
 #include <memory>
 #include <string_view>
@@ -19,11 +20,14 @@
 #include "ClassQuestCompletion.h"
 #include "Creature.h"
 #include "EventLog.h"
+#include "Formulas.h"
 #include "G3D/Vector2.h"
 #include "GameObject.h"
 #include "GossipDef.h"
 #include "GridTerrainData.h"
 #include "Group.h"
+#include "HandInRoomRules.h"
+#include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "LootObjectStack.h"
@@ -46,6 +50,7 @@
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "PursuitRules.h"
+#include "PvpGearMgr.h"
 #include "QuestDef.h"
 #include "QuestExecRules.h"
 #include "QuestFailRecord.h"
@@ -122,16 +127,19 @@ char const* TickPursuit(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& da
 
 // questing WQ19a: the open needs of the bot's log (QuestFields::Needs over its slots, at neutral prices), each item
 // objective's credits left read from the log (a slot holds only the creature and object counters). WQ38: as the
-// bot's group sees them (a lone bot works no elite, group or instance quest)
+// bot's group sees them (a lone bot works no elite, group or instance quest). WQ34: a given-up quest gives none
 std::vector<Planner::QuestFields::Need> LogNeeds(Player* bot, Planner::QuestIndex const& index)
 {
     std::vector<Planner::QuestSlot> slots;
-    slots.reserve(MAX_QUEST_LOG_SIZE);
+    slots.reserve(bot->GetQuestLogSize());
     Planner::FillSlots(bot, slots);
     Planner::QuestFields::Pricing const pricing{};
     Group const* group = bot->GetGroup();
-    std::vector<Planner::QuestFields::Need> needs = Planner::QuestFields::Needs(
-        index, slots, static_cast<uint8>(bot->GetTeamId()), pricing, group ? group->GetMembersCount() : 1);
+    std::shared_ptr<Planner::QuestLog::Record const> const record =
+        NewRpgHelpers::OrderRecord(GET_PLAYERBOT_AI(bot), bot);
+    std::vector<Planner::QuestFields::Need> needs =
+        Planner::QuestFields::Needs(index, slots, static_cast<uint8>(bot->GetTeamId()), pricing,
+                                    group ? group->GetMembersCount() : 1, record->givenUp);
     for (Planner::QuestFields::Need& need : needs)
     {
         if (need.objective == Planner::QuestFields::HAND_IN || need.objective == Planner::QuestFields::TAKE)
@@ -163,11 +171,14 @@ bool Takeable(Player* bot, Planner::QuestLog::Record const& record, uint32 quest
 // them: every source of an objective's need (hand-ins and takes are steps WQ19b's and WQ31's)
 void CountOrder(Player* bot, Planner::QuestOrderRun& run, std::vector<Planner::QuestFields::Need> const& needs)
 {
+    std::vector<Planner::QuestOrderOpen> const before = std::move(run.open);
     run.open = Planner::QuestFieldExec::Open(needs);
     // The takes the order expects (questing WQ18b), after the log's needs: the seeks index those
     std::shared_ptr<Planner::QuestLog::Record const> const record = NewRpgHelpers::OrderRecord(bot, run);
     Planner::QuestFieldExec::OpenTakes(run.open, run.order,
                                        [&](uint32 questId) { return Takeable(bot, *record, questId); });
+    // questing WQ33: a need's refused stand points stay counted until it gains a credit
+    Planner::QuestFieldExec::CarryRefusals(before, run.open);
     run.seeks.clear();
     uint32 at = 0;
     for (Planner::QuestFields::Need const& need : needs)
@@ -241,6 +252,8 @@ void AimOrder(Player* bot, NewRpgInfo::DoQuest& data)
         return;
     data.pos = aim->npc ? WorldPosition(bot->GetMapId(), aim->x, aim->y, aim->z) : OrderPlace(bot, run.order);
     run.arrivedAt = 0;
+    run.closerAt = 0;  // the new aim's distances start anew (QuestFieldExec::NoteCloser)
+    run.bestYards = 0.0f;
     run.order.walkMinutes = bot->GetExactDist2d(aim->x, aim->y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
 }
 
@@ -249,7 +262,7 @@ void AimOrder(Player* bot, NewRpgInfo::DoQuest& data)
 uint32 NoteLog(Player* bot, std::vector<Planner::QuestOrderMark>& marks, bool& added)
 {
     uint32 rise = 0;
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
         if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
         {
             std::size_t const before = marks.size();
@@ -291,12 +304,14 @@ void NoteOrderCredits(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data
             working.push_back(open.quest);
     std::sort(working.begin(), working.end());
     working.erase(std::unique(working.begin(), working.end()), working.end());
-    // A quest worked turned complete or left the log (a failed one keeps its objectives open: no count each tick)
-    for (uint32 const questId : working)
+    // A quest worked turned complete or left the log; a ready quest to hand in left it without its reward (WQ43, L2)
+    auto const worked = [bot](uint32 questId)
     {
         QuestStatus const status = bot->GetQuestStatus(questId);
-        changed = changed || (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_FAILED);
-    }
+        return status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_FAILED;
+    };
+    auto const gone = [bot](uint32 questId) { return bot->GetQuestStatus(questId) == QUEST_STATUS_NONE; };
+    changed = changed || Planner::QuestFieldExec::CountAgain(run.open, worked, gone);
     if (!rise && !changed)
         return;
     std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
@@ -332,7 +347,7 @@ void TickStall(PlayerbotAI* botAI, Player* bot, Planner::QuestOrderRun const& ru
     if (worked.empty() && sums.quests.empty())
         return;
     Planner::QuestFailRows::KeepLogged(
-        sums, [bot](uint32 questId) { return bot->FindQuestSlot(questId) < MAX_QUEST_LOG_SIZE; });
+        sums, [bot](uint32 questId) { return bot->FindQuestSlot(questId) < bot->GetQuestLogSize(); });
     std::sort(worked.begin(), worked.end());
     worked.erase(std::unique(worked.begin(), worked.end()), worked.end());
     uint32 const now = getMSTime();
@@ -387,9 +402,12 @@ void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, cha
     uint32 const minutes = Pursuit::Minutes(clock);
     EventLog::Emit(bot, EventLog::EventType::QuestFail, cause, data.questId, minutes);
     QuestFailRecord::Note(bot, data.questId, cause, minutes);
-    botAI->RecordQuestAbandoned(data.questId, std::string_view(cause) == Pursuit::NO_ENDER
-                                                  ? QuestAbandonReason::CannotTurnIn
-                                                  : QuestAbandonReason::NoProgress);
+    // A take the game refused (cannot_take) was never in the log: no abandon in the quest statistics (WQ43, L8)
+    Pursuit::AbandonCount const counted = Pursuit::AbandonOf(cause);
+    if (counted != Pursuit::AbandonCount::None)
+        botAI->RecordQuestAbandoned(data.questId, counted == Pursuit::AbandonCount::CannotTurnIn
+                                                      ? QuestAbandonReason::CannotTurnIn
+                                                      : QuestAbandonReason::NoProgress);
     LOG_DEBUG("playerbots", "[Quest] {} gives quest {} up: {} after {} min", bot->GetName(), data.questId, cause,
               minutes);
     // Given up twice, a doable class quest or a step of its chain is failed: completed now (upkeep WU21a, WU.29)
@@ -454,14 +472,15 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
 
 namespace
 {
-QuestDropReason DropReasonOf(Planner::QuestLog::Drop drop, QuestStatus status)
+// The world log's word of the one drop's reason (questing WQ34): grey is upstream's trivial
+QuestDropReason DropReasonOf(Planner::QuestLog::Drop drop)
 {
     switch (drop)
     {
-        case Planner::QuestLog::Drop::Outlevelled:
+        case Planner::QuestLog::Drop::Grey:
             return QuestDropReason::Trivial;
-        case Planner::QuestLog::Drop::CannotDo:
-            return status == QUEST_STATUS_FAILED ? QuestDropReason::Failed : QuestDropReason::NotCapable;
+        case Planner::QuestLog::Drop::HolidayEnded:
+            return QuestDropReason::HolidayEnded;
         default:
             return QuestDropReason::Failed;
     }
@@ -470,6 +489,12 @@ QuestDropReason DropReasonOf(Planner::QuestLog::Drop drop, QuestStatus status)
 // The log's drop of a quest slot through the abandon packet, as a player would; its QuestAbandon row names the reason
 void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
 {
+    // The packet names its slot in 8 bits: a quest in a later slot of a log without a limit changes places first
+    if (slot > std::numeric_limits<uint8>::max())
+    {
+        bot->SwapQuestSlot(slot, 0);
+        slot = 0;
+    }
     WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
     packet << static_cast<uint8>(slot);
     WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
@@ -478,32 +503,24 @@ void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
     bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
 }
 
-// A bot on an order abandons only what QuestLogRules' Abandon says: a quest it outlevelled, gave up or cannot do (a
-// failed timed quest too), a ready one only when its hand-in failed; never for room (questing WQ31)
-bool OrganizeOrderQuestLog(PlayerbotAI* botAI, Player* bot)
+// A bot the log's rule covers (NewRpgHelpers::KeepsLogRule) abandons only what QuestLogRules' Abandon says: a quest
+// that is not complete and grey by the game's line, whose holiday has ended or that the game marks failed; never for
+// a give-up, for what the executor cannot do, for a failed hand-in or for room (questing WQ34, WQ.46 item 4). Runs at
+// every tick of the giver search: one pass over the log, no record and no database
+bool OrganizeLogByRule(PlayerbotAI* botAI, Player* bot)
 {
-    std::shared_ptr<Planner::QuestIndex const> const quests = Planner::Quests();
-    if (!quests)
-        return false;
-    // The failure record through the order's kept copy (questing WQ18b): this runs at every tick of the giver search
-    std::shared_ptr<Planner::QuestLog::Record const> const record = NewRpgHelpers::OrderRecord(botAI, bot);
-    uint32 const greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF);
-    uint8 const side = static_cast<uint8>(bot->GetTeamId());
+    int32 const grayLevel = Acore::XP::GetGrayLevel(bot->GetLevel());
     bool dropped = false;
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 const questId = bot->GetQuestSlotQuestId(i);
-        Planner::QuestRecord const* held = questId ? quests->Find(questId) : nullptr;
-        if (!held)
+        Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        if (!quest)
             continue;
-        QuestStatus const status = bot->GetQuestStatus(questId);
-        Planner::QuestLog::Held quest =
-            Planner::QuestLog::HeldOf(*held, *record, side, status == QUEST_STATUS_COMPLETE);
-        quest.cannotDo = quest.cannotDo || status == QUEST_STATUS_FAILED;
-        Planner::QuestLog::Drop const drop = Planner::QuestLog::Abandon(quest, bot->GetLevel(), greyDiff);
+        Planner::QuestLog::Drop const drop = Planner::QuestLog::Abandon(NewRpgHelpers::LogHeld(bot, quest), grayLevel);
         if (drop == Planner::QuestLog::Drop::Keep)
             continue;
-        QuestDropReason const reason = DropReasonOf(drop, status);
+        QuestDropReason const reason = DropReasonOf(drop);
         LOG_DEBUG("playerbots", "[New RPG] {} drops quest {}: {}", bot->GetName(), questId,
                   Planner::QuestLog::Word(drop));
         DropQuestSlot(bot, i, reason);
@@ -535,10 +552,11 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
     if (menu.Empty())
         return true;
 
-    // A bot on an order takes what the take test allows (questing WQ31). A planned take the game refuses stays open,
-    // and the order's end at this giver gives it up (QuestGiveUp::OrderEnded, WQ18c)
+    // A bot the log's rule covers takes what the one accept allows (questing WQ34). A planned take it refuses stays
+    // open, and the order's end at this giver gives it up (QuestGiveUp::OrderEnded, WQ18c)
     bool const onOrder = NewRpgHelpers::OnOrder(botAI);
-    NewRpgHelpers::OrderTake take(bot);
+    bool const byRule = NewRpgHelpers::KeepsLogRule(botAI);
+    NewRpgHelpers::LogAccept take(bot);
     for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
     {
         QuestMenuItem const& item = menu.GetItem(idx);
@@ -550,19 +568,16 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
         bool accept = false;
         if (status == QUEST_STATUS_NONE && TestConstraints::QuestChoicesAllowed(botAI->testConstraints))
         {
-            if (!onOrder)
-                accept = NewRpgHelpers::FreeBotTakes(botAI, bot, quest);
-            else if (take.MayAccept(quest))
-                accept = bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false);
+            if (!byRule)
+                accept = NewRpgHelpers::FreeBotTakes(bot, quest);
+            else  // the accept asks the core's CanTakeQuest (WQ41); CanAddQuest has the last word
+                accept = take.Allows(quest) && bot->CanAddQuest(quest, false);
         }
         if (accept)
         {
             AcceptQuest(quest, guid);
             if (onOrder)
-            {
-                take.Reset();
                 Planner::NotePickup(botAI, true, true);
-            }
             if (botAI->GetMaster())
                 botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "new_rpg_quest_accepted",
@@ -572,7 +587,7 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
             botAI->RecordQuestAccepted(quest->GetQuestId());
             LOG_DEBUG("playerbots", "[New RPG] {} accept quest {}", bot->GetName(), quest->GetQuestId());
         }
-        if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, 0, false))
+        if (status == QUEST_STATUS_COMPLETE && MakeRoomForHandIn(quest))
         {
             TurnInQuest(quest, guid);
             if (botAI->GetMaster())
@@ -684,6 +699,143 @@ bool NewRpgBaseAction::TurnInQuest(Quest const* quest, ObjectGuid guid)
     return true;
 }
 
+namespace
+{
+constexpr uint32 HAND_IN_ROOM_HEARTHSTONE = 6948;
+constexpr uint32 HAND_IN_ROOM_MANA_GEMS = 4;  // ItemLimitCategory.dbc: every mana gem (LootAction's NR6)
+
+// Whether a quest in the log, open or ready, asks for the item or drops it as its source. Not the core's
+// HasQuestForItem(id, 0, true): its turn-in branch answers yes for every item once any quest is ready
+bool LogWantsItem(Player* bot, uint32 itemId)
+{
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
+    {
+        uint32 const questId = bot->GetQuestSlotQuestId(i);
+        Quest const* const quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        QuestStatus const status = quest ? bot->GetQuestStatus(questId) : QUEST_STATUS_NONE;
+        if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
+            continue;
+        for (uint8 j = 0; j < QUEST_ITEM_OBJECTIVES_COUNT; ++j)
+            if (quest->RequiredItemId[j] == itemId && quest->RequiredItemCount[j])
+                return true;
+        for (uint8 j = 0; j < QUEST_SOURCE_ITEM_IDS_COUNT; ++j)
+            if (quest->ItemDrop[j] == itemId)
+                return true;
+    }
+    return false;
+}
+
+// questing WQ43: a stack the room before a hand-in never destroys: a quest item, a worn item, a bag, the hearthstone,
+// a profession's tool, a key, a conjured thing the bot uses (its caster conjures it again; mana gems carry no conjured
+// flag), and a thing without vendor value but an unusable conjured one (often one the bot cannot get back)
+bool KeptAtHandIn(Player* bot, Item const* item)
+{
+    ItemTemplate const* const proto = item->GetTemplate();
+    bool const conjured = proto->IsConjuredConsumable() || proto->ItemLimitCategory == HAND_IN_ROOM_MANA_GEMS;
+    bool const tool = proto->TotemCategory != 0 ||
+                      (proto->Class == ITEM_CLASS_WEAPON && (proto->SubClass == ITEM_SUBCLASS_WEAPON_MISC ||
+                                                             proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE));
+    bool const questItem = proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM || proto->StartQuest ||
+                           LogWantsItem(bot, proto->ItemId);
+    bool const usable = bot->CanUseItem(proto) == EQUIP_ERR_OK;
+    return questItem || tool || proto->Class == ITEM_CLASS_CONTAINER || proto->Class == ITEM_CLASS_QUIVER ||
+           proto->Class == ITEM_CLASS_KEY || proto->ItemId == HAND_IN_ROOM_HEARTHSTONE ||
+           PvpGearMgr::Instance().IsWornItem(bot, item) || (conjured && usable) ||
+           (proto->SellPrice == 0 && !(conjured && !usable));
+}
+}  // namespace
+
+// questing WQ43 (WQ.49): room before a hand-in (HandInRoomRules.h). Run only at a hand-in the game refuses; a bot of
+// the living world (KeepsLogRule) whose bags alone refuse the reward destroys the cheapest stacks it may lose in its
+// general slots until the reward's items fit, one Inventory destroyed_for_hand_in row each (id the item, amount the
+// stack's vendor value). Nothing goes when the stacks that may go cannot make the room: the order then ends `bags`
+bool NewRpgBaseAction::MakeRoomForHandIn(Quest const* quest)
+{
+    uint32 const choice = quest->GetRewChoiceItemsCount() > 1 ? BestRewardIndex(quest) : 0;
+    if (bot->CanRewardQuest(quest, choice, false))
+        return true;
+    // A case bot's trace: why a full bot's hand-in makes room or not
+    if (TestProbe::On(botAI->testConstraints))
+    {
+        auto const store = [this](uint32 itemId, uint32 count)
+        {
+            ItemPosCountVec dest;
+            return itemId ? static_cast<int>(bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count)) : -1;
+        };
+        LOG_INFO("playerbots",
+                 "[Probe] {} hand-in room quest {} choice {} rewardable {} log rule {} destroys {} refuses {} "
+                 "store choice {} fixed {} {} {} {}, free {}",
+                 bot->GetName(), quest->GetQuestId(), choice, bot->CanRewardQuest(quest, false),
+                 NewRpgHelpers::KeepsLogRule(botAI), TestConstraints::DestroysForSpace(botAI->testConstraints),
+                 NewRpgHelpers::RoomRefusesReward(bot, quest, choice),
+                 choice < QUEST_REWARD_CHOICES_COUNT
+                     ? store(quest->RewardChoiceItemId[choice], quest->RewardChoiceItemCount[choice])
+                     : -2,
+                 store(quest->RewardItemId[0], quest->RewardItemIdCount[0]),
+                 store(quest->RewardItemId[1], quest->RewardItemIdCount[1]),
+                 store(quest->RewardItemId[2], quest->RewardItemIdCount[2]),
+                 store(quest->RewardItemId[3], quest->RewardItemIdCount[3]), WorldTravel::FreeGeneralSlots(bot));
+    }
+    if (!NewRpgHelpers::HandInRewardable(bot, quest, choice, botAI->testConstraints))
+        return false;
+    uint32 needed = 0;
+    auto const takes = [this, &needed](uint32 itemId, uint32 count)
+    {
+        ItemTemplate const* const proto = itemId ? sObjectMgr->GetItemTemplate(itemId) : nullptr;
+        if (proto)
+            needed += Planner::HandInRoom::SlotsFor(count, proto->GetMaxStackSize(), bot->GetItemCount(itemId, false));
+    };
+    if (quest->GetRewChoiceItemsCount() > 0 && choice < QUEST_REWARD_CHOICES_COUNT)
+        takes(quest->RewardChoiceItemId[choice], quest->RewardChoiceItemCount[choice]);
+    for (uint32 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+        takes(quest->RewardItemId[i], quest->RewardItemIdCount[i]);
+    // The game said the bags are full: at least one slot is short, whatever the count of stacks found
+    uint32 const slotsShort =
+        std::max<uint32>(1, Planner::HandInRoom::SlotsShort(needed, WorldTravel::FreeGeneralSlots(bot)));
+
+    std::vector<Item*> items;
+    std::vector<Planner::HandInRoom::Stack> stacks;
+    auto const visit = [this, &items, &stacks](Item* item)
+    {
+        if (!item)
+            return;
+        items.push_back(item);
+        stacks.push_back(
+            {static_cast<uint64>(item->GetTemplate()->SellPrice) * item->GetCount(), KeptAtHandIn(bot, item)});
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        visit(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* const bag = bot->GetBagByPos(bagSlot); WorldTravel::IsGeneralBag(bag))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                visit(bag->GetItemByPos(slot));
+
+    std::vector<std::size_t> const victims = Planner::HandInRoom::Victims(stacks, slotsShort);
+    if (TestProbe::On(botAI->testConstraints))
+    {
+        std::size_t const kept =
+            std::count_if(stacks.begin(), stacks.end(), [](Planner::HandInRoom::Stack const& s) { return s.kept; });
+        LOG_INFO("playerbots", "[Probe] {} hand-in room needed {} short {} stacks {} kept {} victims {}",
+                 bot->GetName(), needed, slotsShort, stacks.size(), kept, victims.size());
+    }
+    for (std::size_t const at : victims)
+    {
+        Item* const item = items[at];
+        uint32 const itemId = item->GetEntry();
+        // Destroyed units are no use: the use measure does not count them (NE8a)
+        uint16 const nonUse = Planner::NonUseKindsOf(botAI, item->GetTemplate());
+        uint32 const units = item->GetCount();
+        bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        Planner::NoteNonUse(botAI, nonUse, units);
+        EventLog::Emit(bot, EventLog::EventType::Inventory, "destroyed_for_hand_in", itemId,
+                       static_cast<int64>(stacks[at].value));
+    }
+    if (!victims.empty())
+        LOG_DEBUG("playerbots", "[Quest] {} destroyed {} stacks for the reward of quest {}", bot->GetName(),
+                  victims.size(), quest->GetQuestId());
+    return bot->CanRewardQuest(quest, choice, false);
+}
+
 uint32 NewRpgBaseAction::BestRewardIndex(Quest const* quest)
 {
     ItemIds returnIds;
@@ -732,12 +884,17 @@ bool NewRpgBaseAction::OrganizeQuestLog()
     if (!TestConstraints::QuestChoicesAllowed(botAI->testConstraints))
         return false;
 
-    if (NewRpgHelpers::OnOrder(botAI))
-        return OrganizeOrderQuestLog(botAI, bot);
+    if (NewRpgHelpers::KeepsLogRule(botAI))
+        return OrganizeLogByRule(botAI, bot);
+
+    // A log without a limit drops nothing for room (questing WQ40, WQ.46 item 1): upstream's upkeep below is that of
+    // a character with a client's 25 slots
+    if (bot->HasUnlimitedQuestLog())
+        return false;
 
     int32 freeSlotNum = 0;
 
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)
@@ -750,7 +907,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
 
     int32 dropped = 0;
     // remove quests that not worth doing or not capable of doing
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)
@@ -782,14 +939,10 @@ bool NewRpgBaseAction::OrganizeQuestLog()
         return true;
 
     // remove festival/class quests and quests in different zone
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)
-            continue;
-
-        // A planner bot keeps its plan's quests: a carried quest is delivered in another zone (WT16)
-        if (Planner::KeepsQuest(botAI, questId))
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -815,11 +968,11 @@ bool NewRpgBaseAction::OrganizeQuestLog()
     if (dropped >= 8)
         return true;
 
-    // clear quests log (but a planner bot's planned quests)
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    // clear quests log
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
-        if (!questId || Planner::KeepsQuest(botAI, questId))
+        if (!questId)
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -862,6 +1015,9 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
     if (GetMSTimeDiffToNow(memo.questGiverSince) > questGiverGiveUpTime)
     {
         LOG_DEBUG("playerbots", "[New RPG] {} gives up on quest giver {}", bot->GetName(), npcOrGo.ToString());
+        if (TestProbe::On(botAI->testConstraints))
+            LOG_INFO("playerbots", "[Probe] {} giver {} given up: interacts {} at {:.1f} yd", bot->GetName(),
+                     object->GetEntry(), bot->CanInteractWithQuestGiver(object), bot->GetDistance(object));
         memo.ignoredQuestGivers.insert(npcOrGo);
         memo.questGiver.Clear();
         return false;
@@ -1121,21 +1277,24 @@ std::optional<Planner::QuestOrderEnd> QuestGiveUp::OrderEnded(PlayerbotAI* botAI
     std::optional<Planner::QuestOrderEnd> const own = Planner::QuestFieldExec::OwnEnd(word, outcome);
     Planner::QuestOrderEnd const end = own.value_or(Planner::QuestOrderEnd::Replaced);
     // WQ18c (WQ.44 item 2): the one writer of a refused take. A planned take the order's own end leaves open at its
-    // giver is one give-up of the quest (cannot_take), whether the giver did not offer it or the game refused the
-    // accept; the second puts it out for the bot as any cause does. A bot the test keeps from choosing quests refused
-    // nothing
+    // giver is one give-up of the quest (cannot_take) when the take test, the game's answer with it (CanTakeQuest,
+    // WQ41), still allows it: the giver did not offer it. The second puts it out for the bot as any cause does. A take
+    // the game refuses is none: the plan read an answer that is old now, so the next snapshot asks the game again. A
+    // bot the test keeps from choosing quests refused nothing
     bool const givesUp = own && Planner::QuestFieldExec::GivesUpTakes(*own) &&
                          TestConstraints::QuestChoicesAllowed(botAI->testConstraints);
+    if (givesUp)
+        Planner::AskTakesAgain(botAI);
     if (std::shared_ptr<Planner::QuestIndex const> const index = givesUp ? Planner::Quests() : nullptr)
     {
         std::vector<Planner::QuestFieldExec::NpcSpot> const spots = OrderSpots(bot, run.order, *index);
-        NewRpgHelpers::OrderTake take(bot);
+        NewRpgHelpers::LogAccept take(bot);
         auto const atGiver = [bot, &spots](uint32 questId)
         { return Planner::QuestFieldExec::AtGiver(spots, questId, bot->GetPositionX(), bot->GetPositionY()); };
         auto const mayTake = [&take](uint32 questId)
         {
             Quest const* const quest = sObjectMgr->GetQuestTemplate(questId);
-            return quest && take.MayAccept(quest);
+            return quest && take.Allows(quest);
         };
         for (uint32 const questId : Planner::QuestFieldExec::RefusedTakes(run, *own, atGiver, mayTake))
         {
@@ -1160,8 +1319,12 @@ std::optional<Planner::QuestOrderEnd> QuestGiveUp::OrderEnded(PlayerbotAI* botAI
               placeCredits, wayCredits, quests, minutes);
     // A case bot's trace (WQ18b part 3, fault F4): an order at NPCs that the clock ended, with what tells a bound
     // too short from an arrival that never came
-    if (end == Planner::QuestOrderEnd::Time && run.order.word == Planner::QuestOrderWord::HandIn &&
-        TestProbe::On(botAI->testConstraints))
+    bool const expectsHandIn =
+        std::any_of(run.order.expected.begin(), run.order.expected.end(), [](Planner::QuestOrderNeed const& need)
+                    { return need.objective == Planner::QuestFields::HAND_IN; });
+    if ((end == Planner::QuestOrderEnd::Time || end == Planner::QuestOrderEnd::Dry ||
+         end == Planner::QuestOrderEnd::NoEnder) &&
+        (expectsHandIn || run.order.word == Planner::QuestOrderWord::HandIn) && TestProbe::On(botAI->testConstraints))
     {
         float nearest = -1.0f;
         if (std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests())
@@ -1172,11 +1335,11 @@ std::optional<Planner::QuestOrderEnd> QuestGiveUp::OrderEnded(PlayerbotAI* botAI
             }
         uint32 const seconds = run.startedAt ? getMSTimeDiff(run.startedAt, getMSTime()) / IN_MILLISECONDS : 0;
         LOG_INFO("playerbots",
-                 "[Probe] {} order hand_in ended time: walk {:.2f} min, stay {:.2f} min, {} s since its start, {}, "
+                 "[Probe] {} order {} ended {}: walk {:.2f} min, stay {:.2f} min, {} s since its start, {}, "
                  "{:.0f} yd from its place, nearest expected NPC {:.0f} yd, {} needs open, {} taken, {} handed in",
-                 bot->GetName(), run.order.walkMinutes, run.order.minutes, seconds,
-                 run.arrivedAt ? "arrived" : "not arrived", bot->GetDistance(data.pos), nearest, run.open.size(),
-                 run.takes, run.handIns);
+                 bot->GetName(), Planner::QuestOrderWordName(run.order.word), Planner::QuestOrderEndName(end),
+                 run.order.walkMinutes, run.order.minutes, seconds, run.arrivedAt ? "arrived" : "not arrived",
+                 bot->GetDistance(data.pos), nearest, run.open.size(), run.takes, run.handIns);
     }
     return own;
 }

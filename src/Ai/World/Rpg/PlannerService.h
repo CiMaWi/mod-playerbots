@@ -70,6 +70,13 @@ void StartPlanner();
 void StopPlanner();
 // Map thread only: the bot as the planner sees it (WT.11)
 Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion);
+// Map thread only: the game's answer about takes into snapshot.takeable (questing WQ41a): the core's CanTakeQuest for
+// each quest of the index for the bot's side whose minimum level it has and that is not grey for it
+// (Acore::XP::GetGrayLevel); PerfMonitor row `planner take set`. The goals job's snapshot carries it
+void FillTakeable(Player* bot, Snapshot& snapshot);
+// Map thread (the bot's): the next goals snapshot asks the game again about takes (questing WQ41b): an order ended at a
+// giver with a planned take still open, so the answer it was planned from may be old
+void AskTakesAgain(PlayerbotAI* botAI);
 
 // The wear of the bot's equipped items, as the snapshot and the repair errand read it (items that never wear skipped)
 struct GearWear
@@ -150,12 +157,14 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
 // QuestFieldExec::OwnEnd): the route's running order ends (GoalApply::EndRouteOrder), so its next start gives the
 // next order. `reached`: the bot had arrived at the order's place. An end that says the place gave nothing or could
 // not be reached (dry; time before the arrival: GoalApply::ClosesCell) closes the order's cell for the block time,
-// with one GoalStalled row. Nothing for a bot the planner does not own or for an order that is not its route's. O(1)
+// with one GoalStalled row. The third end in a row within 10 yd of where the first began and without progress (WQ42,
+// GoalApply::EndInPlace) fails the route's goal and blocks its key, with a second row (abandoned/in_place). Nothing
+// for a bot the planner does not own or for an order that is not its route's. O(1)
 void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached);
 // The same door, when an order's status ended by anything else (part 3). A failure of its walk or work
 // (GoalApply::FailsOrder: stuck, abandoned, timed out; `note`: the end's word, a literal) ends the route's running
-// order and closes its cell as a dry end does, so the route does not give it again; any other end leaves the order
-// to be given again. O(1)
+// order and closes its cell as a dry end does, so the route does not give it again, and counts as an end in place
+// does above; any other end (a take-over) leaves the order to be given again and counts nothing. O(1)
 void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
@@ -174,8 +183,6 @@ struct IdleStep
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The idle pick's candidates (3.19 (5)): a planner bot's fallback the narrow list, the weighted pick the full one
 std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step);
-// The bot's map thread: the quest is on its plan's keep list (OrganizeQuestLog keeps it); false without a plan
-bool KeepsQuest(PlayerbotAI* botAI, std::uint32_t quest);
 // The bot's map thread: of a log quest's points of interest (x, y) the one nearest the plan's tasks for it; -1 = none
 int PlannedPoi(PlayerbotAI* botAI, std::uint32_t quest, std::vector<std::pair<float, float>> const& points);
 // Any thread: the bot (raw guid) pursues an external goal (bridge or group) or its plan is paused: the manager leaves

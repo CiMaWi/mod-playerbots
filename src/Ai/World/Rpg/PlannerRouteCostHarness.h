@@ -329,7 +329,8 @@ inline void SearchState(GoalHarness::NextZoneWorld const& world, TravelGraph con
     Situation live;
     live.here.hub = NO_HUB;
     auto const started = std::chrono::steady_clock::now();
-    GoalPlan const plan = PlanGoals(bot, context, GoalHarness::Reserved(live, bot.level));
+    GoalPlan const plan =
+        PlanGoals(TakeFixture::Answered(bot, context), context, GoalHarness::Reserved(live, bot.level));
     tally.micros += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
     Situation filled = live;
     GoalHarness::Filled(bot, context, filled);

@@ -62,6 +62,7 @@
 #include "ProfessionConfig.h"
 #include "QuestCircuitLog.h"
 #include "QuestFailRecord.h"
+#include "ReputationMgr.h"
 #include "RouteService.h"
 #include "SkillPathLive.h"
 #include "SpellAuras.h"
@@ -100,7 +101,6 @@ static_assert(SNAPSHOT_SKILLS ==
               "PlannerPool.h's snapshot skills are the core's SkillType ids");
 
 static_assert(TAXI_WORDS == TaxiMaskSize, "the snapshot's taxi mask has PlayerTaxi's layout");
-static_assert(QUEST_LOG_SLOTS == MAX_QUEST_LOG_SIZE, "the snapshot holds the whole quest log");
 static_assert(QUEST_COUNTERS == QUEST_OBJECTIVES_COUNT, "one counter per quest objective");
 
 std::atomic<uint64> snapshotsBuilt{0};
@@ -190,9 +190,16 @@ void FillBags(Player* bot, Snapshot& snapshot)
 {
     snapshot.bagSlots = static_cast<uint16>(BagSlots(bot));
     uint32 free = 0;
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+    uint32 questItems = 0;  // questing WQ44: by the template alone, no look at the log
+    auto const count = [&free, &questItems](Item const* item)
+    {
+        if (!item)
             ++free;
+        else if (item->GetTemplate()->Class == ITEM_CLASS_QUEST || item->GetTemplate()->Bonding == BIND_QUEST_ITEM)
+            ++questItems;
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        count(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
     for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
     {
         Bag const* bag = bot->GetBagByPos(bagSlot);
@@ -200,10 +207,10 @@ void FillBags(Player* bot, Snapshot& snapshot)
             bag->GetTemplate()->SubClass != ITEM_SUBCLASS_CONTAINER)
             continue;
         for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-            if (!bag->GetItemByPos(static_cast<uint8>(slot)))
-                ++free;
+            count(bag->GetItemByPos(static_cast<uint8>(slot)));
     }
     snapshot.bagFree = static_cast<uint16>(free);
+    snapshot.questItemSlots = static_cast<uint16>(questItems);
     snapshot.unarmed = !bot->GetWeaponForAttack(BASE_ATTACK);
 
     GearWear const wear = ReadGearWear(bot);
@@ -219,7 +226,7 @@ void FillBags(Player* bot, Snapshot& snapshot)
 
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
 {
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 const quest = bot->GetQuestSlotQuestId(slot);
         if (!quest)
@@ -238,6 +245,7 @@ namespace
 void FillQuests(Player* bot, Snapshot& snapshot)
 {
     FillSlots(bot, snapshot.quests);
+    snapshot.noLogLimit = bot->HasUnlimitedQuestLog();
     RewardedQuestSet const& rewarded = bot->getRewardedQuests();
     snapshot.rewardedQuests.assign(rewarded.begin(), rewarded.end());
     std::sort(snapshot.rewardedQuests.begin(), snapshot.rewardedQuests.end());
@@ -261,11 +269,15 @@ void FillBankMail(Player* bot, Snapshot& snapshot)
     snapshot.bankFreeSlots = known.bank.freeSlots;
 }
 
-// FillSnapshot with its PerfMonitor row (map-thread microseconds per snapshot)
-Snapshot TimedSnapshot(Player* bot, uint32 stateVersion)
+void AnswerTakes(Player* bot, Snapshot& snapshot, GoalApply::BotGoals& goals);
+
+// FillSnapshot and the game's answer about takes with its PerfMonitor row (map-thread microseconds per snapshot; rows
+// `planner take key` and `planner take set` are the answer's share)
+Snapshot TimedSnapshot(Player* bot, uint32 stateVersion, GoalApply::BotGoals& goals)
 {
     auto const started = std::chrono::steady_clock::now();
     Snapshot snapshot = FillSnapshot(bot, stateVersion);
+    AnswerTakes(bot, snapshot, goals);
     auto const us =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
     if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner snapshot"))
@@ -461,7 +473,7 @@ QuestTests TestsOf(Player* bot, std::function<bool(uint32)> const& workable)
 uint64 LogNow(Player* bot)
 {
     std::vector<QuestSlot> quests;
-    quests.reserve(MAX_QUEST_LOG_SIZE);
+    quests.reserve(bot->GetQuestLogSize());
     FillSlots(bot, quests);
     std::vector<uint16> items;
     items.reserve(quests.size() * QUEST_ITEM_OBJECTIVES_COUNT);
@@ -474,6 +486,8 @@ uint64 LogNow(Player* bot)
     }
     return GoalApply::LogSignature(quests, bot->GetLevel(), items);
 }
+
+GoalApply::BotSpot SpotOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY()}; }
 
 // The level and XP as one number that grows with every XP gained (GoalApply::EndRun's grind and gather progress)
 uint64 XpNow(Player* bot) { return (static_cast<uint64>(bot->GetLevel()) << 32) | bot->GetUInt32Value(PLAYER_XP); }
@@ -551,14 +565,18 @@ bool StartRoute(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     if (held)
         botAI->planner.snapshotDue = true;
     std::function<bool(QuestOrderNeed const&)> const open = NewRpgInternal::OrderNeedOpen(botAI, bot);
-    std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, LogNow(bot), getMSTime(), BlockMs());
+    uint64 const log = LogNow(bot);
+    std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, log, getMSTime(), BlockMs());
     GoalApply::RouteNext next = GoalApply::NextOrder(goals, open, closed, held);
     while (next.step == GoalApply::RouteStep::Order && next.order->mapId != bot->GetMapId())
         next = GoalApply::AdvanceRoute(goals, open, closed);  // ends: each order is given at most once
     if (next.step == GoalApply::RouteStep::Done)
         return false;
     if (NewRpgInternal::StartRouteOrder(botAI, bot, *next.order, word))
+    {
+        GoalApply::NoteRouteStart(goals, SpotOf(bot), log);
         return true;
+    }
     GoalApply::OrderNotStarted(goals);
     return false;
 }
@@ -1300,9 +1318,9 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
         situation.levelXp = ClassQuests::LevelXpBasis(bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP),
                                                       level > 1 ? sObjectMgr->GetXPForLevel(level - 1) : 0);
         situation.knownClassQuestSpells = ClassQuestCompletion::KnownSpells(bot);
-        situation.givenUpQuests =
-            QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), ClassQuests::GIVE_UP_LIMIT);
     }
+    // WQ34: as the log's accept reads it (a failed hand-in too): a held given-up quest gives no need
+    situation.givenUpQuests = QuestLog::Read(QuestFailRecord::RowsOf(bot->GetGUID().GetCounter())).givenUp;
     if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
     {
         // NR3 (NR.4): a sick bot's safe areas, where it stands and where its hearthstone is bound
@@ -1344,7 +1362,7 @@ void WriteSickArea(PlayerbotAI* botAI)
 void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint32 now)
 {
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
-    Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
+    Snapshot snapshot = TimedSnapshot(bot, state.stateVersion, goals);
     // NR3c: the job plans from the snapshot's hand-over (the sick gate), so the edge is the snapshot's as much as the
     // errand trigger's (NoteSickOpen): an edge seen here writes its row only, the job is the plan; a hand-over this
     // snapshot found closed is the trigger's edge again (run 1: a plan that rested on a closed snapshot after the
@@ -1553,6 +1571,96 @@ void StartPlanner()
 
 void StopPlanner() { Pool().Stop(); }
 
+// The game's answer (questing WQ41a, decision WQ.47): the planner reads it at any distance, on every map. The filter
+// before the ask only saves work: the core refuses a quest of the other side or below its minimum level itself, and
+// a quest at or below GetGrayLevel is grey to Take::IsGrey too (one line since WQ34). A quest whose availability reads
+// the world's events or states is not asked (QuestRecord::worldState, CONTRACT C3); the index walks in id order, so the
+// answer is sorted
+void FillTakeable(Player* bot, Snapshot& snapshot)
+{
+    if (PlannerPool::IsWorkerThread())
+        LOG_ERROR("playerbots", "Thread check: planner take set built on a worker");
+    RowTimer const timer("planner take set");
+    snapshot.takeable.clear();
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+        return;
+    std::uint8_t const level = bot->GetLevel();
+    std::int32_t const grey = Acore::XP::GetGrayLevel(level);
+    std::uint8_t const side = SideOfRace(bot->getRace(true));
+    std::uint32_t const sideMask = side < SIDES ? SIDE_RACE_MASKS[side] : 0;
+    for (QuestRecord const& record : quests->quests)
+    {
+        if (record.minLevel > level || record.worldState ||
+            (sideMask && record.raceMask && !(record.raceMask & sideMask)))
+            continue;
+        if (record.level > 0 && record.level <= grey)
+            continue;
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(record.id); quest && bot->CanTakeQuest(quest, false))
+            snapshot.takeable.push_back(record.id);
+    }
+}
+
+namespace
+{
+// What the game's answer depends on, as the plan text names it (WQ41a): the level, the log (its quests and their
+// states), the rewarded quests, the skills (every skill a quest asks for is a snapshot skill) and the standings, and
+// the index it walks. The full pass costs more than the snapshot's other gathers together (lab13, run
+// scenario-1795758758745: 628 of 839 us per snapshot), so it runs only when this key changed. What else the game
+// reads (items, auras, the bot's zone or area, spells, achievements, the daily and weekly resets) waits for the next
+// change, at most TAKE_ANSWER_MS (WQ41b: every answer has an exit), or an order's end at a giver (AskTakesAgain); the
+// accept at the giver stays the authority
+constexpr uint32 TAKE_ANSWER_MS = 5 * MINUTE * IN_MILLISECONDS;
+
+std::uint64_t TakeKey(Player* bot, Snapshot const& snapshot, QuestIndex const* quests)
+{
+    std::uint64_t key = 14695981039346656037ull;  // FNV-1a over 64-bit words
+    auto const mix = [&key](std::uint64_t value)
+    {
+        key ^= value;
+        key *= 1099511628211ull;
+    };
+    mix(reinterpret_cast<std::uintptr_t>(quests));
+    mix(snapshot.level);
+    for (QuestSlot const& slot : snapshot.quests)
+        mix((static_cast<std::uint64_t>(slot.quest) << 32) | slot.state);
+    mix(snapshot.rewardedQuests.size());
+    for (std::uint32_t const quest : snapshot.rewardedQuests)
+        mix(quest);
+    for (Skill const& skill : snapshot.skills)
+        mix((static_cast<std::uint64_t>(skill.id) << 16) | skill.value);
+    for (auto const& [listId, faction] : bot->GetReputationMgr().GetStateList())
+        mix((static_cast<std::uint64_t>(faction.ID) << 32) | static_cast<std::uint32_t>(faction.Standing));
+    return key;
+}
+
+void AnswerTakes(Player* bot, Snapshot& snapshot, GoalApply::BotGoals& goals)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    std::uint64_t key = 0;
+    {
+        RowTimer const timer("planner take key");
+        key = TakeKey(bot, snapshot, quests.get());
+    }
+    uint32 const nowMs = getMSTime();
+    if (key == goals.takeKey && getMSTimeDiff(goals.takeMs, nowMs) < TAKE_ANSWER_MS)
+    {
+        snapshot.takeable = goals.takeable;
+        return;
+    }
+    FillTakeable(bot, snapshot);
+    goals.takeKey = key;
+    goals.takeMs = nowMs;
+    goals.takeable = snapshot.takeable;
+}
+}  // namespace
+
+void AskTakesAgain(PlayerbotAI* botAI)
+{
+    if (botAI && botAI->planner.goals)
+        botAI->planner.goals->takeKey = 0;
+}
+
 Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
 {
     if (PlannerPool::IsWorkerThread())
@@ -1672,8 +1780,14 @@ void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, 
     Player* const bot = botAI->GetBot();
     if (!state.goals || !bot)
         return;
-    if (GoalApply::EndRouteOrder(*state.goals, order, end, LogNow(bot), getMSTime(), BlockMs(), reached))
-        NoteStalled(bot, *state.goals);  // the closed cell's row
+    GoalApply::BotGoals& goals = *state.goals;
+    bool const route = GoalApply::IsRouteOrder(goals, order);
+    uint64 const log = LogNow(bot);
+    uint32 const now = getMSTime();
+    if (GoalApply::EndRouteOrder(goals, order, end, log, now, BlockMs(), reached))
+        NoteStalled(bot, goals);  // the closed cell's row
+    if (route && GoalApply::EndInPlace(goals, SpotOf(bot), log, now, BlockMs()))
+        NoteStalled(bot, goals);  // the route goal's row
 }
 
 void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note)
@@ -1682,8 +1796,14 @@ void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outco
     Player* const bot = botAI->GetBot();
     if (!state.goals || !bot || !GoalApply::FailsOrder(outcome))
         return;
-    if (GoalApply::FailRouteOrder(*state.goals, order, outcome, note, LogNow(bot), getMSTime(), BlockMs()))
-        NoteStalled(bot, *state.goals);  // the closed cell's row
+    GoalApply::BotGoals& goals = *state.goals;
+    bool const route = GoalApply::IsRouteOrder(goals, order);
+    uint64 const log = LogNow(bot);
+    uint32 const now = getMSTime();
+    if (GoalApply::FailRouteOrder(goals, order, outcome, note, log, now, BlockMs()))
+        NoteStalled(bot, goals);  // the closed cell's row
+    if (route && GoalApply::EndInPlace(goals, SpotOf(bot), log, now, BlockMs()))
+        NoteStalled(bot, goals);  // the route goal's row
 }
 
 bool Owns(PlayerbotAI* botAI)
@@ -2069,12 +2189,6 @@ std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
          GoalApply::IdleList(step.fallback, step.moving, sPlayerbotAIConfig.Lone.TestQuestingOnly))
         statuses.push_back(static_cast<NewRpgStatus>(status));
     return statuses;
-}
-
-bool KeepsQuest(PlayerbotAI* botAI, uint32 quest)
-{
-    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    return goals && goals->plan && GoalApply::Keeps(goals->keep, quest);
 }
 
 int PlannedPoi(PlayerbotAI* botAI, uint32 quest, std::vector<std::pair<float, float>> const& points)

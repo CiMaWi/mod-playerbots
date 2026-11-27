@@ -4,13 +4,15 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of the take rules (questing WQ17a, QuestTakeRules.h): a table with one case per reason word and the
-// order of the rules, then generated bots and quests (the seed is printed; argv[1] replays it) checked against the
-// invariants: a quest in the log or rewarded is never taken, nor one the capability table refuses or the bot gave up;
-// the same input gives the same answer; the circuit's skip for every answer is the one its rules gave before WQ17a
-// (OldTakeable below, a copy of them as they stood); the minimum level, race, class, maximum level and capability
-// words agree with the feed's Eligible.
-// Build (Git Bash, module root):
+// Offline proof of the take test (questing WQ17a, QuestTakeRules.h; WQ41: the game decides what it allows). A table
+// with one case per reason word and the order of the rules, then generated bots, quests and game answers (the seed is
+// printed; argv[1] replays it) checked against the invariants: the game's answer decides (Facts::takeable, the core's
+// CanTakeQuest on the bot's map thread): a quest May allows is in it, and a quest in it is taken unless one of the
+// plan's own rules (rewarded, in the log, given up, listed, repeatable, refused for the side, too high, grey, kind,
+// elite or group, a breadcrumb to an answered target) leaves it; the plan's own rules hold whatever the answer; the
+// same input gives the same answer; the circuit's skip for every reason. A quest that needs a skill the bot lacks is
+// not in the answer, and the plan holds no copy of the game's rule: a quest of a higher minimum level, another race or
+// class or a missing previous quest is taken when the game answers it. Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel tests/quest-take-selftest.cpp
 
 #include <algorithm>
@@ -36,9 +38,10 @@ constexpr std::size_t BOTS = 400;
 constexpr std::uint32_t QUESTS = 120;  // ids 1 to QUESTS; breadcrumbs may name QUESTS + 1, which is missing
 constexpr std::uint8_t HUMAN = 1;      // Alliance
 constexpr std::uint8_t ORC = 2;        // Horde
-constexpr std::uint8_t WARRIOR = 1;
 constexpr std::uint8_t MAGE = 8;
 constexpr std::uint32_t PRINTED_FAILURES = 20;
+constexpr std::uint32_t QUEST = 100;   // the table's quest
+constexpr std::uint32_t TARGET = 200;  // a breadcrumb target the game answers
 
 int passed = 0;
 int failed = 0;
@@ -57,13 +60,13 @@ void Check(bool ok, std::string const& what)
 
 std::string Answer(std::optional<Reason> why) { return why ? Take::Word(*why) : "yes"; }
 
-// The bot's lists, owned here; Facts views them
+// The bot's lists, owned here; Facts views them. The table's game answers its quest and the breadcrumb target
 struct Lists
 {
     std::vector<std::uint32_t> rewarded;
     std::vector<std::uint32_t> inLog;
     std::vector<std::uint32_t> givenUp;
-    std::vector<std::int32_t> takenGroups;
+    std::vector<std::uint32_t> takeable{QUEST, TARGET};  // the game's answer
 };
 
 Lists Done(std::vector<std::uint32_t> ids)
@@ -87,18 +90,17 @@ Lists GaveUp(std::vector<std::uint32_t> ids)
     return lists;
 }
 
-Lists Groups(std::vector<std::int32_t> groups)
+Lists Answered(std::vector<std::uint32_t> ids)
 {
     Lists lists;
-    lists.takenGroups = std::move(groups);
+    lists.takeable = std::move(ids);
     return lists;
 }
 
-Take::Facts BotOf(std::uint8_t race, std::uint8_t cls, std::uint8_t level)
+Take::Facts BotOf(std::uint8_t race, std::uint8_t level)
 {
     Take::Facts facts;
     facts.race = race;
-    facts.cls = cls;
     facts.level = level;
     return facts;
 }
@@ -108,7 +110,7 @@ Take::Facts View(Take::Facts facts, Lists const& lists)
     facts.rewarded = lists.rewarded;
     facts.inLog = lists.inLog;
     facts.givenUp = lists.givenUp;
-    facts.takenGroups = lists.takenGroups;
+    facts.takeable = lists.takeable;
     return facts;
 }
 
@@ -118,69 +120,6 @@ QuestIndex IndexOf(std::vector<QuestRecord> quests)
     QuestIndex index;
     index.quests = std::move(quests);
     return index;
-}
-
-// The circuit's take rules as they stood before WQ17a (QuestCircuit.h Takeable and PrerequisiteMet at ec180f16),
-// with the bot's group size: the oracle that the circuit's skips do not change
-struct OldBot
-{
-    std::uint8_t race{0};
-    std::uint8_t cls{0};
-    std::uint8_t level{0};
-    std::uint8_t groupSize{0};
-    std::uint32_t greyDiff{Circuit::GREY_DIFF};
-    std::vector<std::uint32_t> rewarded;
-    std::vector<std::uint32_t> logIds;
-    std::vector<std::int32_t> takenGroups;
-};
-
-bool OldHas(std::vector<std::uint32_t> const& sorted, std::uint32_t id)
-{
-    return std::binary_search(sorted.begin(), sorted.end(), id);
-}
-
-std::optional<SkipReason> OldTakeable(QuestRecord const& quest, OldBot const& bot, QuestIndex const& quests,
-                                      bool breadcrumbRule = true)
-{
-    if (OldHas(bot.rewarded, quest.id))
-        return SkipReason::Rewarded;
-    if (OldHas(bot.logIds, quest.id))
-        return SkipReason::InLog;
-    if (quest.flags & (QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE | QuestFlag::SEASONAL))
-        return SkipReason::Repeatable;
-    if (bot.level < quest.minLevel)
-        return SkipReason::TooHigh;
-    if (!Eligible(quest, bot.race, bot.cls, bot.level))
-        return SkipReason::Limits;
-    std::int32_t const level = quest.level > 0 ? quest.level : static_cast<std::int32_t>(bot.level);
-    if (level > static_cast<std::int32_t>(bot.level) + 3)
-        return SkipReason::TooHigh;
-    if (static_cast<std::int32_t>(bot.level) > level + static_cast<std::int32_t>(bot.greyDiff))
-        return SkipReason::Grey;
-    if (quest.flags & (QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP))
-        return SkipReason::Instance;
-    if ((quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP)) && bot.groupSize <= 1)
-        return SkipReason::Solo;
-    auto const met = [&bot](std::int32_t prev)
-    {
-        return prev > 0 ? OldHas(bot.rewarded, static_cast<std::uint32_t>(prev))
-                        : OldHas(bot.logIds, static_cast<std::uint32_t>(-prev));
-    };
-    bool const prerequisite = quest.prevAny.empty() ? (!quest.prev || met(quest.prev))
-                                                    : std::any_of(quest.prevAny.begin(), quest.prevAny.end(), met);
-    if (!prerequisite)
-        return SkipReason::Prerequisite;
-    if (quest.exclusiveGroup > 0 &&
-        std::binary_search(bot.takenGroups.begin(), bot.takenGroups.end(), quest.exclusiveGroup))
-        return SkipReason::Exclusive;
-    if (breadcrumbRule && quest.breadcrumbFor)
-    {
-        QuestRecord const* target = quests.Find(quest.breadcrumbFor);
-        if (!target || !OldTakeable(*target, bot, quests, false).has_value() || OldHas(bot.rewarded, target->id) ||
-            OldHas(bot.logIds, target->id))
-            return SkipReason::Breadcrumb;
-    }
-    return std::nullopt;
 }
 
 QuestRecord Plain(std::uint32_t id)
@@ -195,16 +134,9 @@ QuestRecord Plain(std::uint32_t id)
 // One case per reason word, the order of the rules and the inputs of WQ.43 (elite and group quests allowed or not)
 void Table()
 {
-    constexpr std::uint32_t TARGET = 200;    // a takeable breadcrumb target
-    constexpr std::uint32_t HIGH = 201;      // a breadcrumb target too high for the bot
-    constexpr std::uint32_t GIVEN_UP = 202;  // a breadcrumb target the bot gave up
-    constexpr std::uint32_t MISSING = 999;   // not in the index
-    QuestRecord high = Plain(HIGH);
-    high.level = 30;
-    high.minLevel = 25;
-    QuestIndex const index = IndexOf({Plain(TARGET), high, Plain(GIVEN_UP)});
-    Take::Facts const base = BotOf(HUMAN, WARRIOR, 20);
-
+    constexpr std::uint32_t UNANSWERED = 201;  // a breadcrumb target the game leaves out
+    constexpr std::uint32_t MISSING = 999;     // not in the index, nor in the answer
+    Take::Facts const base = BotOf(HUMAN, 20);
     struct Case
     {
         char const* name;
@@ -217,83 +149,49 @@ void Table()
     auto const add =
         [&cases](char const* name, char const* expect, auto&& change, Lists lists = {}, bool eliteGroup = false)
     {
-        QuestRecord quest = Plain(100);
+        QuestRecord quest = Plain(QUEST);
         change(quest);
         cases.push_back({name, expect, quest, std::move(lists), eliteGroup});
     };
     auto const same = [](QuestRecord&) {};
     add("plain", "yes", same);
     add("player's level", "yes", [](QuestRecord& q) { q.level = -1; });
-    add("rewarded", "done", same, Done({100}));
-    add("in the log", "in_log", same, InLog({100}));
-    add("given up", "given_up", same, GaveUp({100}));
+    add("rewarded", "done", same, Done({QUEST}));
+    add("in the log", "in_log", same, InLog({QUEST}));
+    add("given up", "given_up", same, GaveUp({QUEST}));
     add("daily", "repeatable", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; });
     add("seasonal", "repeatable", [](QuestRecord& q) { q.flags = QuestFlag::SEASONAL; });
-    add("minimum level", "level", [](QuestRecord& q) { q.minLevel = 21; });
-    add("race", "limits", [](QuestRecord& q) { q.raceMask = 1u << (ORC - 1); });
-    add("class", "limits", [](QuestRecord& q) { q.classMask = 1u << (MAGE - 1); });
-    add("race and class allowed", "yes",
-        [](QuestRecord& q)
-        {
-            q.raceMask = 1u << (HUMAN - 1);
-            q.classMask = 1u << (WARRIOR - 1);
-        });
-    add("maximum level", "limits", [](QuestRecord& q) { q.maxLevel = 19; });
     add("refused for the side", "unsupported", [](QuestRecord& q) { q.refused[0] = 1; });
     add("listed as impossible", "impossible", [](QuestRecord& q) { q.impossible = "far_trip"; });  // WQ38
-    add("listed and in the log", "in_log", [](QuestRecord& q) { q.impossible = "data"; }, InLog({100}));
+    add("listed and in the log", "in_log", [](QuestRecord& q) { q.impossible = "data"; }, InLog({QUEST}));
     add("refused for the other side", "yes", [](QuestRecord& q) { q.refused[1] = 1; });
     add("3 levels above", "yes", [](QuestRecord& q) { q.level = 23; });
     add("4 levels above", "too_high", [](QuestRecord& q) { q.level = 24; });
-    add("4 levels below", "yes", [](QuestRecord& q) { q.level = 16; });
-    add("5 levels below", "grey", [](QuestRecord& q) { q.level = 15; });
+    add("6 levels below", "yes", [](QuestRecord& q) { q.level = 14; });  // the game's grey level at 20 is 13 (WQ34)
+    add("7 levels below", "grey", [](QuestRecord& q) { q.level = 13; });
     add("dungeon", "kind", [](QuestRecord& q) { q.flags = QuestFlag::DUNGEON; });
     add("pvp", "kind", [](QuestRecord& q) { q.flags = QuestFlag::PVP; });
     add("elite refused", "elite_group", [](QuestRecord& q) { q.flags = QuestFlag::ELITE; });
     add("group refused", "elite_group", [](QuestRecord& q) { q.flags = QuestFlag::GROUP; });
     add("elite allowed", "yes", [](QuestRecord& q) { q.flags = QuestFlag::ELITE; }, {}, true);
     add("raid while elite allowed", "kind", [](QuestRecord& q) { q.flags = QuestFlag::RAID; }, {}, true);
-    add("previous not rewarded", "prerequisite", [](QuestRecord& q) { q.prev = 50; });
-    add("previous rewarded", "yes", [](QuestRecord& q) { q.prev = 50; }, Done({50}));
-    add("active previous not in the log", "prerequisite", [](QuestRecord& q) { q.prev = -60; });
-    add("active previous in the log", "yes", [](QuestRecord& q) { q.prev = -60; }, InLog({60}));
-    add("any previous, none met", "prerequisite", [](QuestRecord& q) { q.prevAny = {50, -60}; });
-    add("any previous, one met", "yes", [](QuestRecord& q) { q.prevAny = {50, -60}; }, InLog({60}));
-    add("exclusive group taken", "exclusive", [](QuestRecord& q) { q.exclusiveGroup = 7; }, Groups({7}));
-    add("exclusive group free", "yes", [](QuestRecord& q) { q.exclusiveGroup = 7; }, Groups({8}));
-    add("breadcrumb to a takeable target", "breadcrumb", [](QuestRecord& q) { q.breadcrumbFor = TARGET; });
-    add("breadcrumb to a missing target", "breadcrumb", [](QuestRecord& q) { q.breadcrumbFor = MISSING; });
-    add("breadcrumb to a done target", "breadcrumb", [](QuestRecord& q) { q.breadcrumbFor = TARGET; }, Done({TARGET}));
-    add(
-        "breadcrumb to a target in the log", "breadcrumb", [](QuestRecord& q) { q.breadcrumbFor = TARGET; },
-        InLog({TARGET}));
-    add("breadcrumb to a target too high", "yes", [](QuestRecord& q) { q.breadcrumbFor = HIGH; });
-    // A given-up target cannot be taken, so its breadcrumb can: the rule asks only whether the target is open
-    add(
-        "breadcrumb to a given-up target", "yes", [](QuestRecord& q) { q.breadcrumbFor = GIVEN_UP; },
-        GaveUp({GIVEN_UP}));
-    // The order: the first rule that fails is the answer
-    add("rewarded and daily", "done", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, Done({100}));
-    add("in the log and rewarded", "done", same, Lists{{100}, {100}, {}, {}});
-    add("given up and daily", "given_up", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, GaveUp({100}));
-    add("daily below the minimum level", "repeatable",
-        [](QuestRecord& q)
-        {
-            q.flags = QuestFlag::DAILY;
-            q.minLevel = 30;
-        });
-    add("minimum level and race", "level",
-        [](QuestRecord& q)
-        {
-            q.minLevel = 21;
-            q.raceMask = 1u << (ORC - 1);
-        });
-    add("race and refused", "limits",
-        [](QuestRecord& q)
-        {
-            q.raceMask = 1u << (ORC - 1);
-            q.refused[0] = 1;
-        });
+    // WQ41: the game decides; the plan keeps no copy of its rule
+    add("not in the game's answer", "game", same, Answered({TARGET}));
+    add("an empty answer", "game", same, Answered({}));
+    add("in the answer above its minimum level", "yes", [](QuestRecord& q) { q.minLevel = 21; });
+    add("in the answer for another race", "yes", [](QuestRecord& q) { q.raceMask = 1u << (ORC - 1); });
+    add("in the answer for another class", "yes", [](QuestRecord& q) { q.classMask = 1u << (MAGE - 1); });
+    add("in the answer above its maximum level", "yes", [](QuestRecord& q) { q.maxLevel = 19; });
+    add("in the answer with its previous not rewarded", "yes", [](QuestRecord& q) { q.prev = 50; });
+    add("in the answer with an exclusive group", "yes", [](QuestRecord& q) { q.exclusiveGroup = 7; });
+    add("breadcrumb to an answered target", "breadcrumb", [](QuestRecord& q) { q.breadcrumbFor = TARGET; });
+    add("breadcrumb to a target the game leaves out", "yes", [](QuestRecord& q) { q.breadcrumbFor = UNANSWERED; });
+    add("breadcrumb to a missing target", "yes", [](QuestRecord& q) { q.breadcrumbFor = MISSING; });
+    // The order: the first rule that fails is the answer; the plan's own rules before the game's answer
+    add("rewarded and daily", "done", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, Done({QUEST}));
+    add("in the log and rewarded", "done", same, Lists{{QUEST}, {QUEST}, {}, {QUEST}});
+    add("given up and daily", "given_up", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, GaveUp({QUEST}));
+    add("daily left out of the answer", "repeatable", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, Answered({}));
     add("refused and too high", "unsupported",
         [](QuestRecord& q)
         {
@@ -307,35 +205,19 @@ void Table()
             q.flags = QuestFlag::DUNGEON;
         });
     add("elite dungeon", "kind", [](QuestRecord& q) { q.flags = QuestFlag::DUNGEON | QuestFlag::ELITE; });
-    add("elite with a missing previous", "elite_group",
-        [](QuestRecord& q)
-        {
-            q.flags = QuestFlag::ELITE;
-            q.prev = 50;
-        });
     add(
-        "missing previous and exclusive", "prerequisite",
-        [](QuestRecord& q)
-        {
-            q.prev = 50;
-            q.exclusiveGroup = 7;
-        },
-        Groups({7}));
+        "elite left out of the answer", "elite_group", [](QuestRecord& q) { q.flags = QuestFlag::ELITE; },
+        Answered({}));
     add(
-        "exclusive breadcrumb", "exclusive",
-        [](QuestRecord& q)
-        {
-            q.exclusiveGroup = 7;
-            q.breadcrumbFor = TARGET;
-        },
-        Groups({7}));
+        "breadcrumb left out of the answer", "game", [](QuestRecord& q) { q.breadcrumbFor = TARGET; },
+        Answered({TARGET}));
 
     std::array<bool, static_cast<std::size_t>(Reason::Count)> seen{};
     for (Case const& c : cases)
     {
         Take::Facts facts = View(base, c.lists);
         facts.eliteGroup = c.eliteGroup;
-        std::optional<Reason> const why = Take::May(c.quest, facts, index);
+        std::optional<Reason> const why = Take::May(c.quest, facts);
         if (why)
             seen[static_cast<std::size_t>(*why)] = true;
         Check(Answer(why) == c.expect, std::string("table: ") + c.name + ": " + Answer(why) + ", expected " + c.expect);
@@ -343,13 +225,35 @@ void Table()
     for (std::size_t i = 0; i < seen.size(); ++i)
         Check(seen[i], std::string("table: no case for ") + Take::WORDS[i]);
     std::array<std::string, static_cast<std::size_t>(Reason::Count)> const words = {
-        "done",     "in_log", "given_up", "impossible",  "repeatable",   "level",     "limits",    "unsupported",
-        "too_high", "grey",   "kind",     "elite_group", "prerequisite", "exclusive", "breadcrumb"};
+        "done",     "in_log", "given_up", "impossible",  "repeatable", "unsupported",
+        "too_high", "grey",   "kind",     "elite_group", "game",       "breadcrumb"};
     for (std::size_t i = 0; i < words.size(); ++i)
         Check(words[i] == Take::WORDS[i], std::string("word ") + std::to_string(i) + ": " + Take::WORDS[i]);
 }
 
-// The circuit's skip for each reason: the words its log rows print stay as they were
+// WQ41: Take::May allows a quest only when it is in the game's answer. Quest 384 (level 7, minimum 5, needs cooking)
+// for a level 6 dwarf without cooking: the game leaves it out of the answer (the live case, plan-take-skill, asks the
+// same of quest 4161 and a night elf)
+void GameAnswer()
+{
+    constexpr std::uint32_t SKILL_QUEST = 384;
+    constexpr std::uint32_t OTHER = 385;
+    constexpr std::uint8_t DWARF = 3;
+    QuestRecord quest;
+    quest.id = SKILL_QUEST;
+    quest.level = 7;
+    quest.minLevel = 5;
+    quest.raceMask = SIDE_RACE_MASKS[0];
+    Take::Facts const bot = BotOf(DWARF, 6);
+    std::optional<Reason> const given = Take::May(quest, View(bot, Answered({SKILL_QUEST, OTHER})));
+    std::optional<Reason> const left = Take::May(quest, View(bot, Answered({OTHER})));
+    std::optional<Reason> const none = Take::May(quest, View(bot, Answered({})));
+    Check(!given, "answer: in the game's answer, answer " + Answer(given));
+    Check(left == Reason::Game, "answer: the skill quest left out of the game's answer, answer " + Answer(left));
+    Check(none == Reason::Game, "answer: an empty answer, answer " + Answer(none));
+}
+
+// The circuit's skip for each reason: the words its log rows print
 void Skips()
 {
     struct Row
@@ -360,18 +264,15 @@ void Skips()
     std::array<Row, static_cast<std::size_t>(Reason::Count)> const rows = {{
         {Reason::Done, "rewarded"},
         {Reason::InLog, "in log"},
-        {Reason::GivenUp, "race/class/max level"},
-        {Reason::Impossible, "race/class/max level"},
+        {Reason::GivenUp, "refused"},
+        {Reason::Impossible, "refused"},
         {Reason::Repeatable, "repeatable"},
-        {Reason::Level, "too high"},
-        {Reason::Limits, "race/class/max level"},
-        {Reason::Unsupported, "race/class/max level"},
+        {Reason::Unsupported, "refused"},
         {Reason::TooHigh, "too high"},
         {Reason::Grey, "grey"},
         {Reason::Kind, "instance"},
         {Reason::EliteGroup, "elite/group solo"},
-        {Reason::Prerequisite, "prerequisite"},
-        {Reason::Exclusive, "exclusive"},
+        {Reason::Game, "game"},
         {Reason::Breadcrumb, "breadcrumb"},
     }};
     for (Row const& row : rows)
@@ -420,10 +321,34 @@ QuestRecord Generated(std::mt19937& rng, std::uint32_t id)
     return quest;
 }
 
-// Generated bots against every generated quest
+// The plan's own rules as the plan text names them, written here apart from QuestTakeRules.h: whether one of them
+// leaves the quest, whatever the game answers
+// The game's grey level (Acore::XP::GetGrayLevel), written out again
+std::int32_t GameGrey(std::uint8_t level)
+{
+    std::int32_t const l = level;
+    return l <= 5 ? 0 : l <= 39 ? l - 5 - l / 10 : l <= 59 ? l - 1 - l / 5 : l - 9;
+}
+
+bool OwnRuleLeaves(QuestRecord const& quest, Take::Facts const& bot, Lists const& lists)
+{
+    std::int32_t const level = quest.level > 0 ? quest.level : static_cast<std::int32_t>(bot.level);
+    std::uint8_t const side = SideOfRace(bot.race);
+    return Take::Holds(lists.rewarded, quest.id) || Take::Holds(lists.inLog, quest.id) ||
+           Take::Holds(lists.givenUp, quest.id) || !quest.impossible.empty() ||
+           (quest.flags & (QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE | QuestFlag::SEASONAL)) ||
+           (side < SIDES && quest.refused[side]) || level > static_cast<std::int32_t>(bot.level) + 3 ||
+           (quest.level > 0 && quest.level <= GameGrey(bot.level)) ||
+           (quest.flags & (QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP)) ||
+           ((quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP)) && !bot.eliteGroup);
+}
+
+// Generated bots and game answers against every generated quest. The answers are drawn apart from the quests' limits,
+// so they hold quests a copy of the game's rule would refuse and leave out quests it would allow
 void GeneratedCases(std::uint32_t seed)
 {
     std::mt19937 rng(seed);
+    std::mt19937 answers(seed ^ 41u);  // the game's answers: their own stream, so the other draws stay as they were
     std::vector<QuestRecord> records;
     for (std::uint32_t id = 1; id <= QUESTS; ++id)
         records.push_back(Generated(rng, id));
@@ -432,39 +357,30 @@ void GeneratedCases(std::uint32_t seed)
     std::array<std::uint32_t, static_cast<std::size_t>(Reason::Count)> counts{};
     std::uint32_t taken = 0;
     std::uint32_t cases = 0;
+    std::uint32_t gameDecided = 0;  // taken although the quest's limits or previous quests would refuse it
     for (std::size_t b = 0; b < BOTS; ++b)
     {
         Lists lists;
         lists.rewarded = SomeQuests(rng, 10);
         lists.inLog = SomeQuests(rng, 8);
         lists.givenUp = SomeQuests(rng, 5);
-        for (std::vector<std::uint32_t> const* list : {&lists.rewarded, &lists.inLog})
-            for (std::uint32_t const id : *list)
-                if (QuestRecord const* quest = index.Find(id); quest && quest->exclusiveGroup > 0)
-                    lists.takenGroups.push_back(quest->exclusiveGroup);
-        std::sort(lists.takenGroups.begin(), lists.takenGroups.end());
+        lists.takeable = SomeQuests(answers, 70);
         std::uint8_t const groupSize = static_cast<std::uint8_t>(rng() % 4);
         std::uint8_t const race = static_cast<std::uint8_t>(rng() % 13);  // 0, 9 and 12: no side
         std::uint8_t const cls = static_cast<std::uint8_t>(1 + rng() % 11);
         std::uint8_t const level = static_cast<std::uint8_t>(1 + rng() % 30);
-        Take::Facts bot = BotOf(race, cls, level);
-        if (rng() % 4 == 0)
-            bot.greyDiff = 2 + rng() % 6;
+        Take::Facts bot = BotOf(race, level);
         bot.eliteGroup = groupSize > 1;
-        Lists const noGiveUps{lists.rewarded, lists.inLog, {}, lists.takenGroups};
-        Take::Facts const withGiveUps = View(bot, lists);
-        Take::Facts const circuit = View(bot, noGiveUps);
+        Take::Facts const facts = View(bot, lists);
         Lists const copy = lists;  // the same input in other storage
         Take::Facts const again = View(bot, copy);
-        OldBot const old{bot.race,     bot.cls,        bot.level,   groupSize,
-                         bot.greyDiff, lists.rewarded, lists.inLog, lists.takenGroups};
         std::string const who = "seed " + std::to_string(seed) + " bot " + std::to_string(b);
         for (QuestRecord const& quest : index.quests)
         {
             ++cases;
             std::string const what = who + " quest " + std::to_string(quest.id);
-            std::optional<Reason> const why = Take::May(quest, withGiveUps, index);
-            Check(Take::May(quest, withGiveUps, index) == why && Take::May(quest, again, index) == why,
+            std::optional<Reason> const why = Take::May(quest, facts);
+            Check(Take::May(quest, facts) == why && Take::May(quest, again) == why,
                   what + ": the same input, another answer");
             bool const logOrDone = Take::Holds(lists.rewarded, quest.id) || Take::Holds(lists.inLog, quest.id);
             Check(!logOrDone || (why && (*why == Reason::Done || *why == Reason::InLog)),
@@ -473,35 +389,31 @@ void GeneratedCases(std::uint32_t seed)
                 RefusedFor(quest, SideOfRace(bot.race)) || Take::Holds(lists.givenUp, quest.id) || Listed(quest);
             Check(!refused || why.has_value(), what + ": refused, given up or listed, taken");
 
-            std::optional<Reason> const forCircuit = Take::May(quest, circuit, index);
-            // WQ38: the old rule knew no list; a listed quest it would not skip as rewarded or in the log is skipped
-            // as one the executor refuses (Limits)
-            std::optional<SkipReason> before = OldTakeable(quest, old, index);
-            if (Listed(quest) && !(before && (*before == SkipReason::Rewarded || *before == SkipReason::InLog)))
-                before = SkipReason::Limits;
-            std::optional<SkipReason> const after =
-                forCircuit ? std::optional<SkipReason>(SkipOf(*forCircuit)) : std::nullopt;
-            Check(after == before, what + ": the circuit's skip " + (after ? SkipName(*after) : "none") +
-                                       ", before WQ17a " + (before ? SkipName(*before) : "none"));
+            // The game's answer decides: nothing out of it is taken, and what it holds is taken unless the plan's own
+            // rules leave it (or it is a breadcrumb to an answered target)
+            bool const answered = Take::Holds(lists.takeable, quest.id);
+            Check(why.has_value() || answered, what + ": taken, not in the game's answer");
+            bool const breadcrumb = quest.breadcrumbFor && Take::Holds(lists.takeable, quest.breadcrumbFor);
+            bool const left = OwnRuleLeaves(quest, facts, lists);
+            Check(!answered || left || breadcrumb || !why.has_value(),
+                  what + ": in the game's answer and no own rule leaves it, answer " + Answer(why));
+            Check(answered || left || why == Reason::Game,
+                  what + ": out of the game's answer, answer " + Answer(why) + ", expected game");
 
-            bool const eligible = Eligible(quest, bot.race, bot.cls, bot.level);
-            bool const eligibility = forCircuit && (*forCircuit == Reason::Level || *forCircuit == Reason::Limits ||
-                                                    *forCircuit == Reason::Unsupported);
-            bool const decidedBefore = forCircuit && *forCircuit < Reason::Level;
-            Check(decidedBefore || eligibility == !eligible,
-                  what + ": answer " + Answer(forCircuit) + ", Eligible " + (eligible ? "yes" : "no"));
-
+            if (!why && !Eligible(quest, race, cls, level))
+                ++gameDecided;
             if (why)
                 ++counts[static_cast<std::size_t>(*why)];
             else
                 ++taken;
         }
     }
-    std::printf("seed=%u cases=%u taken=%u", seed, cases, taken);
+    std::printf("seed=%u cases=%u taken=%u game_decided=%u", seed, cases, taken, gameDecided);
     for (std::size_t i = 0; i < counts.size(); ++i)
         std::printf(" %s=%u", Take::WORDS[i], counts[i]);
     std::printf("\n");
     Check(taken > 0, "generated: nothing taken");
+    Check(gameDecided > 0, "generated: no quest the template's limits refuse taken on the game's answer");
     for (std::size_t i = 0; i < counts.size(); ++i)
         Check(counts[i] > 0, std::string("generated: no case answered ") + Take::WORDS[i]);
 }
@@ -514,6 +426,7 @@ int main(int argc, char** argv)
         seed = static_cast<std::uint32_t>(std::strtoul(argv[1], nullptr, 10));
     Table();
     Skips();
+    GameAnswer();
     GeneratedCases(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

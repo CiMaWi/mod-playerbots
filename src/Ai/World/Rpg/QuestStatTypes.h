@@ -24,6 +24,7 @@ enum class QuestDropReason : uint8
     OtherZone,
     ClassOrHoliday,
     LogFull,
+    HolidayEnded,  // questing WQ34: a holiday's quest after its holiday
     Count
 };
 
@@ -52,6 +53,8 @@ inline char const* QuestDropReasonName(QuestDropReason reason)
             return "class_or_holiday";
         case QuestDropReason::LogFull:
             return "log_full";
+        case QuestDropReason::HolidayEnded:
+            return "holiday_ended";
         default:
             return "unknown";
     }
