@@ -918,10 +918,117 @@ void RouteSwitch()
     }
 }
 
+// One tick's inputs to upstream's grind pick "attack anything" (NewRpgGrindMultiplier)
+struct GrindTick
+{
+    bool led{false};
+    bool openWorld{false};
+    Active goal;
+    bool startsFights{false};
+    bool sick{false};
+    bool travelling{false};
+    bool giverNear{false};    // a giver the bot's status would visit is near
+    bool questTarget{false};  // the quest executor holds a target
+};
+
+// The multiplier: the pure rule, then upstream's two terms where it leaves the pick to them
+bool GrindRuns(GrindTick const& t)
+{
+    GrindPick const pick = GrindPickOf(t.led, t.openWorld, t.goal, t.startsFights, t.sick, t.travelling);
+    return pick == GrindPick::Allow || (pick == GrindPick::Upstream && !t.questTarget && !t.giverNear);
+}
+
+// The three multipliers before WQ39 (giver visit with nofight and trip, sickness, quest target), every bot alike
+bool GrindRunsBefore(GrindTick const& t)
+{
+    return t.startsFights && !t.travelling && !t.giverNear && !t.sick && !t.questTarget;
+}
+
+// WQ.45's invariant, the count of ticks that break it: a bot the planner leads in the open world picks a mob only
+// while its goal is a chosen grind (and never under nofight, sick or on a trip); every other bot picks as before
+template <typename Rule>
+std::size_t GrindBreaks(Rule rule, std::vector<Active> const& goals)
+{
+    std::size_t breaks = 0;
+    for (int bits = 0; bits < 128; ++bits)
+        for (Active const& goal : goals)
+        {
+            GrindTick t;
+            t.led = (bits & 1) != 0;
+            t.openWorld = (bits & 2) != 0;
+            t.startsFights = (bits & 4) != 0;
+            t.sick = (bits & 8) != 0;
+            t.travelling = (bits & 16) != 0;
+            t.giverNear = (bits & 32) != 0;
+            t.questTarget = (bits & 64) != 0;
+            t.goal = goal;
+            bool const runs = rule(t);
+            if (t.led && t.openWorld)
+                breaks += runs != (GrindChosen(goal) && t.startsFights && !t.sick && !t.travelling);
+            else
+                breaks += runs != GrindRunsBefore(t);
+        }
+    return breaks;
+}
+
+void GrindRules()
+{
+    Active const none;
+    Active const grind = GoalOf(Goals::GoalKind::Grind, 12, Source::Planner);
+    Active const bridgeGrind = GoalOf(Goals::GoalKind::Grind, 12, Source::Bridge);
+    Active const moneySpot = Typed(Goals::GoalKind::Money, Goals::TargetType::Spot, "money");
+    Active const moneyNode = Typed(Goals::GoalKind::Money, Goals::TargetType::Node, "money");
+    Active const circuit = Typed(Goals::GoalKind::Quest, Goals::TargetType::Default, "circuit");
+    Active const route = Typed(Goals::GoalKind::Quest, Goals::TargetType::Route, "route", 0);
+    Active const delivery = Typed(Goals::GoalKind::Quest, Goals::TargetType::Quest, "deliver");
+    std::vector<Active> others = {none, moneyNode, circuit, route, delivery};
+    for (Goals::GoalKind const kind :
+         {Goals::GoalKind::MoveZone, Goals::GoalKind::Errand, Goals::GoalKind::BuyBag, Goals::GoalKind::Rest,
+          Goals::GoalKind::Gather, Goals::GoalKind::Hearth, Goals::GoalKind::TravelElsewhere, Goals::GoalKind::Fish})
+        others.push_back(GoalOf(kind, 7, Source::Planner));
+
+    bool chosen = GrindChosen(grind) && GrindChosen(bridgeGrind) && GrindChosen(moneySpot);
+    bool otherChosen = false;
+    for (Active const& goal : others)
+        otherChosen = otherChosen || GrindChosen(goal);
+    Check(chosen && !otherChosen,
+          "grind chosen (WQ.45): a grind goal (planner or bridge) and a money goal at a spot; no goal, a money goal at "
+          "a node, every quest goal and every other kind are none");
+
+    // An interlude in front of a grind goal: the goal waits behind it and picks no mob meanwhile
+    BotGoals goals;
+    goals.slot.Set(grind);
+    goals.slot.Set(GoalOf(Goals::GoalKind::Errand, 3, Source::Planner));
+    Check(goals.slot.Holds(Goals::GoalKind::Grind) && !GrindChosen(goals.slot.Query()),
+          "grind chosen: an errand in front of a grind goal is none while it runs");
+
+    std::vector<Active> all = others;
+    all.insert(all.end(), {grind, bridgeGrind, moneySpot});
+    std::size_t const breaks = GrindBreaks(GrindRuns, all);
+    std::size_t const before = GrindBreaks(GrindRunsBefore, all);
+    std::printf("  grind ticks: %zu breaks now, %zu with the three old multipliers\n", breaks, before);
+    Check(breaks == 0 && before > 0,
+          "grind pick (WQ.45): a planner-led open-world bot picks a mob only under a chosen grind, not under "
+          "nofight, sick or on a trip; upstream's bots and instances pick as before (mutant: the three old "
+          "multipliers break it)");
+
+    // The ticks of the two cases kill-q7 and kill-among-others: a released bot on a test order, no goal, seeking
+    GrindTick seeking;
+    seeking.led = true;
+    seeking.openWorld = true;
+    seeking.startsFights = true;
+    GrindTick held = seeking;
+    held.led = false;
+    Check(!GrindRuns(seeking) && GrindRunsBefore(seeking) && GrindRuns(held),
+          "grind pick: a led bot seeking its order's next target picks no mob between two targets; a held bot still "
+          "does (upstream's kinds keep their pick)");
+}
+
 int main()
 {
     RouteRules();
     RouteSwitch();
+    GrindRules();
     // The pinned table of who the planner leads (questing WQ6e, WQ.39): every bot that keeps its possessions and
     // whose planner no test holds, whatever its guid. A bot that keeps none or whose planner a test holds keeps
     // upstream's pick; a bot the planner leads never gets upstream's pick from the idle step

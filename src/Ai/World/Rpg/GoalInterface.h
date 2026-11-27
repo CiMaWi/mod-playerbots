@@ -330,6 +330,31 @@ inline bool RunsRoute(Active const& goal)
     return goal.kind == Goals::GoalKind::Quest && RoleOf(goal.targetType, goal.reason) == QuestRole::Route;
 }
 
+// The bot's goal is a chosen grind (questing WQ39, WQ.45): a grind goal, a money goal at a spot, from the planner or a
+// bridge order. Any other goal, an interlude in front of one and no goal at all are none (the reach is not read)
+inline bool GrindChosen(Active const& goal) { return goal.Is() && ExecutorFor(goal, Reach{}) == Executor::Grind; }
+
+// What decides upstream's grind pick ("attack anything") for this tick
+enum class GrindPick : std::uint8_t
+{
+    Drop,     // no pick this tick
+    Allow,    // the pick may run
+    Upstream  // a bot the planner does not lead, or one in an instance: the giver visit and quest target terms decide
+};
+
+// WQ.45: a bot the planner leads in the open world grinds only while its goal is a chosen grind; it fights what
+// attacks it and what its executor seeks (other actions). Every bot picks no mob under the test's nofight, with
+// resurrection sickness or on a trip (it fights its attackers, then its walk goes on: WT44)
+inline GrindPick GrindPickOf(bool led, bool openWorld, Active const& goal, bool startsFights, bool sick,
+                             bool travelling)
+{
+    if (!startsFights || sick || travelling)
+        return GrindPick::Drop;
+    if (!led || !openWorld)
+        return GrindPick::Upstream;
+    return GrindChosen(goal) ? GrindPick::Allow : GrindPick::Drop;
+}
+
 // What an idle bot does
 enum class IdleAction : std::uint8_t
 {
