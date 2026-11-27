@@ -1334,10 +1334,12 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
 // release starts no goal, so the first goal after it comes from the release's own snapshot, chosen under the
 // constraints the release keeps (professions WR30: a zone move taken at the pool spot before the hold walked the
 // released bot away from its fixture). A quest goal under a kept noquest is one such goal; the plans offer it none
-// (Goals::Situation::questsHeld). The bridge's goal stays. True when a goal ended
+// (Goals::Situation::questsHeld). The bridge's goal stays. The stall list goes too, also when no goal ended: a start
+// refused before the hold (a bot logged in flying) left nothing in the slot but its block. True when a goal ended
 inline bool Release(BotGoals& goals)
 {
     goals.planUsed = true;
+    goals.stalled.reset();
     if (!goals.slot.Cancel(Source::Planner))
         return false;
     goals.run = {};

@@ -610,6 +610,14 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
     std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
+    if (!TestConstraints::ProfessionErrandsOffered(botAI->testConstraints))
+        std::erase_if(offers,
+                      [](WorldTravel::ErrandOffer const& offer)
+                      {
+                          return offer.Kind == WorldTravel::ErrandKind::Profession ||
+                                 (offer.Kind == WorldTravel::ErrandKind::Shop &&
+                                  offer.Id == Planner::StockBit(Planner::UpkeepStock::Tool));
+                      });
     // A sick bot's trip (NR3, NR.4) starts no fight and keeps to the safe area it stands in: the tame and the stable's
     // swap are left out, and so is every stop its walk would leave that area for
     if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))

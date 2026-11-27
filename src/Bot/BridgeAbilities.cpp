@@ -416,7 +416,7 @@ Result CastOnce(ActFacts const& act, Refusal& why)
 
     bool const checked = act.Ai->CanCastSpell(spell->Id, target, true);
     // The ordered cast is no cast of the bot's own AI: a test's nocast bit is off for this call
-    uint32 const heldConstraints = act.Ai->testConstraints;
+    TestConstraints::Set const heldConstraints = act.Ai->testConstraints;
     act.Ai->testConstraints = heldConstraints & ~TestConstraints::NOCAST;
     bool const cast = checked && act.Ai->CastSpell(spell->Id, target);
     act.Ai->testConstraints = heldConstraints;
