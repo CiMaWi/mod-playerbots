@@ -2925,6 +2925,35 @@ inline void OwnStops(std::vector<Check>& checks)
         std::to_string(plain.training.walkMinutes) + " " + std::to_string(sickPlaced.training.walkMinutes) + " " +
             std::to_string(plain.pet.walkMinutes) + " " + std::to_string(noneSeen.training.walkMinutes) + " " +
             std::to_string(noneSeen.pet.walkMinutes));
+
+    // NR14c: the plan names the lists the next snapshot seeks (the map thread's FillOwnStopsSeen does no search for a
+    // bot with none of the three due): due riding wants the trainers and the mount vendors, due training the
+    // trainers, a due pet (its walk is the beast's spawn) and nothing due neither; a wanted list the snapshot skipped
+    // (the last plan wanted none) makes the plan ask for the next one at once, an unwanted skipped list does not
+    auto const wanted = [&](std::vector<Need> const& list, bool trainersSkipped = false, bool vendorsSkipped = false)
+    {
+        Situation situation = filled(base, list);
+        situation.trainersSkipped = trainersSkipped;
+        situation.mountVendorsSkipped = vendorsSkipped;
+        GoalPlan const plan = Goals::PlanGoals(bot, CircuitContext{}, situation);
+        return std::to_string(plan.trainersWanted) + std::to_string(plan.mountVendorsWanted) +
+               std::to_string(plan.ownStopsSkipped);
+    };
+    std::string const ridingWants = wanted({riding(RIDING_PRICE, RIDING_TRAINER)});
+    std::string const trainingWants = wanted({training(SPELL_PRICE, true)});
+    std::string const petWants = wanted({pet()}, true, true);
+    std::string const noneWants = wanted({training(SPELL_PRICE * 3, false)}, true, true);
+    std::string const ridingSkipped = wanted({riding(RIDING_PRICE, RIDING_TRAINER)}, false, true);
+    std::string const trainingSkipped = wanted({training(SPELL_PRICE, true)}, true, false);
+    std::string const trainingOtherSkipped = wanted({training(SPELL_PRICE, true)}, false, true);
+    Add(checks,
+        "own stop: the plan wants the trainers and mount vendors for due riding, the trainers for due training, no "
+        "list for the pet or with nothing due; a wanted list its snapshot skipped asks for the next plan (mutant: the "
+        "due stop waits for a plan that comes when the running goal ends)",
+        ridingWants == "110" && trainingWants == "100" && petWants == "000" && noneWants == "000" &&
+            ridingSkipped == "111" && trainingSkipped == "101" && trainingOtherSkipped == "100",
+        ridingWants + " " + trainingWants + " " + petWants + " " + noneWants + " " + ridingSkipped + " " +
+            trainingSkipped + " " + trainingOtherSkipped);
 }
 
 inline std::vector<Check> SyntheticChecks()

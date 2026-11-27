@@ -549,6 +549,9 @@ struct Situation
     // bot's class and the riding trainers, and the vendors that sell a mount for gold
     std::vector<StopSeen> trainersSeen;
     std::vector<StopSeen> mountVendorsSeen;
+    // The map thread left the list out: the last plan found none of its stops due (Planner FillOwnStopsSeen)
+    bool trainersSkipped{false};
+    bool mountVendorsSkipped{false};
     std::vector<BagOffer> bagOffers;
     std::vector<Inn> inns;
     // NR3 (NR.4), a sick bot's only (Upkeep::SafeAreas on the map thread): it stands in a safe area; its bind lies in
@@ -1657,6 +1660,12 @@ struct GoalPlan
     std::uint32_t gatherBagsFull{0};  // Situation::gatherBagsFull: the map thread's skip row (WPC9)
     std::uint32_t gatherUnarmed{0};   // Situation::gatherUnarmed: the map thread's skip row (WPC10)
     RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
+    // NR14: the own stops the plan found due, whose spawns the next snapshot seeks (Planner FillOwnStopsSeen): the
+    // trainers for due class training or riding, the mount vendors for due riding. A wanted list its snapshot skipped
+    // (ownStopsSkipped) left the due stop without a walk: the map thread asks for the next plan at once
+    bool trainersWanted{false};
+    bool mountVendorsWanted{false};
+    bool ownStopsSkipped{false};
 };
 
 // The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
@@ -2021,6 +2030,10 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     plan.gatherRefusedLevels = situation.gatherRefusedLevels;
     plan.gatherBagsFull = situation.gatherBagsFull;
     plan.gatherUnarmed = situation.gatherUnarmed;
+    plan.trainersWanted = situation.training.due || situation.riding.due;
+    plan.mountVendorsWanted = situation.riding.due;
+    plan.ownStopsSkipped = (plan.trainersWanted && situation.trainersSkipped) ||
+                           (plan.mountVendorsWanted && situation.mountVendorsSkipped);
     return plan;
 }
 
