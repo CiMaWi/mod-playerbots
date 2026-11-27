@@ -250,26 +250,7 @@ struct WeaponSkillFacts
 struct ReagentUse
 {
     std::uint32_t item{0};
-    std::uint8_t cls{0};       // a class whose trainer spells use it
-    std::uint32_t spellId{0};  // the class trainer spell that uses it, or teaches the spell that does
-};
-
-// A class trainer spell that uses a reagent: its position in the class's list, so the snapshot's known bits tell
-// whether the bot can cast it (UpkeepIndex::ReagentSpells)
-struct ReagentSpell
-{
-    std::uint8_t cls{0};
-    std::uint32_t item{0};
-    std::uint32_t position{0};
-
-    bool operator<(ReagentSpell const& other) const
-    {
-        return std::tie(cls, item, position) < std::tie(other.cls, other.item, other.position);
-    }
-    bool operator==(ReagentSpell const& other) const
-    {
-        return cls == other.cls && item == other.item && position == other.position;
-    }
+    std::uint8_t cls{0};  // a class with a spell that uses it
 };
 
 // A spawn of a tameable beast (WU21b, §3.11): a creature template the core lets a hunter tame
@@ -437,7 +418,6 @@ public:
     std::vector<UpkeepTrainer> trainers;  // by key
     std::array<std::vector<VendorOffer>, UPKEEP_STOCK_COUNT> offers;      // by required level, item, vendor
     std::vector<std::pair<std::uint32_t, std::uint32_t>> reagentClasses;  // item, class mask; by item
-    std::vector<ReagentSpell> reagentSpells;                              // by class, item and position
     std::vector<WeaponSkill> weaponSkills;                                // by skill line
     // (spell, trainer key) of every tradeskill trainer's spell, sorted: who teaches a profession's rank or recipe
     std::vector<std::pair<std::uint32_t, std::uint32_t>> tradeskillTeachers;
@@ -545,18 +525,7 @@ public:
         return it != reagentClasses.end() && it->first == item ? it->second : 0;
     }
 
-    // The class's trainer spells that use the reagent, as a range of reagentSpells (empty: none does)
-    std::pair<std::vector<ReagentSpell>::const_iterator, std::vector<ReagentSpell>::const_iterator> ReagentSpells(
-        std::uint8_t cls, std::uint32_t item) const
-    {
-        auto const first = std::lower_bound(reagentSpells.begin(), reagentSpells.end(), ReagentSpell{cls, item, 0});
-        auto last = first;
-        while (last != reagentSpells.end() && last->cls == cls && last->item == item)
-            ++last;
-        return {first, last};
-    }
-
-    // StockKinds plus Reagent when the class's trainer spells use the item
+    // StockKinds plus Reagent when a spell of the class uses the item
     StockMask KindsOf(UpkeepItemFacts const& item, std::uint8_t cls) const
     {
         StockMask kinds = StockKinds(item);
@@ -572,7 +541,6 @@ public:
         std::size_t bytes = sizeof(UpkeepIndex) + lists.capacity() * sizeof(TrainerList) +
                             trainers.capacity() * sizeof(UpkeepTrainer) +
                             reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>) +
-                            reagentSpells.capacity() * sizeof(ReagentSpell) +
                             (tradeskillTeachers.capacity() + tradeskillTaught.capacity()) *
                                 sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (TrainerList const& list : lists)
@@ -802,17 +770,6 @@ private:
                 reagentClasses.push_back({item, mask});
         reagentClasses.shrink_to_fit();
         stats.reagentItems = static_cast<std::uint32_t>(reagentClasses.size());
-        // The positions in the class lists (built before) of the spells that use each reagent
-        for (ReagentUse const& use : input.reagents)
-        {
-            TrainerList const* list = use.item && use.spellId ? ClassList(use.cls) : nullptr;
-            std::size_t const position = list ? list->Find(use.spellId) : TrainerList::NOT_FOUND;
-            if (position != TrainerList::NOT_FOUND)
-                reagentSpells.push_back({use.cls, use.item, static_cast<std::uint32_t>(position)});
-        }
-        std::sort(reagentSpells.begin(), reagentSpells.end());
-        reagentSpells.erase(std::unique(reagentSpells.begin(), reagentSpells.end()), reagentSpells.end());
-        reagentSpells.shrink_to_fit();
     }
 
     void BuildOffers(UpkeepGather const& input)

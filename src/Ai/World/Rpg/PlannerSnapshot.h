@@ -159,9 +159,9 @@ struct Snapshot
     // Bit i: the abilities the class list's spell i needs that are on neither list (talents, racials, quest spells
     // such as Summon Warhorse) are all known
     std::vector<std::uint64_t> offListMetClassSpells;
-    // Bit i: the class list's spell i is known and cast without its reagents (Player::CanNoReagentCast: Glyph of
-    // Renewed Life frees Reincarnation's Ankh); only the reagent spells' positions are filled
-    std::vector<std::uint64_t> reagentFreeClassSpells;
+    // The reagent items of the class spells the bot knows and pays reagents for, sorted
+    // (ItemUsageValue::ClassSpellReagents)
+    std::vector<std::uint32_t> knownReagents;
     // The riding skill the bot's best known mount of each kind needs; a riding rank is complete with a mount of its
     // skill or better (WU14). The travel shares are no snapshot fields: the needs read them from the slot measure
     std::uint16_t groundMountSkill{0};
@@ -221,12 +221,13 @@ struct Snapshot
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
                ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
-               (knownRecipes.capacity() + toolsHeld.capacity() + gatherUp.capacity() + gatherDown.capacity()) *
+               (knownReagents.capacity() + knownRecipes.capacity() + toolsHeld.capacity() + gatherUp.capacity() +
+                gatherDown.capacity()) *
                    sizeof(std::uint32_t) +
                gatherRefused.capacity() * sizeof(WorldTravel::SightPoint) +
                ladders.capacity() * sizeof(ProfessionRung) + materials.capacity() * sizeof(MaterialHeld) +
-               (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
-                canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
+               (knownClassSpells.capacity() + knownRidingSpells.capacity() + canLearnClassSpells.capacity() +
+                canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);
     }
 };

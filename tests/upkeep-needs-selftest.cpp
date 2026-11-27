@@ -801,22 +801,41 @@ void KeptItems(UpkeepIndex const& index)
     NeedList const noviceNeeds = Show("mage before the powder's spell, empty bags", novice, index, Rates(9));
     NeedList const adeptNeeds = ComputeNeeds(adept, index, Rates(12));
     NeedList const warriorNeeds = ComputeNeeds(warrior, index, Rates(30));
-    Check(!ReagentKnown(index, novice, ITEM_POWDER) && !Find(noviceNeeds, NeedOrder::ReagentPoison) &&
+    Check(!ReagentKnown(novice, ITEM_POWDER) && !Find(noviceNeeds, NeedOrder::ReagentPoison) &&
               !StockErrandDue(noviceNeeds) &&
               !VendorCover(index, novice, noviceNeeds, StockBit(UpkeepStock::Reagent)).count(VENDOR_REAGENT),
           "a reagent of a spell the mage has not learned: no need, no errand, no vendor covers it");
-    Check(ReagentKnown(index, adept, ITEM_POWDER) && Find(adeptNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent),
+    Check(ReagentKnown(adept, ITEM_POWDER) && Find(adeptNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent),
           "the spell learned: the reagent need");
     Snapshot glyphed = adept;
-    glyphed.reagentFreeClassSpells = SpellBits(glyphed.knownClassSpells.size() * BITS_PER_WORD);
-    auto const [powderFirst, powderLast] = index.ReagentSpells(CLASS_MAGE, ITEM_POWDER);
-    for (auto it = powderFirst; it != powderLast; ++it)
-        SetSpellBit(glyphed.reagentFreeClassSpells, it->position);
+    glyphed.knownReagents.clear();  // the live reading drops a spell cast without its reagent
     NeedList const glyphedNeeds = ComputeNeeds(glyphed, index, Rates(12));
-    Check(powderFirst != powderLast && !ReagentKnown(index, glyphed, ITEM_POWDER) &&
-              !Find(glyphedNeeds, NeedOrder::ReagentPoison) && !StockErrandDue(glyphedNeeds),
+    Check(!ReagentKnown(glyphed, ITEM_POWDER) && !Find(glyphedNeeds, NeedOrder::ReagentPoison) &&
+              !StockErrandDue(glyphedNeeds),
           "the spell cast without its reagent (a glyph): no need, no errand (WU26a-fix)");
     Check(!Find(warriorNeeds, NeedOrder::ReagentPoison), "a class no spell of which uses the powder: no need");
+
+    // A warlock's reagent of a quest's spell (on no trainer list): the generic line leaves it to the errand visit,
+    // which lists it. The line reads the bot's spells only, so the index being ready or not changes nothing
+    Snapshot warlock = Bot(index, CLASS_WARLOCK, 60, 100 * GOLD, 60);
+    warlock.stock.clear();
+    warlock.knownReagents = {ITEM_FIGURINE};
+    for (bool const ready : {true, false})
+    {
+        Snapshot at = warlock;
+        at.upkeepVersion = ready ? index.version : 0;
+        Check(!GenericBuysSkillItem(true, at.knownReagents, ITEM_FIGURINE) &&
+                  GenericBuysSkillItem(true, at.knownReagents, ITEM_POWDER) &&
+                  GenericBuysSkillItem(false, at.knownReagents, ITEM_FIGURINE),
+              "the generic line buys no reagent of a spell the bot knows, index ready or not");
+    }
+    NeedList const warlockNeeds = ComputeNeeds(warlock, index, Rates(60));
+    std::vector<ShopLine> const warlockLines = PlanShopping(warlockNeeds, index, warlock, VENDOR_REAGENT);
+    Check(Find(warlockNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent) &&
+              VendorCover(index, warlock, warlockNeeds, StockBit(UpkeepStock::Reagent)).count(VENDOR_REAGENT) &&
+              Line(warlockLines, UpkeepStock::Reagent) &&
+              Line(warlockLines, UpkeepStock::Reagent)->item == ITEM_FIGURINE,
+          "the quest spell's reagent is on the visit's list");
 
     Snapshot hunter = Bot(index, CLASS_HUNTER, 30, 100 * GOLD, 30);
     SetStock(hunter, UpkeepStock::Ammo, 0);

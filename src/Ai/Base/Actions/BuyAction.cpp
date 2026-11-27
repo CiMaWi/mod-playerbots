@@ -125,6 +125,8 @@ bool BuyAction::Execute(Event event)
     bool const shopsAmmo = !Upkeep::Granted(bot, UpkeepKind::Ammo);
     bool const shopsReagents = !Upkeep::Granted(bot, UpkeepKind::Reagent);
     bool const consumablesGranted = Upkeep::Granted(bot, UpkeepKind::Consumable);
+    std::vector<uint32> const classReagents =
+        shopsReagents ? ItemUsageValue::ClassSpellReagents(bot) : std::vector<uint32>();
     for (GuidVector::iterator i = vendors.begin(); i != vendors.end(); ++i)
     {
         ObjectGuid vendorguid = *i;
@@ -284,7 +286,7 @@ bool BuyAction::Execute(Event event)
                             break;
                         case ITEM_USAGE_SKILL:
                             // Profession materials keep the tradeskill budget
-                            if (!shopsReagents || !Planner::ClassReagent(proto->ItemId))
+                            if (UpkeepNeeds::GenericBuysSkillItem(shopsReagents, classReagents, proto->ItemId))
                                 needMoneyFor = NeedMoneyFor::tradeskill;
                             break;
                         default:

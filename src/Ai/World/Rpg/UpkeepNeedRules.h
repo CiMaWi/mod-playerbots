@@ -379,27 +379,26 @@ inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
     return snapshot.upkeepVersion && snapshot.upkeepVersion == index.version;
 }
 
-// A reagent of a class spell the bot knows and casts with it (the index's reagent spells against the snapshot's known
-// and reagent-free bits). The generic sell keeps only the reagents of spells the bot has and pays them for
-// (ItemUsageValue::IsItemNeededForUsefullSpell): one for a spell not learned yet, or one a glyph makes free
-// (CastsWithoutReagent), would be sold at the next visit
-inline bool ReagentKnown(UpkeepIndex const& index, Snapshot const& snapshot, std::uint32_t item)
+// A reagent of a class spell the bot knows and pays for (Snapshot::knownReagents, ItemUsageValue::ClassSpellReagents).
+// The generic sell keeps only those: one for a spell not learned yet, or one a glyph makes free, would be sold at the
+// next visit
+inline bool ReagentKnown(Snapshot const& snapshot, std::uint32_t item)
 {
-    if (!BitsAlign(index, snapshot))
-        return false;
-    auto const [first, last] = index.ReagentSpells(snapshot.cls, item);
-    for (auto it = first; it != last; ++it)
-        if (Planner::HasSpellBit(snapshot.knownClassSpells, it->position) &&
-            !Planner::HasSpellBit(snapshot.reagentFreeClassSpells, it->position))
-            return true;
-    return false;
+    return std::binary_search(snapshot.knownReagents.begin(), snapshot.knownReagents.end(), item);
+}
+
+// The generic buy's skill line: a bot that shops its reagents (at the errand visit) buys none of a class spell it knows
+// there; knownReagents is sorted
+inline bool GenericBuysSkillItem(bool shopsReagents, std::vector<std::uint32_t> const& knownReagents,
+                                 std::uint32_t item)
+{
+    return !shopsReagents || !std::binary_search(knownReagents.begin(), knownReagents.end(), item);
 }
 
 // OfferFits, and a reagent only for a spell the bot knows
-inline bool OfferUsable(UpkeepIndex const& index, VendorOffer const& offer, Snapshot const& snapshot, UpkeepStock kind)
+inline bool OfferUsable(VendorOffer const& offer, Snapshot const& snapshot, UpkeepStock kind)
 {
-    return OfferFits(offer, snapshot, kind) &&
-           (kind != UpkeepStock::Reagent || ReagentKnown(index, snapshot, offer.item));
+    return OfferFits(offer, snapshot, kind) && (kind != UpkeepStock::Reagent || ReagentKnown(snapshot, offer.item));
 }
 
 // The better offer for the bot's level: the higher required level, then the cheaper per unit
@@ -420,7 +419,7 @@ inline VendorOffer const* BestOffer(UpkeepIndex const& index, Snapshot const& sn
     VendorOffer const* best = nullptr;
     for (VendorOffer const& offer : index.Offers(kind))
         if ((!vendorEntry || offer.vendorEntry == vendorEntry) && BetterOffer(offer, best) &&
-            OfferUsable(index, offer, snapshot, kind))
+            OfferUsable(offer, snapshot, kind))
             best = &offer;
     return best;
 }
@@ -1975,7 +1974,7 @@ inline std::unordered_map<std::uint32_t, Planner::StockMask> VendorCover(UpkeepI
         for (VendorOffer const& offer : index.Offers(need.stock))
         {
             VendorOffer const*& at = best[offer.vendorEntry];
-            if (BetterOffer(offer, at) && OfferUsable(index, offer, snapshot, need.stock))
+            if (BetterOffer(offer, at) && OfferUsable(offer, snapshot, need.stock))
                 at = &offer;
         }
         for (auto const& [entry, offer] : best)

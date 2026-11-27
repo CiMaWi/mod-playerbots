@@ -93,6 +93,8 @@ public:
     bool IsBestPoison(ItemTemplate const* proto);
 
     static std::vector<uint32> SpellsUsingItem(uint32 itemId, Player* bot);
+    // The reagent items of the class (non-generic family) spells the bot knows and pays reagents for, sorted
+    static std::vector<uint32> ClassSpellReagents(Player* bot);
     static bool SpellGivesSkillUp(uint32 spellId, Player* bot);
 
     // Slots of the smallest equipped bag; 0 while a bag slot is empty
