@@ -140,7 +140,8 @@ enum class ResetEffect : std::uint8_t
 
 // The one list of what a reset (RpgStatus::Reset) does to the bot's RPG member groups: the status starts over unless
 // KeepsStatus keeps it (a kept trip keeps its start); the planner's view and the RPG memos start fresh; a test's
-// constraints stay. The bank and mail state has its own rule (BankMail::AfterReset: the visits end, the knowledge
+// constraints stay; the skill path stays, the bot's profession plan, which the next plan replaces (Planner::
+// ResetPlanner). The bank and mail state has its own rule (BankMail::AfterReset: the visits end, the knowledge
 // stays); the route request ids are BotTravel's, which a reset does not touch
 struct ResetList
 {
@@ -148,12 +149,13 @@ struct ResetList
     ResetEffect planner;
     ResetEffect rpgMemos;
     ResetEffect testConstraints;
+    ResetEffect skillPath;
 };
 
 constexpr ResetList ResetOf(bool farTeleport, bool holdsTrip)
 {
     return {KeepsStatus(farTeleport, holdsTrip) ? ResetEffect::Kept : ResetEffect::Fresh, ResetEffect::Fresh,
-            ResetEffect::Fresh, ResetEffect::Kept};
+            ResetEffect::Fresh, ResetEffect::Kept, ResetEffect::Kept};
 }
 
 // The errand status's deadline clock (WT64c): its age without the time its trips ran, the ended ones' (endedMs) and

@@ -1728,6 +1728,23 @@ void NoteSickOpen(PlayerbotAI* botAI, bool open)
 
 QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot) { return GoalsOf(botAI, bot).questStalls; }
 
+void ResetPlanner(PlayerbotAI* botAI, StatusEnd::ResetList const& list)
+{
+    // The path is the bot's profession plan, neither its place nor its AI state: dropped with the goals, it took the
+    // keep of every material with it, and a due material withdrawn from the bank was sold at the next vendor (NR15a)
+    GoalApply::BotGoals const* const goals = botAI->planner.goals.get();
+    std::shared_ptr<SkillPath::Path const> path =
+        goals && list.skillPath == StatusEnd::ResetEffect::Kept ? goals->path : nullptr;
+    uint32 const pathMs = goals ? goals->pathMs : 0;
+    StatusEnd::ApplyReset(list.planner, botAI->planner);
+    Player* const bot = botAI->GetBot();
+    if (!path || !bot)
+        return;
+    GoalApply::BotGoals& fresh = GoalsOf(botAI, bot);
+    fresh.path = std::move(path);
+    fresh.pathMs = pathMs;
+}
+
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
 {
     Planner::BotState& state = botAI->planner;
