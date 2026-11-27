@@ -153,7 +153,10 @@ enum class BankReason : uint8_t
     BlockedLooted,    // EQUIP_ERR_ALREADY_LOOTED: its loot is open or was generated (an opened box)
     BlockedNotOwned,  // EQUIP_ERR_DONT_OWN_THAT_ITEM
     BlockedLimit,     // EQUIP_ERR_CANT_CARRY_MORE_OF_THIS or a limit category
-    BlockedOther      // any other code but a full bank (room is the model's)
+    BlockedOther,     // any other code but a full bank (room is the model's)
+    // Needs and errands NR12a (NR.8's margin): sale stock whose listing pays now but would not after one more failed
+    // auction stays in the bags, so the next hold does not release it from the bank
+    ThinMargin
 };
 
 struct BankVerdict
@@ -170,6 +173,14 @@ struct BankVerdict
     uint32_t sellNow = 0;
     uint8_t dueLevel = 0;
     char const* provider = "";
+    // Needs and errands NR12a: a stack the reader judged as sale stock (KeepItemIn::stockCandidate), its listing's
+    // worth and what a vendor pays for its stock units, the item usage's number for its entry (0: not asked) and the
+    // plan that made its move: the visit's moves before that plan (0: the visit's first plan)
+    bool saleStock = false;
+    uint32_t worth = 0;
+    uint32_t payout = 0;
+    uint8_t usage = 0;
+    uint32_t plan = 0;
 };
 
 // What the bank-space rule does at a banker (BankRules.h, DecideBankSpace)
@@ -212,7 +223,9 @@ struct KeptEntry
     uint8_t dueLevel = 0;
     char const* provider = "";
     uint32_t itemGuid = 0;  // the bag stack's low guid (CarriedKeeps; the auction visit lists by it, ListsStack)
-    bool blocked = false;   // the core refuses its deposit by its state (KeepItemIn::depositBlock): no deposit to plan
+    // the core refuses its deposit by its state (KeepItemIn::depositBlock), or NR.8's margin keeps it in the bags
+    // (KeptByMargin): no deposit to plan
+    bool blocked = false;
 };
 
 // The bag items the rule keeps for a later level, as the bot remembers them for its item usage (ITEM_USAGE_BANK):

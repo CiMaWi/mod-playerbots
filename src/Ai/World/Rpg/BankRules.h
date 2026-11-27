@@ -16,6 +16,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "BankMailTypes.h"
@@ -37,6 +39,7 @@
 //                                                    // withdraw steps, then deposit steps; refused items stay put
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
 //   void AssignStock(entries, laterBySlot, bags, bank);                   // demand's use stock per stack (WI9b)
+//   void JudgeStock(bags, bank, market);                                  // sale stock per entry (NR12a)
 //   CarriedKeeps KeptInBags(BankIn const& in);                            // the bag items kept for a later level
 //   bool ListsStack(CarriedKeeps const&, uint32_t itemGuid);              // the auction visit lists this bag stack
 //   uint32_t KeptWorthEach(CarriedKeeps const&, uint32_t entry, uint8_t level);  // the item usage's O(k) lookup
@@ -136,6 +139,17 @@ struct KeepItemIn
     // A bag item the core's own deposit test refuses by its state (R6: Player::CanBankItem, room apart): the word it
     // stays in the bags with; empty when the core takes it
     std::optional<BankReason> depositBlock;
+    // Needs and errands NR12a: its random property (an entry's lot is of one), whether the reader may count it as
+    // auction stock (MaybeAuctionStock, a reference table; JudgeStock then fills auctionable and auctionWorth), its
+    // units within those its item usage keeps carried by count (a stack holding any is no stock: it stays with the
+    // bot's use), and that usage's number (0: not read)
+    int32_t randomPropertyId = 0;
+    bool stockCandidate = false;
+    uint32_t countUsed = 0;
+    uint8_t stockUsage = 0;
+    // NR.8's margin: its lot pays now but would not after one more failed auction (one relist step), so a bag stack of
+    // it is not deposited; a banked one stays kept while its lot pays now
+    bool thinMargin = false;
 };
 
 struct KeepBotIn
@@ -251,6 +265,8 @@ inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& b
 // of an entry keeps the path's units, so after a listing the bags hold at least what the path uses (WA3-4 review B1)
 inline uint32_t StockUnits(KeepItemIn const& item)
 {
+    if (item.countUsed)
+        return 0;
     uint32_t const count = std::max<uint32_t>(item.count, 1);
     return count > item.materialUsed ? count - item.materialUsed : 0;
 }
@@ -409,6 +425,8 @@ inline char const* ReasonWord(BankReason reason)
             return "blocked_limit";
         case BankReason::BlockedOther:
             return "blocked_other";
+        case BankReason::ThinMargin:
+            return "thin_margin";
         default:
             return "no_space";
     }
@@ -549,6 +567,10 @@ inline BankVerdict MakeVerdict(BankItemIn const& in, KeepAnswer const& answer, b
     verdict.sellNow = in.item.sellNow;
     verdict.dueLevel = answer.dueLevel;
     verdict.provider = answer.provider;
+    verdict.saleStock = in.item.stockCandidate;
+    verdict.worth = in.item.auctionWorth;
+    verdict.payout = in.item.vendorPayout;
+    verdict.usage = in.item.stockUsage;
     return verdict;
 }
 
@@ -576,6 +598,13 @@ inline bool IsSettled(std::vector<uint32_t> const& settled, BankItemIn const& in
 // while the bank has room, counting the slots the withdrawals freed. When the bank is full the lowest-worth kept items
 // stay in the bags; nothing already banked is taken out to make room. An item in settled (low guids moved or refused
 // by the core on this visit) stays where it is and takes no room; so does a bag item the core would refuse to bank.
+// NR.8's margin: a bag stack of sale stock (not a path's material, which the path places) whose lot would no longer
+// pay after one more failed auction is not deposited, and no errand counts it as a deposit (KeptEntry::blocked)
+inline bool KeptByMargin(KeepItemIn const& item, KeepAnswer const& answer)
+{
+    return item.thinMargin && !item.materialUsed && std::string_view(answer.provider) == AUCTION_STOCK_PROVIDER;
+}
+
 inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& settled = {})
 {
     using namespace BankRulesDetail;
@@ -648,8 +677,10 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
     SortByLaterWorth(dueInBags);
     for (Decided const& decided : deposit)
     {
-        std::optional<BankReason> const stays =
+        std::optional<BankReason> stays =
             IsSettled(settled, *decided.item) ? BankReason::Settled : decided.item->item.depositBlock;
+        if (!stays && KeptByMargin(decided.item->item, decided.answer))
+            stays = BankReason::ThinMargin;
         if (stays)
         {
             plan.verdicts.push_back(MakeVerdict(*decided.item, decided.answer, false, BankChoice::Keep, *stays));
@@ -688,6 +719,142 @@ inline BankPlan PlanNextMove(BankIn const& in, std::vector<uint32_t> const& move
     return PlanBankVisit(in, settled);
 }
 
+// An entry's stack in the bags or the bank (AssignStock, JudgeStock)
+struct EntryStack
+{
+    BankItemIn* item = nullptr;
+    bool inBank = false;
+};
+
+// The order an entry's stacks are carried in: the bags' first, the larger first, then the bank's; the stacks' order in
+// the input never changes it
+inline bool CarriedBefore(EntryStack const& a, EntryStack const& b)
+{
+    if (a.inBank != b.inBank)
+        return !a.inBank;
+    if (a.item->item.count != b.item->item.count)
+        return a.item->item.count > b.item->item.count;
+    if (a.item->bag != b.item->bag)
+        return a.item->bag < b.item->bag;
+    if (a.item->slot != b.item->slot)
+        return a.item->slot < b.item->slot;
+    return a.item->item.itemGuid < b.item->item.itemGuid;
+}
+
+template <typename Same>
+inline std::vector<EntryStack> StacksOf(std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank, Same same)
+{
+    std::vector<EntryStack> stacks;
+    for (BankItemIn& item : bags)
+        if (same(item.item))
+            stacks.push_back({&item, false});
+    for (BankItemIn& item : bank)
+        if (same(item.item))
+            stacks.push_back({&item, true});
+    std::sort(stacks.begin(), stacks.end(), CarriedBefore);
+    return stacks;
+}
+
+// Needs and errands NR12a: what the reader answers for an entry's sale stock. auctionable: the item usage sells it at
+// the auction house, asked with the bank's units counted (ItemUsageValue::BANK_COUNT_QUALIFIER); countKeep: the units
+// its needed-by-count branch keeps carried (2 stacks, 0: the branch does not apply); usage: its number, for the rows
+struct StockUsage
+{
+    bool auctionable = false;
+    uint32_t countKeep = 0;
+    uint8_t usage = 0;
+};
+
+// A stack's share of its lot's worth: its own payout and a share of the lot's gain by its units, at least 1 copper
+// while the lot pays, so a stack pays exactly when its lot does
+inline uint32_t ShareOfWorth(uint32_t worth, uint32_t payout, uint32_t units, uint32_t stackPayout, uint32_t stackUnits)
+{
+    uint64_t const base = worth > payout ? worth - payout : worth;
+    uint64_t const share = base * stackUnits / std::max<uint32_t>(units, 1);
+    if (worth <= payout)
+        return static_cast<uint32_t>(std::min<uint64_t>(share, stackPayout));
+    return static_cast<uint32_t>(
+        std::min<uint64_t>(stackPayout + std::max<uint64_t>(share, 1), std::numeric_limits<uint32_t>::max()));
+}
+
+// Sale stock is judged per lot, an entry's stacks of one random property in the bags and the bank together (NR11 A
+// and F1), so no move of a visit changes an entry's split and a merge's remainder stays with its entry: the units its
+// item usage keeps carried by count are taken by its stacks in carried order (the units, so the split is the same
+// wherever the stacks lie), and a stack holding any is no stock; the stacks beyond are read as one lot whose worth
+// they share (ShareOfWorth). market.Worth(first, units, payout, steps): the lot's listing worth after `steps` more
+// failed auctions (0: not worth listing; 1 step is NR.8's margin, thinMargin); market.Usage(first): the item usage's
+// StockUsage, the dearest read, asked only for a lot that pays (a smaller lot is taken to pay no better); a skill
+// path's material asks none (WA7b)
+template <typename Market>
+inline void JudgeStock(std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank, Market& market)
+{
+    auto const capped = [](uint64_t sum)
+    { return static_cast<uint32_t>(std::min<uint64_t>(sum, std::numeric_limits<uint32_t>::max())); };
+    std::vector<std::pair<uint32_t, int32_t>> lots;
+    for (std::vector<BankItemIn>* side : {&bags, &bank})
+        for (BankItemIn const& stack : *side)
+        {
+            std::pair<uint32_t, int32_t> const lot{stack.item.entry, stack.item.randomPropertyId};
+            if (stack.item.stockCandidate && std::find(lots.begin(), lots.end(), lot) == lots.end())
+                lots.push_back(lot);
+        }
+    for (auto const& [entry, randomPropertyId] : lots)
+    {
+        uint32_t const lotEntry = entry;
+        int32_t const lotProperty = randomPropertyId;
+        std::vector<EntryStack> const stacks =
+            StacksOf(bags, bank, [lotEntry, lotProperty](KeepItemIn const& item)
+                     { return item.entry == lotEntry && item.randomPropertyId == lotProperty; });
+        auto const lot = [&stacks, &capped]()
+        {
+            uint64_t units = 0;
+            uint64_t payout = 0;
+            for (EntryStack const& stack : stacks)
+                if (stack.item->item.stockCandidate && StockUnits(stack.item->item))
+                {
+                    units += StockUnits(stack.item->item);
+                    payout += stack.item->item.vendorPayout;
+                }
+            return std::pair<uint32_t, uint32_t>{capped(units), capped(payout)};
+        };
+        auto [units, payout] = lot();
+        if (!units)
+            continue;
+        KeepItemIn const& first = std::find_if(stacks.begin(), stacks.end(),
+                                               [](EntryStack const& stack) { return stack.item->item.stockCandidate; })
+                                      ->item->item;
+        uint32_t worth = market.Worth(first, units, payout, 0);
+        StockUsage answer;
+        if (worth > payout)
+            answer = first.materialUsed ? StockUsage{true, 0, 0} : market.Usage(first);
+        if (answer.auctionable && answer.countKeep)
+        {
+            uint64_t kept = 0;
+            for (EntryStack const& stack : stacks)
+            {
+                KeepItemIn& item = stack.item->item;
+                item.countUsed = capped(
+                    std::min<uint64_t>(item.count, answer.countKeep - std::min<uint64_t>(kept, answer.countKeep)));
+                kept += item.countUsed;
+            }
+            std::tie(units, payout) = lot();
+            worth = units ? market.Worth(first, units, payout, 0) : 0;
+        }
+        bool const thin = answer.auctionable && worth > payout && market.Worth(first, units, payout, 1) <= payout;
+        for (EntryStack const& stack : stacks)
+        {
+            KeepItemIn& item = stack.item->item;
+            if (!item.stockCandidate)
+                continue;
+            uint32_t const own = StockUnits(item);
+            item.auctionable = answer.auctionable && own > 0;
+            item.stockUsage = answer.usage;
+            item.thinMargin = thin && own > 0;
+            item.auctionWorth = own ? ShareOfWorth(worth, payout, units, item.vendorPayout, own) : 0;
+        }
+    }
+}
+
 // Item use WI9b: one entry of demand's use stock. worthEach: one unit's worth to the bot; carryUnits: the units the
 // bags carry (demand's kept units over bags and bank); slot: the demand slot whose share bounds its stock for later
 struct StockEntry
@@ -722,33 +889,11 @@ inline void AssignStock(std::span<StockEntry const> entries, std::span<uint32_t 
               });
     std::vector<uint32_t> laterLeft(laterBySlot.begin(), laterBySlot.end());
 
-    struct Stack
-    {
-        BankItemIn* item = nullptr;
-        bool inBank = false;
-    };
+    using Stack = EntryStack;
     for (StockEntry const& entry : order)
     {
-        std::vector<Stack> stacks;
-        for (BankItemIn& item : bags)
-            if (item.item.entry == entry.entry)
-                stacks.push_back({&item, false});
-        for (BankItemIn& item : bank)
-            if (item.item.entry == entry.entry)
-                stacks.push_back({&item, true});
-        std::sort(stacks.begin(), stacks.end(),
-                  [](Stack const& a, Stack const& b)
-                  {
-                      if (a.inBank != b.inBank)
-                          return !a.inBank;
-                      if (a.item->item.count != b.item->item.count)
-                          return a.item->item.count > b.item->item.count;
-                      if (a.item->bag != b.item->bag)
-                          return a.item->bag < b.item->bag;
-                      if (a.item->slot != b.item->slot)
-                          return a.item->slot < b.item->slot;
-                      return a.item->item.itemGuid < b.item->item.itemGuid;
-                  });
+        std::vector<Stack> const stacks =
+            StacksOf(bags, bank, [&entry](KeepItemIn const& item) { return item.entry == entry.entry; });
 
         uint32_t carried = 0;
         for (Stack const& stack : stacks)
@@ -813,9 +958,10 @@ inline CarriedKeeps KeptInBags(BankIn const& in, std::span<KeepProvider const> p
     carried.level = in.bot.level;
     for (Decided const& decided : kept)
     {
-        carried.items.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
-                                 decided.answer.dueLevel, decided.answer.provider, decided.item->item.itemGuid,
-                                 decided.item->item.depositBlock.has_value()});
+        carried.items.push_back(
+            {decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth, decided.answer.dueLevel,
+             decided.answer.provider, decided.item->item.itemGuid,
+             decided.item->item.depositBlock.has_value() || KeptByMargin(decided.item->item, decided.answer)});
         // Auction stock's worth beats the payout (AuctionStock), so the gain is positive; the trip weighs it (WA3b)
         KeepItemIn const& item = decided.item->item;
         bool const stock = std::string_view(decided.answer.provider) == AUCTION_STOCK_PROVIDER;
@@ -866,6 +1012,8 @@ inline std::string DescribeVerdict(BankVerdict const& verdict)
     if (verdict.laterWorth)
         line += ", later " + std::to_string(verdict.laterWorth) + " at level " + std::to_string(verdict.dueLevel) +
                 " (" + verdict.provider + ")";
+    if (verdict.saleStock)
+        line += ", listing " + std::to_string(verdict.worth) + " against " + std::to_string(verdict.payout);
     return line;
 }
 

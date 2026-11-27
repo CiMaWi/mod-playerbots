@@ -195,6 +195,7 @@ bool SpaceStep(Player* bot, BankVisitData& visit, BankIn const& in, BankPlan con
 void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
 {
     Item* item = bot->GetItemByPos(next.bag, next.slot);
+    uint32 const planNumber = static_cast<uint32>(visit.moved.size() + visit.refused.size());  // moves before it
     if (!item || item->GetGUID().GetCounter() != next.itemGuid)
     {
         visit.refused.push_back(next.itemGuid);  // not where the plan saw it this tick: left quietly
@@ -234,12 +235,21 @@ void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan co
     if (!verdict)
     {
         if (planned)
+        {
             visit.verdicts.push_back(*planned);
+            visit.verdicts.back().plan = planNumber;
+        }
         return;
     }
     verdict->choice = next.kind;
-    if (planned)
-        verdict->reason = planned->reason;
+    if (!planned)
+        return;
+    // The inputs of the plan that made the move (NR12a)
+    verdict->reason = planned->reason;
+    verdict->worth = planned->worth;
+    verdict->payout = planned->payout;
+    verdict->usage = planned->usage;
+    verdict->plan = planNumber;
 }
 
 // One bank decision row per item of the visit's first plan, with what was really done with it
@@ -252,6 +262,15 @@ void WriteBankRows(Player* bot, BankVisitData const& visit)
                             {"count", static_cast<float>(row.count)},
                             {"due_level", static_cast<float>(row.dueLevel)}},
                            row.entry);
+    // Needs and errands NR12a: a moved stack of sale stock writes its move's inputs in a row beside its own
+    for (BankVerdict const& row : visit.verdicts)
+        if (row.saleStock && (row.choice == BankChoice::Deposit || row.choice == BankChoice::Withdraw))
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Bank, "stock_inputs", ChoiceWord(row.choice),
+                               static_cast<float>(row.worth),
+                               {{"payout", static_cast<float>(row.payout)},
+                                {"usage", static_cast<float>(row.usage)},
+                                {"plan", static_cast<float>(row.plan)}},
+                               row.entry);
     // Professions WR17: the bank-space steps, and the decision that left something out
     for (SpaceAnswer const& row : visit.space)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Bank, SpaceChoiceWord(row.choice),

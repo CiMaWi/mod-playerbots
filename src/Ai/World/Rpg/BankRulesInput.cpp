@@ -297,6 +297,7 @@ public:
         KeepItemIn& keep = in.item;
         keep.itemGuid = item->GetGUID().GetCounter();
         keep.entry = proto->ItemId;
+        keep.randomPropertyId = randomPropertyId;
         keep.count = std::max<uint32>(item->GetCount(), 1);
         keep.stackMax = std::max<uint32>(proto->GetMaxStackSize(), 1);
         keep.requiredLevel = ClampLevel(proto->RequiredLevel);
@@ -309,7 +310,7 @@ public:
                                                _sellMultiplier, 0, demandEach);
         Player* bot = _botAI->GetBot();
         ReadProfession(proto, keep);
-        ReadAuction(item, proto, randomPropertyId, keep);
+        ReadAuction(item, proto, keep);
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
         WornSlots const slots = SlotsFor(bot, proto, dueLevel);
         // Gear of the bot's level or below: the item usage answers whether the bot wears it now, the answer the equip
@@ -353,6 +354,55 @@ public:
         return in;
     }
 
+    // JudgeStock's market (NR12a): what listing a lot of the entry is worth (AuctionStock) after extraSteps more failed
+    // auctions (NR.8's margin), read away from the auctioneer: R1, never the cheapest standing buyout
+    uint32_t Worth(KeepItemIn const& first, uint32_t units, uint32_t payout, uint32_t extraSteps) const
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(first.entry);
+        if (!_reference || !proto)
+            return 0;
+        AuctionRules::AskInput in;
+        in.count = units;
+        in.sellPrice = proto->SellPrice;
+        in.vendorPayout = payout;
+        if (AuctionRules::ItemReference const* row = _reference->Find(proto->ItemId))
+            in.reference = row->copper;
+        if (_index)
+        {
+            AuctionIndex::Evidence const evidence = _index->EvidenceOf(
+                proto->ItemId,
+                AuctionIndex::KindOf(proto->Class, proto->Quality, proto->RequiredLevel, proto->ItemLevel));
+            in.typical = evidence.typical;
+            in.itemRecord = evidence.item;
+            in.kindRecord = evidence.kind;
+        }
+        in.fees = _fees;
+        // WA3b: the seller's expiry memory; an item expired past the relist limit is held, so it is no stock any more
+        AuctionMemory::ItemMemory const memory =
+            AuctionMemory::Of(_botAI->GetBot()->GetGUID().GetCounter(), proto->ItemId);
+        in.expiredSteps = memory.expiredSteps + extraSteps;
+        in.quickSale = memory.quickSale && !extraSteps;
+        return AuctionRules::StockWorth(in, sPlayerbotAIConfig.Auction);
+    }
+
+    // The item usage's AH label with the bank's units counted, so the visit's own moves never flip it (NR11 A), and
+    // the units its needed-by-count branch keeps carried. It answers without the keep inside RefreshCarriedKeeps,
+    // whose bags' memo is empty then, and at a bank read it labels stock kept already ITEM_USAGE_BANK
+    StockUsage Usage(KeepItemIn const& first) const
+    {
+        std::string const qualifier = std::to_string(first.entry) + "," + std::to_string(first.randomPropertyId) +
+                                      ItemUsageValue::BANK_COUNT_QUALIFIER;
+        ItemUsage const usage = _botAI->GetAiObjectContext()->GetValue<ItemUsage>("item usage", qualifier)->Get();
+        StockUsage answer;
+        answer.usage = static_cast<uint8_t>(usage);
+        answer.auctionable = usage == ITEM_USAGE_AH || usage == ITEM_USAGE_BANK;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(first.entry);
+        if (answer.auctionable && proto && !IsRealPlayer(_botAI->GetMaster()) &&
+            ItemUsageValue(_botAI).KeepsByCount(proto, _path))
+            answer.countKeep = ItemUsageValue::KEPT_STACKS * std::max<uint32>(proto->GetMaxStackSize(), 1);
+        return answer;
+    }
+
 private:
     // Professions WR12: the path's material of the item, and a recipe item's profession, rank and whether it is known
     void ReadProfession(ItemTemplate const* proto, KeepItemIn& keep) const
@@ -373,51 +423,15 @@ private:
         }
     }
 
-    // Auction house WA3a: the item usage's AH label, what a vendor pays for the stock units now and what listing them
-    // is worth (AuctionStock). The usage, the dearest read, is asked only for a listing that beats the vendor; it
-    // answers without the keep inside RefreshCarriedKeeps, whose bags' memo is empty then, and at a bank read it
-    // labels stock kept already ITEM_USAGE_BANK
-    void ReadAuction(Item const* item, ItemTemplate const* proto, int32 randomPropertyId, KeepItemIn& keep) const
+    // Auction house WA3a: a stack auction stock may hold and what a vendor pays for its stock units now; its entry's
+    // lot is judged by JudgeStock (needs and errands NR12a), with Worth and Usage below
+    void ReadAuction(Item const* item, ItemTemplate const* proto, KeepItemIn& keep) const
     {
         uint32 const units = StockUnits(keep);
         if (!_reference || !units || !MaybeAuctionStock(proto) || item->IsSoulBound())
             return;
-
+        keep.stockCandidate = true;
         keep.vendorPayout = VendorPayoutOf(item, proto, units);
-        AuctionRules::AskInput in;
-        in.count = units;
-        in.sellPrice = proto->SellPrice;
-        in.vendorPayout = keep.vendorPayout;
-        if (AuctionRules::ItemReference const* row = _reference->Find(proto->ItemId))
-            in.reference = row->copper;
-        if (_index)
-        {
-            // R1: away from the auctioneer, never the cheapest standing buyout
-            AuctionIndex::Evidence const evidence = _index->EvidenceOf(
-                proto->ItemId,
-                AuctionIndex::KindOf(proto->Class, proto->Quality, proto->RequiredLevel, proto->ItemLevel));
-            in.typical = evidence.typical;
-            in.itemRecord = evidence.item;
-            in.kindRecord = evidence.kind;
-        }
-        in.fees = _fees;
-        // WA3b: the seller's expiry memory; an item expired past the relist limit is held, so it is no stock any more
-        AuctionMemory::ItemMemory const memory =
-            AuctionMemory::Of(_botAI->GetBot()->GetGUID().GetCounter(), proto->ItemId);
-        in.expiredSteps = memory.expiredSteps;
-        in.quickSale = memory.quickSale;
-        keep.auctionWorth = AuctionRules::StockWorth(in, sPlayerbotAIConfig.Auction);
-        if (keep.auctionWorth <= keep.vendorPayout)
-            return;
-        // A skill path's material is labelled keep while the bags hold its units, never AH (ItemUsageValue): its units
-        // beyond the path's use are stock by the AH precondition alone (MaybeAuctionStock, WA7b)
-        if (keep.materialUsed)
-        {
-            keep.auctionable = true;
-            return;
-        }
-        ItemUsage const usage = UsageOf("item usage", proto->ItemId, randomPropertyId);
-        keep.auctionable = usage == ITEM_USAGE_AH || usage == ITEM_USAGE_BANK;
     }
 
     // An item usage value's answer for the item now ("item upgrade" is the one the equip action asks, EquipAction.cpp;
@@ -506,6 +520,26 @@ void ReadBankConsumables(Player const* bot, ItemReader& reader, std::vector<Bank
                     [&bank, &reader](Item const* item, uint8 bag, uint8 slot, bool /*plain*/)
                     {
                         if (item && item->GetTemplate()->Class == ITEM_CLASS_CONSUMABLE)
+                            bank.push_back(reader.Read(item, bag, slot));
+                    });
+}
+
+// The bank's stacks of the entries the bags hold as possible auction stock, so each lot is judged as at the bank
+// (needs and errands NR12a, JudgeStock)
+void ReadBankStock(Player const* bot, ItemReader& reader, std::vector<BankItemIn> const& bags,
+                   std::vector<BankItemIn>& bank)
+{
+    std::vector<uint32> entries;
+    for (BankItemIn const& carried : bags)
+        if (carried.item.stockCandidate &&
+            std::find(entries.begin(), entries.end(), carried.item.entry) == entries.end())
+            entries.push_back(carried.item.entry);
+    if (entries.empty())
+        return;
+    ForEachBankSlot(bot,
+                    [&bank, &reader, &entries](Item const* item, uint8 bag, uint8 slot, bool /*plain*/)
+                    {
+                        if (item && std::find(entries.begin(), entries.end(), item->GetEntry()) != entries.end())
                             bank.push_back(reader.Read(item, bag, slot));
                     });
 }
@@ -660,6 +694,7 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
     in.bagSpace = BuildBagSpace(bot);
     ReadBank(bot, reader, in);
     ReadBankSpace(botAI, bot, in);
+    JudgeStock(in.bags, in.bank, reader);
     FillStock(botAI, in.bags, in.bank);
     return in;
 }
@@ -737,6 +772,14 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
         std::vector<BankItemIn> bank;
         ReadBankConsumables(bot, *reader, bank);
         FillStock(botAI, in.bags, bank);
+    }
+    if (reader)
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "bank keeps stock read")
+                                                        : nullptr);
+        std::vector<BankItemIn> bank;
+        ReadBankStock(bot, *reader, in.bags, bank);
+        JudgeStock(in.bags, bank, *reader);
     }
     carried = KeptInBags(in);
 }
