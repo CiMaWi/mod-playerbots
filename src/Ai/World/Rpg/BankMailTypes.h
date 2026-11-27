@@ -156,7 +156,10 @@ enum class BankReason : uint8_t
     BlockedOther,     // any other code but a full bank (room is the model's)
     // Needs and errands NR12a (NR.8's margin): sale stock whose listing pays now but would not after one more failed
     // auction stays in the bags, so the next hold does not release it from the bank
-    ThinMargin
+    ThinMargin,
+    // Needs and errands NR12b: sale stock whose listing pays, at a bank visit an auction stop of the same trip follows
+    // (KeepBotIn::auctionNext): withdrawn from the bank, or kept in the bags, for that auction
+    ForAuction
 };
 
 struct BankVerdict

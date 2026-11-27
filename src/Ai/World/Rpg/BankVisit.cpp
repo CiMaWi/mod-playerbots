@@ -309,7 +309,8 @@ bool BankerInReach(Player* bot, WorldObject const& banker, float& /*range*/)
 VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
 {
     BankVisitData& visit = botAI->bankMail.bankData;
-    BankIn const in = BuildBankIn(botAI);
+    BankIn in = BuildBankIn(botAI);
+    in.bot.auctionNext = visit.auctionNext;
     BankPlan const plan = PlanNextMove(in, visit.moved, visit.refused);
     if (!visit.planned)
     {
@@ -363,11 +364,12 @@ constexpr VisitKindRow BANK_VISIT{.startWord = "bank",
 
 VisitKindRow const& BankVisitRow() { return BANK_VISIT; }
 
-bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
+bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot, bool auctionNext)
 {
     if (!BeginVisit(botAI, VisitKind::Bank, &spot))
         return false;
     botAI->bankMail.bankData = BankVisitData{};
+    botAI->bankMail.bankData.auctionNext = auctionNext;
     return true;
 }
 

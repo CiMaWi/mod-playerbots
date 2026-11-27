@@ -55,6 +55,7 @@ struct BankKnowledge
     CarriedKeeps carried;        // the bag items it keeps for a later level, for the item usage (RefreshCarriedKeeps)
     uint16 freeSlots{0};         // free bank slots: the 28 item slots and the plain bank bags' slots (WR17)
     uint16 slots{0};             // the bank's 28 item slots and its plain bags' slots
+    uint32 stockGain{0};         // NR12b: the banked sale stock's listing worth above a vendor's payout, copper
     bool built{false};           // set at login (BuildBankKnowledge)
 };
 
@@ -88,8 +89,9 @@ struct BankVisitData
     uint32 deposited{0};
     uint32 withdrawn{0};
     std::vector<SpaceAnswer>
-        space;              // professions WR17: the bank-space steps taken, then the decision that stopped them
-    bool spaceDone{false};  // the bank-space rule has nothing more to do on this visit
+        space;                // professions WR17: the bank-space steps taken, then the decision that stopped them
+    bool spaceDone{false};    // the bank-space rule has nothing more to do on this visit
+    bool auctionNext{false};  // NR12b: an auction errand of the trip follows (KeepBotIn::auctionNext)
 };
 
 // The craft's own data of a craft visit (CraftVisit.h, professions WR7; the lifecycle is BotBankMail::visit): one

@@ -38,6 +38,7 @@
 //   BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {});
 //                                                    // withdraw steps, then deposit steps; refused items stay put
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
+//   uint32_t BankedStockGain(BankIn const& in);                           // the banked sale stock's gain (NR12b)
 //   void AssignStock(entries, laterBySlot, bags, bank);                   // demand's use stock per stack (WI9b)
 //   void JudgeStock(bags, bank, market);                                  // sale stock per entry (NR12a)
 //   CarriedKeeps KeptInBags(BankIn const& in);                            // the bag items kept for a later level
@@ -158,6 +159,9 @@ struct KeepBotIn
     uint8_t horizon = DEFAULT_KEEP_LEVEL_HORIZON;
     float upgradeThreshold = DEFAULT_UPGRADE_THRESHOLD;
     std::vector<SkillRank> skills;  // the bot's profession skills now (professions WR12)
+    // Needs and errands NR12b: an auction errand of the same trip follows this bank visit (at its stop or a later one;
+    // the errand stop's visit sets it, the GM command never): the sale stock is due for it (DueForAuction)
+    bool auctionNext = false;
 };
 
 // The bot's value of a skill now; 0 when it does not have it
@@ -427,6 +431,8 @@ inline char const* ReasonWord(BankReason reason)
             return "blocked_other";
         case BankReason::ThinMargin:
             return "thin_margin";
+        case BankReason::ForAuction:
+            return "for_auction";
         default:
             return "no_space";
     }
@@ -448,7 +454,7 @@ struct BankPlan
 {
     std::vector<BankStep> steps;        // every withdrawal, then every deposit
     std::vector<BankVerdict> verdicts;  // bank items, then the bags' kept items, in the order they were decided
-    uint32_t withdrawDue = 0;           // due items withdrawn
+    uint32_t withdrawDue = 0;           // due items withdrawn, sale stock due for an auction (NR12b) among them
     uint32_t withdrawReleased = 0;      // released items withdrawn
     uint32_t deposits = 0;
     uint32_t keptInBags = 0;     // kept items that stay in the bags (due, or the bank is full)
@@ -605,6 +611,15 @@ inline bool KeptByMargin(KeepItemIn const& item, KeepAnswer const& answer)
     return item.thinMargin && !item.materialUsed && std::string_view(answer.provider) == AUCTION_STOCK_PROVIDER;
 }
 
+// Needs and errands NR12b (NR.8): sale stock whose listing pays is due at a bank visit an auction stop of the same trip
+// follows: the bank's is withdrawn, the bags' stays there, and the auction visit lists both (ListsStack). Without one
+// it waits in the bank as before. A stack the auction holds is deposited again at a later visit and fetched again for
+// a later auction; each hold is a relist step off its worth, so its round trips end once its lot no longer pays
+inline bool DueForAuction(KeepAnswer const& answer, KeepBotIn const& bot)
+{
+    return bot.auctionNext && answer.keeps && std::string_view(answer.provider) == AUCTION_STOCK_PROVIDER;
+}
+
 inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& settled = {})
 {
     using namespace BankRulesDetail;
@@ -613,6 +628,7 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
     BagSpace bankSpace = in.bankSpace;
 
     std::vector<Decided> due;
+    std::vector<Decided> forAuction;
     std::vector<Decided> released;
     std::vector<Decided> waiting;
     for (BankItemIn const& item : in.bank)
@@ -622,10 +638,13 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
             released.push_back({&item, answer});
         else if (IsDue(answer, in.bot))
             due.push_back({&item, answer});
+        else if (DueForAuction(answer, in.bot))
+            forAuction.push_back({&item, answer});
         else
             waiting.push_back({&item, answer});
     }
     SortByLaterWorth(due);
+    SortByLaterWorth(forAuction);
     SortBySellWorth(released);
     SortByLaterWorth(waiting);
 
@@ -652,6 +671,8 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
     };
     for (Decided const& decided : due)
         withdraw(decided, BankReason::Due, plan.withdrawDue);
+    for (Decided const& decided : forAuction)
+        withdraw(decided, BankReason::ForAuction, plan.withdrawDue);
     for (Decided const& decided : released)
         withdraw(decided, BankReason::Released, plan.withdrawReleased);
     for (Decided const& decided : waiting)
@@ -663,6 +684,7 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
 
     std::vector<Decided> deposit;
     std::vector<Decided> dueInBags;
+    std::vector<Decided> forAuctionInBags;
     for (BankItemIn const& item : in.bags)
     {
         KeepAnswer const answer = DecideKeep(item.item, in.bot);
@@ -670,11 +692,14 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
             continue;
         if (IsDue(answer, in.bot))
             dueInBags.push_back({&item, answer});
+        else if (DueForAuction(answer, in.bot))
+            forAuctionInBags.push_back({&item, answer});
         else
             deposit.push_back({&item, answer});
     }
     SortByLaterWorth(deposit);
     SortByLaterWorth(dueInBags);
+    SortByLaterWorth(forAuctionInBags);
     for (Decided const& decided : deposit)
     {
         std::optional<BankReason> stays =
@@ -702,6 +727,12 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& set
     for (Decided const& decided : dueInBags)
     {
         plan.verdicts.push_back(MakeVerdict(*decided.item, decided.answer, false, BankChoice::Keep, BankReason::Due));
+        ++plan.keptInBags;
+    }
+    for (Decided const& decided : forAuctionInBags)
+    {
+        plan.verdicts.push_back(
+            MakeVerdict(*decided.item, decided.answer, false, BankChoice::Keep, BankReason::ForAuction));
         ++plan.keptInBags;
     }
 
@@ -937,6 +968,22 @@ inline std::vector<KeptEntry> KeptInBank(BankIn const& in)
         entries.push_back({decided.item->item.entry, decided.item->item.count, decided.answer.laterWorth,
                            decided.answer.dueLevel, decided.answer.provider});
     return entries;
+}
+
+// Needs and errands NR12b: the banked sale stock's gain over a vendor (its listing's worth above the payout), read at
+// the bank visit's end and at login (BankKnowledge::stockGain). The trip's auction offer counts it, and a banker before
+// that auction stop rides along to withdraw the stock (PlanTrip); a bank stop alone never fetches it
+inline uint32_t BankedStockGain(BankIn const& in)
+{
+    uint64_t gain = 0;
+    for (BankItemIn const& item : in.bank)
+    {
+        KeepAnswer const answer = DecideKeep(item.item, in.bot);
+        if (answer.keeps && !IsDue(answer, in.bot) && std::string_view(answer.provider) == AUCTION_STOCK_PROVIDER &&
+            item.item.auctionWorth > item.item.vendorPayout)
+            gain += item.item.auctionWorth - item.item.vendorPayout;
+    }
+    return static_cast<uint32_t>(std::min<uint64_t>(gain, std::numeric_limits<uint32_t>::max()));
 }
 
 // Kept and not due yet: a due item is gear the bot may wear now, which the item usage labels as an upgrade first.

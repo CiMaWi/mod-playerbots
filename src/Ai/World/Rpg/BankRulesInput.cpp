@@ -604,6 +604,25 @@ void ForEachBagItem(Player const* bot, Visit visit)
     }
 }
 
+// The bags' stacks of the entries the bank holds as possible sale stock, so the bank's lots are judged whole
+// (JudgeStock; NR12b's gain of the banked stock)
+void ReadBagStock(Player const* bot, ItemReader& reader, std::vector<BankItemIn> const& bank,
+                  std::vector<BankItemIn>& bags)
+{
+    std::vector<uint32> entries;
+    for (BankItemIn const& banked : bank)
+        if (banked.item.stockCandidate && std::find(entries.begin(), entries.end(), banked.item.entry) == entries.end())
+            entries.push_back(banked.item.entry);
+    if (entries.empty())
+        return;
+    ForEachBagItem(bot,
+                   [&bags, &reader, &entries](Item const* item, uint8 bag, uint8 slot)
+                   {
+                       if (std::find(entries.begin(), entries.end(), item->GetEntry()) != entries.end())
+                           bags.push_back(reader.Read(item, bag, slot));
+                   });
+}
+
 // Professions WR17: what the bank-space rule reads (BankRules.h, DecideBankSpace): the bank bag slots bought and
 // filled, the next slot's price from the core's table (WorldSession::HandleBuyBankSlotOpcode reads the same), the
 // carried empty plain bag with the most slots (the cheaper on a tie) and the money above the reserve, as a bag buy
@@ -712,11 +731,14 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);
     ReadBank(bot, reader, in);
+    ReadBagStock(bot, reader, in.bank, in.bags);
+    JudgeStock(in.bags, in.bank, reader);
 
     BankKnowledge& known = botAI->bankMail.bank;
     known.kept.clear();
     for (KeptEntry const& entry : KeptInBank(in))
         known.kept.push_back({entry.entry, entry.count, entry.laterWorth, entry.dueLevel});
+    known.stockGain = BankedStockGain(in);
     known.freeSlots = static_cast<uint16>(in.bankSpace.freeSlots);
     known.slots = static_cast<uint16>(in.bankSlots);
     RefreshCarriedKeeps(botAI);

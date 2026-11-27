@@ -888,6 +888,84 @@ inline void AuctionScenarios(std::vector<Check>& checks)
                          order.find("bank_deposit") < order.find("mail") && order.find("mail") != std::string::npos;
     Add(checks, "auction: little stock joins the town stop; sale, listing, deposit, mailbox in that order",
         ordered && OrderHolds(townPlan), order);
+
+    // NR12b: banked sale stock draws the auctioneer, and the stock's withdrawal rides along at a banker before it,
+    // 100 yd apart as in Stormwind and Orgrimmar; never at a banker after the auction, never without one
+    auto const stockStops = [](TripPlan const& plan, std::size_t& bankAt, std::size_t& auctionAt)
+    {
+        bankAt = auctionAt = plan.Stops.size();
+        for (std::size_t s = 0; s < plan.Stops.size(); ++s)
+            for (ErrandOffer const& errand : plan.Stops[s].Errands)
+            {
+                if (errand.Kind == ErrandKind::BankWithdraw && errand.Id == STOCK_WITHDRAW_ID)
+                    bankAt = s;
+                if (errand.Kind == ErrandKind::Auction && auctionAt == plan.Stops.size())
+                    auctionAt = s;
+            }
+    };
+    ErrandSnapshot banked = GovernedBot(10, 0);
+    banked.BankStockWorth = 5000;
+    WithServices(
+        banked, {},
+        {{BANKER_ID, At(300.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const bankedPlan = Plan(banked, Request(banked), TripProviders());
+    std::size_t bankAt = 0;
+    std::size_t auctionAt = 0;
+    stockStops(bankedPlan, bankAt, auctionAt);
+    Add(checks, "NR12b: banked stock 5000 c alone draws the auctioneer, and the banker before it fetches the stock",
+        bankedPlan.Stops.size() == 2 && bankAt == 0 && auctionAt == 1 && bankedPlan.Refused.empty() &&
+            OrderHolds(bankedPlan),
+        Describe(bankedPlan));
+
+    ErrandSnapshot beyond = banked;
+    WithServices(
+        beyond, {},
+        {{BANKER_ID, At(500.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(400.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const beyondPlan = Plan(beyond, Request(beyond), TripProviders());
+    stockStops(beyondPlan, bankAt, auctionAt);
+    Add(checks, "NR12b: a banker beyond the auctioneer is walked to first: no bank stop after the auction fetches it",
+        beyondPlan.Stops.size() == 2 && bankAt == 0 && auctionAt == 1, Describe(beyondPlan));
+
+    ErrandSnapshot together = banked;
+    WithServices(
+        together, {},
+        {{BANKER_ID, At(300.0f, 0.0f), SERVICE_BANKER}, {AUCTIONEER_ID, At(320.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const togetherPlan = Plan(together, Request(together), TripProviders());
+    stockStops(togetherPlan, bankAt, auctionAt);
+    Add(checks, "NR12b: a banker beside the auctioneer: one stop, the withdrawal before the listing",
+        togetherPlan.Stops.size() == 1 && bankAt == 0 && auctionAt == 0 && OrderHolds(togetherPlan),
+        Describe(togetherPlan));
+
+    ErrandSnapshot noAuctioneer = banked;
+    WithServices(noAuctioneer, {}, {{BANKER_ID, At(300.0f, 0.0f), SERVICE_BANKER}});
+    TripPlan const noAuctioneerPlan = Plan(noAuctioneer, Request(noAuctioneer), TripProviders());
+    ErrandSnapshot littleBanked = banked;
+    littleBanked.BankStockWorth = 400;
+    TripPlan const littlePlanBanked = Plan(littleBanked, Request(littleBanked), TripProviders());
+    bool fetchedAlone = PlanHasKind(noAuctioneerPlan, ErrandKind::BankWithdraw) ||
+                        PlanHasKind(littlePlanBanked, ErrandKind::BankWithdraw);
+    for (TripPlan const* plan : {&noAuctioneerPlan, &littlePlanBanked})
+        for (Refusal const& refusal : plan->Refused)
+            fetchedAlone = fetchedAlone || refusal.Offer.Kind == ErrandKind::BankWithdraw;
+    Add(checks,
+        "NR12b: no auctioneer, or little stock whose auction does not pay its detour: no withdrawal, and no row of "
+        "one (the auction's refusal says why)",
+        !fetchedAlone && noAuctioneerPlan.Stops.empty() && littlePlanBanked.Stops.empty(),
+        Describe(noAuctioneerPlan) + "; " + Describe(littlePlanBanked));
+
+    // The running trip's flags: the bank visit finds the stock due for an auction ahead, not for one that ran
+    struct FlagStop
+    {
+        bool auction = false;
+    };
+    std::vector<FlagStop> const ahead = {{false}, {true}};
+    std::vector<FlagStop> const here = {{true}};
+    std::vector<FlagStop> const ran = {{false}, {false}};
+    std::vector<FlagStop> const earlier = {{true}, {false}};
+    Add(checks, "NR12b: due for an auction stop after the bank stop or at it, not when it precedes the bank stop",
+        AuctionAhead(ahead, 0) && AuctionAhead(here, 0) && !AuctionAhead(ran, 1) && !AuctionAhead(earlier, 1) &&
+            !AuctionAhead(ahead, 2),
+        "");
 }
 
 // ---- The invariant search (WB8) ----

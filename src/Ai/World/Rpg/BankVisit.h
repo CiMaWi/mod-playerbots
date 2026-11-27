@@ -25,7 +25,7 @@ class PlayerbotAI;
 //
 // Used by the GM command, the errand stops and (Withdraw, Deposit) the chat command:
 //   std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal);
-//   bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot);
+//   bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot, bool auctionNext = false);
 // The visit is stepped by the visit driver (Visit.h StepVisit) through `new rpg visit`.
 class Item;
 class Player;
@@ -48,8 +48,9 @@ std::optional<BankerSpot> BankerSpotNear(Player* bot, uint32 mapId, float x, flo
 // the bot's map thread (the visit's moves and the chat bank command). EQUIP_ERR_NONE (deposit): it already lies there
 InventoryResult Withdraw(Player* bot, Item* item);
 InventoryResult Deposit(Player* bot, Item* item);
-// World thread or the bot's map thread: starts a visit to the spot; false while a visit runs
-bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot);
+// World thread or the bot's map thread: starts a visit to the spot; false while a visit runs. auctionNext: an auction
+// errand of the same trip follows, so the sale stock is due for it (NR12b; the GM command passes none)
+bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot, bool auctionNext = false);
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string BankVisitCounters();
 }  // namespace BankMail

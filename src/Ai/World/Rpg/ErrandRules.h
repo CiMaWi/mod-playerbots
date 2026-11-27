@@ -319,6 +319,9 @@ struct ErrandSnapshot
     // The auction plan (WA3b fills the stock, WA4b the wanted lines)
     uint32_t AuctionStockWorth = 0;   // copper listing the bag stock fetches above a vendor's payout (CarriedKeeps)
     uint32_t AuctionWantedWorth = 0;  // copper the wanted lines of its buy list are worth to it
+    // Needs and errands NR12b: copper listing the banked sale stock fetches above a vendor's payout
+    // (BankKnowledge::stockGain): the auction offer counts it, and a banker before the auction stop withdraws it
+    uint32_t BankStockWorth = 0;
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -603,17 +606,31 @@ inline void ProvideMail(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
     offers.push_back(offer);
 }
 
-// Due items waiting in the bank, weighted by orderliness
+// The withdrawal of the banked sale stock (NR12b): worth nothing of its own (the auction offer holds the stock's gain),
+// placed by PlanTrip only at a banker up to the trip's first auction stop, so it is never fetched without its auction
+constexpr uint32_t STOCK_WITHDRAW_ID = 1;
+
+// Due items waiting in the bank, weighted by orderliness; and the banked sale stock's withdrawal for an auction
 inline void ProvideBankWithdraw(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Governed || !snapshot.BankDueCount)
+    if (!snapshot.Governed)
         return;
 
     ErrandOffer offer;
     offer.Kind = ErrandKind::BankWithdraw;
     offer.Service = SERVICE_BANKER;
-    offer.WorthCopper = static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
-    offers.push_back(offer);
+    if (snapshot.BankDueCount)
+    {
+        offer.WorthCopper =
+            static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
+        offers.push_back(offer);
+    }
+    if (snapshot.BankStockWorth)
+    {
+        offer.Id = STOCK_WITHDRAW_ID;
+        offer.WorthCopper = 0.0f;
+        offers.push_back(offer);
+    }
 }
 
 // Kept items out of the bags: the slots they free are worth the same as a sale's until the next stop, unweighted
@@ -633,10 +650,12 @@ inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<Erran
 // Auction stock in the bags (WA3b) and the buy list's wanted lines (WA4b): worth what listing the stock fetches above
 // a vendor's payout plus what the wanted lines save under their ceilings at their typical prices, against the detour
 // like any errand (selling and buying share one stop); an auctioneer beside a stop the bot makes anyway joins it. It
-// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later
+// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later. The banked
+// sale stock's gain counts too (NR12b): its withdrawal rides along at a banker before the stop (PlanTrip)
 inline void ProvideAuction(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    uint64_t const worth = static_cast<uint64_t>(snapshot.AuctionStockWorth) + snapshot.AuctionWantedWorth;
+    uint64_t const worth =
+        static_cast<uint64_t>(snapshot.AuctionStockWorth) + snapshot.AuctionWantedWorth + snapshot.BankStockWorth;
     if (!snapshot.Governed || !worth)
         return;
 
@@ -670,6 +689,18 @@ inline void MergeServiceStops(std::vector<ServiceStop>& stops, std::vector<Servi
         else
             stops.push_back(extra);
     }
+}
+
+// NR12b: an auction errand is still ahead of a running trip from stop `from` on (that stop's own while its flag
+// stands): the bank visit there finds the sale stock due for it. A stop's flag drops once its errand ran, so an
+// auction stop before the bank's makes nothing due
+template <typename Stop>
+inline bool AuctionAhead(std::vector<Stop> const& stops, std::size_t from)
+{
+    for (std::size_t s = from; s < stops.size(); ++s)
+        if (stops[s].auction)
+            return true;
+    return false;
 }
 
 // The travel plan's providers; a later plan adds its row to its own copy of this table, PlanTrip stays as it is
@@ -945,11 +976,16 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         done[i] = true;
         plan.Refused.push_back({offers[i], "too_far", 0.0f, minutes});
     }
-    auto const join = [&plan, &offers, &done]()
+    // NR12b: the banked sale stock's withdrawal is placed only by stockAlong below
+    std::size_t stock = offers.size();
+    for (std::size_t i = 0; i < offers.size(); ++i)
+        if (offers[i].Kind == ErrandKind::BankWithdraw && offers[i].Id == STOCK_WITHDRAW_ID)
+            stock = i;
+    auto const join = [&plan, &offers, &done, stock]()
     {
         for (std::size_t i = 0; i < offers.size(); ++i)
             for (TripStop& stop : plan.Stops)
-                if (!done[i] && StopTakes(stop, offers[i]))
+                if (!done[i] && i != stock && StopTakes(stop, offers[i]))
                 {
                     stop.Errands.push_back(offers[i]);
                     done[i] = true;
@@ -1004,9 +1040,77 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
         join();
     };
+    // The trip's first stop with an auction errand, or the trip's size when it has none
+    auto const firstAuction = [&plan]()
+    {
+        std::size_t at = 0;
+        while (at < plan.Stops.size() &&
+               std::none_of(
+                   plan.Stops[at].Errands.begin(), plan.Stops[at].Errands.end(),
+                   [](ErrandOffer const& errand) { return errand.Kind == ErrandKind::Auction; }))
+            ++at;
+        return at;
+    };
+    // NR12b: once the trip has an auction errand (whose worth holds the banked stock's gain), the stock's withdrawal
+    // rides along before it, as the mount rides along with its rank: at a stop up to the auction's that has a banker
+    // (at the auction's own stop the withdrawal comes first), else at the banker that adds the fewest minutes in front
+    // of it, within the walk limit. Never after it: a bank stop past the auction would fetch the stock for nothing
+    auto const stockAlong = [&plan, &offers, &done, &candidates, &request, &join, &firstAuction, stock]()
+    {
+        if (stock == offers.size() || done[stock])
+            return;
+
+        std::size_t const auction = firstAuction();
+        if (auction == plan.Stops.size())
+            return;
+
+        for (std::size_t s = 0; s <= auction; ++s)
+            if (StopTakes(plan.Stops[s], offers[stock]))
+            {
+                // First at its stop, as the providers' order has it (the withdrawal row leads TripProviders)
+                plan.Stops[s].Errands.insert(plan.Stops[s].Errands.begin(), offers[stock]);
+                done[stock] = true;
+                return;
+            }
+        bool found = false;
+        std::size_t bestCandidate = 0;
+        std::size_t bestIndex = 0;
+        float bestMinutes = 0.0f;
+        for (std::size_t c = 0; c < candidates.size(); ++c)
+        {
+            if (!StopTakes(candidates[c], offers[stock]))
+                continue;
+
+            ErrandPlace const& place = candidates[c].Place;
+            for (std::size_t s = 0; s <= auction; ++s)
+            {
+                ErrandPlace const& from = s ? plan.Stops[s - 1].Place : request.Start;
+                float const minutes = WalkMinutes(
+                    Yards(from, place) + Yards(place, plan.Stops[s].Place) - Yards(from, plan.Stops[s].Place),
+                    request.YardsPerSecond);
+                if (!(minutes <= ERRAND_MAX_WALK_MINUTES) || (found && !(minutes < bestMinutes)))
+                    continue;
+
+                found = true;
+                bestCandidate = c;
+                bestIndex = s;
+                bestMinutes = minutes;
+            }
+        }
+        if (!found)
+            return;
+
+        TripStop stop = candidates[bestCandidate];
+        stop.DetourMinutes = bestMinutes;
+        stop.Errands.push_back(offers[stock]);
+        done[stock] = true;
+        plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
+        join();
+    };
 
     join();
     rideAlong();
+    stockAlong();
     for (std::size_t detours = 0; detours < MAX_DETOUR_STOPS; ++detours)
     {
         bool found = false;
@@ -1020,7 +1124,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             float worth = 0.0f;
             bool takes = false;
             for (std::size_t i = 0; i < offers.size(); ++i)
-                if (!done[i] && StopTakes(candidates[c], offers[i]))
+                if (!done[i] && i != stock && StopTakes(candidates[c], offers[i]))
                 {
                     if (i == rank && mount < offers.size() && !done[mount])
                         worth += offers[mount].WorthCopper;
@@ -1055,9 +1159,13 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
         join();
         rideAlong();
+        stockAlong();
     }
 
-    // What is left: no place takes it, every place is beyond the walk limit, or no detour pays
+    // What is left: no place takes it, every place is beyond the walk limit, or no detour pays. The stock's
+    // withdrawal without an auction on the trip is no errand of its own: the auction offer's refusal says why
+    if (stock < offers.size() && !done[stock] && firstAuction() == plan.Stops.size())
+        done[stock] = true;
     for (std::size_t i = 0; i < offers.size(); ++i)
     {
         if (done[i])

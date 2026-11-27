@@ -2106,6 +2106,80 @@ inline void CheckMargin(Checker& checker)
     checker.Check(Moves(control, {{BankChoice::Deposit, LINEN}}) && controlReleased,
                   "NR12a margin: control: without it the deposit comes out at the next hold (caught)");
 }
+
+// Needs and errands NR12b: sale stock whose listing pays is due at a bank visit an auction stop of the same trip
+// follows (KeepBotIn::auctionNext): the bank's is withdrawn for_auction, the bags' is not deposited; without one it
+// waits in the bank. The withdrawn stack stays carried as stock, and repeated holds end its round trips
+inline void CheckForAuction(Checker& checker)
+{
+    CaseMarket market;
+    market.worthEach = LINEN_PAYOUT + 9;
+    market.stepDrop = 4;
+    BankIn const banked = MakeIn(20, {}, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, 10, 10);
+    BankIn next = banked;
+    next.bot.auctionNext = true;
+    BankPlan const fetched = PlanBankVisit(ReadLots(next, market));
+    BankPlan const waits = PlanBankVisit(ReadLots(banked, market));
+    checker.Show("NR12b: 20 banked linen paying 9 a unit over the vendor, an auction stop after the bank stop",
+                 fetched);
+    checker.Check(Moves(fetched, {{BankChoice::Withdraw, LINEN}}) && fetched.withdrawDue == 1 &&
+                      GuidIs(fetched, 1, BankChoice::Withdraw, BankReason::ForAuction),
+                  "NR12b: sale stock whose listing pays is due at a bank stop with an auction stop after it");
+    checker.Check(waits.steps.empty() && GuidIs(waits, 1, BankChoice::Leave, BankReason::KeptStock),
+                  "NR12b: without an auction stop after it the stock waits in the bank");
+    checker.Check(std::string(ReasonWord(BankReason::ForAuction)) == "for_auction",
+                  "NR12b: the withdrawal's word is its own (for_auction)");
+
+    CaseMarket flat = market;
+    flat.worthEach = LINEN_PAYOUT;
+    uint32_t const gain = BankedStockGain(ReadLots(banked, market));
+    checker.Check(gain == STACK_20 * 9 && BankedStockGain(ReadLots(banked, flat)) == 0 &&
+                      BankedStockGain(ReadLots(MakeIn(20, {}, {}, 10, 10), market)) == 0,
+                  "NR12b: the banked stock's gain is its listing's worth above the payout (180 c); none that does not "
+                  "pay, none without stock: " +
+                      std::to_string(gain));
+
+    BankIn const carried = MakeIn(20, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, {}, 10, 10);
+    BankIn carriedNext = carried;
+    carriedNext.bot.auctionNext = true;
+    BankPlan const kept = PlanBankVisit(ReadLots(carriedNext, market));
+    BankPlan const deposited = PlanBankVisit(ReadLots(carried, market));
+    checker.Check(kept.steps.empty() && GuidIs(kept, 1, BankChoice::Keep, BankReason::ForAuction) &&
+                      Moves(deposited, {{BankChoice::Deposit, LINEN}}),
+                  "NR12b: the bags' sale stock is not deposited before an auction stop, and is without one");
+
+    BankIn after = banked;
+    for (BankStep const& step : fetched.steps)
+        Apply(after, step);
+    CarriedKeeps const keeps = KeptInBags(ReadLots(after, market));
+    checker.Check(ListsStack(keeps, 1) && KeptWorthEach(keeps, LINEN, 20) > 0,
+                  "NR12b: the withdrawn stack stays carried as stock: the auction visit lists it, and the item usage's "
+                  "bank keep (ITEM_USAGE_BANK) stops a vendor on the way from selling it");
+
+    // Fetched for each auction stop, held there, deposited again at a later bank visit with no auction after it
+    BankIn trip = banked;
+    CaseMarket held = market;
+    uint32_t rounds = 0;
+    for (uint32_t round = 1; round <= 10 && !rounds; ++round)
+    {
+        BankIn fetch = trip;
+        fetch.bot.auctionNext = true;
+        for (BankStep const& step : PlanBankVisit(ReadLots(fetch, held)).steps)
+            Apply(trip, step);
+        ++held.expiredSteps;
+        BankPlan const back = PlanBankVisit(ReadLots(trip, held));
+        for (BankStep const& step : back.steps)
+            Apply(trip, step);
+        if (!back.deposits)
+            rounds = round;
+    }
+    ++held.expiredSteps;
+    bool const ends = KeptWorthEach(KeptInBags(ReadLots(trip, held)), LINEN, 20) == 0;
+    checker.Check(rounds && rounds <= 9 / 4 && ends,
+                  "NR12b: repeated holds end the round trips: " + std::to_string(rounds) +
+                      " fetches (at most the gain over the drop a hold takes, 9 / 4), then the lot stays carried and "
+                      "the next hold ends its keep");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -2147,6 +2221,7 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckLotRemainder(checker);
     CheckMaterialKeepAcrossRecompute(checker);
     CheckMargin(checker);
+    CheckForAuction(checker);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;
