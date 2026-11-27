@@ -440,7 +440,10 @@ void Merge(Order& pending, Order&& incoming)
         pending.entry = incoming.entry;
     }
     if (incoming.aboard)
+    {
         pending.aboard = incoming.aboard;
+        pending.aboardAt = incoming.aboardAt;
+    }
     pending.flush = pending.flush || incoming.flush;  // a flush is no trip: it neither waits nor is replaced
     pending.postedMs = incoming.postedMs;
 }

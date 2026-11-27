@@ -40,8 +40,8 @@ using TravelLifecycle::PassengerMotion;
 using TravelLifecycle::Point;
 namespace TransportGeometry = TravelTransportGeometry;
 
-// Transport legs, called by the test orders (`route aboard`)
-void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
+// Transport legs, called by the test orders (`route aboard`; at: the named offset on the deck, null: by the first row)
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry, TravelCrossing::Spot const* at = nullptr);
 
 // Transport legs, called by the route follower (NewRpgTransport.cpp defines them)
 bool AtTransportLeg(TravelLegs::Trip const& trip);

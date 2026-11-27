@@ -444,6 +444,8 @@ inline char const* TransportSource(TransportEvent event)
             return "follow_timeout";
         case TransportEvent::Left:
             return "left";
+        case TransportEvent::StrandedHearth:
+            return "stranded_hearth";
     }
     return "?";
 }
@@ -1671,11 +1673,16 @@ inline void RowRefused(Trip& trip, Observation const& seen)
 {
     if (trip.crossMs || trip.cancelled)
         return;
+    RowRef const ref = RowNow(trip, seen);
     // The walk ahead of the docking (riding): not asked again on this ride; at the stop the row is tried as ever
     if (trip.boarding == Boarding::Ride && !trip.offFirst.sinceMs)
         trip.aheadRefused = true;
     else
         SpendRow(trip, seen);
+    // PA76: a get-off's stop whose rows were all refused so (OffFirst::boxed)
+    OffFirst& off = trip.offFirst;
+    if (off.sinceMs && ref.Get() && ++off.refused >= ref.stop->leaveCount)
+        ++off.boxed;
 }
 
 // The follower's one try for a place aboard (Act::Stand): taken (a complete deck path to the drawn deck point), or the
@@ -2189,6 +2196,9 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t gui
     off.outcome = outcome;
     off.stop = TravelCrossing::NO_STOP;
     off.spent = 0;
+    off.refused = 0;
+    off.boxed = 0;
+    off.crossed = false;
     // The scans start anew, and a crossing of the leg is tracked no more (the follower discards its move)
     trip.sight = {};
     trip.sightMs = 0;
@@ -2342,6 +2352,7 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
     {
         off.stop = stop->stop;
         off.spent = 0;
+        off.refused = 0;
     }
     CrossState const crossing = SettleCrossing(trip, seen, stop, off.entry);
     if (crossing == CrossState::UnderWay)
@@ -2355,7 +2366,50 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
     if (away > DECK_REACH_YARDS)
         return OffStep::Deck;
     TravelCrossing::Move const move = TravelCrossing::MoveOf(row, TravelCrossing::Direction::Leave, away);
-    return HasTimeFor(trip, *stop, move, seen.nowMs) ? OffStep::Disembark : OffStep::Wait;
+    if (!HasTimeFor(trip, *stop, move, seen.nowMs))
+        return OffStep::Wait;
+    off.crossed = true;
+    return OffStep::Disembark;
+}
+
+// PA76 (G414): the bound of a rider that cannot get off. A get-off given up after every leaving row of a stop was
+// refused by the deck path, with no crossing issued, counts; one from where the last counted (within
+// STRANDED_MOVE_YARDS) adds to it, any other end (ashore, lost, a crossing tried, a give-up by time alone) starts anew.
+// After STRANDED_GIVE_UPS in a row the bot takes the player's way out, its hearthstone (DP.5; no hop, snap or
+// teleport, WT.53), cast at the stop right after its rows there were refused again (off.boxed grew on this tick): a
+// cooling stone waits for the next such moment, a missing one gets nothing. The glue calls it on every get-off tick
+// after StepOffFirst and the deck walk (boxedBefore: off.boxed before them); O(1)
+constexpr std::uint8_t STRANDED_GIVE_UPS = 2;
+constexpr float STRANDED_MOVE_YARDS = 2.0f;
+
+inline StrandedExit StrandedStep(Stranded& stranded, OffFirst const& off, OffStep step, std::uint8_t boxedBefore,
+                                 TravelLifecycle::Point const& offset, Stone stone)
+{
+    bool const here = stranded.guid == off.guid && OffsetYards(offset, stranded.offset) <= STRANDED_MOVE_YARDS;
+    if (step == OffStep::Off || step == OffStep::Lost || step == OffStep::GiveUp)
+    {
+        if (step != OffStep::GiveUp || !off.boxed || off.crossed)
+            stranded = {};
+        else if (!here)
+            stranded = {off.guid, {offset.X, offset.Y, offset.Z}, 1, false};
+        else if (stranded.giveUps < STRANDED_GIVE_UPS)
+            ++stranded.giveUps;
+        return StrandedExit::None;
+    }
+    if (off.boxed == boxedBefore || off.crossed || !here || stranded.giveUps < STRANDED_GIVE_UPS ||
+        stone == Stone::Cooling)
+        return StrandedExit::None;
+    return stone == Stone::Ready ? StrandedExit::Hearth : StrandedExit::Missing;
+}
+
+// The exit's row, `Transport stranded_hearth`: 1 the cast began (each one; the stone's cooldown spaces them), 0 it did
+// not (no stone, or the core refused it), once
+inline void NoteStrandedExit(Trip& trip, Stranded& stranded, bool cast)
+{
+    if (!cast && stranded.told)
+        return;
+    stranded.told = stranded.told || !cast;
+    trip.transportNotes.push_back({TransportEvent::StrandedHearth, trip.offFirst.entry, cast ? 1u : 0u});
 }
 
 // The trip's next step: finished legs are passed (at most LEGS_PER_TICK), then the current leg's step; Arrived after

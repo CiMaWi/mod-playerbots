@@ -82,7 +82,8 @@ enum class FailReason : std::uint8_t
 // the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period).
 // The sources that name a stored crossing row (cross, crossed, cross_failed, cross_cut, no_crossing) carry
 // TravelCrossing::EventAmount: stop * 100 + direction * 10 + seq; place = 1 taken, 0 stayed; off_deck = tenths of a
-// yard; fight = seconds fought aboard; left = seconds since its off_first
+// yard; fight = seconds fought aboard; left = seconds since its off_first; stranded_hearth = 1 the hearthstone's cast
+// began, 0 it did not (no stone, or the core refused the cast)
 enum class TransportEvent : std::uint8_t
 {
     Attempt,  // the bot reached its first row's dock point
@@ -104,7 +105,8 @@ enum class TransportEvent : std::uint8_t
     OffDeck,        // a deck move ended off the vessel's mesh (the corner-cut watch)
     Fight,          // the leg ended after a fight aboard
     FollowTimeout,  // a follower's owed ride ran out of the wait clock (WT70e)
-    Left            // ashore after a get-off without a trip (PA39b, DecideVesselLeave)
+    Left,           // ashore after a get-off without a trip (PA39b, DecideVesselLeave)
+    StrandedHearth  // PA76 (G414): a rider that cannot get off takes its hearthstone (StrandedStep)
 };
 
 // A Transport event for the follower to send (Trip::transportNotes)
@@ -234,6 +236,36 @@ struct OffFirst
     // WT70c: the stop (its number) the vessel stood at last, and that stop's leaving rows spent (another stop: 0 again)
     std::uint32_t stop{TravelCrossing::NO_STOP};
     std::uint8_t spent{0};
+    // PA76 (G414): that stop's rows spent by a refused deck path, the stops whose rows were all refused so, and whether
+    // a crossing was issued on this get-off (StrandedStep)
+    std::uint8_t refused{0};
+    std::uint8_t boxed{0};
+    bool crossed{false};
+};
+
+// PA76 (G414): a rider that cannot get off. The get-offs given up in a row with every leaving row of a stop refused
+// by the deck path and no crossing issued, from one place aboard (StrandedStep); memory only, across trips
+struct Stranded
+{
+    std::uint64_t guid{0};
+    TravelCrossing::Spot offset{};
+    std::uint8_t giveUps{0};
+    bool told{false};  // the exit's row for a cast that did not begin was written
+};
+
+// The hearthstone as the bound sees it: ready, cooling (or a cast under way), missing (or a test's nohearth)
+enum class Stone : std::uint8_t
+{
+    Ready,
+    Cooling,
+    Missing
+};
+
+enum class StrandedExit : std::uint8_t
+{
+    None,
+    Hearth,  // cast the hearthstone now
+    Missing  // the exit is due but there is no stone: nothing is done (its row once, NoteStrandedExit)
 };
 
 // A route's legs and the follower's place on them

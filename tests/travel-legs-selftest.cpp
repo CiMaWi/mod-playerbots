@@ -3696,6 +3696,142 @@ void CheckVesselLeave()
     Check(std::string(TravelLegs::TransportSource(TransportEvent::Left)) == "left", "vessel leave: the word left");
 }
 
+// PA76 (G414): a rider whose every leaving row is refused by the deck path while it has not moved on the vessel
+// leaves that state by one defined exit, its hearthstone, within a bounded number of give-ups; a rider that crosses,
+// moves, or merely runs out of time is never touched. Driven as the glue (GetOffFirst) drives it: each tick
+// StepOffFirst, the deck walk's answer (RowRefused where the path is refused), then StrandedStep
+void CheckStranded()
+{
+    using TravelLegs::BeginOffFirst;
+    using TravelLegs::OffStep;
+    using TravelLegs::StepOffFirst;
+    using TravelLegs::Stone;
+    using TravelLegs::StrandedExit;
+    using TravelLegs::TransportEvent;
+
+    TravelLegs::Stranded rider;
+    struct Tick
+    {
+        OffStep step;
+        StrandedExit exit;
+    };
+    auto const tick = [&rider](Trip& trip, Observation const& seen, bool refuse, Stone stone)
+    {
+        std::uint8_t const boxed = trip.offFirst.boxed;
+        OffStep const step = StepOffFirst(trip, seen);
+        if (step == OffStep::Deck && refuse)
+            TravelLegs::RowRefused(trip, seen);
+        return Tick{step, TravelLegs::StrandedStep(rider, trip.offFirst, step, boxed, seen.offset, stone)};
+    };
+    // One get-off begun at t0 (a period of 300 s): stop B stands, its two leaving rows are walked for from `at`
+    // (refused or not), the period ends. exit: the bound's answer at the stop; end: the give-up's step
+    struct Run
+    {
+        Trip trip;
+        StrandedExit exit{StrandedExit::None};
+        OffStep end{OffStep::Wait};
+    };
+    auto const getOff = [&tick](std::uint32_t t0, TravelLifecycle::Point at, bool refuse, Stone stone = Stone::Ready)
+    {
+        Run run;
+        BeginOffFirst(run.trip, SHIP, VESSEL, 300000, t0);
+        for (Observation const& seen : {GetOff(t0 + 1000, at, &STOP_B, Docked(STOP_B, 250000)),
+                                        GetOff(t0 + 1500, at, &STOP_B), GetOff(t0 + 2000, at, &STOP_B)})
+        {
+            StrandedExit const exit = tick(run.trip, seen, refuse, stone).exit;
+            if (exit != StrandedExit::None)
+                run.exit = exit;
+        }
+        run.end = tick(run.trip, GetOff(t0 + 300001, at, &STOP_B), false, stone).step;
+        return run;
+    };
+    auto const strandedRows = [](Trip const& trip)
+    {
+        return std::count_if(trip.transportNotes.begin(), trip.transportNotes.end(),
+                             [](TravelLegs::TransportNote const& note)
+                             { return note.event == TransportEvent::StrandedHearth; });
+    };
+    constexpr std::uint32_t P = 301001;  // one get-off's span: the next begins right after its give-up
+
+    // (a) every row refused twice from one place: the third get-off's refusals at the stop take the hearthstone
+    Run const first = getOff(1000, PLACE, true);
+    Check(first.exit == StrandedExit::None && first.end == OffStep::GiveUp && rider.giveUps == 1 &&
+              Words(first.trip) == "off_first,cross_failed,cross_failed,stuck_aboard" && first.trip.offFirst.boxed == 1,
+          "stranded: a period with both rows refused: given up, counted once, no exit yet");
+    Run const second = getOff(1000 + P, PLACE, true);
+    Check(second.exit == StrandedExit::None && second.end == OffStep::GiveUp && rider.giveUps == 2,
+          "stranded: the second such period: counted twice; the exit waits for the stop's next refusals");
+    Run third = getOff(1000 + 2 * P, PLACE, true);
+    Check(third.exit == StrandedExit::Hearth, "stranded: then its rows refused again at the stop: the hearthstone");
+    TravelLegs::NoteStrandedExit(third.trip, rider, true);
+    Check(Last(third.trip, TransportEvent::StrandedHearth, SHIP, 1) &&
+              std::string(TravelLegs::TransportSource(TransportEvent::StrandedHearth)) == "stranded_hearth",
+          "stranded: the exit's row, stranded_hearth 1 (the cast began)");
+    Trip home;
+    BeginOffFirst(home, SHIP, VESSEL, 300000, 5000);
+    Check(tick(home, Seen(PIER_B, 6000, Gone()), false, Stone::Ready).step == OffStep::Lost && !rider.giveUps,
+          "stranded: the stone took it off (membership lost): the count ends");
+
+    // (b) one period refused, then a crossing tried at the next: never touched
+    rider = {};
+    getOff(1000, PLACE, true);
+    Trip tried;
+    BeginOffFirst(tried, SHIP, VESSEL, 300000, 1000 + P);
+    Observation const stands = GetOff(4000 + P, PLACE, &STOP_B, Docked(STOP_B, 250000));
+    Observation const atSecond = GetOff(6000 + P, DECK_B1, &STOP_B);
+    bool const crossTried = tick(tried, stands, true, Stone::Ready).step == OffStep::Deck &&
+                            tick(tried, atSecond, false, Stone::Ready).step == OffStep::Disembark;
+    TravelLegs::CrossIssued(tried, atSecond);
+    tick(tried, With(GetOff(7000 + P, DECK_B1, &STOP_B, Docked(STOP_B, 253000)), Passenger::Cancelled), false,
+         Stone::Ready);
+    Check(crossTried &&
+              tick(tried, GetOff(301002 + P, DECK_B1, &STOP_B), false, Stone::Ready).step == OffStep::GiveUp &&
+              !rider.giveUps && getOff(1000 + 2 * P, PLACE, true).exit == StrandedExit::None && rider.giveUps == 1,
+          "stranded: a crossing tried (then cancelled) ends the count; the next refused period counts from one");
+
+    // (c) give-ups by time alone (a car's short stand, a stop never stood at): never counted
+    rider = {};
+    Run const timeOne = getOff(1000, PLACE, false);
+    Run const timeTwo = getOff(1000 + P, PLACE, false);
+    Run const thenRefused = getOff(1000 + 2 * P, PLACE, true);
+    Check(timeOne.end == OffStep::GiveUp && timeTwo.end == OffStep::GiveUp && !timeTwo.trip.offFirst.boxed &&
+              thenRefused.exit == StrandedExit::None && rider.giveUps == 1,
+          "stranded: two give-ups by time without a refused row count nothing; the refused one after them counts one");
+
+    // (d) the bot moved between two give-ups: the count starts again at its new place
+    rider = {};
+    TravelLifecycle::Point const moved{-4.0f, 7.0f, 1.0f};  // 5 yd from PLACE
+    getOff(1000, PLACE, true);
+    Run const elsewhere = getOff(1000 + P, moved, true);
+    Check(elsewhere.exit == StrandedExit::None && rider.giveUps == 1 && rider.offset.y == 7.0f,
+          "stranded: refused from another place: counted from one there");
+    Check(getOff(1000 + 2 * P, moved, true).exit == StrandedExit::None && rider.giveUps == 2 &&
+              getOff(1000 + 3 * P, moved, true).exit == StrandedExit::Hearth &&
+              getOff(1000 + 4 * P, PLACE, true).exit == StrandedExit::None,
+          "stranded: two there, then the exit there; refused from the first place again: no exit");
+
+    // (e) a cooling stone (or a cast under way): waits aboard, the next stop's refusals cast it
+    rider = {};
+    getOff(1000, PLACE, true);
+    getOff(1000 + P, PLACE, true);
+    Run cooling = getOff(1000 + 2 * P, PLACE, true, Stone::Cooling);
+    Check(cooling.exit == StrandedExit::None && !strandedRows(cooling.trip) && rider.giveUps == 2 &&
+              getOff(1000 + 3 * P, PLACE, true).exit == StrandedExit::Hearth,
+          "stranded: the stone cools: no cast, no row; the next stop's refusals with the stone ready: the hearthstone");
+
+    // (f) no stone: nothing is done, its row once, never a cast
+    rider = {};
+    getOff(1000, PLACE, true);
+    getOff(1000 + P, PLACE, true);
+    Run bare = getOff(1000 + 2 * P, PLACE, true, Stone::Missing);
+    TravelLegs::NoteStrandedExit(bare.trip, rider, false);
+    Run bareAgain = getOff(1000 + 3 * P, PLACE, true, Stone::Missing);
+    TravelLegs::NoteStrandedExit(bareAgain.trip, rider, false);
+    Check(bare.exit == StrandedExit::Missing && Last(bare.trip, TransportEvent::StrandedHearth, SHIP, 0) &&
+              bareAgain.exit == StrandedExit::Missing && !strandedRows(bareAgain.trip),
+          "stranded: no stone: no cast; stranded_hearth 0 once, not again at the next period");
+}
+
 // G411: who stays on foot (TravelKeepsOnFoot's rule, TravelLegs::KeepsOnFoot) is one rule for every status: an
 // errand's tame or stable visit is one reason among the get-offs and the transport leg, not the errand's only answer
 void CheckTravelOnFoot()
@@ -4184,6 +4320,7 @@ int main()
     CheckOffFirst();
     CheckDeckContact();
     CheckVesselLeave();
+    CheckStranded();
     CheckTravelOnFoot();
     CheckTravelUpkeep();
     CheckNextDeadline();

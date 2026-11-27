@@ -7,9 +7,11 @@
 #ifndef PLAYERBOTS_TESTORDERS_H
 #define PLAYERBOTS_TESTORDERS_H
 
+#include <optional>
 #include <string>
 
 #include "Define.h"
+#include "TravelCrossingTypes.h"
 #include "TravelMgr.h"
 
 class Player;
@@ -35,6 +37,8 @@ struct TravelOrder
     std::string status;    // `route start` (WT64e, TestOrderStatus.h): the status word to start at dest; empty = none
     uint32 entry{0};       // what it needs besides the place (quest, vendor, trainer, flight master, node, point)
     bool flush{false};  // `route flush` (WT64e): the bot's MeshMiss rows written now, not at the travel block's flush
+    // `route aboard <bot> <entry> x y z` (PA76): the offset on the deck to stand the bot at; none: by the first row
+    std::optional<TravelCrossing::Spot> aboardAt;
 };
 
 namespace TravelOrders
