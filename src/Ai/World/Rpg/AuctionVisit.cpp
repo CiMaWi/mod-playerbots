@@ -282,17 +282,37 @@ void MarkEntryTried(Player* bot, uint32 entry, std::vector<uint32>& tried)
         tried.push_back(same->GetGUID().GetCounter());
 }
 
-// The units of a bag stack the visit lists (StockUnits): those beyond the units the kept skill path uses of its entry,
-// the whole stack of an entry it does not use (auction house WA7b). Read now, so a stack a craft used since the keeps'
-// refresh never gives up the path's units
-uint32 ListUnits(PlayerbotAI* botAI, Item const* item)
+// The units of a bag stack the visit lists (StockUnits): those beyond its claim of the kept skill path's use, claimed
+// over the entry's plain bag stacks as the keeps claim them (ClaimPathUnits), the stacks the visit already tried first;
+// the whole stack of an entry the path does not use (auction house WA7b). Read now, so a stack a craft used since the
+// keeps' refresh never gives up the path's units
+uint32 ListUnits(PlayerbotAI* botAI, Item const* item, std::vector<uint32> const& tried)
 {
-    KeepItemIn keep;
-    keep.count = item->GetCount();
     SkillPath::Path const* const path = Planner::KeptPath(botAI);
-    if (SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, item->GetEntry()) : nullptr)
-        keep.materialUsed = material->used;
-    return StockUnits(keep);
+    SkillPath::Material const* const material = path ? SkillPath::MaterialOf(*path, item->GetEntry()) : nullptr;
+    std::vector<BankItemIn> bags;
+    std::vector<BankItemIn> bank;
+    FirstBagItem(botAI->GetBot(),
+                 [&](Item* other)
+                 {
+                     Bag const* const held = other->GetContainer();
+                     if (other->GetEntry() != item->GetEntry() ||
+                         (held && held->GetTemplate()->SubClass != ITEM_SUBCLASS_CONTAINER))
+                         return false;
+                     BankItemIn& stack = bags.emplace_back();
+                     stack.bag = other->GetBagSlot();
+                     stack.slot = other->GetSlot();
+                     stack.item.itemGuid = other->GetGUID().GetCounter();
+                     stack.item.entry = other->GetEntry();
+                     stack.item.count = other->GetCount();
+                     stack.item.materialUsed = material ? material->used : 0;
+                     return false;
+                 });
+    ClaimPathUnits(bags, bank, tried);
+    for (BankItemIn const& stack : bags)
+        if (stack.item.itemGuid == item->GetGUID().GetCounter())
+            return StockUnits(stack.item);
+    return 0;
 }
 
 // The ask for the stack's listed units at this house (PLAN 3.4): its fees, the index's evidence (the cheapest competing
@@ -508,7 +528,7 @@ VisitTurn AwaitListing(PlayerbotAI* botAI, Player* bot)
         AuctionWords::Reason const reason =
             visit.relist ? AuctionWords::Reason::Expired : AuctionWords::Reason::AboveVendor;
         WriteRow(bot, visit.relist ? AuctionWords::Choice::Relist : AuctionWords::Choice::Post, reason, visit.ask,
-                 visit.floor, deposit, visit.awaitingEntry, left ? ListUnits(botAI, left) : 0);
+                 visit.floor, deposit, visit.awaitingEntry, left ? ListUnits(botAI, left, visit.tried) : 0);
         WriteChanceRow(bot, reason, visit.chance, visit.hours, visit.awaitingEntry);
     }
     else
@@ -686,8 +706,8 @@ VisitTurn ListNext(PlayerbotAI* botAI, Player* bot)
 
     while (Item* item = NextStock(botAI, bot, visit.tried))
     {
+        uint32 const units = ListUnits(botAI, item, visit.tried);
         visit.tried.push_back(item->GetGUID().GetCounter());
-        uint32 const units = ListUnits(botAI, item);
         AuctionRules::AskResult const ask = AskFor(bot, item, units, static_cast<uint8>(house->houseId));
         bool const lists = units && ask.kind == AuctionRules::AskResult::Kind::List;
         uint32 const minutes = ask.hours * MINUTES_PER_HOUR;
