@@ -355,18 +355,21 @@ inline bool UsesPlaces(FieldMap const& map, Need const& need)
                         [&map](NeedSource const& source) { return !map.CellsOf(source.kind, source.entry).empty(); });
 }
 
-// Every open objective of the log as a need, and a ready quest as its hand-in. A quest the capability table refuses for
-// the bot's side gives none; a slot of a quest the index lacks is passed over. WQ38: a listed quest gives none, its
-// hand-in neither; an elite, group or instance quest gives a bot alone (groupSize 1 or less) no objective need and
-// waits in the log, its ready hand-in, which a lone bot can do, stays
+// What a held quest is worth (WQ34, decision WQ.46; the log keeps it until it is grey): every open objective of the log
+// as a need, and a ready quest as its hand-in. A given-up quest (givenUp, sorted: QuestLog::Record::givenUp, a failed
+// hand-in too) gives none, its hand-in neither. A ready quest gives its hand-in, whatever its kind: a lone bot can hand
+// in what it holds complete. Of an open quest none: one the capability table refuses for the bot's side, a listed one
+// (WQ38) and an elite, group or instance quest for a bot alone (groupSize 1 or less). A slot of a quest the index
+// lacks is passed over
 inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot const> log, std::uint8_t team,
-                               Pricing const& pricing, std::uint32_t groupSize)
+                               Pricing const& pricing, std::uint32_t groupSize,
+                               std::span<std::uint32_t const> givenUp = {})
 {
     std::vector<Need> needs;
     for (QuestSlot const& slot : log)
     {
         QuestRecord const* quest = slot.quest ? index.Find(slot.quest) : nullptr;
-        if (!quest || RefusedFor(*quest, team) || Listed(*quest))
+        if (!quest || Take::Holds(givenUp, quest->id))
             continue;
         QuestShares const shares = SharesOf(*quest, pricing);
         if (slot.state & Circuit::SLOT_COMPLETE)
@@ -379,7 +382,8 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
             needs.push_back(std::move(need));
             continue;
         }
-        if ((quest->flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) && groupSize <= 1)
+        if (RefusedFor(*quest, team) || Listed(*quest) ||
+            ((quest->flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) && groupSize <= 1))
             continue;
         for (std::uint32_t at = 0; at < QuestExec::ObjectiveCount(*quest); ++at)
         {

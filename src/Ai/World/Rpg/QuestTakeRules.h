@@ -26,8 +26,6 @@ namespace Planner
 {
 namespace Take
 {
-constexpr std::uint32_t GREY_DIFF = 4;        // a quest this many levels below the bot is grey: the core's
-                                              // Quests.LowLevelHideDiff default; the server passes its own value
 constexpr std::int32_t MAX_LEVELS_ABOVE = 3;  // QUEST_MAX_LEVELS_ABOVE_BOT (QuestLevelRules.h), as today
 constexpr std::uint16_t INSTANCE_FLAGS = QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP;
 constexpr std::uint16_t GROUP_FLAGS = QuestFlag::ELITE | QuestFlag::GROUP;
@@ -62,7 +60,6 @@ struct Facts
 {
     std::uint8_t race{0};  // its side, for the executor's refusals
     std::uint8_t level{0};
-    std::uint32_t greyDiff{GREY_DIFF};
     bool eliteGroup{false};  // elite and group quests allowed (the circuit: the bot is in a group)
     std::span<std::uint32_t const> rewarded;
     std::span<std::uint32_t const> inLog;
@@ -82,9 +79,24 @@ inline std::int32_t QuestLevel(QuestRecord const& quest, std::uint8_t botLevel)
     return quest.level > 0 ? quest.level : static_cast<std::int32_t>(botLevel);
 }
 
-inline bool IsGrey(QuestRecord const& quest, std::uint8_t level, std::uint32_t greyDiff)
+// The game's grey level of a bot of this level: a copy of Acore::XP::GetGrayLevel (Formulas.h)
+constexpr std::int32_t GrayLevel(std::uint8_t level)
 {
-    return static_cast<std::int32_t>(level) > QuestLevel(quest, level) + static_cast<std::int32_t>(greyDiff);
+    std::int32_t const own = level;
+    if (own <= 5)
+        return 0;
+    if (own <= 39)
+        return own - 5 - own / 10;
+    if (own <= 59)
+        return own - 1 - own / 5;
+    return own - 9;
+}
+
+// Grey by the game's colour line, the one line of the log's accept and drop (WQ34, WQ.46 item 3): at or below the
+// bot's grey level. A quest without a level is of the bot's own and never grey
+inline bool IsGrey(QuestRecord const& quest, std::uint8_t level)
+{
+    return quest.level > 0 && quest.level <= GrayLevel(level);
 }
 
 // The plan's own rules, without the game's answer: the circuit asks these alone of a quest its own turn-ins unlock,
@@ -105,7 +117,7 @@ inline std::optional<Reason> Own(QuestRecord const& quest, Facts const& bot)
         return Reason::Unsupported;
     if (QuestLevel(quest, bot.level) > static_cast<std::int32_t>(bot.level) + MAX_LEVELS_ABOVE)
         return Reason::TooHigh;
-    if (IsGrey(quest, bot.level, bot.greyDiff))
+    if (IsGrey(quest, bot.level))
         return Reason::Grey;
     if (quest.flags & INSTANCE_FLAGS)
         return Reason::Kind;

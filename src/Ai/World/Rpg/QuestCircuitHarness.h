@@ -199,15 +199,14 @@ inline double Percentile(std::vector<double> values, double share)
 }
 
 // Whether a taken quest is one the bot may take: limits, levels, solo rules (the real-data check)
-inline bool FitsBot(QuestRecord const& quest, Snapshot const& bot, std::uint32_t greyDiff)
+inline bool FitsBot(QuestRecord const& quest, Snapshot const& bot)
 {
     std::int32_t const level = Circuit::QuestLevel(quest, bot.level);
     bool const solo = bot.groupSize <= 1;
     return Eligible(quest, bot.race, bot.cls, bot.level) &&
            level <= static_cast<std::int32_t>(bot.level) + Circuit::MAX_LEVELS_ABOVE &&
-           static_cast<std::int32_t>(bot.level) <= level + static_cast<std::int32_t>(greyDiff) &&
-           !(quest.flags & Circuit::INSTANCE_FLAGS) && !(quest.flags & Circuit::REPEAT_FLAGS) &&
-           !(solo && (quest.flags & Circuit::GROUP_FLAGS));
+           !Take::IsGrey(quest, bot.level) && !(quest.flags & Circuit::INSTANCE_FLAGS) &&
+           !(quest.flags & Circuit::REPEAT_FLAGS) && !(solo && (quest.flags & Circuit::GROUP_FLAGS));
 }
 
 // The bot after the plan's loop, standing at the camp it moves on to: abandons and turn-ins leave the log, the turn-ins
@@ -342,7 +341,7 @@ inline Report RunScenario(Scenario const& input, std::uint32_t timingRuns)
     for (CircuitTake const& take : plan.take)
     {
         QuestRecord const* record = quests.Find(take.quest);
-        if (!record || !FitsBot(*record, scenario.bot, scenario.context.greyDiff))
+        if (!record || !FitsBot(*record, scenario.bot))
         {
             fits = false;
             misfits += " " + std::to_string(take.quest);

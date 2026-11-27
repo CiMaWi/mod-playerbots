@@ -50,6 +50,7 @@
 #include "QuestFailRecord.h"
 #include "QuestFieldExec.h"
 #include "QuestGiveUp.h"
+#include "QuestLogRules.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
 #include "Random.h"
@@ -814,5 +815,5 @@ bool NewRpgInternal::EndQuestAtStart(PlayerbotAI* botAI, Player* bot)
 
 std::vector<uint32> NewRpgInternal::GivenUpQuests(Player* bot)
 {
-    return QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), Planner::ClassQuests::GIVE_UP_LIMIT);
+    return Planner::QuestLog::Read(QuestFailRecord::RowsOf(bot->GetGUID().GetCounter())).givenUp;
 }

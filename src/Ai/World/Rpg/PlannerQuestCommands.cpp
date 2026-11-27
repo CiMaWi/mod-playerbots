@@ -243,12 +243,11 @@ bool CircuitStart(QuestIndex const& quests, CircuitPlace const& place, Place& st
 
 // The synthetic bot's history: every quest grey for its level, as a bot that levelled through the world has done
 // (prerequisites of the hub's chains met; the grey ones skipped either way), ascending as the index
-std::vector<uint32> GreyHistory(QuestIndex const& quests, uint8 level, uint32 greyDiff)
+std::vector<uint32> GreyHistory(QuestIndex const& quests, uint8 level)
 {
     std::vector<uint32> ids;
     for (QuestRecord const& quest : quests.quests)
-        if (quest.level > 0 &&
-            static_cast<int32>(level) > Circuit::QuestLevel(quest, level) + static_cast<int32>(greyDiff))
+        if (Take::IsGrey(quest, level))
             ids.push_back(quest.id);
     return ids;
 }
@@ -269,7 +268,7 @@ std::vector<uint32> HubQuests(QuestIndex const& quests, Place const& at)
 // cannot do from the hub), grey for its level or not, never a repeatable, elite, group, instance or exclusive quest,
 // and none that a hub quest names (prerequisite, breadcrumb), so the hub offers what it offers to an empty log
 std::vector<uint32> FarQuests(QuestIndex const& quests, CircuitPlace const& place, std::vector<uint32> const& hub,
-                              uint32 greyDiff, bool grey, std::size_t count)
+                              bool grey, std::size_t count)
 {
     std::vector<uint32> named;
     for (uint32 const id : hub)
@@ -283,8 +282,7 @@ std::vector<uint32> FarQuests(QuestIndex const& quests, CircuitPlace const& plac
     {
         if (ids.size() >= count)
             break;
-        bool const isGrey =
-            static_cast<int32>(place.level) > Circuit::QuestLevel(quest, place.level) + static_cast<int32>(greyDiff);
+        bool const isGrey = Take::IsGrey(quest, place.level);
         bool const above =
             Circuit::QuestLevel(quest, place.level) > static_cast<int32>(place.level) + Circuit::MAX_LEVELS_ABOVE;
         if (quest.level <= 0 || isGrey != grey || above || quest.exclusiveGroup ||
@@ -1162,7 +1160,7 @@ bool RunCircuitHarness(ChatHandler* handler)
         // An empty log at the hub after a levelled bot's history: most fitting quests taken, only fitting ones, the log
         // within its limit, one turn-in batch
         CircuitHarness::Scenario scenario{place.name, CircuitBot(place, start), context, {}};
-        scenario.bot.rewardedQuests = GreyHistory(quests, place.level, data.greyDiff);
+        scenario.bot.rewardedQuests = GreyHistory(quests, place.level);
         CircuitHarness::Report const report = CircuitHarness::RunScenario(scenario, CIRCUIT_TIMING_RUNS);
         AddChecks(checks, report.checks);
         AddPlanLines(plans, scenario.name, report);
@@ -1191,8 +1189,8 @@ bool RunCircuitHarness(ChatHandler* handler)
         // A full log of quests from another map and a grey one: the grey one goes, far ones make room for every quest
         // the empty log took to work here (a delivery only when worth more than the far quests it pushes out, so it
         // may wait for log space), a protected far one stays
-        std::vector<uint32> const fillers = FarQuests(quests, place, hub, data.greyDiff, false, QUEST_LOG_SLOTS - 1);
-        std::vector<uint32> const grey = FarQuests(quests, place, hub, data.greyDiff, true, 1);
+        std::vector<uint32> const fillers = FarQuests(quests, place, hub, false, QUEST_LOG_SLOTS - 1);
+        std::vector<uint32> const grey = FarQuests(quests, place, hub, true, 1);
         bool const fixture = fillers.size() == QUEST_LOG_SLOTS - 1 && grey.size() == 1;
         checks.push_back({fixture, Acore::StringFormat("{}-full-log: {} far quests and {} grey one fill the log",
                                                        scenario.name, fillers.size(), grey.size())});
@@ -1283,9 +1281,8 @@ bool RunCircuitHarness(ChatHandler* handler)
     }
     for (std::string const& line : plans)
         handler->PSendSysMessage("{}", line);
-    std::string const summary =
-        Acore::StringFormat("PLANNER circuit selftest: {}, {} checks, {} failed, in {} ms (grey difference {})",
-                            failed ? "FAIL" : "PASS", checks.size(), failed, MsSince(started), data.greyDiff);
+    std::string const summary = Acore::StringFormat("PLANNER circuit selftest: {}, {} checks, {} failed, in {} ms",
+                                                    failed ? "FAIL" : "PASS", checks.size(), failed, MsSince(started));
     handler->PSendSysMessage("{}", summary);
     LOG_INFO("playerbots", "{}", summary);
     return !failed;
@@ -1420,7 +1417,7 @@ bool RunGoalsHarness(ChatHandler* handler)
                 continue;
             }
             Snapshot bot = CircuitBot(place, start);
-            bot.rewardedQuests = GreyHistory(*data.quests, place.level, data.greyDiff);
+            bot.rewardedQuests = GreyHistory(*data.quests, place.level);
             TakeFixture::Answer(bot, *data.quests);
             bot.money = GOALS_FLUSH;
             Goals::GoalPlan const flush = Goals::PlanGoals(bot, context, GoalsSituation(bot, start));

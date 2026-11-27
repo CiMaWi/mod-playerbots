@@ -75,6 +75,7 @@ struct Ask
     float runSpeed{0.0f};  // yards per second; 0: Circuit::DEFAULT_RUN_SPEED
     float caution{1.0f};   // the planner's caution weight; 1 is neutral
     std::uint8_t groupSize{0};
+    std::span<std::uint32_t const> givenUp;  // sorted: the bot's given-up quests, which give no need (WQ34)
     float stayMinutes{STAY_MINUTES};
     float radius{QuestFields::FIELD_WALK_YARDS};  // a stop lies within this many straight yards of the one before
     float horizonMinutes{HORIZON_MINUTES};
@@ -234,7 +235,8 @@ inline std::vector<QuestFields::Need> NeedsOf(QuestIndex const& index, Ask const
     QuestSlot slot;
     slot.quest = quest;
     slot.state = ready ? Circuit::SLOT_COMPLETE : 0;
-    return QuestFields::Needs(index, std::span<QuestSlot const>(&slot, 1), ask.team, ask.pricing, ask.groupSize);
+    return QuestFields::Needs(index, std::span<QuestSlot const>(&slot, 1), ask.team, ask.pricing, ask.groupSize,
+                              ask.givenUp);
 }
 
 // Register row G344: the best candidate around the bot's own cell that hands in a ready quest whose ender stands in

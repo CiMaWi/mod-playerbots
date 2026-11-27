@@ -12,6 +12,8 @@
 
 #include "Creature.h"
 #include "DBCStores.h"
+#include "Formulas.h"
+#include "GameEventMgr.h"
 #include "GameObject.h"
 #include "GossipDef.h"
 #include "NewRpgInfo.h"
@@ -24,7 +26,6 @@
 #include "QuestDef.h"
 #include "QuestFailRecord.h"
 #include "QuestFields.h"
-#include "QuestIndex.h"
 #include "QuestLevelRules.h"
 #include "QuestLogRules.h"
 #include "TestConstraints.h"
@@ -56,48 +57,61 @@ std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(PlayerbotAI* botAI,
         Planner::QuestLog::Read(QuestFailRecord::RowsOf(bot->GetGUID().GetCounter())));
 }
 
-void OrderTake::Build()
+bool KeepsLogRule(PlayerbotAI* botAI) { return botAI && (OnOrder(botAI) || Planner::Owns(botAI)); }
+
+bool HolidayEnded(Quest const* quest)
 {
-    _built = true;
-    _quests = Planner::Quests();
-    _log.clear();
-    for (uint16 slot = 0; slot < _bot->GetQuestLogSize(); ++slot)
-        if (uint32 const questId = _bot->GetQuestSlotQuestId(slot))
-            _log.push_back(questId);
-    std::sort(_log.begin(), _log.end());
-    RewardedQuestSet const& rewarded = _bot->getRewardedQuests();
-    _rewarded.assign(rewarded.begin(), rewarded.end());
-    std::sort(_rewarded.begin(), _rewarded.end());
-    _givenUp = OrderRecord(GET_PLAYERBOT_AI(_bot), _bot)->givenUp;
+    uint16 const event = quest->GetEventIdForQuest();
+    return event && !sGameEventMgr->IsActiveEvent(event);
 }
 
-bool OrderTake::MayAccept(Quest const* quest)
+Planner::QuestLog::Held LogHeld(Player* bot, Quest const* quest)
+{
+    QuestStatus const status = bot->GetQuestStatus(quest->GetQuestId());
+    return {.id = quest->GetQuestId(),
+            .level = quest->GetQuestLevel(),
+            .ready = status == QUEST_STATUS_COMPLETE,
+            .failed = status == QUEST_STATUS_FAILED,
+            .holidayEnded = HolidayEnded(quest)};
+}
+
+namespace
+{
+// The offer as the one accept reads it; its repeat kinds are the quest index's (PlannerQuests.cpp FlagsOf)
+Planner::QuestLog::Offer OfferOf(Player* bot, Quest const* quest)
+{
+    return {.id = quest->GetQuestId(),
+            .level = quest->GetQuestLevel(),
+            .repeats = quest->IsDaily() || quest->IsWeekly() || quest->IsRepeatable(),
+            .holidayEnded = HolidayEnded(quest),
+            .gameAllows = bot->CanTakeQuest(quest, false)};
+}
+}  // namespace
+
+bool LogAccept::Allows(Quest const* quest)
 {
     if (!_built)
-        Build();
-    Planner::QuestRecord const* record = _quests ? _quests->Find(quest->GetQuestId()) : nullptr;
-    if (!record)
-        return false;
-    // Elite and group quests are refused (WQ.43): the take test's eliteGroup off. The game's answer for this one
-    // quest (WQ41): the core's CanTakeQuest, on the bot's own thread
-    std::uint32_t const id = record->id;
-    std::span<std::uint32_t const> const takeable =
-        _bot->CanTakeQuest(quest, false) ? std::span<std::uint32_t const>(&id, 1) : std::span<std::uint32_t const>();
-    Planner::Take::Facts const facts{.race = _bot->getRace(true),
-                                     .level = static_cast<std::uint8_t>(_bot->GetLevel()),
-                                     .greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF),
-                                     .eliteGroup = false,
-                                     .rewarded = _rewarded,
-                                     .inLog = _log,
-                                     .givenUp = _givenUp,
-                                     .takeable = takeable};
-    return Planner::QuestLog::MayAccept(*record, facts);
+    {
+        _built = true;
+        _grayLevel = Acore::XP::GetGrayLevel(_bot->GetLevel());
+        _givenUp = OrderRecord(GET_PLAYERBOT_AI(_bot), _bot)->givenUp;
+    }
+    Planner::QuestLog::Facts const facts{.grayLevel = _grayLevel, .givenUp = _givenUp};
+    return Planner::QuestLog::Accepts(OfferOf(_bot, quest), facts);
 }
 
-bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest)
+bool LogAccepts(PlayerbotAI* botAI, Player* bot, Quest const* quest)
+{
+    if (!KeepsLogRule(botAI))
+        return true;
+    LogAccept take(bot);
+    return take.Allows(quest);
+}
+
+bool FreeBotTakes(Player* bot, Quest const* quest)
 {
     return bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) && IsQuestWorthDoing(bot, quest) &&
-           IsQuestCapableDoing(bot, quest) && IsQuestPlannerOffered(botAI, bot, quest);
+           IsQuestCapableDoing(bot, quest);
 }
 
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
@@ -178,7 +192,7 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
     return false;
 }
 
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints, OrderTake* take)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints, LogAccept* take)
 {
     ObjectGuid guid = object->GetGUID();
     bot->PrepareQuestMenu(guid);
@@ -198,9 +212,8 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constrain
             return true;
         }
     }
-    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
-    std::optional<OrderTake> own;
-    if (!take && OnOrder(botAI))
+    std::optional<LogAccept> own;
+    if (!take && KeepsLogRule(GET_PLAYERBOT_AI(bot)))
         take = &own.emplace(bot);
     for (uint8 idx = 0; idx < menu.GetMenuItemCount(); idx++)
     {
@@ -209,8 +222,7 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constrain
         if (!quest || bot->GetQuestStatus(item.QuestId) != QUEST_STATUS_NONE)
             continue;
 
-        bool const offered =
-            take ? take->MayAccept(quest) && bot->CanAddQuest(quest, false) : FreeBotTakes(botAI, bot, quest);
+        bool const offered = take ? take->Allows(quest) && bot->CanAddQuest(quest, false) : FreeBotTakes(bot, quest);
         if (offered)
             return TestConstraints::GiverSought(false, true, constraints);
     }
@@ -232,15 +244,6 @@ bool IsQuestWorthDoing(Player* bot, Quest const* quest)
         return false;
 
     return true;
-}
-
-bool IsQuestPlannerOffered(PlayerbotAI* botAI, Player* bot, Quest const* quest)
-{
-    if (!botAI || !Planner::Owns(botAI))
-        return true;
-    std::shared_ptr<Planner::QuestIndex const> const quests = Planner::Quests();
-    Planner::QuestRecord const* record = quests ? quests->Find(quest->GetQuestId()) : nullptr;
-    return !record || !Planner::RefusedFor(*record, static_cast<uint8>(bot->GetTeamId()));
 }
 
 bool IsQuestCapableDoing(Player* bot, Quest const* quest)
@@ -266,10 +269,11 @@ ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
     GuidSet const& ignored = botAI->rpgMemos.ignoredQuestGivers;
     WorldObject* nearestObject = nullptr;
     float nearest = 0.0f;
-    // A bot on an order takes the nearest giver of both caches; one take's facts serve the whole search
+    // A bot on an order takes the nearest giver of both caches; one accept's facts serve the whole search of a bot the
+    // log's rule covers (WQ34)
     bool const onOrder = OnOrder(botAI);
-    std::optional<OrderTake> take;
-    if (onOrder)
+    std::optional<LogAccept> take;
+    if (KeepsLogRule(botAI))
         take.emplace(bot);
 
     for (char const* candidates : {"possible new rpg targets", "possible new rpg game objects"})

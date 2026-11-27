@@ -525,11 +525,11 @@ struct Situation
     std::string shortText;             // "12g 0s 0c short for journeyman riding", for the goal view
     std::uint32_t bagBudgetPercent{BAG_BUDGET_PERCENT};
     // Class quests (upkeep WU20a, §3.11): the governed rule's inputs, from the map thread and the job
-    bool governed{false};                              // the bot keeps its possessions (GoalInterface.h)
-    std::uint32_t levelXp{0};                          // XP from the bot's level to the next
-    std::vector<std::uint32_t> knownClassQuestSpells;  // sorted: the table's spells the bot knows
-    std::vector<std::uint32_t> givenUpQuests;          // sorted: given up GIVE_UP_LIMIT times (WU21a counts them)
-    std::vector<std::uint32_t> trainerTaught;          // sorted: the table's spells the class trainer teaches
+    bool governed{false};                                     // the bot keeps its possessions (GoalInterface.h)
+    std::uint32_t levelXp{0};                                 // XP from the bot's level to the next
+    std::vector<std::uint32_t> knownClassQuestSpells;         // sorted: the table's spells the bot knows
+    std::vector<std::uint32_t> givenUpQuests;                 // sorted: QuestLog::Record::givenUp (WU21a, WQ34)
+    std::vector<std::uint32_t> trainerTaught;                 // sorted: the table's spells the class trainer teaches
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // PlanGoals fills: (quest, bonus XP), sorted
     std::vector<ClassTrip> classTrips;                        // PlanGoals fills: one per bonus quest not in the log
     std::vector<ClassQuests::Due> classFailed;  // PlanGoals fills: the failed doable quests to complete (WU21a)
@@ -1654,7 +1654,7 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
 // A camp gives at least the bracket move's few quests the bot may take now: the take test with the game's answer
 // (Take::May, WQ41), as the circuit asks it. The game's answer also keeps the bot out of the enemy's towns in a
 // contested zone (their quests' race masks)
-inline bool OffersQuests(Snapshot const& bot, QuestIndex const& quests, QuestCamp const& camp, std::uint32_t greyDiff)
+inline bool OffersQuests(Snapshot const& bot, QuestIndex const& quests, QuestCamp const& camp)
 {
     std::vector<std::uint32_t> inLog;
     for (QuestSlot const& slot : bot.quests)
@@ -1663,7 +1663,6 @@ inline bool OffersQuests(Snapshot const& bot, QuestIndex const& quests, QuestCam
     std::sort(inLog.begin(), inLog.end());
     Take::Facts const facts{.race = bot.race,
                             .level = bot.level,
-                            .greyDiff = greyDiff,
                             .eliteGroup = bot.groupSize > 1,
                             .rewarded = bot.rewardedQuests,
                             .inLog = inLog,
@@ -1720,7 +1719,7 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
             static_cast<std::size_t>(std::count(tried.begin(), tried.end(), camp.zoneId)) >= NEXT_ZONE_HUB_TRIES)
             return true;
         ZoneRecord const* zone = indexes.FindZone(camp.zoneId);
-        if (!ZoneOffered(zone, bot.level, bot.team) || !OffersQuests(bot, quests, camp, context.greyDiff))
+        if (!ZoneOffered(zone, bot.level, bot.team) || !OffersQuests(bot, quests, camp))
             return true;  // the bot's own zone fails the bracket
         std::optional<Nearby> const hub = CampHub(camp, indexes);
         if (!hub || std::any_of(situation.hubs.begin(), situation.hubs.end(),
@@ -1915,6 +1914,7 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
             plan.route = buildRoute(bot, context, model, situation);
     }
     situation.route = situation.onCircuit ? nullptr : &plan.route;
+    context.givenUp = situation.givenUpQuests;
     plan.circuit = PlanCircuit(bot, context);
     if (situation.here.hub == NO_HUB)
         situation.here.hub = CircuitHub(plan.circuit, context);

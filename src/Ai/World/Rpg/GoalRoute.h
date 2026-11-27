@@ -80,7 +80,8 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
     Clock::time_point const started = timer ? Clock::now() : Clock::time_point{};
     QuestIndex const& index = *context.quests;
     QuestFields::Pricing const pricing{context.weights, context.unlockBonus};
-    std::vector<QuestFields::Need> needs = QuestFields::Needs(index, bot.quests, bot.team, pricing, bot.groupSize);
+    std::vector<QuestFields::Need> needs =
+        QuestFields::Needs(index, bot.quests, bot.team, pricing, bot.groupSize, situation.givenUpQuests);
 
     std::vector<std::uint32_t> inLog;
     for (QuestSlot const& slot : bot.quests)
@@ -100,13 +101,13 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
     ask.runSpeed = model.runSpeed;
     ask.caution = model.cautionWeight;
     ask.groupSize = bot.groupSize;
+    ask.givenUp = situation.givenUpQuests;
     ask.closed = closed;
     ask.pricing = pricing;
     ask.walk = WalkOf(context.travel, ask.mapId, bot.position.z, cappedWalks);
 
     Take::Facts const facts{.race = bot.race,
                             .level = bot.level,
-                            .greyDiff = context.greyDiff,
                             .eliteGroup = false,
                             .rewarded = bot.rewardedQuests,
                             .inLog = inLog,

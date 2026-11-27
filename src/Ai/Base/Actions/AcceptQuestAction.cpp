@@ -6,11 +6,17 @@
 
 #include "AcceptQuestAction.h"
 #include "Event.h"
+#include "NewRpgHelpers.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 
 bool AcceptAllQuestsAction::ProcessQuest(Quest const* quest, Object* questGiver)
 {
+    // A bot's own accept-all asks the quest log's one accept when the rule covers it (questing WQ34); a master's
+    // "accept" command does not
+    if (!byCommand && !NewRpgHelpers::LogAccepts(botAI, bot, quest))
+        return false;
+
     if (!AcceptQuest(quest, questGiver->GetGUID())) return false;
 
     auto text_quest = ChatHelper::FormatQuest(quest);
@@ -124,7 +130,8 @@ bool AcceptQuestShareAction::Execute(Event event)
         return false;
     }
 
-    if (!bot->CanTakeQuest(qInfo, false))
+    // A bot the quest log's rule covers takes a shared quest the one accept allows (questing WQ34)
+    if (!bot->CanTakeQuest(qInfo, false) || !NewRpgHelpers::LogAccepts(botAI, bot, qInfo))
     {
         // can't take quest
         bot->SetDivider(ObjectGuid::Empty);
@@ -181,7 +188,8 @@ bool ConfirmQuestAction::Execute(Event event)
         return false;
 
     quest = qInfo->GetQuestId();
-    if (!bot->CanTakeQuest(qInfo, false))
+    // A bot the quest log's rule covers joins a party's quest the one accept allows (questing WQ34)
+    if (!bot->CanTakeQuest(qInfo, false) || !NewRpgHelpers::LogAccepts(botAI, bot, qInfo))
     {
         // can't take quest
         // botAI->TellError("quest_cant_take");

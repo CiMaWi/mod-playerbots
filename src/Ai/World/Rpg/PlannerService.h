@@ -174,8 +174,6 @@ struct IdleStep
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The idle pick's candidates (3.19 (5)): a planner bot's fallback the narrow list, the weighted pick the full one
 std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step);
-// The bot's map thread: the quest is on its plan's keep list (OrganizeQuestLog keeps it); false without a plan
-bool KeepsQuest(PlayerbotAI* botAI, std::uint32_t quest);
 // The bot's map thread: of a log quest's points of interest (x, y) the one nearest the plan's tasks for it; -1 = none
 int PlannedPoi(PlayerbotAI* botAI, std::uint32_t quest, std::vector<std::pair<float, float>> const& points);
 // Any thread: the bot (raw guid) pursues an external goal (bridge or group) or its plan is paused: the manager leaves

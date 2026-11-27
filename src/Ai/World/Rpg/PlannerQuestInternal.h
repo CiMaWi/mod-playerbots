@@ -38,7 +38,6 @@ struct CircuitData
     std::shared_ptr<QuestStatsView const> stats;
     std::shared_ptr<CrowdingSnapshot const> crowding;
     std::shared_ptr<FieldMap const> fields;  // WQ13: held by a planner job like the other indexes; WQ14 reads it
-    uint32 greyDiff{Circuit::GREY_DIFF};
 
     // The pointers stay valid while this data (or a copy of its shared pointers) lives; travel: the way's price
     // (a goals job's JobTravel), empty = straight yards
@@ -50,7 +49,6 @@ struct CircuitData
         context.indexes = indexes.get();
         context.stats = stats.get();
         context.crowding = crowding.get();
-        context.greyDiff = greyDiff;
         return context;
     }
 };

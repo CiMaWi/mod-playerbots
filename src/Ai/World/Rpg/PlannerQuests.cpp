@@ -936,7 +936,6 @@ CircuitData CircuitDataNow()
     data.stats = QuestStats();
     data.crowding = Crowding();
     data.fields = FieldsReady() ? Fields() : nullptr;
-    data.greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF);
     return data;
 }
 

@@ -42,7 +42,6 @@ namespace Planner
 namespace Circuit
 {
 // All values are estimates [E] that WT14/WT17 tune
-constexpr std::uint32_t GREY_DIFF = Take::GREY_DIFF;  // the take rules' (QuestTakeRules.h)
 constexpr std::int32_t MAX_LEVELS_ABOVE = Take::MAX_LEVELS_ABOVE;
 constexpr std::size_t LOG_RESERVE = 2;          // free log slots kept, as today's drop pass keeps them
 constexpr float HUB_GIVER_YARDS = 120.0f;       // the quest givers this near the bot make its hub
@@ -170,7 +169,9 @@ struct CircuitContext
     std::vector<std::uint32_t> protectedQuests;  // never abandoned: a group's or the bridge's goal (WT16 fills)
     std::vector<std::pair<std::uint32_t, float>> unlockBonus;  // (quest, bonus XP), sorted: class quests (WU20a)
     std::vector<QuestProgress> progress;
-    std::uint32_t greyDiff{Circuit::GREY_DIFF};
+    // Sorted: the bot's given-up quests (QuestLog::Record::givenUp, a failed hand-in too, WQ34): a held one is never
+    // worked or turned in, it waits in the log until it is grey; none is taken
+    std::vector<std::uint32_t> givenUp;
     TravelCost travel;  // moving on; empty = straight yards at the run speed (same map only)
 };
 
@@ -692,11 +693,10 @@ private:
     {
         Take::Facts const facts{.race = _bot.race,
                                 .level = _bot.level,
-                                .greyDiff = _context.greyDiff,
                                 .eliteGroup = _bot.groupSize > 1,
                                 .rewarded = _rewarded,
                                 .inLog = _logIds,
-                                .givenUp = {},
+                                .givenUp = _context.givenUp,
                                 .takeable = _bot.takeable};
         std::optional<Take::Reason> const why = Take::May(quest, facts);
         if (!why || (*why == Take::Reason::Game && Contains(_unlocked, quest.id)))
@@ -731,7 +731,7 @@ private:
         return false;
     }
 
-    bool IsGrey(QuestRecord const& quest) const { return Take::IsGrey(quest, _bot.level, _context.greyDiff); }
+    bool IsGrey(QuestRecord const& quest) const { return Take::IsGrey(quest, _bot.level); }
 
     // The quest's remaining objectives at their area nearest the hub, its nearest ender and its action time
     Placement Locate(QuestRecord const& quest, QuestSlot const* slot) const
@@ -872,8 +872,13 @@ private:
         return (quest.flags & (GROUP_FLAGS | INSTANCE_FLAGS)) && _bot.groupSize <= 1;
     }
 
-    // WQ38: a listed quest is never worked; it waits in the log as one that needs a group does
-    bool Waits(QuestRecord const& quest) const { return NeedsGroup(quest) || Listed(quest); }
+    // WQ38: a listed quest is never worked; it waits in the log as one that needs a group does. WQ34: so does one the
+    // executor refuses for the bot's side, which the log's accept may take (QuestFields::Needs gives it no need either)
+    bool Waits(QuestRecord const& quest) const
+    {
+        return NeedsGroup(quest) || Listed(quest) || RefusedFor(quest, _bot.team) ||
+               Contains(_context.givenUp, quest.id);
+    }
 
     void Skip(std::uint32_t quest, SkipReason reason) { _plan.skipped.push_back({quest, reason}); }
 
@@ -1049,7 +1054,7 @@ private:
         std::size_t freed = 0;  // complete log quests turned in on a loop from here
         for (LogQuest const& quest : _log)
             if ((quest.slot.state & SLOT_COMPLETE) && !Abandoned(quest.slot.quest) &&
-                TurnsInHere(Locate(*quest.record, &quest.slot)))
+                !Contains(_context.givenUp, quest.slot.quest) && TurnsInHere(Locate(*quest.record, &quest.slot)))
                 ++freed;
         if (wanted.size() <= FreeSlots() + freed)
             return;
@@ -1100,13 +1105,14 @@ private:
     }
 
     // Log quests join the circuit when what is left of them lies in reach and the bot can do it now. A quest with
-    // nothing left to do whose ender is at another hub is carried there, never walked to from here
+    // nothing left to do whose ender is at another hub is carried there, never walked to from here. A given-up quest
+    // never joins (WQ34: it waits in the log until it is grey); a listed or group quest joins only to be handed in
     void AddLogMembers()
     {
         for (LogQuest const& quest : _log)
         {
-            if (Abandoned(quest.slot.quest) || Listed(*quest.record) ||
-                (!(quest.slot.state & SLOT_COMPLETE) && NeedsGroup(*quest.record)))
+            if (Abandoned(quest.slot.quest) || Contains(_context.givenUp, quest.slot.quest) ||
+                (!(quest.slot.state & SLOT_COMPLETE) && Waits(*quest.record)))
                 continue;
             Placement placement = Locate(*quest.record, &quest.slot);
             if (!WorkHere(placement))

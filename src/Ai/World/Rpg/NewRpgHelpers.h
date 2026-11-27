@@ -22,12 +22,12 @@ class WorldObject;
 
 namespace Planner
 {
-class QuestIndex;
 struct QuestOrderRun;
 namespace QuestLog
 {
+struct Held;
 struct Record;
-}
+}  // namespace QuestLog
 }  // namespace Planner
 
 // Quest checks shared by the new RPG actions and values. They encode new RPG questing policy
@@ -40,6 +40,16 @@ constexpr float QUEST_GIVER_SEARCH_DISTANCE = 80.0f;
 // Questing WQ31: the bot's quest executor runs an order (NewRpgInfo::DoQuest::order). O(1)
 bool OnOrder(PlayerbotAI* botAI);
 
+// Questing WQ34 (WQ.46): a bot the quest log's one accept and one drop cover (QuestLogRules.h): on an order, or a
+// planner bot (Planner::Owns). Any other bot (it keeps no possessions, or a test holds its planner) keeps upstream's
+// accept and drop (WQ.39). O(1)
+bool KeepsLogRule(PlayerbotAI* botAI);
+// A holiday's quest (the game's seasonal relation of a game event) whose event is not running. The active events
+// change on the world thread between map updates (World::Update), so a map thread reads them safely. O(1)
+bool HolidayEnded(Quest const* quest);
+// The quest of the bot's log as the one drop reads it (QuestLogRules' Abandon). Map thread
+Planner::QuestLog::Held LogHeld(Player* bot, Quest const* quest);
+
 // Questing WQ18b: the failure record of a bot on an order as the accept and the log upkeep read it (QuestLogRules'
 // Read), kept by the order's run and read again only after a write to the record (QuestFail::Reread): the executor's
 // tick copies no rows and takes no lock. The second form finds the bot's running order; a bot on none reads anew.
@@ -47,48 +57,42 @@ bool OnOrder(PlayerbotAI* botAI);
 std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(Player* bot, Planner::QuestOrderRun& run);
 std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(PlayerbotAI* botAI, Player* bot);
 
-// Questing WQ31 (WQ.40): whether a bot on an order takes a quest a giver offers, QuestLogRules' MayAccept (the one
-// take test) with the game's answer for that quest (CanTakeQuest, WQ41). The facts (the log, the rewarded quests, the
-// failure record) are gathered at the first quest that asks and kept for one search; an accept changes the log, so it
-// calls Reset
-class OrderTake
+// Questing WQ34 (WQ.46): whether a bot KeepsLogRule covers takes a quest, QuestLogRules' Accepts with the game's
+// answer for that quest (CanTakeQuest, WQ41) and its holiday. The facts (the grey level, the failure record) are read
+// at the first quest that asks and kept for the one search or menu; an accept changes none of them. Map thread
+class LogAccept
 {
 public:
-    explicit OrderTake(Player* bot) : _bot(bot) {}
-    OrderTake(OrderTake const&) = delete;
-    OrderTake& operator=(OrderTake const&) = delete;
+    explicit LogAccept(Player* bot) : _bot(bot) {}
+    LogAccept(LogAccept const&) = delete;
+    LogAccept& operator=(LogAccept const&) = delete;
 
-    bool MayAccept(Quest const* quest);
-    void Reset() { _built = false; }
+    bool Allows(Quest const* quest);
 
 private:
-    void Build();
-
     Player* _bot;
     bool _built{false};
-    std::shared_ptr<Planner::QuestIndex const> _quests;
-    std::vector<std::uint32_t> _log;
-    std::vector<std::uint32_t> _rewarded;
+    std::int32_t _grayLevel{0};
     std::vector<std::uint32_t> _givenUp;
 };
 
-// Whether a bot not on an order takes a quest a giver offers: upstream's filter (the game's checks, worth and capable
-// doing) and the planner's capability refusal for a bot it owns
-bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest);
+// The one accept for a single quest outside a giver's menu (a start item, a shared quest, a party's escort, the
+// accept-all action): LogAccept's for a bot KeepsLogRule covers, else nothing more than the caller's own checks
+bool LogAccepts(PlayerbotAI* botAI, Player* bot, Quest const* quest);
+
+// Whether a bot KeepsLogRule does not cover takes a quest a giver offers: upstream's filter (the game's checks, worth
+// and capable doing)
+bool FreeBotTakes(Player* bot, Quest const* quest);
 
 // Player::CanInteractWithQuestGiver without the distance check.
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
-// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test. A bot on an order asks
-// OrderTake (take: the search's, else one of its own), which holds the game's take check (WQ41): a giver offering only
-// takes the game refuses is none to seek, and a planned take left open there is no give-up (QuestFail cannot_take is a
-// giver that does not offer it, WQ18c)
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0, OrderTake* take = nullptr);
+// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test. A bot KeepsLogRule covers
+// asks LogAccept (take: the search's, else one of its own), which holds the game's take check (WQ41): a giver offering
+// only takes the one accept refuses is none to seek, and a planned take left open there is no give-up (QuestFail
+// cannot_take is a giver that does not offer it, WQ18c)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0, LogAccept* take = nullptr);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
-// Questing WT36a: a bot the planner owns takes no quest the executor refuses for its side (the quest index's capability
-// refusal, QuestExecRules.h), at a giver as in its plan; any other bot (it keeps no possessions, or a test holds its
-// planner) keeps upstream's accept
-bool IsQuestPlannerOffered(PlayerbotAI* botAI, Player* bot, Quest const* quest);
 
 // Nearest giver in the new RPG target caches with something to accept or reward, skipping givers
 // the bot gave up on. A distanceLimit of 0 searches the whole cache. A bot not on an order compares only each cache's

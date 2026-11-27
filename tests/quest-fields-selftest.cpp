@@ -411,13 +411,14 @@ World Generate(Gen& gen)
 }
 
 // The needs a quest's slot must give, worked out again from the step's text
-// WQ38: a listed quest gives nothing; an elite, group or instance quest only its ready hand-in to a lone bot
+// WQ34: a ready quest gives its hand-in, whatever its kind; an open one that is refused or listed (WQ38) gives nothing,
+// an open elite, group or instance quest nothing to a lone bot
 std::size_t ExpectedNeeds(QuestRecord const& quest, QuestSlot const& slot, std::uint8_t team, std::uint32_t groupSize)
 {
-    if (quest.refused[team] || !quest.impossible.empty())
-        return 0;
     if (slot.state & Circuit::SLOT_COMPLETE)
         return 1;
+    if (quest.refused[team] || !quest.impossible.empty())
+        return 0;
     bool const waits =
         (quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP | QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP)) !=
         0;
@@ -534,7 +535,7 @@ void GeneratedLogs(std::uint32_t seed)
     Gen gen{std::mt19937(seed)};
     Pricing const pricing{};
     Invariant emptyLog{"the needs of an empty log are empty"};
-    Invariant perQuest{"a refused quest gives none, a ready one one hand-in, an open one a need per open objective"};
+    Invariant perQuest{"a ready quest gives one hand-in, a refused open one none, an open one a need per objective"};
     Invariant needShape{"every need has a count left, a finite worth per credit, its seconds, chances in (0, 1]"};
     Invariant zeroField{"a field with no open need is worth 0"};
     Invariant zeroNeed{"a need whose count left is 0 adds nothing"};
@@ -571,8 +572,7 @@ void GeneratedLogs(std::uint32_t seed)
                     handIns += need.kind == NeedKind::HandIn ? 1 : 0;
                 }
             std::size_t const expected = quest ? ExpectedNeeds(*quest, slot, w.team, w.groupSize) : 0;
-            bool const ready =
-                quest && !quest->refused[w.team] && quest->impossible.empty() && (slot.state & Circuit::SLOT_COMPLETE);
+            bool const ready = quest && (slot.state & Circuit::SLOT_COMPLETE);
             perQuest.Note(mine == expected && handIns == (ready ? 1u : 0u), logIndex,
                           "quest " + std::to_string(slot.quest) + ": " + std::to_string(mine) + " needs, expected " +
                               std::to_string(expected));
@@ -1173,8 +1173,9 @@ void PlacesAndTakes()
 
 // WQ17b: the generated worlds again (their own stream of the seed) with givers, the take rules' fields and objective
 // places added: the shares, the takes, the places and ordinary hostiles over every log
-// WQ38: a quest on the list of impossible quests gives no need, its ready hand-in neither; an elite, group or dungeon
-// quest gives a lone bot no objective need (its ready hand-in, which a lone bot can do, stays) and a party all of them
+// WQ38, WQ34: a quest on the list of impossible quests gives no objective need; an elite, group or dungeon quest gives
+// a lone bot none and a party all of them; a ready quest of any of them gives its hand-in. A given-up quest gives none,
+// its ready hand-in neither (a failed hand-in is a give-up: no trip back to the ender)
 void ListedAndAlone()
 {
     constexpr std::uint32_t BOAR = 101;
@@ -1192,7 +1193,8 @@ void ListedAndAlone()
     std::vector<QuestSlot> const ready = {{40, Circuit::SLOT_COMPLETE, {}},
                                           {41, Circuit::SLOT_COMPLETE, {}},
                                           {42, Circuit::SLOT_COMPLETE, {}},
-                                          {43, Circuit::SLOT_COMPLETE, {}}};
+                                          {43, Circuit::SLOT_COMPLETE, {}},
+                                          {44, Circuit::SLOT_COMPLETE, {}}};
     auto const quests = [](std::vector<Need> const& needs)
     {
         std::vector<std::uint32_t> ids;
@@ -1206,9 +1208,14 @@ void ListedAndAlone()
           "listed and alone: a bot in a group of two works the elite, group and dungeon quests too, never the listed");
     std::vector<Need> const handIns = Needs(index, ready, 0, Pricing{}, ALONE);
     Check(
-        quests(handIns) == std::vector<std::uint32_t>{41, 42, 43} &&
+        quests(handIns) == std::vector<std::uint32_t>{40, 41, 42, 43, 44} &&
             std::all_of(handIns.begin(), handIns.end(), [](Need const& need) { return need.kind == NeedKind::HandIn; }),
-        "listed and alone: a lone bot hands in a ready flagged quest, a listed one not");
+        "listed and alone: a lone bot hands in every ready quest, a listed or flagged one too");
+    std::vector<std::uint32_t> const givenUp = {40, 42, 44};
+    Check(quests(Needs(index, open, 0, Pricing{}, 2, givenUp)) == std::vector<std::uint32_t>{41, 43},
+          "given up: a given-up quest gives no need");
+    Check(quests(Needs(index, ready, 0, Pricing{}, ALONE, givenUp)) == std::vector<std::uint32_t>{41, 43},
+          "given up: a given-up quest gives no hand-in");
 }
 
 void GeneratedSteps(std::uint32_t seed)

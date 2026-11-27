@@ -16,18 +16,21 @@ class WorldObject;
 class AcceptAllQuestsAction : public QuestAction
 {
 public:
-    AcceptAllQuestsAction(PlayerbotAI* botAI, std::string const name = "accept all quests") : QuestAction(botAI, name)
+    AcceptAllQuestsAction(PlayerbotAI* botAI, std::string const name = "accept all quests", bool command = false)
+        : QuestAction(botAI, name), byCommand(command)
     {
     }
 
 protected:
     bool ProcessQuest(Quest const* quest, Object* questGiver) override;
+
+    bool const byCommand;  // a master's "accept": not the bot's own choice, so the log's rule is not asked
 };
 
 class AcceptQuestAction : public AcceptAllQuestsAction
 {
 public:
-    AcceptQuestAction(PlayerbotAI* botAI) : AcceptAllQuestsAction(botAI, "accept quest") {}
+    AcceptQuestAction(PlayerbotAI* botAI) : AcceptAllQuestsAction(botAI, "accept quest", true) {}
     bool Execute(Event event) override;
 };
 

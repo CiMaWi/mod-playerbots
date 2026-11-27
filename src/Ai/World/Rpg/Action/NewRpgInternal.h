@@ -124,7 +124,7 @@ std::function<bool(uint32)> OrderEnderElsewhere(Player* bot, Planner::QuestOrder
 // Right after a DoQuest start (an order, a pick): ends it at once when the step function refuses the quest or finds
 // no place (QuestExec::EndWord), before any walk or fight; true when it ended
 bool EndQuestAtStart(PlayerbotAI* botAI, Player* bot);
-// The quests the bot gave up ClassQuests::GIVE_UP_LIMIT times (QuestFailRecord): the picker and the planner skip them
+// The quests the bot has given up (QuestLog::Record::givenUp, a failed hand-in too): the picker and planner skip them
 std::vector<uint32> GivenUpQuests(Player* bot);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)

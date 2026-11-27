@@ -1226,9 +1226,9 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
         situation.levelXp = ClassQuests::LevelXpBasis(bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP),
                                                       level > 1 ? sObjectMgr->GetXPForLevel(level - 1) : 0);
         situation.knownClassQuestSpells = ClassQuestCompletion::KnownSpells(bot);
-        situation.givenUpQuests =
-            QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), ClassQuests::GIVE_UP_LIMIT);
     }
+    // WQ34: as the log's accept reads it (a failed hand-in too): a held given-up quest gives no need
+    situation.givenUpQuests = QuestLog::Read(QuestFailRecord::RowsOf(bot->GetGUID().GetCounter())).givenUp;
     if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
     {
         // NR3 (NR.4): a sick bot's safe areas, where it stands and where its hearthstone is bound
@@ -1479,9 +1479,9 @@ void StopPlanner() { Pool().Stop(); }
 
 // The game's answer (questing WQ41a, decision WQ.47): the planner reads it at any distance, on every map. The filter
 // before the ask only saves work: the core refuses a quest of the other side or below its minimum level itself, and
-// GetGrayLevel is below Take::IsGrey's line (a superset until WQ34). A quest whose availability reads the world's
-// events or states is not asked (QuestRecord::worldState, CONTRACT C3); the index walks in id order, so the answer is
-// sorted
+// a quest at or below GetGrayLevel is grey to Take::IsGrey too (one line since WQ34). A quest whose availability reads
+// the world's events or states is not asked (QuestRecord::worldState, CONTRACT C3); the index walks in id order, so the
+// answer is sorted
 void FillTakeable(Player* bot, Snapshot& snapshot)
 {
     if (PlannerPool::IsWorkerThread())
@@ -2060,12 +2060,6 @@ std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
          GoalApply::IdleList(step.fallback, step.moving, sPlayerbotAIConfig.Lone.TestQuestingOnly))
         statuses.push_back(static_cast<NewRpgStatus>(status));
     return statuses;
-}
-
-bool KeepsQuest(PlayerbotAI* botAI, uint32 quest)
-{
-    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    return goals && goals->plan && GoalApply::Keeps(goals->keep, quest);
 }
 
 int PlannedPoi(PlayerbotAI* botAI, uint32 quest, std::vector<std::pair<float, float>> const& points)

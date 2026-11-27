@@ -167,8 +167,8 @@ void Table()
     add("refused for the other side", "yes", [](QuestRecord& q) { q.refused[1] = 1; });
     add("3 levels above", "yes", [](QuestRecord& q) { q.level = 23; });
     add("4 levels above", "too_high", [](QuestRecord& q) { q.level = 24; });
-    add("4 levels below", "yes", [](QuestRecord& q) { q.level = 16; });
-    add("5 levels below", "grey", [](QuestRecord& q) { q.level = 15; });
+    add("6 levels below", "yes", [](QuestRecord& q) { q.level = 14; });  // the game's grey level at 20 is 13 (WQ34)
+    add("7 levels below", "grey", [](QuestRecord& q) { q.level = 13; });
     add("dungeon", "kind", [](QuestRecord& q) { q.flags = QuestFlag::DUNGEON; });
     add("pvp", "kind", [](QuestRecord& q) { q.flags = QuestFlag::PVP; });
     add("elite refused", "elite_group", [](QuestRecord& q) { q.flags = QuestFlag::ELITE; });
@@ -323,6 +323,13 @@ QuestRecord Generated(std::mt19937& rng, std::uint32_t id)
 
 // The plan's own rules as the plan text names them, written here apart from QuestTakeRules.h: whether one of them
 // leaves the quest, whatever the game answers
+// The game's grey level (Acore::XP::GetGrayLevel), written out again
+std::int32_t GameGrey(std::uint8_t level)
+{
+    std::int32_t const l = level;
+    return l <= 5 ? 0 : l <= 39 ? l - 5 - l / 10 : l <= 59 ? l - 1 - l / 5 : l - 9;
+}
+
 bool OwnRuleLeaves(QuestRecord const& quest, Take::Facts const& bot, Lists const& lists)
 {
     std::int32_t const level = quest.level > 0 ? quest.level : static_cast<std::int32_t>(bot.level);
@@ -331,7 +338,7 @@ bool OwnRuleLeaves(QuestRecord const& quest, Take::Facts const& bot, Lists const
            Take::Holds(lists.givenUp, quest.id) || !quest.impossible.empty() ||
            (quest.flags & (QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE | QuestFlag::SEASONAL)) ||
            (side < SIDES && quest.refused[side]) || level > static_cast<std::int32_t>(bot.level) + 3 ||
-           static_cast<std::int32_t>(bot.level) > level + static_cast<std::int32_t>(bot.greyDiff) ||
+           (quest.level > 0 && quest.level <= GameGrey(bot.level)) ||
            (quest.flags & (QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP)) ||
            ((quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP)) && !bot.eliteGroup);
 }
@@ -363,8 +370,6 @@ void GeneratedCases(std::uint32_t seed)
         std::uint8_t const cls = static_cast<std::uint8_t>(1 + rng() % 11);
         std::uint8_t const level = static_cast<std::uint8_t>(1 + rng() % 30);
         Take::Facts bot = BotOf(race, level);
-        if (rng() % 4 == 0)
-            bot.greyDiff = 2 + rng() % 6;
         bot.eliteGroup = groupSize > 1;
         Take::Facts const facts = View(bot, lists);
         Lists const copy = lists;  // the same input in other storage
