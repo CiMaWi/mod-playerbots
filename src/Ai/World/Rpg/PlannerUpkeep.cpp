@@ -219,23 +219,30 @@ StockItem StockEntryOf(UpkeepItemFacts const& facts, StockMask kinds, uint32 cou
     return entry;
 }
 
-// The spell's reagents, and those of the spell it teaches (a trainer spell can be a learn spell)
-void AddReagents(uint32 spellId, uint8 cls, std::vector<ReagentUse>& reagents)
+// The reagents of every class spell a player can learn (it has a skill line ability), by the class of its spell
+// family: not only the trainers' spells, a quest rewards some
+void GatherReagents(std::vector<ReagentUse>& reagents)
 {
-    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-    if (!info)
-        return;
-    for (int32 const reagent : info->Reagent)
-        if (reagent > 0)
-            reagents.push_back({static_cast<uint32>(reagent), cls, spellId});
-    for (SpellEffectInfo const& effect : info->GetEffects())
+    std::array<uint32, UPKEEP_CLASS_SLOTS> families{};
+    for (uint8 cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+        if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(cls))
+            families[cls] = entry->spellfamily;
+    for (uint32 spellId = 1; spellId < sSpellMgr->GetSpellInfoStoreSize(); ++spellId)
     {
-        if (effect.Effect != SPELL_EFFECT_LEARN_SPELL || !effect.TriggerSpell)
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->SpellFamilyName == SPELLFAMILY_GENERIC)
             continue;
-        if (SpellInfo const* learned = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
-            for (int32 const reagent : learned->Reagent)
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        if (bounds.first == bounds.second)
+            continue;  // no player learns it (a creature's spell)
+        for (uint8 cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+        {
+            if (families[cls] != info->SpellFamilyName)
+                continue;
+            for (int32 const reagent : info->Reagent)
                 if (reagent > 0)
-                    reagents.push_back({static_cast<uint32>(reagent), cls, spellId});
+                    reagents.push_back({static_cast<uint32>(reagent), cls});
+        }
     }
 }
 
@@ -349,6 +356,8 @@ UpkeepGather GatherUpkeep()
              std::count_if(tameSpawns.begin(), tameSpawns.end(),
                            [](auto const& each) { return !UpkeepNeeds::TameTargetSpawns(each.second); }));
 
+    GatherReagents(input.reagents);
+
     std::unordered_map<Trainer::Trainer const*, uint32> trainerKeys;  // the core keeps one object per trainer id
     std::unordered_set<uint32> itemsSeen;
     for (auto const& [entry, creature] : creatures)
@@ -382,8 +391,6 @@ UpkeepGather GatherUpkeep()
                                 copy.teaches[taught++] = effect.TriggerSpell;
                     }
                     facts.spells.push_back(copy);
-                    if (classTrainer)
-                        AddReagents(spell.SpellId, static_cast<uint8>(facts.requirement), input.reagents);
                     // Weapon masters are tradeskill trainers; their weapon skill spells (WU15a)
                     if (facts.kind == TrainerKind::Tradeskill)
                         if (uint32 const skill = WeaponSkillOf(spell.SpellId))
@@ -489,8 +496,9 @@ void AddWeapon(Snapshot& snapshot, Player* bot, Item const* item)
     snapshot.ownedWeaponSkills.push_back({static_cast<uint16>(skill), bot->GetSkillValue(skill) > 0});
 }
 
-// A profession tool it holds, once each (professions WR1): an item a cast asks for by its tool category (a knife, a
-// rod, a pick, a hammer, a spanner, a stone), not a shaman's totem; or a fishing pole
+// A profession tool it holds, once each (professions WR1, NR20): a TOOLS row by its item id (a jeweler's kit and
+// grinder have no tool category); an item a cast asks for by its tool category (a knife, a rod, a pick, a hammer, a
+// spanner, a stone), not a shaman's totem; or a fishing pole
 void AddTool(Snapshot& snapshot, Item const* item)
 {
     ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
@@ -500,7 +508,7 @@ void AddTool(Snapshot& snapshot, Item const* item)
         proto->TotemCategory ? sTotemCategoryStore.LookupEntry(proto->TotemCategory) : nullptr;
     bool const tool = category && category->categoryType != TOTEM_CATEGORY_TYPE_TOTEM;
     bool const pole = proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
-    if ((tool || pole) &&
+    if ((ProfessionRules::IsProfessionTool(proto->ItemId, tool) || pole) &&
         std::find(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), proto->ItemId) == snapshot.toolsHeld.end())
         snapshot.toolsHeld.push_back(proto->ItemId);
 }
@@ -780,25 +788,7 @@ void FillMounts(Player* bot, Snapshot& snapshot)
     }
 }
 
-// The known reagent spells of the class the bot casts without their reagents (CastsWithoutReagent, which the generic
-// sell reads too): their reagents are no need (UpkeepNeeds::ReagentKnown)
-void FillReagentFree(Player* bot, UpkeepIndex const& index, TrainerList const& list, Snapshot& snapshot)
-{
-    snapshot.reagentFreeClassSpells = SpellBits(list.spells.size());
-    uint8 const cls = bot->getClass();
-    auto it = std::lower_bound(index.reagentSpells.begin(), index.reagentSpells.end(), ReagentSpell{cls, 0, 0});
-    for (; it != index.reagentSpells.end() && it->cls == cls; ++it)
-    {
-        if (it->position >= list.spells.size() || !HasSpellBit(snapshot.knownClassSpells, it->position))
-            continue;
-        SpellInfo const* info = sSpellMgr->GetSpellInfo(list.spells[it->position].spellId);
-        if (info && CastsWithoutReagent(bot, info))
-            SetSpellBit(snapshot.reagentFreeClassSpells, it->position);
-    }
-}
 }  // namespace
-
-bool CastsWithoutReagent(Player* bot, SpellInfo const* info) { return bot->CanNoReagentCast(info); }
 
 StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto)
 {
@@ -837,12 +827,6 @@ StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* prot
     decision.kept = keep.verdict >= UpkeepNeeds::StockVerdict::Keep;
     decision.keep = keep.keep;
     return decision;
-}
-
-bool ClassReagent(uint32 item)
-{
-    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
-    return index && index->ReagentClassMask(item);
 }
 
 bool WeaponToLearn(Player* bot, ItemTemplate const* proto)
@@ -935,8 +919,7 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         TrainerList const* classList = index->ClassList(cls);
         TrainerList const* riding = index->RidingList(bot->getRace(true));
         FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
-        if (classList)
-            FillReagentFree(bot, *index, *classList, snapshot);
+        snapshot.knownReagents = ItemUsageValue::ClassSpellReagents(bot);
         FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
         FillMounts(bot, snapshot);
         if (classList)

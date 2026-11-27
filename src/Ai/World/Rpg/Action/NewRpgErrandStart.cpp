@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -39,6 +41,7 @@
 #include "NewRpgStatusEnd.h"
 #include "NewRpgTriggers.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -47,6 +50,7 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
+#include "RouteService.h"
 #include "SkillPathLive.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
@@ -55,6 +59,7 @@
 #include "TestConstraints.h"
 #include "TestProbe.h"
 #include "TraitRules.h"
+#include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "UpkeepIndex.h"
 #include "UpkeepNeedRules.h"
@@ -223,6 +228,74 @@ void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& c
         quest.WorthCopper = static_cast<float>(std::max<int32>(record->copperReward, 0));
         completed.push_back(quest);
     }
+}
+// One PerfMonitor sample of a block's time; nothing while PerfMonitor is off
+class ErrandTimer
+{
+public:
+    explicit ErrandTimer(char const* name) : _row(sPerfMonitor.acquire(PERF_MON_TOTAL, name))
+    {
+        if (_row)
+            _started = std::chrono::steady_clock::now();
+    }
+    ~ErrandTimer()
+    {
+        if (_row)
+            _row->Record(static_cast<uint64>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - _started)
+                    .count()));
+    }
+    ErrandTimer(ErrandTimer const&) = delete;
+    ErrandTimer& operator=(ErrandTimer const&) = delete;
+
+private:
+    PerformanceData* _row;
+    std::chrono::steady_clock::time_point _started;
+};
+
+// The trip planned with its vendor stops held to the walk limit by their route (NR13): one search each from the bot,
+// asked as the trip's walk asks it (NewRpgTravelAction::RequestRoute) with the flight maps off (no flight search on a
+// map thread, contract C3). Before the travel graph is ready the straight distance stands. The PerfMonitor rows
+// "errand trip plan" (one per start) and "errand vendor route" (one per search) give the searches per start
+WorldTravel::TripPlan PlanErrandTrip(PlayerbotAI* botAI, WorldTravel::TripRequest const& request,
+                                     std::vector<WorldTravel::ServiceStop> const& stops,
+                                     std::vector<WorldTravel::ErrandOffer> const& offers,
+                                     std::vector<WorldTravel::DroppedVendor>& dropped)
+{
+    ErrandTimer const timer("errand trip plan");
+    if (!TravelGraph::Instance().IsReady())
+        return WorldTravel::PlanTrip(request, stops, offers);
+
+    Player* bot = botAI->GetBot();
+    std::optional<TravelRoute::Snapshot> snapshot;
+    std::shared_ptr<TravelRoute::StuckEdges const> stuck;
+    TravelRoute::Params params;
+    auto const routeSeconds = [&](WorldTravel::ErrandPlace const& place)
+    {
+        ErrandTimer const searchTimer("errand vendor route");
+        if (!snapshot)
+        {
+            snapshot = TravelRoute::FillSnapshot(bot, 0);
+            snapshot->allowTransport = true;
+            snapshot->hasHearthstone =
+                snapshot->hasHearthstone && TestConstraints::HearthAllowed(botAI->testConstraints);
+            if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
+                snapshot->knownTaxi.fill(0);
+            if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))
+                snapshot->flyOutland = snapshot->flyNorthrend = false;
+            stuck = TravelRoute::StuckBook::Instance().Current();
+            params = TravelRoute::ConfiguredParams();
+            params.flightMaps = nullptr;
+        }
+        TravelRoute::Request ask(*snapshot, {place.MapId, place.X, place.Y, place.Z});
+        ask.freeRides = TestConstraints::RidesFree(botAI->testConstraints);
+        TravelRoute::Result const route = TravelRoute::Search(TravelGraph::Instance(), ask, *stuck, params);
+        float const seconds = route.ok ? route.totalSeconds : -1.0f;
+        LOG_DEBUG("playerbots", "[New RPG] {} errand vendor at ({:.0f}, {:.0f}, {:.0f}): route {:.0f} s",
+                  bot->GetName(), place.X, place.Y, place.Z, seconds);
+        return seconds;
+    };
+    return WorldTravel::PlanTripByRoute(request, stops, offers, routeSeconds, dropped);
 }
 }  // namespace
 
@@ -570,7 +643,13 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                             .empty();
             });
     }
-    WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
+    std::vector<WorldTravel::DroppedVendor> dropped;
+    WorldTravel::TripPlan const plan = PlanErrandTrip(botAI, request, snapshot.Stops, offers, dropped);
+    if (WorldLog::Active())
+        for (WorldTravel::DroppedVendor const& vendor : dropped)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor_drop", vendor.Reason,
+                               vendor.RouteSeconds, {{"straight_yd", WorldTravel::Yards(request.Start, vendor.Place)}},
+                               vendor.Entry);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
     float tripMinutes = 0.0f;
@@ -609,6 +688,10 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                     break;
                 case WorldTravel::ErrandKind::TurnIn:
                     stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
+                    break;
+                case WorldTravel::ErrandKind::Ride:
+                    if (errand.Service == WorldTravel::SERVICE_MOUNT_VENDOR)
+                        stop.mountRank = errand.Id;
                     break;
                 case WorldTravel::ErrandKind::Tame:
                     stop.tameEntry = errand.Target;

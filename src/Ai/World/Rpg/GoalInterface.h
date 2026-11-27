@@ -762,6 +762,19 @@ inline Goals::Ranked ChosenFirst(Goals::Ranked ranked, std::size_t index)
     return ranked;
 }
 
+// The last interlude that missed what it went for (NoteInterludeEnd) or whose start was refused (NoteRefused): the
+// goal (kind, target, reason) at the bot's level then, when, and how many misses of it in a row came before
+struct Missed
+{
+    Goals::GoalKind kind{Goals::GoalKind::None};
+    Goals::TargetType targetType{Goals::TargetType::Default};
+    std::uint32_t target{0};
+    std::string reason;
+    std::uint8_t level{0};
+    std::uint32_t lastMs{0};  // 0 = none
+    std::uint32_t repeats{0};
+};
+
 // A bot's planner side on its map thread (Planner::BotState::goals). A reset of the AI starts it anew
 struct BotGoals
 {
@@ -797,12 +810,16 @@ struct BotGoals
     std::string shortKind;  // its kind word, as at the begin (the end row repeats it)
     // By goal kind: when an interlude of that kind last failed (NoteInterludeEnd); 0 = none
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
+    Missed missed;                  // the same goal's own, longer wait after misses in a row (MissedWaits)
     std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
     std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
     bool sickOpenSeen{false};  // recover's hand-over of a sick bot as the errand trigger last saw it (SickOpenChanged)
     std::vector<Goals::InnStay> innStays;  // the inns the bot is near and since when (NR.5)
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
+    // NR14: the planner's errand to a stop of its own (Goals::OwnStopReason) got what it went for there (the spells,
+    // the rank or its mount, the tame); a goal's start clears it
+    bool ownStopDone{false};
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
     QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
@@ -1125,25 +1142,61 @@ inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toId
 // of what it starts now is judged again
 inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 
+// The goal is the missed one: its kind, target and reason, at the level it missed at
+inline bool SameMissed(Missed const& missed, Active const& goal, std::uint8_t level)
+{
+    return missed.lastMs && missed.kind == goal.kind && missed.targetType == goal.targetType &&
+           missed.target == goal.target && missed.reason == goal.reason && missed.level == level;
+}
+
+// A miss of the goal at the bot's level: the same goal missed again counts one repeat more (at most
+// WorldTravel::STUCK_REPEAT_MAX); another goal, or a new level (it brings new due needs), starts the count anew
+inline void NoteMissed(BotGoals& goals, Active const& goal, std::uint8_t level, std::uint32_t nowMs)
+{
+    std::uint32_t const repeats =
+        SameMissed(goals.missed, goal, level) ? std::min(goals.missed.repeats + 1, WorldTravel::STUCK_REPEAT_MAX) : 0;
+    goals.missed = {goal.kind, goal.targetType, goal.target, goal.reason, level, std::max<std::uint32_t>(nowMs, 1),
+                    repeats};
+}
+
 // An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
 // waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
 // (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
 // failure (PlannedEnd). An interlude that finished without its result missed it, as a failure: a bag trip without its
 // bag (bagBought unset), an errand with the repair still due (repairDue, read at that end: a repairer dead or gone, a
-// stand point off the mesh; the due repair ranks first and would start the same trip again at once)
+// stand point off the mesh; the due repair ranks first and would start the same trip again at once), an errand to a
+// stop of its own without what it went for (ownStopDone unset, NR14: the due stop ranks first as the repair does).
+// Every failure is also the goal's miss (NoteMissed), a success of that goal ends its count
 inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs,
-                             bool repairDue = false)
+                             bool repairDue = false, std::uint8_t level = 0)
 {
     if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
         return;
+    Active const& goal = goals.slot.Query();
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
     bool const finished = outcome == StatusEnd::Outcome::Finished;
+    bool const ownStop = Goals::OwnStopReason(goal.reason) && !goals.ownStopDone;
     bool const missed = finished && ((kind == Goals::GoalKind::BuyBag && !goals.bagBought) ||
-                                     (kind == Goals::GoalKind::Errand && repairDue));
+                                     (kind == Goals::GoalKind::Errand && (repairDue || ownStop)));
     if (!missed && (outcome == StatusEnd::Outcome::Arrived || finished))
+    {
         failed = 0;
+        if (SameMissed(goals.missed, goal, level))
+            goals.missed = {};
+    }
     else if (StatusEnd::Judged(outcome))
+    {
         failed = std::max<std::uint32_t>(nowMs, 1);
+        NoteMissed(goals, goal, level, nowMs);
+    }
+}
+
+// An interlude whose start was refused (StartActive's Refused; a rest's refusal is none to wait on) counts as its
+// miss: the errand start, which computes the needs, is not tried again at every plan
+inline void NoteRefused(BotGoals& goals, Active const& goal, std::uint8_t level, std::uint32_t nowMs)
+{
+    if (Goals::IsInterlude(goal.kind) && goal.kind != Goals::GoalKind::Rest)
+        NoteMissed(goals, goal, level, nowMs);
 }
 
 // What a planned status's end reads besides the goal (3.19 (4)), on the bot's map thread
@@ -1238,6 +1291,14 @@ inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_
         return false;
     std::uint32_t const failed = goals.failedMs[static_cast<std::size_t>(kind)];
     return failed && nowMs - failed < WorldTravel::ERRAND_RETRY_MS;
+}
+
+// The missed goal waits the errand retry time doubled per repeat (WorldTravel::StuckAvoidMs: 5, 10, 20, then 40 min),
+// so a due stop that keeps failing, which ranks first, is tried less and less often and the bot's quests fill the time
+inline bool MissedWaits(BotGoals const& goals, Active const& goal, std::uint8_t level, std::uint32_t nowMs)
+{
+    return SameMissed(goals.missed, goal, level) &&
+           nowMs - goals.missed.lastMs < WorldTravel::StuckAvoidMs(WorldTravel::ERRAND_RETRY_MS, goals.missed.repeats);
 }
 
 // The running goal's executor ended: its key stalls for the block time (BlockKey) when the log is as it was at the

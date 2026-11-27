@@ -936,14 +936,28 @@ bool ItemUsageValue::IsItemNeededForUsefullSpell(ItemTemplate const* proto, bool
 
 bool ItemUsageValue::IsItemNeededForClassSpell(ItemTemplate const* proto)
 {
-    for (uint32 spellId : SpellsUsingItem(proto->ItemId, bot))
-    {
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (spellInfo && spellInfo->SpellFamilyName != SPELLFAMILY_GENERIC)
-            return true;
-    }
+    std::vector<uint32> const reagents = ClassSpellReagents(bot);
+    return std::binary_search(reagents.begin(), reagents.end(), proto->ItemId);
+}
 
-    return false;
+std::vector<uint32> ItemUsageValue::ClassSpellReagents(Player* bot)
+{
+    std::vector<uint32> items;
+    for (auto const& [spellId, spell] : bot->GetSpellMap())
+    {
+        if (spell->State == PLAYERSPELL_REMOVED || !spell->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        // A spell the server charges no reagents for (Glyph of Renewed Life) uses none
+        if (!info || info->SpellFamilyName == SPELLFAMILY_GENERIC || bot->CanNoReagentCast(info))
+            continue;
+        for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            if (info->ReagentCount[i] > 0 && info->Reagent[i] > 0)
+                items.push_back(static_cast<uint32>(info->Reagent[i]));
+    }
+    std::sort(items.begin(), items.end());
+    items.erase(std::unique(items.begin(), items.end()), items.end());
+    return items;
 }
 
 static SpellInfo const* GetTemporaryEnchantSpell(ItemTemplate const* proto)

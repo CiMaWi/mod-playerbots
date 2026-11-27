@@ -126,6 +126,31 @@ inline std::optional<VisitEnd> WatchVisit(VisitWatchIn const& in)
     return std::nullopt;
 }
 
+// The moves one step of a bank visit makes at most (NR.15)
+constexpr uint32_t BANK_MOVES_PER_STEP = 8;
+
+// What one try for a move did: moved an item; stopped the step (the core refused, the item was not where the plan saw
+// it, or the step went to a bank slot); or found nothing left to move
+enum class BankMove : uint8_t
+{
+    Moved,
+    Stopped,
+    NoneLeft,
+};
+
+// One step of a bank visit: up to BANK_MOVES_PER_STEP tries, each planned anew by `move`. False: the visit is done
+template <typename Move>
+bool RunBankStep(Move&& move)
+{
+    for (uint32_t made = 0; made < BANK_MOVES_PER_STEP; ++made)
+    {
+        BankMove const turn = move();
+        if (turn != BankMove::Moved)
+            return turn != BankMove::NoneLeft;
+    }
+    return true;
+}
+
 // The limit after an answered step (AH.9): one step's time from now, counted from the visit's start, which stays
 inline uint32_t RenewedLimitMs(uint32_t elapsedMs, uint32_t stepMs) { return elapsedMs + stepMs; }
 }  // namespace BankMail

@@ -8,6 +8,7 @@
 #define _PLAYERBOT_NEEDGOALBRIDGE_H
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,6 +23,14 @@ namespace Planner
 {
 namespace NeedBridge
 {
+// NR14 (NR.14): a need worth a trip of its own that the gold pays, by upkeep's rule (Goals::OwnStop)
+struct OwnNeed
+{
+    bool due{false};
+    std::uint32_t target{0};
+    Place place;
+};
+
 struct NeedInputs
 {
     std::uint64_t reserveCopper{0};  // unscaled: the goal model scales it by thrift as the needs rules do
@@ -29,6 +38,9 @@ struct NeedInputs
     std::string shortKind;          // the largest unpaid part's kind word (Upkeep::KindWord): NeedShort's src
     std::string shortText;          // "12g 0s 0c short for journeyman riding"
     bool trainingUnpayable{false};  // a due trainer spell whose cheapest waiting rank the funded gold does not pay
+    OwnNeed training;               // TrainingErrandDue
+    OwnNeed riding;                 // RidingErrandDue
+    OwnNeed pet;                    // PetErrandDue
 };
 
 struct ReservePart
@@ -77,8 +89,17 @@ inline NeedInputs InputsOf(UpkeepNeeds::NeedList const& list)
     // The questing test's money goal (questing WQ37): a due training the gold cannot pay (TrainingErrandDue's
     // opposite), whether or not the reserve is short
     for (UpkeepNeeds::Need const& need : list.needs)
+    {
         if (need.kind == UpkeepKind::TrainerSpell && need.due && need.cheapest > 0 && need.funded < need.cheapest)
             inputs.trainingUnpayable = true;
+        // The stops of their own (NR14): upkeep's rules decide, the goal model offers the trip
+        if (need.kind == UpkeepKind::TrainerSpell && UpkeepNeeds::TrainingErrandDue(need) && !inputs.training.due)
+            inputs.training = {true, need.trainer, {}};
+        else if (UpkeepNeeds::RidingErrandDue(need) && !inputs.riding.due)
+            inputs.riding = {true, need.trainer ? need.trainer : need.vendor, {}};
+        else if (UpkeepNeeds::PetErrandDue(need) && !inputs.pet.due)
+            inputs.pet = {true, need.beast, need.beastAt};
+    }
     if (!list.shortfall)
         return inputs;
 
@@ -110,6 +131,90 @@ inline void Fill(Goals::Situation& situation, NeedInputs const& inputs)
     situation.shortKind = inputs.shortKind;
     situation.shortText = inputs.shortText;
     situation.trainingUnpayable = inputs.trainingUnpayable;
+    // The walk and its safety are the map thread's (OwnStop)
+    auto const own = [](Goals::OwnStop& stop, OwnNeed const& need)
+    {
+        stop.due = need.due;
+        stop.target = need.target;
+        stop.place = need.place;
+    };
+    own(situation.training, inputs.training);
+    own(situation.riding, inputs.riding);
+    own(situation.pet, inputs.pet);
+}
+
+// The walk to each due stop of its own (after Fill), to the stop the errand start plans for that need
+// (NewRpgErrandStart): a class trainer of the bot's class with the need's key or one that teaches its highest waiting
+// spell; a riding trainer that teaches the rank, else a vendor in reach that sells the rank's mount; the beast's spawn
+// within the errand walk. From the map thread's stops seen (nearest first), a sick bot's nearest safe one before the
+// others; none in reach leaves the walk unknown (-1), and no trip is offered
+inline void PlaceOwnStops(Goals::Situation& situation, UpkeepNeeds::NeedList const& list, UpkeepIndex const& index,
+                          std::uint8_t race, std::uint8_t cls, Place const& position, float runSpeed)
+{
+    auto const place = [](Goals::OwnStop& stop, std::vector<Goals::StopSeen> const& seen, auto const& serves)
+    {
+        Goals::StopSeen const* best = nullptr;
+        for (Goals::StopSeen const& candidate : seen)
+            if ((!best || (candidate.safe && !best->safe)) && serves(candidate.entry))
+                best = &candidate;
+        if (best)
+        {
+            stop.walkMinutes = best->walkMinutes;
+            stop.safe = best->safe;
+        }
+    };
+    auto const taughtBy = [&index](std::uint32_t entry, auto const& teaches)
+    {
+        return std::any_of(
+            index.trainers.begin(), index.trainers.end(), [entry, &teaches](UpkeepTrainer const& trainer)
+            { return teaches(trainer) && std::binary_search(trainer.entries.begin(), trainer.entries.end(), entry); });
+    };
+    UpkeepNeeds::Need const* training = nullptr;
+    UpkeepNeeds::Need const* riding = nullptr;
+    UpkeepNeeds::Need const* pet = nullptr;
+    for (UpkeepNeeds::Need const& need : list.needs)
+        if (need.kind == UpkeepKind::TrainerSpell && UpkeepNeeds::TrainingErrandDue(need) && !training)
+            training = &need;
+        else if (UpkeepNeeds::RidingErrandDue(need) && !riding)
+            riding = &need;
+        else if (UpkeepNeeds::PetErrandDue(need) && !pet)
+            pet = &need;
+    if (training && situation.training.due)
+        place(situation.training, situation.trainersSeen,
+              [&](std::uint32_t entry)
+              {
+                  return taughtBy(entry,
+                                  [&](UpkeepTrainer const& trainer)
+                                  {
+                                      return trainer.kind == TrainerKind::Class && trainer.requirement == cls &&
+                                             (trainer.key == training->trainer ||
+                                              UpkeepNeeds::Teaches(index, trainer, training->lastSpell));
+                                  });
+              });
+    if (riding && situation.riding.due && riding->trainer)
+        place(situation.riding, situation.trainersSeen,
+              [&](std::uint32_t entry)
+              {
+                  return taughtBy(entry,
+                                  [&](UpkeepTrainer const& trainer)
+                                  {
+                                      return trainer.kind == TrainerKind::Mount &&
+                                             UpkeepNeeds::Teaches(index, trainer, riding->item);
+                                  });
+              });
+    else if (riding && situation.riding.due)
+        if (UpkeepNeeds::RankValue const* const rank = UpkeepNeeds::BoughtRank(list, riding->item))
+            place(situation.riding, situation.mountVendorsSeen,
+                  [&](std::uint32_t entry) { return UpkeepNeeds::MountSoldBy(index, race, cls, *rank, entry) != 0; });
+    if (pet && situation.pet.due && pet->beastAt.map == position.map)
+    {
+        float const dx = pet->beastAt.x - position.x;
+        float const dy = pet->beastAt.y - position.y;
+        float const dz = pet->beastAt.z - position.z;
+        float const minutes = WorldTravel::WalkMinutes(std::sqrt(dx * dx + dy * dy + dz * dz), runSpeed);
+        if (minutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
+            situation.pet.walkMinutes = minutes;
+    }
 }
 }  // namespace NeedBridge
 }  // namespace Planner

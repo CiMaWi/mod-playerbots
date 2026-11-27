@@ -127,6 +127,9 @@ std::uint32_t OrderedBag(PlayerbotAI* botAI);
 // The errand's vendor visit bought the ordered bag: the order is done, and its trip's end clears the retry stamp
 // (GoalApply::NoteInterludeEnd: a bag trip that finished without its bag stamps it). O(1)
 void NoteBagBought(PlayerbotAI* botAI);
+// NR14: a trip's trainer taught the spells or the riding rank, a vendor sold the mount, or the tame took: an errand to
+// a stop of its own got what it went for, and its trip's end clears the retry stamp (GoalApply::NoteInterludeEnd). O(1)
+void NoteOwnStopDone(PlayerbotAI* botAI);
 // The status core's end check of a status a planner goal may run (GO_GRIND, WANDER_RANDOM, DO_GATHER, REST), on the
 // bot's map thread every update: a planned status ends by its order (GoalApply::PlannedEnd, its outcome and word),
 // any other one when `timerOver` (upstream's timer; a sick bot's Upkeep::RestEnds). True when it ended. O(1)
@@ -284,10 +287,6 @@ struct StockDecision
     std::uint32_t keep{0};  // how many of it the bot keeps; the rest is surplus
 };
 StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto);
-// A class spell's reagent: the shopping list buys it for a bot not granted reagents
-bool ClassReagent(std::uint32_t item);
-// A spell the server charges no reagents for (Glyph of Renewed Life): its reagents are neither kept nor bought
-bool CastsWithoutReagent(Player* bot, SpellInfo const* info);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);

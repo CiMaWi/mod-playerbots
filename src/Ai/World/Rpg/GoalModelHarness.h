@@ -23,6 +23,7 @@
 #include "GoalModel.h"
 #include "GoalModelLog.h"
 #include "InterludeInputs.h"
+#include "NeedGoalBridge.h"
 #include "UpkeepRules.h"
 
 // The goal model's scenarios (travel plan WT14): synthetic bots and places, one check per decision. Proof is
@@ -2663,6 +2664,298 @@ inline void QuestingOnly(std::vector<Check>& checks)
             std::to_string(noneRows.size()) + " rows");
 }
 
+// NR14 (NR.14): riding, class training or a hunter's pet that upkeep's need rules make due and the gold pays is an
+// errand goal of its own, through NeedBridge as the planner's job fills it. The rule is upkeep's (R1): the goal model
+// offers what the needs list says and ranks it as the due repair
+inline void OwnStops(std::vector<Check>& checks)
+{
+    constexpr std::uint32_t CLASS_TRAINER = 911;
+    constexpr std::uint32_t RIDING_TRAINER = 4732;
+    constexpr std::uint32_t MOUNT_VENDOR = 384;
+    constexpr std::uint32_t BEAST = 2956;
+    constexpr std::uint32_t TAME_BEAST = 1515;
+    constexpr std::uint32_t RIDING_PRICE = 40000;
+    constexpr std::uint32_t SPELL_PRICE = 100;
+    constexpr float WALK = 6.0f;
+    constexpr float FAR_WALK = 45.0f;
+    using UpkeepNeeds::Need;
+    using UpkeepNeeds::NeedOrder;
+    auto const riding = [](std::uint64_t funded, std::uint32_t trainer)
+    {
+        Need need;
+        need.order = NeedOrder::Riding;
+        need.kind = UpkeepKind::Riding;
+        need.copper = RIDING_PRICE;
+        need.funded = funded;
+        need.due = true;
+        need.trainer = trainer;
+        need.vendor = MOUNT_VENDOR;
+        return need;
+    };
+    auto const training = [](std::uint64_t funded, bool due)
+    {
+        Need need;
+        need.order = NeedOrder::Training;
+        need.kind = UpkeepKind::TrainerSpell;
+        need.copper = SPELL_PRICE * 3;
+        need.cheapest = SPELL_PRICE;
+        need.funded = funded;
+        need.due = due;
+        need.trainer = CLASS_TRAINER;
+        return need;
+    };
+    Place const spawn{EASTERN, -9300.0f, 150.0f, 50.0f};
+    auto const pet = [&spawn]()
+    {
+        Need need;
+        need.order = NeedOrder::Pet;
+        need.kind = UpkeepKind::Pet;
+        need.item = TAME_BEAST;
+        need.due = true;
+        need.beast = BEAST;
+        need.beastAt = spawn;
+        return need;
+    };
+    // The situation the job fills: the needs through the bridge, the stops' walks as the map thread gives them
+    auto const filled = [](Situation situation, std::vector<Need> const& list, bool safe = false)
+    {
+        UpkeepNeeds::NeedList needs;
+        needs.needs = list;
+        NeedBridge::Fill(situation, NeedBridge::InputsOf(needs));
+        for (OwnStop* stop : {&situation.training, &situation.riding, &situation.pet})
+        {
+            stop->walkMinutes = WALK;
+            stop->safe = safe;
+        }
+        return situation;
+    };
+    auto const errands = [](Ranked const& ranked)
+    {
+        return std::count_if(ranked.options.begin(), ranked.options.end(),
+                             [](Option const& option) { return option.kind == GoalKind::Errand; });
+    };
+    auto const dropped = [](Ranked const& ranked, char const* reason)
+    {
+        return std::any_of(ranked.dropped.begin(), ranked.dropped.end(), [reason](Dropped const& drop)
+                           { return drop.kind == GoalKind::Errand && drop.target == BEAST && drop.reason == reason; });
+    };
+
+    // Riding at 20 and at 40, the gold paying the rank and its mount, beside a good circuit at the bot's hub: the
+    // trip is offered, due, and ranks over the quests (the reading NR14 asks for: once it is affordable, always)
+    bool ridingWins = true;
+    std::string ridingDetail;
+    for (std::uint8_t const level : {20, 40})
+    {
+        Snapshot const bot = Bot(level, RIDING_PRICE * 2);
+        Situation base = Base(level);
+        base.here.zoneHigh = level + 2;
+        CircuitPlan const circuit = Circuit(bot, base, 400.0f * level, 2000.0f, 20.0f);
+        base.circuit = &circuit;
+        Ranked const ranked = Rank(bot, filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)}));
+        Option const* top = Top(ranked);
+        ridingWins = ridingWins && TopIs(ranked, GoalKind::Errand, RIDING_TRAINER, RIDING_REASON) && top->due &&
+                     top->peaceful && Has(ranked, GoalKind::Quest);
+        ridingDetail += std::to_string(level) + ": " + Summary(ranked) + "; ";
+    }
+    Add(checks,
+        "own stop (NR14): riding due and affordable at 20 and 40 is offered the trip to its trainer, due, over the "
+        "quests",
+        ridingWins, ridingDetail);
+
+    Snapshot const bot = Bot(20, RIDING_PRICE * 2);
+    Situation base = Base(20);
+    base.here.zoneHigh = 22;
+    CircuitPlan const circuit = Circuit(bot, base, 8000.0f, 2000.0f, 20.0f);
+    base.circuit = &circuit;
+    Ranked const shortRide = Rank(bot, filled(base, {riding(RIDING_PRICE - 1, RIDING_TRAINER)}));
+    Ranked const mountOnly = Rank(bot, filled(base, {riding(RIDING_PRICE, 0)}));
+    Add(checks,
+        "own stop: riding whose funded share does not pay it whole (RidingErrandDue) is offered no trip; a known "
+        "rank's trip goes to its mount vendor",
+        !Has(shortRide, GoalKind::Errand) && TopIs(mountOnly, GoalKind::Errand, MOUNT_VENDOR, RIDING_REASON),
+        Summary(shortRide) + " / " + Summary(mountOnly));
+
+    Ranked const train = Rank(bot, filled(base, {training(SPELL_PRICE, true)}));
+    Situation const unpaid = filled(base, {training(SPELL_PRICE - 1, true)});
+    Ranked const trainShort = Rank(bot, unpaid);
+    Ranked const notDue = Rank(bot, filled(base, {training(SPELL_PRICE * 3, false)}));
+    Add(checks,
+        "own stop: class training due and paid (TrainingErrandDue) is offered the trip to the trainer; short of the "
+        "cheapest spell or not due by upkeep's levels, none",
+        TopIs(train, GoalKind::Errand, CLASS_TRAINER, TRAINING_REASON) && Top(train)->due &&
+            !Has(trainShort, GoalKind::Errand) && unpaid.trainingUnpayable && !Has(notDue, GoalKind::Errand),
+        Summary(train) + " / " + Summary(trainShort) + " / " + Summary(notDue));
+
+    // The trip's worth is upkeep's verdict, not a threshold of the goal model: a far trainer is offered as a near one,
+    // a stop the map thread knows no walk to is not
+    Situation distant = filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)});
+    distant.riding.walkMinutes = FAR_WALK;
+    Situation unknown = distant;
+    unknown.riding.walkMinutes = -1.0f;
+    Ranked const farRanked = Rank(bot, distant);
+    Ranked const unknownRanked = Rank(bot, unknown);
+    Add(checks,
+        "own stop: the worth is upkeep's (R1): a trainer 45 minutes away is still the due trip, one without a known "
+        "walk is none",
+        TopIs(farRanked, GoalKind::Errand, RIDING_TRAINER, RIDING_REASON) && Top(farRanked)->due &&
+            !Has(unknownRanked, GoalKind::Errand),
+        Summary(farRanked) + " / " + Summary(unknownRanked));
+
+    // Training and riding both due: one errand option, named by training (the needs' fixed order), both in its worth
+    Ranked const both = Rank(bot, filled(base, {training(SPELL_PRICE, true), riding(RIDING_PRICE, RIDING_TRAINER)}));
+    Ranked const one = Rank(bot, filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)}));
+    bool const twoWorth = Top(both) && Top(one) && std::abs(Top(both)->expected - 2.0f * Top(one)->expected) < 0.01f;
+    Add(checks, "own stop: training and riding due make one errand named by training, both in its worth",
+        TopIs(both, GoalKind::Errand, CLASS_TRAINER, TRAINING_REASON) && errands(both) == 1 && twoWorth, Summary(both));
+
+    // Full bags with riding due: still one errand, the sale names it; the trip takes the trainer if it passes, the next
+    // plan names riding. One due option, so a due current is it (ReplanDecision)
+    Snapshot full = bot;
+    full.bagFree = 0;
+    Situation bags = filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)});
+    bags.bags.sellableSlots = 10;
+    bags.bags.vendor = {77, 1.0f, true};
+    Ranked const sale = Rank(full, bags);
+    Add(checks, "own stop: full bags with riding due make one due errand, named by the sale",
+        errands(sale) == 1 && Top(sale) && Top(sale)->kind == GoalKind::Errand && Top(sale)->target == 77 &&
+            Top(sale)->due,
+        Summary(sale));
+
+    // A hunter without a pet: the tame trip to the beast's spawn, which fights (not peaceful). A sick bot handed over
+    // in its safe area is not offered it, nor one under a test's nofight; both drops name the beast
+    Snapshot const hunter = Bot(10, 5000);
+    Situation const tame = filled(Base(10), {pet()}, true);
+    Ranked const tamed = Rank(hunter, tame);
+    Option const* tameTop = Top(tamed);
+    Snapshot sickHunter = hunter;
+    sickHunter.sickMs = 60000;
+    sickHunter.sickErrandOpen = true;
+    Situation sickTame = tame;
+    sickTame.sickSafeHere = true;
+    Ranked const sickRanked = Rank(sickHunter, sickTame);
+    Situation held = tame;
+    held.fightsHeld = true;
+    Ranked const heldRanked = Rank(hunter, held);
+    Add(checks,
+        "own stop: a hunter without a pet is offered the tame trip (not peaceful), not while sick and not under "
+        "nofight",
+        TopIs(tamed, GoalKind::Errand, BEAST, PET_REASON) && tameTop->due && !tameTop->peaceful &&
+            tameTop->place.x == spawn.x && !Has(sickRanked, GoalKind::Errand) && dropped(sickRanked, SICK_REASON) &&
+            !Has(heldRanked, GoalKind::Errand) && dropped(heldRanked, NOFIGHT_REASON),
+        Summary(tamed) + " / " + Summary(sickRanked) + " / " + Summary(heldRanked));
+
+    // Riding and training pass the sick gate like any errand: peaceful, and offered when the stop is in the safe area
+    Snapshot sickBot = bot;
+    sickBot.sickMs = 60000;
+    sickBot.sickErrandOpen = true;
+    Situation safe = filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)}, true);
+    safe.sickSafeHere = true;
+    Situation unsafe = filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)}, false);
+    unsafe.sickSafeHere = true;
+    Ranked const sickSafe = Rank(sickBot, safe);
+    Ranked const sickUnsafe = Rank(sickBot, unsafe);
+    Add(checks, "own stop: a sick bot handed over gets the due riding trip to a trainer in its safe area, none outside",
+        TopIs(sickSafe, GoalKind::Errand, RIDING_TRAINER, RIDING_REASON) && !Has(sickUnsafe, GoalKind::Errand),
+        Summary(sickSafe) + " / " + Summary(sickUnsafe));
+
+    Situation only = filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)});
+    only.questingOnly = true;
+    Ranked const kept = Rank(bot, only);
+    Add(checks, "own stop: the questing test keeps the trip of its own (it serves levelling)",
+        TopIs(kept, GoalKind::Errand, RIDING_TRAINER, RIDING_REASON), Summary(kept));
+
+    ReplanInput running;
+    running.current = {GoalKind::Quest, HOME_HUB, 0.0f, false, false};
+    Ranked const fresh = Rank(bot, filled(base, {riding(RIDING_PRICE, RIDING_TRAINER)}));
+    running.fresh = &fresh;
+    running.delta.situation = true;
+    Replan const switched = ReplanDecision(running);
+    running.current = {GoalKind::Errand, RIDING_TRAINER, 0.0f, false, false};
+    Replan const staying = ReplanDecision(running);
+    Add(checks, "own stop: a quest in progress is replaced by the due riding trip, the running trip stays",
+        switched.verdict == ReplanVerdict::Switch && switched.reason == RIDING_REASON &&
+            staying.verdict == ReplanVerdict::Stay,
+        std::string(ReplanWord(switched.verdict)) + " " + switched.reason + " / " + ReplanWord(staying.verdict));
+
+    // The walks the job gives the due stops (NeedBridge::PlaceOwnStops) from the map thread's stops seen: a trainer of
+    // the bot's class with the need's key, never one of another class; a sick bot's safe spawn before a nearer unsafe
+    // one; the beast's spawn by its distance, none past the errand walk
+    constexpr std::uint32_t OWN_SPAWN = 5113;
+    constexpr std::uint32_t FAR_SPAWN = 5114;
+    constexpr std::uint32_t OTHER_SPAWN = 6000;
+    constexpr std::uint32_t NO_LIST = 99;
+    UpkeepIndex index;
+    Planner::UpkeepTrainer own;
+    own.key = CLASS_TRAINER;
+    own.kind = Planner::TrainerKind::Class;
+    own.requirement = WARRIOR;
+    own.list = NO_LIST;
+    own.entries = {OWN_SPAWN, FAR_SPAWN};
+    Planner::UpkeepTrainer other = own;
+    other.key = CLASS_TRAINER + 1;
+    other.requirement = WARRIOR + 1;
+    other.entries = {OTHER_SPAWN};
+    index.trainers = {own, other};
+    UpkeepNeeds::NeedList placed;
+    placed.needs = {training(SPELL_PRICE, true), pet()};
+    auto const placedBy = [&](std::vector<StopSeen> const& seen, Place const& beastAt)
+    {
+        UpkeepNeeds::NeedList needs = placed;
+        needs.needs.back().beastAt = beastAt;
+        Situation situation = base;
+        NeedBridge::Fill(situation, NeedBridge::InputsOf(needs));
+        situation.trainersSeen = seen;
+        NeedBridge::PlaceOwnStops(situation, needs, index, bot.race, bot.cls, bot.position, bot.runSpeed);
+        return situation;
+    };
+    Situation const plain = placedBy({{OTHER_SPAWN, 1.0f, false}, {OWN_SPAWN, 3.0f, false}}, spawn);
+    Situation const sickPlaced =
+        placedBy({{OTHER_SPAWN, 1.0f, true}, {OWN_SPAWN, 3.0f, false}, {FAR_SPAWN, 5.0f, true}}, spawn);
+    Place farBeast = spawn;
+    farBeast.x += WorldTravel::ERRAND_MAX_WALK_MINUTES * 60.0f * bot.runSpeed + 100.0f;
+    Situation const noneSeen = placedBy({{OTHER_SPAWN, 1.0f, false}}, farBeast);
+    float const beastMinutes = WorldTravel::WalkMinutes(
+        std::hypot(spawn.x - bot.position.x, spawn.y - bot.position.y, spawn.z - bot.position.z), bot.runSpeed);
+    Add(checks,
+        "own stop: the job's walk is the nearest trainer of the bot's class that serves the need (a sick bot's safe "
+        "one first) and the beast's distance; none seen or past the errand walk leaves no trip",
+        plain.training.walkMinutes == 3.0f && sickPlaced.training.walkMinutes == 5.0f && sickPlaced.training.safe &&
+            std::abs(plain.pet.walkMinutes - beastMinutes) < 0.01f && noneSeen.training.walkMinutes < 0.0f &&
+            noneSeen.pet.walkMinutes < 0.0f,
+        std::to_string(plain.training.walkMinutes) + " " + std::to_string(sickPlaced.training.walkMinutes) + " " +
+            std::to_string(plain.pet.walkMinutes) + " " + std::to_string(noneSeen.training.walkMinutes) + " " +
+            std::to_string(noneSeen.pet.walkMinutes));
+
+    // NR14c: the plan names the lists the next snapshot seeks (the map thread's FillOwnStopsSeen does no search for a
+    // bot with none of the three due): due riding wants the trainers and the mount vendors, due training the
+    // trainers, a due pet (its walk is the beast's spawn) and nothing due neither; a wanted list the snapshot skipped
+    // (the last plan wanted none) makes the plan ask for the next one at once, an unwanted skipped list does not
+    auto const wanted = [&](std::vector<Need> const& list, bool trainersSkipped = false, bool vendorsSkipped = false)
+    {
+        Situation situation = filled(base, list);
+        situation.trainersSkipped = trainersSkipped;
+        situation.mountVendorsSkipped = vendorsSkipped;
+        GoalPlan const plan = Goals::PlanGoals(bot, CircuitContext{}, situation);
+        return std::to_string(plan.trainersWanted) + std::to_string(plan.mountVendorsWanted) +
+               std::to_string(plan.ownStopsSkipped);
+    };
+    std::string const ridingWants = wanted({riding(RIDING_PRICE, RIDING_TRAINER)});
+    std::string const trainingWants = wanted({training(SPELL_PRICE, true)});
+    std::string const petWants = wanted({pet()}, true, true);
+    std::string const noneWants = wanted({training(SPELL_PRICE * 3, false)}, true, true);
+    std::string const ridingSkipped = wanted({riding(RIDING_PRICE, RIDING_TRAINER)}, false, true);
+    std::string const trainingSkipped = wanted({training(SPELL_PRICE, true)}, true, false);
+    std::string const trainingOtherSkipped = wanted({training(SPELL_PRICE, true)}, false, true);
+    Add(checks,
+        "own stop: the plan wants the trainers and mount vendors for due riding, the trainers for due training, no "
+        "list for the pet or with nothing due; a wanted list its snapshot skipped asks for the next plan (mutant: the "
+        "due stop waits for a plan that comes when the running goal ends)",
+        ridingWants == "110" && trainingWants == "100" && petWants == "000" && noneWants == "000" &&
+            ridingSkipped == "111" && trainingSkipped == "101" && trainingOtherSkipped == "100",
+        ridingWants + " " + trainingWants + " " + petWants + " " + noneWants + " " + ridingSkipped + " " +
+            trainingSkipped + " " + trainingOtherSkipped);
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -2688,6 +2981,7 @@ inline std::vector<Check> SyntheticChecks()
     RepairDuringQuest(checks);
     RepairFirst(checks);
     SickSafeAreas(checks);
+    OwnStops(checks);
     Targets(checks);
     Routes(checks);
     HeldFromQuests(checks);
