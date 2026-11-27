@@ -523,6 +523,26 @@ bool Expects(QuestOrder const& order, std::uint32_t quest, std::uint32_t objecti
 
 bool SameNeeds(Route::Candidate const& a, Route::Candidate const& b) { return a.needs == b.needs; }
 
+// Questing WQ44, the harness's own reading: a hand-in, or the only open objective need of its quest
+bool Favoured(std::vector<Need> const& needs, QuestOrderNeed const& expected)
+{
+    if (expected.objective == HAND_IN)
+        return true;
+    if (expected.objective == TAKE)
+        return false;
+    return std::count_if(needs.begin(), needs.end(), [&expected](Need const& need)
+                         { return need.quest == expected.quest && need.objective < TAKE; }) == 1;
+}
+
+bool FirstFavoured(Route::Plan const& plan, std::vector<Need> const& needs)
+{
+    if (plan.stops.empty())
+        return false;
+    std::vector<QuestOrderNeed> const& expected = plan.stops.front().order.expected;
+    return std::any_of(expected.begin(), expected.end(),
+                       [&needs](QuestOrderNeed const& one) { return Favoured(needs, one); });
+}
+
 void GeneratedLogs(std::uint32_t seed, std::size_t show)
 {
     Gen gen{std::mt19937(seed)};
@@ -540,6 +560,9 @@ void GeneratedLogs(std::uint32_t seed, std::size_t show)
     Invariant bounds{"stops begin before the horizon, at most the limit; each walk is straight yards within reach"};
     Invariant sums{"the route's worth and minutes are its stops' sums; rate, leave-below and stay as stated"};
     Invariant thin{"of neighbouring candidates with the same needs only the best stays; the best always stays"};
+    Invariant bags{"more quest items never turn a first order with a hand-in or finishing need into one without"};
+    Invariant none{"with no quest item the route is that of a default pricing"};
+    std::size_t turned = 0;  // logs whose first order the quest items turned to a hand-in or finishing need
     std::size_t routes = 0;
     std::size_t stops = 0;
     std::size_t fieldOrders = 0;
@@ -565,6 +588,32 @@ void GeneratedLogs(std::uint32_t seed, std::size_t show)
         same.Note(RouteText(Route::Build(w.map, w.index, w.needs, ask)) == text &&
                       RouteText(Route::Build(again, w.index, w.needs, ask)) == text,
                   logIndex, "another route");
+
+        // Questing WQ44: the log's needs priced per share of quest items, the same takes after them
+        bool favoured = false;
+        bool atZero = false;
+        for (float const share : {0.0f, 0.25f, 0.5f, 1.0f})
+        {
+            Pricing pricing{};
+            pricing.questItemShare = share;
+            std::vector<Need> needs = Needs(w.index, w.log, ask.team, pricing, 5);
+            for (Need const& need : w.needs)
+                if (need.objective == TAKE)
+                    needs.push_back(need);
+            Route::Ask held = ask;
+            held.pricing = pricing;
+            Route::Plan const laden = Route::Build(w.map, w.index, needs, held);
+            bool const now = FirstFavoured(laden, needs);
+            if (share == 0.0f)
+            {
+                atZero = now;
+                none.Note(RouteText(laden) == text, logIndex, "another route");
+            }
+            if (favoured)
+                bags.Note(now, logIndex, "share " + std::to_string(share));
+            favoured = favoured || now;
+        }
+        turned += !atZero && favoured ? 1 : 0;
 
         // Reach, the giver and the ender at hand: asked of TopFields with the harness's own rules
         std::uint64_t const here = FieldCellKeyAt(ask.mapId, ask.x, ask.y);
@@ -727,8 +776,9 @@ void GeneratedLogs(std::uint32_t seed, std::size_t show)
         "seed=%u logs=%zu routes=%zu stops=%zu (field %zu, hand_in %zu) several=%zu projected=%zu "
         "thinned=%zu\n",
         seed, LOGS, routes, stops, fieldOrders, handInOrders, several, projected, thinned);
-    for (Invariant const* invariant :
-         {&work, &risk, &shut, &same, &reach, &giver, &atHand, &longer, &closing, &cells, &rise, &bounds, &sums, &thin})
+    std::printf("quest items turned the first order in %zu logs\n", turned);
+    for (Invariant const* invariant : {&work, &risk, &shut, &same, &reach, &giver, &atHand, &longer, &closing, &cells,
+                                       &rise, &bounds, &sums, &thin, &bags, &none})
         Report(*invariant);
     Check(several > 0 && projected > 0 && thinned > 0 && fieldOrders > 0 && handInOrders > 0,
           "the generated logs give routes of several stops, projected needs, thinned candidates and both words");
@@ -1384,6 +1434,97 @@ void GoalRouteTakes()
           "goal route: no field map, no build and no route");
 }
 
+// Questing WQ44, hand-built. The bot stands in cell (0, 0); every field named lies two cells (200 yd) to either side,
+// so the walks are equal and the worths decide
+constexpr std::uint32_t ENDER = 701;
+constexpr std::uint32_t GHOST = 399;  // spawns nowhere
+
+Route::Plan PlanWithItems(FieldMap const& map, QuestIndex const& index, std::vector<QuestSlot> const& log, float share,
+                          std::optional<std::uint32_t> take = std::nullopt)
+{
+    Route::Ask ask;
+    ask.mapId = MAP_A;
+    ask.x = Mid(0);
+    ask.y = Mid(0);
+    ask.level = 10;
+    ask.pricing.questItemShare = share;
+    std::vector<Need> needs = Needs(index, log, 0, ask.pricing, 1);
+    if (take)
+        if (std::optional<Need> need = TakeNeed(index, *index.Find(*take), 0, ask.pricing, MAP_A))
+            needs.push_back(std::move(*need));
+    return Route::Build(map, index, needs, ask);
+}
+
+// Quest 90 (100 XP) is ready and its ender stands to one side: 50 at the hand-in. Quest 91 (800 XP) is given on the
+// other: 80 at the take. Full of quest items the hand-in is worth 100
+void ItemsPreferHandIn()
+{
+    std::vector<FieldSpawn> spawns;
+    spawns.push_back(MakeSpawn(FieldKind::Creature, ENDER, MAP_A, Mid(3), Mid(0), 10, 10, false, 300));
+    spawns.push_back(MakeSpawn(FieldKind::Creature, CLERK, MAP_A, Mid(-3), Mid(0), 10, 10, false, 300));
+    auto const map = std::make_shared<FieldMap const>(FieldMap::Build(spawns));
+    QuestGather gather;
+    gather.quests = {MakeQuest(90, 100, {MakeObjective(ObjectiveKind::Kill, WOLF, 2, 0)}),
+                     MakeQuest(91, 800, {MakeObjective(ObjectiveKind::Kill, BOAR, 6, 0)})};
+    gather.places = {MakePlace(ENDER, MAP_A, 3, 0), MakePlace(CLERK, MAP_A, -3, 0)};
+    gather.relations = {{90, ENDER, false, true}, {91, CLERK, false, false}};
+    QuestIndex const index = QuestIndex::Build(gather);
+    std::vector<QuestSlot> const log = {{90, Circuit::SLOT_COMPLETE, {2, 0, 0, 0}}};
+
+    Route::Plan const empty = PlanWithItems(*map, index, log, 0.0f, 91);
+    Route::Plan const full = PlanWithItems(*map, index, log, 1.0f, 91);
+    Check(!empty.stops.empty() && Expects(empty.stops[0].order, 91, TAKE) && Near(empty.stops[0].worth, 80.0),
+          "no quest item: the take's 80 before the hand-in's 50: " + RouteText(empty));
+    Check(!full.stops.empty() && Expects(full.stops[0].order, 90, HAND_IN) && Near(full.stops[0].worth, 100.0),
+          "bags full of quest items: the hand-in, worth 100, before the take: " + RouteText(full));
+
+    // The snapshot's slots reach the goals' route
+    Snapshot bot;
+    bot.bot = 1;
+    bot.level = 10;
+    bot.race = HUMAN;
+    bot.cls = 1;
+    bot.position = {MAP_A, Mid(0), Mid(0), 0.0f};
+    bot.quests = log;
+    bot.runSpeed = 7.0f;
+    bot.bagSlots = 16;
+    CircuitContext context;
+    context.quests = &index;
+    Goals::Situation situation;
+    situation.onCircuit = false;
+    Goals::RouteBuild const build = GoalRoute::Builder(map);
+    Snapshot laden = bot;
+    laden.questItemSlots = 16;
+    Goals::GoalPlan const light = Goals::PlanGoals(TakeFixture::Answered(bot, context), context, situation, build);
+    Goals::GoalPlan const heavy = Goals::PlanGoals(TakeFixture::Answered(laden, context), context, situation, build);
+    Check(!light.route.orders.empty() && Expects(light.route.orders[0], 91, TAKE) && !heavy.route.orders.empty() &&
+              Expects(heavy.route.orders[0], 90, HAND_IN),
+          "goal route: the share of bag slots with quest items turns the first order: " +
+              GoalText(light.route, light.ranked) + " / " + GoalText(heavy.route, heavy.ranked));
+}
+
+// Quest 94 (500 XP) needs two wolves and nothing else: 100 a wolf. Quest 95 (1600 XP) needs two boars and two of a
+// creature that spawns nowhere: 160 a boar. Full of quest items a wolf is worth 200
+void ItemsPreferFinishing()
+{
+    std::vector<FieldSpawn> spawns;
+    AddSpawns(spawns, WOLF, 3, 0, 8, 9, 10, 300);
+    AddSpawns(spawns, BOAR, -3, 0, 8, 9, 10, 300);
+    FieldMap const map = FieldMap::Build(spawns);
+    QuestIndex index;
+    index.quests = {
+        MakeQuest(94, 500, {MakeObjective(ObjectiveKind::Kill, WOLF, 2, 0)}),
+        MakeQuest(95, 1600,
+                  {MakeObjective(ObjectiveKind::Kill, BOAR, 2, 0), MakeObjective(ObjectiveKind::Kill, GHOST, 2, 1)})};
+    std::vector<QuestSlot> const log = {{94, 0, {}}, {95, 0, {}}};
+    Route::Plan const empty = PlanWithItems(map, index, log, 0.0f);
+    Route::Plan const full = PlanWithItems(map, index, log, 1.0f);
+    Check(!empty.stops.empty() && Expects(empty.stops[0].order, 95, 0),
+          "no quest item: the boars of the quest with two open objectives first: " + RouteText(empty));
+    Check(!full.stops.empty() && Expects(full.stops[0].order, 94, 0),
+          "bags full of quest items: the wolves that finish their quest first: " + RouteText(full));
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
@@ -1400,6 +1541,8 @@ int main(int argc, char** argv)
     FarStops(seed);
     GoalRoutes(seed);
     GoalRouteTakes();
+    ItemsPreferHandIn();
+    ItemsPreferFinishing();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

@@ -190,9 +190,16 @@ void FillBags(Player* bot, Snapshot& snapshot)
 {
     snapshot.bagSlots = static_cast<uint16>(BagSlots(bot));
     uint32 free = 0;
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+    uint32 questItems = 0;  // questing WQ44: by the template alone, no look at the log
+    auto const count = [&free, &questItems](Item const* item)
+    {
+        if (!item)
             ++free;
+        else if (item->GetTemplate()->Class == ITEM_CLASS_QUEST || item->GetTemplate()->Bonding == BIND_QUEST_ITEM)
+            ++questItems;
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        count(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
     for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
     {
         Bag const* bag = bot->GetBagByPos(bagSlot);
@@ -200,10 +207,10 @@ void FillBags(Player* bot, Snapshot& snapshot)
             bag->GetTemplate()->SubClass != ITEM_SUBCLASS_CONTAINER)
             continue;
         for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-            if (!bag->GetItemByPos(static_cast<uint8>(slot)))
-                ++free;
+            count(bag->GetItemByPos(static_cast<uint8>(slot)));
     }
     snapshot.bagFree = static_cast<uint16>(free);
+    snapshot.questItemSlots = static_cast<uint16>(questItems);
     snapshot.unarmed = !bot->GetWeaponForAttack(BASE_ATTACK);
 
     GearWear const wear = ReadGearWear(bot);

@@ -117,7 +117,8 @@ struct Snapshot
     std::uint32_t money{0};
     std::uint16_t bagSlots{0};  // general slots: the backpack and plain bags
     std::uint16_t bagFree{0};
-    bool unarmed{false};  // no weapon in the main hand: no creature stop (WPC10)
+    std::uint16_t questItemSlots{0};  // questing WQ44: general slots holding a quest item
+    bool unarmed{false};              // no weapon in the main hand: no creature stop (WPC10)
     std::uint8_t durabilityPercent{100};
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
