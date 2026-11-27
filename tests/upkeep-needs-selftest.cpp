@@ -1221,6 +1221,12 @@ void ProfessionNeeds()
     constexpr std::uint32_t VENDOR_SMITH = 602;
     constexpr std::uint32_t VENDOR_INN = 603;
     constexpr std::uint32_t ITEM_BREAD = 604;
+    // The jeweler's vendor sells its kit and grinder, which have no tool category (NR20: their TOOLS rows make them
+    // tools)
+    constexpr std::uint32_t VENDOR_JEWEL = 605;
+    constexpr std::uint32_t JEWELER_KIT = 20815;
+    constexpr std::uint32_t SIMPLE_GRINDER = 20824;
+    constexpr std::uint16_t JEWELCRAFTING = 755;
     constexpr std::uint32_t WEAPON = 2;  // ITEM_CLASS_WEAPON
     UpkeepGather input;
     UpkeepItemFacts pickFacts = Item(MINING_PICK, WEAPON, 14, 90, 1, 1);
@@ -1231,12 +1237,14 @@ void ProfessionNeeds()
     bread.spellCategory = UpkeepItem::CATEGORY_FOOD;
     UpkeepItemFacts plansFacts = Item(SMITH_PLANS, 9, 4, 400, 1, 1);  // ITEM_CLASS_RECIPE, blacksmithing
     plansFacts.tool = true;
-    input.items = {pickFacts, poleFacts, bread, plansFacts};
-    input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK},
-                         {VENDOR_SUPPLIER, FISHING_POLE},
-                         {VENDOR_SMITH, MINING_PICK},
-                         {VENDOR_SMITH, SMITH_PLANS},
-                         {VENDOR_INN, ITEM_BREAD}};
+    UpkeepItemFacts kitFacts = Item(JEWELER_KIT, 7, 0, 60, 1, 1);  // ITEM_CLASS_TRADE_GOODS
+    kitFacts.tool = true;
+    UpkeepItemFacts grinderFacts = Item(SIMPLE_GRINDER, 7, 0, 40, 1, 1);
+    grinderFacts.tool = true;
+    input.items = {pickFacts, poleFacts, bread, plansFacts, kitFacts, grinderFacts};
+    input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK}, {VENDOR_SUPPLIER, FISHING_POLE}, {VENDOR_SMITH, MINING_PICK},
+                         {VENDOR_SMITH, SMITH_PLANS},    {VENDOR_INN, ITEM_BREAD},        {VENDOR_JEWEL, JEWELER_KIT},
+                         {VENDOR_JEWEL, SIMPLE_GRINDER}};
     input.trainers.push_back({TRAINER_MINING,
                               TrainerKind::Tradeskill,
                               0,
@@ -1362,7 +1370,7 @@ void ProfessionNeeds()
     hold(miner, MINING, 20, 75);
     NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
     Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
-    Check(index.Offers(UpkeepStock::Tool).size() == 4 && index.Offers(UpkeepStock::Food).size() == 1,
+    Check(index.Offers(UpkeepStock::Tool).size() == 6 && index.Offers(UpkeepStock::Food).size() == 1,
           "the index's tool sellers: every vendor row of a tool or recipe item, nothing else");
     Check(pick && pick->item == MINING_PICK && pick->copper == 90 && pick->stock == UpkeepStock::Tool &&
               pick->lotPrice == 90 && pick->units == 1 && pick->due && pick->vendor != 0 && StockPayable(*pick) &&
@@ -1400,6 +1408,17 @@ void ProfessionNeeds()
     Check(unpaid && unpaid->funded < 90 && !StockPayable(*unpaid) && !AnyErrandDue(poorTools) && shortLine &&
               shortLine->outcome == ShopOutcome::Budget,
           "a miner short of the pick's price takes no trip for it; at a stop it is gold short");
+    // A jeweler's kit and grinder are tools by their TOOLS rows (NR20): held, neither is a need; without them, a need
+    Snapshot jeweler = bot;
+    jeweler.person = person(Skill::Mining, Skill::Jewelcrafting);
+    hold(jeweler, JEWELCRAFTING, 20, 75);
+    Need const* kit = need(ComputeNeeds(jeweler, index, Rates(5)), ProfessionStep::Tool, JEWELCRAFTING);
+    Check(kit && kit->item == JEWELER_KIT && kit->due,
+          "a jeweler without its kit and grinder has a due tool need for the kit");
+    Snapshot equipped = jeweler;
+    equipped.toolsHeld = {JEWELER_KIT, SIMPLE_GRINDER};
+    Check(!need(ComputeNeeds(equipped, index, Rates(5)), ProfessionStep::Tool, JEWELCRAFTING),
+          "a jeweler holding both tools has no tool need: it buys neither again");
     Snapshot smith = bot;
     hold(smith, SMITHING, 20, 75);
     Check(!need(ComputeNeeds(smith, index, Rates(5)), ProfessionStep::Tool, SMITHING),

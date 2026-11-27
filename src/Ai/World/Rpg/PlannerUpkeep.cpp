@@ -489,8 +489,9 @@ void AddWeapon(Snapshot& snapshot, Player* bot, Item const* item)
     snapshot.ownedWeaponSkills.push_back({static_cast<uint16>(skill), bot->GetSkillValue(skill) > 0});
 }
 
-// A profession tool it holds, once each (professions WR1): an item a cast asks for by its tool category (a knife, a
-// rod, a pick, a hammer, a spanner, a stone), not a shaman's totem; or a fishing pole
+// A profession tool it holds, once each (professions WR1, NR20): a TOOLS row by its item id (a jeweler's kit and
+// grinder have no tool category); an item a cast asks for by its tool category (a knife, a rod, a pick, a hammer, a
+// spanner, a stone), not a shaman's totem; or a fishing pole
 void AddTool(Snapshot& snapshot, Item const* item)
 {
     ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
@@ -500,7 +501,7 @@ void AddTool(Snapshot& snapshot, Item const* item)
         proto->TotemCategory ? sTotemCategoryStore.LookupEntry(proto->TotemCategory) : nullptr;
     bool const tool = category && category->categoryType != TOTEM_CATEGORY_TYPE_TOTEM;
     bool const pole = proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
-    if ((tool || pole) &&
+    if ((ProfessionRules::IsProfessionTool(proto->ItemId, tool) || pole) &&
         std::find(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), proto->ItemId) == snapshot.toolsHeld.end())
         snapshot.toolsHeld.push_back(proto->ItemId);
 }
