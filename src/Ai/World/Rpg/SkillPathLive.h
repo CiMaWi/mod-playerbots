@@ -66,8 +66,8 @@ Market::View MarketView();
 std::uint32_t MarketProceeds(Market::View const& market, std::uint32_t item);
 
 // Any thread, a pure function of its inputs: the needs list with the path's recipes and ranks (SkillPathBridge
-// Compute), its own PerfMonitor row "profession path computed". Without a recipe index or a person: the needs without
-// a path, and null
+// Compute), its own PerfMonitor row "profession path computed" and its parts' rows. Without a recipe index or a
+// person: the needs without a path, and null
 std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, UpkeepIndex const& upkeep,
                                                      UpkeepNeeds::NeedRates const& rates,
                                                      SkillPath::PathInputs const& inputs, PathData const& data,

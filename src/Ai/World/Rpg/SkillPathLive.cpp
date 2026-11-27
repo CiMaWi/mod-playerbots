@@ -171,6 +171,18 @@ std::string SecondText(SkillPath::SecondChoice const& second)
 }
 
 constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps the command prints
+
+uint64 MicrosSince(std::chrono::steady_clock::time_point started)
+{
+    return static_cast<uint64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
+}
+
+void RecordMicros(char const* name, uint64 micros)
+{
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, name))
+        row->Record(micros);
+}
 }  // namespace
 
 Market::View MarketView()
@@ -314,6 +326,7 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         skinnables = SkillPath::SkinnablesOf(
             *data.recipes, killer, [&market](std::uint32_t item) { return market.SaleOf(item, SellCopper(item)); });
     }
+    uint64 const skinnablesMicros = MicrosSince(started);
     SkillPath::PathWorld const world{*data.recipes,
                                      [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
                                      SellCopper,
@@ -328,10 +341,11 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
                                  CategoriesOf(snapshot.toolsHeld));
     needs = std::move(computed.needs);
     auto path = std::make_shared<SkillPath::Path const>(std::move(computed.path));
-    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "profession path computed"))
-        row->Record(static_cast<uint64>(std::max<long long>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(),
-            0)));
+    RecordMicros("profession path computed", MicrosSince(started));
+    // Its parts: the skinnables with the market view, both needs lists, the weigh with the second choice
+    RecordMicros("profession path computed: skinnables", skinnablesMicros);
+    RecordMicros("profession path computed: needs", computed.needsMicros);
+    RecordMicros("profession path computed: weigh", computed.weighMicros);
     return path;
 }
 

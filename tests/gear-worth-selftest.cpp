@@ -618,6 +618,84 @@ void CheckChoice()
     Check(BestBuy({}, 0, 1000) == NO_OFFER && Refusals({}, 0, 0).empty(), "choice: nothing offered");
 }
 
+// Gear lines at the auctioneer (WG7): one pick per slot, the wear rule asked in the slot's order
+void CheckPick()
+{
+    using GearWorth::Offer;
+    using GearWorth::PickPerSlot;
+    using Picks = std::vector<std::size_t>;
+
+    constexpr std::uint8_t HEAD = 0;
+    constexpr std::uint8_t LEGS = 6;
+    auto const make = [](std::uint32_t item, std::uint8_t slot, std::uint32_t worth, std::uint32_t price,
+                         std::uint32_t ceiling) { return Offer{item, slot, 1u << slot, worth, price, ceiling}; };
+    auto const all = [](std::size_t) { return true; };
+
+    std::vector<Offer> const same = {make(1, HEAD, 1000, 400, 1000), make(2, HEAD, 1200, 600, 1200),
+                                     make(3, HEAD, 900, 100, 900)};
+    Check(PickPerSlot(same, 100000, all) == Picks{2}, "pick: one per slot, the largest surplus");
+
+    std::vector<Offer> const tie = {make(1, HEAD, 1500, 1000, 1500), make(2, HEAD, 1000, 500, 1000)};
+    Check(PickPerSlot(tie, 100000, all) == Picks{1}, "pick: equal surplus goes to the cheaper");
+
+    // A poor suffix cheap, a good suffix dearer: the larger worth above price wins
+    std::vector<Offer> const suffix = {make(1, HEAD, 600, 200, 600), make(1, HEAD, 2000, 900, 2000)};
+    Check(PickPerSlot(suffix, 100000, all) == Picks{1}, "pick: the good suffix when its surplus is larger");
+
+    std::vector<Offer> const dear = {make(1, HEAD, 5000, 2000, 5000), make(2, HEAD, 900, 500, 900)};
+    Check(PickPerSlot(dear, 600, all) == Picks{1}, "pick: an affordable offer before a larger unaffordable one");
+    std::vector<Offer> const over = {make(1, HEAD, 5000, 1000, 800), make(2, HEAD, 900, 500, 900)};
+    Check(PickPerSlot(over, 100000, all) == Picks{1}, "pick: within the ceiling before a larger over it");
+    Check(PickPerSlot(dear, 100, all) == Picks{0}, "pick: none buyable keeps the slot's largest surplus");
+
+    std::vector<std::size_t> asked;
+    auto const refuseFirst = [&](std::size_t i)
+    {
+        asked.push_back(i);
+        return i != 2;
+    };
+    Check(PickPerSlot(same, 100000, refuseFirst) == Picks{0}, "pick: a refusal falls to the next");
+    Check(asked == Picks{2, 0}, "pick: not asked past the first yes");
+    Check(PickPerSlot(same, 100000, [](std::size_t) { return false; }).empty(), "pick: every offer refused");
+
+    std::vector<Offer> const slots = {make(1, HEAD, 1000, 900, 1000), make(2, LEGS, 3000, 1000, 3000),
+                                      make(3, HEAD, 1100, 950, 1100)};
+    Check(PickPerSlot(slots, 100000, all) == Picks{1, 2}, "pick: two slots by surplus");
+
+    std::vector<Offer> const worthless = {make(1, HEAD, 0, 0, 0), make(2, LEGS, 500, 100, 500)};
+    Check(PickPerSlot(worthless, 100000, all) == Picks{1}, "pick: worth 0 dropped");
+    Check(PickPerSlot({}, 100000, all).empty(), "pick: nothing listed");
+}
+
+void CheckNoOfferSlot()
+{
+    using GearWorth::NO_SLOT;
+    using GearWorth::NoOfferSlot;
+    using GearWorth::WornSlot;
+    using Worn = std::array<WornSlot, GearWorth::EQUIPMENT_SLOTS>;
+
+    Worn full;
+    for (WornSlot& slot : full)
+        slot = {true, 50};
+    Worn gap = full;
+    gap[9] = {};
+    gap[2].itemLevel = 10;
+    Check(NoOfferSlot(gap, 0) == 9, "no_offer: an empty slot before a low one");
+    Worn low = full;
+    low[7].itemLevel = 20;
+    low[12].itemLevel = 20;
+    Check(NoOfferSlot(low, 0) == 7, "no_offer: the lowest item level, the first of equals");
+
+    Worn bare = full;
+    bare[GearWorth::SLOT_SHIRT] = {};
+    bare[GearWorth::SLOT_TABARD] = {};
+    bare[GearWorth::SLOT_OFF_HAND] = {};
+    bare[4].itemLevel = 30;
+    Check(NoOfferSlot(bare, 1u << GearWorth::SLOT_OFF_HAND) == 4, "no_offer: never shirt, tabard, blocked off hand");
+    Check(NoOfferSlot(bare, 0) == GearWorth::SLOT_OFF_HAND, "no_offer: an unblocked empty off hand");
+    Check(NoOfferSlot(full, 0x7FFFFu) == NO_SLOT, "no_offer: none fillable");
+}
+
 int main()
 {
     CheckZero();
@@ -627,6 +705,8 @@ int main()
     CheckHoursPerLevel();
     CheckRoute();
     CheckChoice();
+    CheckPick();
+    CheckNoOfferSlot();
     PrintLadder();
 
     std::cout << "\ngear-worth: " << passed << " passed, " << failed << " failed\n";

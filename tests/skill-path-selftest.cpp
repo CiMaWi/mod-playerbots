@@ -1115,6 +1115,81 @@ void CheckSaleClaim()
           "control sale_at_loss: a chain for sale where the bars fetch more (caught)");
 }
 
+// Auction item 10 (profession coverage WPC11): a held food the bot keeps for its own use is also a recipe's reagent;
+// neither the skill casts nor the crafts for sale take the units it keeps, nor is it a path material (item use keeps
+// it); the control without the want shows the crafts take them
+void CheckKeptReagent()
+{
+    constexpr std::uint32_t RAW_FISH = 6291;
+    constexpr std::uint32_t FISH = 6290;
+    constexpr std::uint32_t R_FISH = 7751;
+    World world = SupplyWorld();
+    world.recipes.push_back(MakeRecipe(COOK, R_FISH, FISH, {{RAW_FISH, 1}}, 45, 65, 1500));
+    for (std::uint32_t const id : {RAW_FISH, FISH})
+        world.items.push_back(Fact(id));
+    world.sell[RAW_FISH] = 1;
+    world.sell[FISH] = 2;
+    RecipeIndex const index = world.Index();
+    PathBot cook = HandBot();
+    cook.skills.clear();
+    cook.knownRecipes = {R_FISH};
+    cook.held = {{RAW_FISH, 10}};
+    PathBot keeper = cook;
+    keeper.consumables = {{RAW_FISH, 6, 10, 5.0f}};
+    auto const castsOf = [&](std::vector<Craft> const& queue, bool forSale)
+    {
+        std::uint32_t casts = 0;
+        for (Craft const& craft : queue)
+            if (craft.spell == R_FISH && craft.forSale == forSale)
+                casts += craft.casts;
+        return casts;
+    };
+
+    // The skill casts: a chosen cooking stretch of twenty casts
+    PathWorld const paths = WorldOf(index, world);
+    Path skillPath;
+    Stretch stretch;
+    stretch.skill = COOK;
+    PathStep step;
+    step.kind = StepKind::Craft;
+    step.id = R_FISH;
+    step.from = 1;
+    step.to = 20;
+    step.casts = 20.0;
+    stretch.steps.push_back(step);
+    skillPath.weighed.push_back(stretch);
+    skillPath.chosen = 0;
+    std::uint32_t const skillKept = castsOf(Weigher(keeper, paths).Claim(skillPath).queue, false);
+    std::uint32_t const skillAll = castsOf(Weigher(cook, paths).Claim(skillPath).queue, false);
+
+    // The crafts for sale: no stretch, a market that buys the cooked fish
+    auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+    AuctionIndex::TypicalPrice& typical = snapshot->items[FISH].typical;
+    typical.unitPrice = 20000;
+    typical.sample = 10;
+    typical.weight = 10.0;
+    snapshot->items[FISH].record = {10.0, 24.0};
+    PathWorld market = WorldOf(index, world);
+    market.market = Market::View{snapshot, {}, {}, {}};
+    auto const sold = [&market](PathBot const& bot)
+    {
+        Weigher const weigher(bot, market);
+        Path path;
+        weigher.TakeClaims(path, weigher.Claim(path));
+        return path;
+    };
+    Path const saleKept = sold(keeper);
+    Path const saleAll = sold(cook);
+    std::cout << "kept reagent (auction item 10): skill casts " << skillKept << " kept, " << skillAll
+              << " without the want; sale " << QueueText(saleKept.queue) << " kept, " << QueueText(saleAll.queue)
+              << " without the want\n";
+    Check(skillKept == 4, "kept reagent: the skill casts take only the four raw fish the kept six leave");
+    Check(castsOf(saleKept.queue, true) == 4 && !MaterialOf(saleKept, RAW_FISH),
+          "kept reagent: the crafts for sale take only the four left, the kept six are no path material");
+    Check(skillAll == 10 && castsOf(saleAll.queue, true) == 10,
+          "kept reagent control: without the want the skill casts and the sale take all ten");
+}
+
 void CheckProcessingClaims()
 {
     constexpr std::uint16_t SCRIBE = static_cast<std::uint16_t>(Skill::Inscription);
@@ -2226,6 +2301,7 @@ int main(int argc, char** argv)
     CheckDisenchantOutlet();
     CheckProcessingClaims();
     CheckSaleClaim();
+    CheckKeptReagent();
     std::ostringstream search;
     Search(search);
     std::ostringstream fixture;

@@ -30,6 +30,8 @@
 #include "Playerbots.h"
 #include "SkillPathBridge.h"
 #include "SkillPathLive.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
@@ -360,14 +362,46 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
     return true;
 }
 
+uint32 GatherToolCategory(uint16 skill)
+{
+    // The base-rank Mining spell, the one OpenLootAction::DoLoot casts at a vein
+    constexpr uint32 MINING_SPELL = 2575;
+    if (skill != SKILL_MINING)
+        return 0;
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(MINING_SPELL);
+    return spell ? spell->TotemCategory[0] : 0;
+}
+
+bool HoldsGatherTool(std::vector<uint32> const& toolsHeld, uint16 skill)
+{
+    uint32 const category = GatherToolCategory(skill);
+    TotemCategoryEntry const* wanted = category ? sTotemCategoryStore.LookupEntry(category) : nullptr;
+    if (!wanted)
+        return true;
+    // The engine's rule (Player::IsTotemCategoryCompatiableWith): the same type, the held mask covers the wanted one
+    return std::any_of(toolsHeld.begin(), toolsHeld.end(),
+                       [wanted](uint32 tool)
+                       {
+                           ItemTemplate const* proto = sObjectMgr->GetItemTemplate(tool);
+                           TotemCategoryEntry const* held = proto && proto->TotemCategory
+                                                                ? sTotemCategoryStore.LookupEntry(proto->TotemCategory)
+                                                                : nullptr;
+                           return held && held->categoryType == wanted->categoryType &&
+                                  (held->categoryMask & wanted->categoryMask) == wanted->categoryMask;
+                       });
+}
+
 void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Materials::Rates const& rates,
                        PathData const& data, uint32 competing, bool shortOfGold, Goals::Situation& situation)
 {
     if (!data.recipes)
         return;
     Gather::Gatherer gatherer;
+    // A miner without a pick plans no vein (WPC8): the cast asks for one, so each vein timed out until the tool errand
+    // bought it
     for (Skill const& skill : snapshot.skills)
-        if (skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING || skill.id == SKILL_SKINNING)
+        if ((skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING || skill.id == SKILL_SKINNING) &&
+            HoldsGatherTool(snapshot.toolsHeld, skill.id))
             gatherer.skills.push_back({skill.id, skill.value, skill.max});
     gatherer.level = snapshot.level;
     gatherer.side = Materials::SideBit(snapshot.team);

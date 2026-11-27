@@ -1031,6 +1031,46 @@ void CheckStanding()
           "standing store: the later row wins, a future row set to now, unknown kind and no price skipped");
     Check(oddCounts.standing == 3 && odd.HistoryDirty(), "standing store: three kept, the table due a rewrite");
 }
+
+// An offer carries its item's random property id (gear plan WG6): read back from a snapshot, kept through a
+// refresh, replaced by a new add
+void CheckSuffix()
+{
+    Book book;
+    auto add = [&book](std::uint32_t id, std::uint32_t buyout, std::int32_t randomPropertyId)
+    {
+        AuctionFacts facts = Auction(id, 1100, 1, 10, buyout);
+        facts.randomPropertyId = randomPropertyId;
+        book.Add(facts);
+    };
+    auto idOf = [](Snapshot const& snapshot, std::uint32_t auction) -> std::int32_t
+    {
+        if (ItemEntry const* entry = Item(snapshot, 1100))
+            for (OfferLine const& offer : entry->offers.cheapest)
+                if (offer.id == auction)
+                    return offer.randomPropertyId;
+        return 999999;  // not listed
+    };
+    add(60, 500, -41);
+    add(61, 600, 1203);
+    add(62, 700, 0);
+    Snapshot const first = Take(book);
+    Check(idOf(first, 60) == -41 && idOf(first, 61) == 1203 && idOf(first, 62) == 0,
+          "suffix: each offer gives its own random property id back, negative, positive and none");
+    book.Refresh(
+        [](AuctionFacts& facts)
+        {
+            facts.bid = 20;
+            facts.bidder = 5;
+            return true;
+        });
+    Snapshot const refreshed = Take(book);
+    Check(idOf(refreshed, 60) == -41 && idOf(refreshed, 61) == 1203 && idOf(refreshed, 62) == 0,
+          "suffix: a refresh that changes the bid keeps the ids");
+    add(60, 500, -7);
+    Snapshot const again = Take(book);
+    Check(idOf(again, 60) == -7 && idOf(again, 61) == 1203, "suffix: the same auction added again replaces its id");
+}
 }  // namespace
 
 int main()
@@ -1046,6 +1086,7 @@ int main()
     CheckRecordStore();
     CheckLotFrontier();
     CheckStanding();
+    CheckSuffix();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

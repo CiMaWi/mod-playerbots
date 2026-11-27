@@ -416,6 +416,9 @@ struct Claims
     std::map<std::uint32_t, std::uint32_t> afterUses;  // held units the skill crafts may take
     double useWorth{0.0};                              // value units: what the uses' crafts make is worth (WR15)
     std::uint32_t foodUnits{0};                        // units of upkeep's food the uses' crafts make (WR15)
+    // held units a consumable want keeps for direct use, up to its stock (auction item 10): no craft takes them, and
+    // they are no path material (item use keeps them)
+    std::map<std::uint32_t, std::uint32_t> keptForUse;
 };
 
 // Where the weigher's netting records the path's materials (WR12): the map, the stretch's skill and the skill they are
@@ -881,8 +884,10 @@ public:
         {
             Material const* material = MaterialOf(path, item);
             auto const reserved = claims.reserved.find(item);
+            auto const forUse = claims.keptForUse.find(item);
             std::uint32_t const kept =
-                std::max(material ? material->used : 0u, reserved == claims.reserved.end() ? 0u : reserved->second);
+                std::max(material ? material->used : 0u, reserved == claims.reserved.end() ? 0u : reserved->second) +
+                (forUse == claims.keptForUse.end() ? 0u : forUse->second);
             if (held > kept)
                 spare[item] = held - kept;
         }
@@ -901,7 +906,9 @@ public:
         for (auto const& [item, held] : _held)
         {
             auto const after = claims.afterUses.find(item);
-            std::uint32_t const left = after == claims.afterUses.end() ? 0 : after->second;
+            auto const forUse = claims.keptForUse.find(item);
+            std::uint32_t const left = (after == claims.afterUses.end() ? 0 : after->second) +
+                                       (forUse == claims.keptForUse.end() ? 0 : forUse->second);
             if (held > left && _world.fault != Fault::WantsOnly)
                 Record(used, item, held - left, 0, 0, 0);
         }
@@ -1190,6 +1197,16 @@ public:
         // The wants of one group share its stock (WR15: the slot's entries the bot makes, the lowest item first)
         auto const uses = [&]()
         {
+            // the held units the wants keep first; a group's wants are listed only while the slot holds less than its
+            // stock, so each keeps all it holds
+            for (ConsumableWant const& want : _consumables)
+                if (auto const held = left.find(want.item); held != left.end())
+                {
+                    std::uint32_t const kept = std::min(held->second, want.wantedStock);
+                    held->second -= kept;
+                    if (kept)
+                        claims.keptForUse[want.item] += kept;
+                }
             std::map<std::uint32_t, std::uint32_t> groupMissing;
             for (ConsumableWant const& want : _consumables)
             {

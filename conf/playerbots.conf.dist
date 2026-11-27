@@ -1280,7 +1280,8 @@ Playerbots.ResetBotLevel.ExcludeNames =
 # GEAR
 #
 
-# Randombots automatically receive upgraded equipment on levelup
+# Randombots automatically receive upgraded equipment on levelup. Only bots that keep no possessions: a persistent
+# bot that no player at a game client leads gets its gear from the world.
 # Default: 1 (enabled)
 Playerbots.AutoUpgradeEquip = 1
 
