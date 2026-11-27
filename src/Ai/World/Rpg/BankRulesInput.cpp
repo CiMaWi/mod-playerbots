@@ -252,6 +252,27 @@ uint32 VendorPayoutOf(Item const* item, ItemTemplate const* proto, uint32 units)
     return AuctionRules::VendorPayout(proto->SellPrice, units, lost, multiplier, quality->quality_mod);
 }
 
+// R6: the core's own deposit test for a bag item, room apart (the model's): the word the item stays in the bags with
+std::optional<BankReason> DepositBlockOf(Player const* bot, uint8 bag, uint8 slot)
+{
+    ItemPosCountVec dest;
+    switch (bot->CanBankItem(NULL_BAG, NULL_SLOT, dest, bot->GetItemByPos(bag, slot), false))
+    {
+        case EQUIP_ERR_OK:
+        case EQUIP_ERR_BANK_FULL:
+            return std::nullopt;
+        case EQUIP_ERR_ALREADY_LOOTED:
+            return BankReason::BlockedLooted;
+        case EQUIP_ERR_DONT_OWN_THAT_ITEM:
+            return BankReason::BlockedNotOwned;
+        case EQUIP_ERR_CANT_CARRY_MORE_OF_THIS:
+        case EQUIP_ERR_ITEM_MAX_LIMIT_CATEGORY_COUNT_EXCEEDED:
+            return BankReason::BlockedLimit;
+        default:
+            return BankReason::BlockedOther;
+    }
+}
+
 class ItemReader
 {
 public:
@@ -630,8 +651,12 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
                                : nullptr);
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);
-    ForEachBagItem(bot, [&in, &reader](Item const* item, uint8 bag, uint8 slot)
-                   { in.bags.push_back(reader.Read(item, bag, slot)); });
+    ForEachBagItem(bot,
+                   [&in, &reader, bot](Item const* item, uint8 bag, uint8 slot)
+                   {
+                       in.bags.push_back(reader.Read(item, bag, slot));
+                       in.bags.back().item.depositBlock = DepositBlockOf(bot, bag, slot);
+                   });
     in.bagSpace = BuildBagSpace(bot);
     ReadBank(bot, reader, in);
     ReadBankSpace(botAI, bot, in);
@@ -681,7 +706,7 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
     bool const auctions = AuctionReference::Current() != nullptr;
     bool surplus = false;
     ForEachBagItem(bot,
-                   [&in, &reader, &surplus, botAI, level, path, auctions](Item const* item, uint8 bag, uint8 slot)
+                   [&in, &reader, &surplus, botAI, bot, level, path, auctions](Item const* item, uint8 bag, uint8 slot)
                    {
                        ItemTemplate const* proto = item->GetTemplate();
                        if (proto->Class == ITEM_CLASS_CONSUMABLE)
@@ -695,6 +720,7 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
                        if (!reader)
                            reader.emplace(botAI);
                        in.bags.push_back(reader->Read(item, bag, slot));
+                       in.bags.back().item.depositBlock = DepositBlockOf(bot, bag, slot);
                    });
     // A surplus use item may be stock for later (item use WI9b): every consumable of the bags and the bank takes
     // part, since a slot's share is counted over all of them as at the bank

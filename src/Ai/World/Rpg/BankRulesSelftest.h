@@ -418,6 +418,26 @@ inline void Apply(BankIn& in, BankStep const& step)
     --taken.freeSlots;
 }
 
+// The night's full banks (NR7): the visit plans again before each move. An item moved earlier on the visit that the
+// rebuilt plan would move back (its keep changed with its place) stays where it lies: it frees no slot for the next
+// deposit and takes none from it
+inline void CheckSettled(Checker& checker)
+{
+    BankIn const deposited = MakeIn(10, {Gear(905, 13)}, {Gear(904, 10)}, 1, 0);
+    BankPlan const full = PlanNextMove(deposited, {904}, {});
+    checker.Show("a full bank after depositing 904, which the rebuilt plan would withdraw", full);
+    checker.Check(full.steps.empty() && Is(full, 904, BankChoice::Leave, BankReason::Settled) &&
+                      Is(full, 905, BankChoice::Keep, BankReason::BankFull) && full.bankFreeAfter == 0,
+                  "a deposited item the rebuilt plan would take out frees no bank slot for the next deposit");
+
+    BankIn const withdrawn = MakeIn(10, {Gear(906, 13), Gear(907, 14)}, {}, 0, 1);
+    BankPlan const room = PlanNextMove(withdrawn, {906}, {});
+    checker.Show("one bank slot after withdrawing 906, which the rebuilt plan would deposit", room);
+    checker.Check(Moves(room, {{BankChoice::Deposit, 907}}) && Is(room, 906, BankChoice::Keep, BankReason::Settled) &&
+                      room.bankFreeAfter == 0,
+                  "a withdrawn item the rebuilt plan would deposit takes no bank slot from the next deposit");
+}
+
 // The visit's refused moves: the core said no to a move the rule allowed; the item stays and takes no room
 inline void CheckRefused(Checker& checker)
 {
@@ -429,15 +449,49 @@ inline void CheckRefused(Checker& checker)
     checker.Check(Moves(first, {{BankChoice::Withdraw, 901}}) && Is(first, 902, BankChoice::Leave, BankReason::NoSpace),
                   "one bag slot: the first by entry is withdrawn, the other has no room");
     checker.Check(
-        Moves(refused, {{BankChoice::Withdraw, 902}}) && Is(refused, 901, BankChoice::Leave, BankReason::Refused),
+        Moves(refused, {{BankChoice::Withdraw, 902}}) && Is(refused, 901, BankChoice::Leave, BankReason::Settled),
         "a refused withdrawal stays in the bank and leaves its bag slot to the next");
+
+    // R4/R5: a word per refusal code, each read by the night check's 'refused%'; the designed skips (settled, the
+    // core's pre-test) never start with refused
+    std::vector<std::string_view> words;
+    for (BankReason reason :
+         {BankReason::RefusedLooted, BankReason::RefusedNotOwned, BankReason::RefusedLimit, BankReason::RefusedFull,
+          BankReason::RefusedBag, BankReason::RefusedInPlace, BankReason::RefusedOther})
+        words.push_back(ReasonWord(reason));
+    bool const named =
+        std::all_of(words.begin(), words.end(), [](std::string_view word) { return word.starts_with("refused"); });
+    size_t const refusals = words.size();
+    for (BankReason reason : {BankReason::Settled, BankReason::BlockedLooted, BankReason::BlockedNotOwned,
+                              BankReason::BlockedLimit, BankReason::BlockedOther})
+        words.push_back(ReasonWord(reason));
+    bool const skips = std::none_of(words.begin() + refusals, words.end(),
+                                    [](std::string_view word) { return word.starts_with("refused"); });
+    std::sort(words.begin(), words.end());
+    checker.Check(named && skips && std::adjacent_find(words.begin(), words.end()) == words.end(),
+                  "each refusal code has its own word starting with refused; no designed skip's word does");
 
     BankIn const deposit = MakeIn(10, {Gear(903, 13)}, {}, 0, BANK_ITEM_SLOTS);
     BankPlan const kept = PlanBankVisit(deposit, {903});
     checker.Show("a kept item whose deposit the core refused", kept);
-    checker.Check(kept.steps.empty() && Is(kept, 903, BankChoice::Keep, BankReason::Refused) &&
+    checker.Check(kept.steps.empty() && Is(kept, 903, BankChoice::Keep, BankReason::Settled) &&
                       kept.bankFreeAfter == BANK_ITEM_SLOTS,
                   "a refused deposit stays in the bags and takes no bank slot");
+
+    // R6: the input asks the core's own deposit test; an item it refuses by its state (an opened box) gets no step
+    KeepItemIn opened = Gear(908, 14);
+    opened.depositBlock = BankReason::BlockedLooted;
+    BankIn const blocked = MakeIn(10, {opened, Gear(909, 13)}, {}, 0, 1);
+    BankPlan const left = PlanBankVisit(blocked);
+    checker.Show("an item the core would refuse to bank and one it takes, one bank slot", left);
+    checker.Check(Moves(left, {{BankChoice::Deposit, 909}}) &&
+                      Is(left, 908, BankChoice::Keep, BankReason::BlockedLooted) && left.keptInBags == 1 &&
+                      left.bankFreeAfter == 0,
+                  "an item the core would refuse is kept with its word and leaves the bank slot to the next");
+    CarriedKeeps const carried = KeptInBags(blocked);
+    bool const marked = std::any_of(carried.items.begin(), carried.items.end(),
+                                    [](KeptEntry const& item) { return item.entry == 908 && item.blocked; });
+    checker.Check(marked, "it stays kept in the bags, marked so the trip counts no deposit for it");
 }
 
 // The visit plans again after every move (WB5 review note 2): the bag slot a deposit frees lets a due item out
@@ -890,6 +944,31 @@ inline KeepItemIn UsedMaterial(uint32_t entry, uint32_t count, uint32_t used, ui
     item.materialSkill = used ? SMITHING : 0;
     item.materialDueSkill = dueSkill;
     return item;
+}
+
+// NR9 W1 (NR8: 20 bank visits that found nothing due; why they were planned is not shown): a bank stack the skill path
+// uses, its step reached (due now), stored in the knowledge; then the path no longer uses it (materialUsed cleared:
+// the step is past or the path changed) and the bot levels. Observed, not fixed: DueAt reads only the stored due
+// level, so the stored entry still counts as due at the next level while the live rule keeps nothing due there
+inline void CheckMaterialDueAfterPathChange(Checker& checker)
+{
+    BankIn in = MakeIn(10, {}, {UsedMaterial(2840, 10, 10, 0)}, 4, 27);
+    in.bot.skills = {{SMITHING, SMITH_SKILL}};
+    std::vector<KeptEntry> const known = KeptInBank(in);
+    DueTotal const storedNow = DueAt(known, in.bot.level);
+    in.bank[0].item.materialUsed = 0;
+    in.bot.level = 11;
+    std::vector<KeptEntry> const liveKept = KeptInBank(in);
+    DueTotal const live = DueAt(liveKept, in.bot.level);
+    DueTotal const read = DueAt(known, in.bot.level);
+    checker.Note("W1: a used bank material, path step reached: kept " + std::to_string(known.size()) + ", due " +
+                 std::to_string(storedNow.count) + " at level 10; path cleared, level 11: live kept " +
+                 std::to_string(liveKept.size()) + " due " + std::to_string(live.count) +
+                 ", the stored knowledge read at 11 due " + std::to_string(read.count));
+    checker.Check(known.size() == 1 && storedNow.count == 10, "W1: a material its path uses now is kept and due now");
+    checker.Check(live.count == 0 && read.count == 10,
+                  "W1 observed: after the path stops using it, the stored entry still reads due at the next level "
+                  "(a bank visit with nothing due), the live rule none");
 }
 
 inline KeepItemIn RecipeItem(uint32_t entry, uint16_t skill, uint16_t rank, bool known = false)
@@ -1684,8 +1763,10 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckSwap(checker);
     CheckStacks(checker);
     CheckRefused(checker);
+    CheckSettled(checker);
     CheckReplan(checker);
     CheckDueAfterLevelChange(checker);
+    CheckMaterialDueAfterPathChange(checker);
     CheckCarried(checker);
     CheckCarriedReleased(checker);
     CheckCarriedSpace(checker);

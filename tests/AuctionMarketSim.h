@@ -770,14 +770,15 @@ private:
         lines = AuctionRules::BuyList(std::move(lines));
         std::uint64_t const guid = Guid(index);
         std::uint32_t openBids = AuctionRules::OpenBids(_snapshot, guid);
-        std::vector<std::uint32_t> decided;
+        std::vector<std::uint64_t> decided;
         bool bagTaken = false;
         AuctionIndex::CurrentOffers const none;
         for (AuctionRules::BuyLine const& line : lines)
         {
-            if (std::find(decided.begin(), decided.end(), line.item) != decided.end())
+            std::uint64_t const key = AuctionRules::DecidedKey(line);
+            if (std::find(decided.begin(), decided.end(), key) != decided.end())
                 continue;
-            decided.push_back(line.item);
+            decided.push_back(key);
             bool const bag = line.owner == AuctionRules::LineOwner::Bag;
             if (bag && bagTaken)
                 continue;

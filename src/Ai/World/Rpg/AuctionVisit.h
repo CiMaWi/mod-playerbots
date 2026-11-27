@@ -31,9 +31,10 @@ using AuctioneerSpot = VisitSpot;
 std::optional<AuctioneerSpot> AuctioneerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards);
 // World thread or the bot's map thread: starts the visit; false while a visit of any kind runs
 bool BeginAuctionVisit(PlayerbotAI* botAI, AuctioneerSpot const& spot);
-// GM console `playerbots auction visit <bot> [<item>]`: the visit at the nearest auctioneer serving the bot within the
-// command's reach (VISIT_COMMAND_REACH_YARDS); answers `AUCTION visit <bot>: started ..` or `.. refused, <reason>`.
-// An item (a test's filter, WA4b) makes the buy step decide that line alone. `far` (a test's start, AH3) starts the
+// GM console `playerbots auction visit <bot> [<item> ...]`: the visit at the nearest auctioneer serving the bot within
+// the command's reach (VISIT_COMMAND_REACH_YARDS); answers `AUCTION visit <bot>: started ..` or `.. refused, <reason>`.
+// Items (a test's filter, WA4b, WG7) make the buy step decide those lines alone and walk only those entries for gear
+// (none of them weapon or armour: no gear step). `far` (a test's start, AH3) starts the
 // visit at any distance the search finds, as an errand's visit starts wherever the stop's spot finds the bot
 bool HandleAuctionVisitCommand(ChatHandler* handler, char const* args);
 // World thread, the fixture's `grow` verb (a test seam, AH3): a bot under a test constraint whose next listing of the

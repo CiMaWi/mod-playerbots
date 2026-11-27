@@ -89,8 +89,22 @@ enum class BankReason : uint8_t
     KeptStock,     // use stock beyond what the bags carry (item use WI9b): banked, never due by level
     BankFull,      // kept, but the bank has no room left for it
     NoSpace,       // to be withdrawn, but the bags have no room for it
-    Refused,       // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
-    KeptForSkill   // a profession material or recipe kept for a skill the bot has not reached (professions WR12)
+    Settled,       // moved or refused earlier on this visit: stays where it lies and takes no room (later plans only)
+    KeptForSkill,  // a profession material or recipe kept for a skill the bot has not reached (professions WR12)
+    // A move the core refused (BankVisit.cpp), a word per result code of Player::CanBankItem or CanStoreItem
+    RefusedLooted,    // EQUIP_ERR_ALREADY_LOOTED: the item's loot is open or was generated (an opened box)
+    RefusedNotOwned,  // EQUIP_ERR_DONT_OWN_THAT_ITEM: bound to another character
+    RefusedLimit,     // EQUIP_ERR_CANT_CARRY_MORE_OF_THIS or a limit category: no more of it may be held
+    RefusedFull,      // EQUIP_ERR_BANK_FULL (deposit) or EQUIP_ERR_INVENTORY_FULL (withdrawal): no room for it
+    RefusedBag,       // EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS: a bag that holds items
+    RefusedInPlace,   // the core's place for the item is where it lies (Deposit's EQUIP_ERR_NONE)
+    RefusedOther,     // any other code (its number goes to the server log)
+    // A bag item the core's own deposit test refuses by its state (R6, BankRulesInput.cpp): kept in the bags, no
+    // deposit planned; a designed skip, so no word starts with refused
+    BlockedLooted,    // EQUIP_ERR_ALREADY_LOOTED: its loot is open or was generated (an opened box)
+    BlockedNotOwned,  // EQUIP_ERR_DONT_OWN_THAT_ITEM
+    BlockedLimit,     // EQUIP_ERR_CANT_CARRY_MORE_OF_THIS or a limit category
+    BlockedOther      // any other code but a full bank (room is the model's)
 };
 
 struct BankVerdict
@@ -149,6 +163,7 @@ struct KeptEntry
     uint8_t dueLevel = 0;
     char const* provider = "";
     uint32_t itemGuid = 0;  // the bag stack's low guid (CarriedKeeps; the auction visit lists by it, ListsStack)
+    bool blocked = false;   // the core refuses its deposit by its state (KeepItemIn::depositBlock): no deposit to plan
 };
 
 // The bag items the rule keeps for a later level, as the bot remembers them for its item usage (ITEM_USAGE_BANK):
