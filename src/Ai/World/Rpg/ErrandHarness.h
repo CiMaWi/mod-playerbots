@@ -188,6 +188,43 @@ inline void DetourRefused(std::vector<Check>& checks)
         Describe(richPlan));
 }
 
+// Three turn-ins beyond the destination take the trip's three detours; a fourth far off is refused by the cap
+// (detour_cap) when worth more than its cheapest detour, and by its own cost (detour_not_worth) when worth less
+inline void DetourCap(std::vector<Check>& checks)
+{
+    constexpr uint32_t FIRST_FAR = 311;
+    constexpr uint32_t SECOND_FAR = 312;
+    constexpr uint32_t THIRD_FAR = 313;
+    constexpr uint32_t FOURTH_FAR = 314;
+    TripStop destination;
+    destination.Place = At(600.0f, 0.0f);
+    destination.Services = SERVICE_QUEST_ENDER;
+    auto const detourCount = [](TripPlan const& plan)
+    {
+        std::size_t count = 0;
+        for (TripStop const& stop : plan.Stops)
+            count += stop.OnRoute ? 0 : 1;
+        return count;
+    };
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Completed = {{FIRST_FAR, ENDER, false, At(900.0f, 0.0f), 5000.0f},
+                     {SECOND_FAR, ENDER, false, At(900.0f, -300.0f), 5000.0f},
+                     {THIRD_FAR, ENDER, false, At(900.0f, 300.0f), 5000.0f},
+                     {FOURTH_FAR, ENDER, false, At(300.0f, 500.0f), 5000.0f}};
+    TripPlan const capped = Plan(bot, Request(bot, {destination}));
+    bool const cap =
+        capped.Refused.size() == 1 && std::string(capped.Refused[0].Reason) == "detour_cap" && detourCount(capped) == 3;
+    Add(checks, "detour cap: a fourth turn-in worth above its detour, with three detours taken, is detour_cap", cap,
+        Describe(capped));
+
+    bot.Completed[3].WorthCopper = 50.0f;
+    TripPlan const cheap = Plan(bot, Request(bot, {destination}));
+    bool const notWorth = cheap.Refused.size() == 1 && std::string(cheap.Refused[0].Reason) == "detour_not_worth" &&
+                          detourCount(cheap) == 3;
+    Add(checks, "detour cap: a fourth turn-in worth below its detour, with three detours taken, is detour_not_worth",
+        notWorth, Describe(cheap));
+}
+
 // Two errands each worth less than the detour, worth more together: one stop does both (a sale and a turn-in whose
 // ender stands at the vendor, worth the detour less half the sale)
 inline void TwoAtOneStop(std::vector<Check>& checks)
@@ -1920,6 +1957,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     OneHub(checks);
     BagOnTheWay(checks);
     DetourRefused(checks);
+    DetourCap(checks);
     TwoAtOneStop(checks);
     SaleRuleKept(checks);
     GreyOnlyNoTrip(checks);

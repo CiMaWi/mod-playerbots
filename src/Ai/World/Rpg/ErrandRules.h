@@ -789,7 +789,7 @@ struct TripRequest
 struct Refusal
 {
     ErrandOffer Offer;
-    char const* Reason = "";  // detour_not_worth, too_far, no_stop; place_refused (KeepUnrefusedErrands)
+    char const* Reason = "";  // detour_not_worth, detour_cap, too_far, no_stop; place_refused (KeepUnrefusedErrands)
     float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth)
     float WalkMinutes = 0.0f;
 };
@@ -1304,8 +1304,10 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
                 refusal.WalkMinutes = minutes;
             }
             reachable = true;
-            refusal.Reason = "detour_not_worth";
         }
+        // Worth above its cheapest detour but no detour left under the cap: detour_cap; else the detour is not worth it
+        if (reachable)
+            refusal.Reason = refusal.Offer.WorthCopper > refusal.CostCopper ? "detour_cap" : "detour_not_worth";
         plan.Refused.push_back(refusal);
     }
     RankBeforeMount(plan.Stops);
