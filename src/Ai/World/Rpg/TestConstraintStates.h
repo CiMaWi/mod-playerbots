@@ -20,7 +20,7 @@ namespace TravelOrders
 void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order, bool tripFollows);
 // The bot's state constraints applied again (a pet summoned since gets nofight); map thread, at every AI update of a
 // bot with a state row set
-void KeepConstraints(Player* bot, uint32 constraints);
+void KeepConstraints(Player* bot, uint64 constraints);  // a TestConstraints::Set
 // walkflush (TestConstraints::FlushesWalks): the bot's MeshMiss rows written now, where a walk is ordered or ends.
 // One bit test for a bot without the row; map thread
 void FlushWalk(PlayerbotAI* botAI);

@@ -768,8 +768,8 @@ public:
     // Mail and bank knowledge and visits (BankMailState.h); a status change keeps it, so a visit survives it; a far
     // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
     BankMail::BotBankMail bankMail;
-    // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
-    uint32 testConstraints{0};
+    // A test's constraints (a TestConstraints::Set, `playerbots route constraint`); a reset keeps them; not saved
+    uint64 testConstraints{0};
     // The open fight's tally (CombatTallyState.h; the core's combat edges open and close it, the combat engine's ticks
     // fill it); numbers only
     CombatTally::Fight fightTally;

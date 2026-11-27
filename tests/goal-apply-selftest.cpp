@@ -1006,10 +1006,10 @@ int main()
     // released bot's first goal is chosen after the release; a constraint change that releases nothing keeps the goal
     {
         using namespace TestConstraints;
-        auto const apply = [](BotGoals& goals, std::uint32_t before, std::uint32_t after)
+        auto const apply = [](BotGoals& goals, Set before, Set after)
         { return Releases(before, after) && Release(goals); };
         // The control: WR20c-3's old rule (a quest goal under noquest only) leaves every other kind standing
-        auto const questOnly = [](BotGoals& goals, std::uint32_t, std::uint32_t after)
+        auto const questOnly = [](BotGoals& goals, Set, Set after)
         {
             if (QuestChoicesAllowed(after) || !goals.slot.Holds(Goals::GoalKind::Quest))
                 return false;
@@ -1050,7 +1050,7 @@ int main()
         Check(apply(goals, HOLD, PLANNER | STATUS) && goals.planUsed,
               "the plan taken before the release starts no goal after it");
         goals.slot.Set(GoalOf(Goals::GoalKind::Gather, 10, Source::Planner));
-        std::uint32_t const released = NOQUEST;
+        Set const released = NOQUEST;
         Check(!apply(goals, released, Next(released, NOFIGHT, 0)) &&
                   goals.slot.Query().kind == Goals::GoalKind::Gather && !apply(goals, released, released) &&
                   goals.slot.Query().target == 10,
