@@ -4,11 +4,61 @@
  * or (at your option) any later version.
  */
 
+#include <array>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <vector>
+
+#include "DangerFold.h"
 #include "DangerRules.h"
 #include "Log.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
 #include "Timer.h"
+#include "TravelGraph.h"
+
+namespace
+{
+// `aw term` (AW37a): the fold's store, set once by the fold; the copy without links, made at the first `off`
+std::atomic<DangerRules::Known const*> foldedStore{nullptr};
+std::mutex termLock;
+DangerRules::Known const* unlinkedStore = nullptr;  // under termLock
+}  // namespace
+
+void DangerRules::FoldBeforeReady(TravelGraph const& graph)
+{
+    // The store of the load, never null after a start (the load refuses it); the fold's store is a copy with the links
+    Known const* const facts = Published();
+    if (!facts)
+    {
+        LOG_ERROR("server.playerbots", "Playerbots: no known danger to fold; the route search has no danger term");
+        return;
+    }
+    std::uint32_t const started = getMSTime();
+    std::vector<LinkDanger> links;
+    FoldGraph(*facts, graph, links);
+    std::size_t walks = 0;
+    std::array<std::size_t, SIDE_COUNT> deadlyAtFirst{};  // deadly for a bot of level 1
+    for (std::size_t index = 0; index < graph.LinkCount(); ++index)
+    {
+        if (graph.GetLink(static_cast<std::uint32_t>(index)).type != TravelLinkType::Walk)
+            continue;
+        ++walks;
+        for (std::uint8_t side = 0; side < SIDE_COUNT; ++side)
+            if (links[index * SIDE_COUNT + side].deadlyBelow > 1)
+                ++deadlyAtFirst[side];
+    }
+    auto known = std::make_unique<Known>(*facts);
+    known->graphLinks = graph.LinkCount();
+    known->links = std::move(links);
+    LOG_INFO("server.loading",
+             ">> Folded known danger {} into {} walk links of {} ({} and {} deadly at level 1, Alliance and Horde), "
+             "{:.1f} MB in {} ms",
+             known->build, walks, known->graphLinks, deadlyAtFirst[0], deadlyAtFirst[1], known->Bytes() / 1048576.0,
+             GetMSTimeDiffToNow(started));
+    foldedStore.store(Publish(std::move(known)), std::memory_order_release);
+}
 
 bool DangerRules::Load()
 {
@@ -75,4 +125,37 @@ bool DangerRules::Load()
              known->build, rowCount, known->keys.size(), known->Bytes() / 1048576.0, GetMSTimeDiffToNow(started));
     Publish(std::move(known));
     return true;
+}
+
+bool DangerRules::SetTerm(bool on)
+{
+    Known const* const folded = foldedStore.load(std::memory_order_acquire);
+    if (!folded)
+        return false;
+    std::lock_guard<std::mutex> const lock(termLock);
+    if (on)
+    {
+        Store::published.store(folded, std::memory_order_release);
+        return true;
+    }
+    if (unlinkedStore)
+    {
+        Store::published.store(unlinkedStore, std::memory_order_release);
+        return true;
+    }
+    auto copy = std::make_unique<Known>();
+    copy->build = folded->build;
+    copy->maxLayers = folded->maxLayers;
+    copy->keys = folded->keys;
+    copy->firsts = folded->firsts;
+    copy->layers = folded->layers;
+    copy->graphLinks = folded->graphLinks;
+    unlinkedStore = Publish(std::move(copy));
+    return true;
+}
+
+bool DangerRules::TermOn()
+{
+    Known const* const folded = foldedStore.load(std::memory_order_acquire);
+    return folded && Published() == folded;
 }

@@ -72,6 +72,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../Awareness/DangerRules.h"
 #include "FailedAttemptRules.h"
 #include "FlightRules.h"
 #include "RouteTypes.h"
@@ -462,7 +463,8 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
         case TravelLinkType::Walk:
         {
             float const swim = std::clamp(link.swim, 0.0f, link.distance);
-            return ((link.distance - swim) / runSpeed + swim / swimSpeed) * WalkModifier(link, bot);
+            return ((link.distance - swim) / runSpeed + swim / swimSpeed) +
+                   DangerRules::LinkTerm(graph.LinkCount(), graph.IndexOfLink(link), bot.team, bot.level);
         }
         case TravelLinkType::Portal:
         case TravelLinkType::StaticPortal:

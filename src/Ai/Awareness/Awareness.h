@@ -10,11 +10,13 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include "AwarenessRules.h"
 #include "DangerRules.h"
+#include "RouteTypes.h"
 #include "SharedDefines.h"
 
 class ChatHandler;
@@ -184,9 +186,29 @@ DangerRules::CellFacts GroundFactsAt(std::uint32_t mapId, float x, float y, floa
 // `playerbots aw danger [<player>] | <map> <x> <y> <z> <alliance|horde> <level>`: the cell, height and side, the
 // layers read, the facts, both thresholds, the answer healthy and as the player is (sick, for a place), and the mean
 // cost of GroundAt over DANGER_TIMED_CALLS calls. Naming a player is for game masters: it shows where that player is.
-// `<bot> check [expect=<same|near|apart|close|away|full|dead,..>]` (scenario aw-danger) judges the place by the bot's
-// picture too (DangerRules::FactsOfPicture) and, with expect=, replies a FIXTURE check line
+// `<bot> check [expect=<same|near|apart|close|away|path|full|dead,..>]` (scenario aw-danger) judges the place by the
+// bot's picture too (DangerRules::FactsOfPicture) and, with expect=, replies a FIXTURE check line
 bool HandleDangerCommand(ChatHandler* handler, std::string_view rest);
+// A way's danger (AW37a, INTERFACE.md §4.5): the walk links of a route's legs (DangerRules::WalkLinksOf over the
+// travel graph) judged over the published store (DangerRules::WayDanger) with the ground of its start and goal for a
+// healthy bot of this side and level. Lock-free, from any thread; before the fold no link counts and only the ends do
+DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRoute::Point const& start,
+                              TravelRoute::Point const& goal, TeamId side, std::uint8_t level);
+// `playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe,..>]`: the way the search
+// answers for the bot now (its snapshot and record, as its trip would ask), WayOf and JudgeWay for the bot's own trip
+// and for an order; the legs and their deadly links (yards and deadly yards) in Playerbots.log. With expect= a
+// FIXTURE check line. No reply word is "refused" or "error": the scenario runner fails a bot on them
+bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
+// `playerbots aw ways <alliance|horde> <level> | all`: from each capital of the side to every hub of the zones a bot
+// of that level plays, for a bot of the capital's race with the flight points the factory gives its level: the hubs
+// with no safe way (each deadly link with its yards, deadly yards and deciding facts), the zones cut off (one of the
+// level's own bracket with the level from which it opens) and the routes the term changed (a second pass under
+// DangerRules::Unpriced); `all` asks both sides at the levels 5 to 80 in steps of 5. Synchronous on the world thread;
+// every line in Playerbots.log
+bool HandleWaysCommand(ChatHandler* handler, std::string_view rest);
+// `playerbots aw term off|on`: the search's danger term off (a store without links) or on again; on at every start.
+// A lab's switch: off writes the warning `danger term off` to Server.log
+bool HandleTermCommand(ChatHandler* handler, std::string_view rest);
 // The record (AW5): world log rows FightScene, FightEnemy and DeathScene, read off the picture; bots only, while the
 // world log wants the type. The bot's own attack on a target it picked (AttackAction::Attack, the action's name)
 void NoteAttack(PlayerbotAI* botAI, std::uint64_t targetGuid, std::string_view action);

@@ -124,9 +124,45 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         return reference;
     };
 
+    // a) and c) stay on their own continent: the portals between maps are closed for them. Their subjects are the walk
+    //    and the hearthstone against the flight. By time alone the cheapest way of a) is through the Dark Portal: the
+    //    offline graph of tests/route-rules-selftest.cpp has no portal gates, the core lets every level through that
+    //    portal, and the capitals' portals to the Blasted Lands are gated at 58 (PA38c). In a server the danger term
+    //    (awareness AW37a) keeps bots off it, and the graph is ready only with the term folded; this selftest does not
+    //    test the term
+    StuckEdges homeMap;
+    // A route's seconds less the danger term of its walk links (the term only adds): for each consecutive node pair of
+    // a walk leg the shortest walk link between them, as DangerFold.h's WalkLinksOf picks it
+    auto const withoutTerm = [&graph](Result const& route, Snapshot const& bot)
+    {
+        float seconds = route.totalSeconds;
+        for (Leg const& leg : route.legs)
+        {
+            if (leg.type != LegType::Walk)
+                continue;
+            for (std::size_t i = 1; i < leg.nodes.size(); ++i)
+            {
+                TravelGraphLink const* best = nullptr;
+                if (leg.nodes[i - 1] < graph.NodeCount())
+                    for (TravelGraphLink const& link : graph.LinksOf(leg.nodes[i - 1]))
+                        if (link.to == leg.nodes[i] && link.type == TravelLinkType::Walk &&
+                            (!best || link.distance < best->distance))
+                            best = &link;
+                if (best)
+                    seconds -= DangerRules::LinkTerm(graph.LinkCount(), graph.IndexOfLink(*best), bot.team, bot.level);
+            }
+        }
+        return seconds;
+    };
+    for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+        for (TravelGraphLink const& link : graph.LinksOf(index))
+            if ((link.type == TravelLinkType::Portal || link.type == TravelLinkType::StaticPortal) &&
+                graph.GetNode(link.from).mapId != graph.GetNode(link.to).mapId)
+                homeMap.flags[EdgeKey(link.from, link.to)] = STUCK_SKIP_FLAGS;
+
     // a) A level 20 human at the Goldshire inn, no flight points, bound in Stormwind (ready), to Ironforge. With no
     //    flights and no transports (the Deeprun Tram is one) the way is on foot through Redridge, the Burning Steppes,
-    //    the Searing Gorge, the Badlands and Loch Modan or Dun Morogh, past mobs far above level 20: slow
+    //    the Searing Gorge, the Badlands and Loch Modan or Dun Morogh: slow
     Snapshot human;
     human.position = goldshire;
     human.team = 0;
@@ -135,18 +171,21 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     human.hasHearthstone = true;
     human.hearth = stormwindInn;
     Request toIronforge{human, ironforgeFlight};
-    Result const walked = Search(graph, toIronforge, StuckEdges{}, aStar);
-    if (sound(walked, toIronforge, "a) Goldshire -> Ironforge, no flight points"))
+    Result const walked = Search(graph, toIronforge, StuckEdges{}, aStar);  // d) flags an edge of it
+    Result const onFoot = Search(graph, toIronforge, homeMap, aStar);
+    if (sound(onFoot, toIronforge, "a) Goldshire -> Ironforge, no flight points"))
     {
-        Result const reference = optimal(walked, toIronforge, StuckEdges{}, "a)");
-        check(legCount(walked, LegType::Flight) == 0, "a) a flight leg without known flight points");
-        check(legCount(walked, LegType::Transport) == 0, "a) a transport leg without allowTransport");
-        check(legCount(walked, LegType::Hearth) == legCount(reference, LegType::Hearth),
+        Result const reference = optimal(onFoot, toIronforge, homeMap, "a)");
+        check(legCount(onFoot, LegType::Flight) == 0, "a) a flight leg without known flight points");
+        check(legCount(onFoot, LegType::Transport) == 0, "a) a transport leg without allowTransport");
+        check(legCount(onFoot, LegType::Hearth) == legCount(reference, LegType::Hearth),
               "a) A* and Dijkstra disagree on the hearth");
-        check(walked.totalSeconds >= 1500.0f && walked.totalSeconds <= 20000.0f,
-              "a) " + num(walked.totalSeconds) + " s outside 1500..20000 s");
-        check(walked.expandedNodes <= reference.expandedNodes,
-              "a) A* expanded " + std::to_string(walked.expandedNodes) + " nodes, Dijkstra " +
+        float const onFootPlain = withoutTerm(onFoot, human);
+        check(onFootPlain >= 1500.0f && onFootPlain <= 20000.0f,
+              "a) " + num(onFootPlain) + " s without the danger term (" + num(onFoot.totalSeconds) +
+                  " s with it) outside 1500..20000 s");
+        check(onFoot.expandedNodes <= reference.expandedNodes,
+              "a) A* expanded " + std::to_string(onFoot.expandedNodes) + " nodes, Dijkstra " +
                   std::to_string(reference.expandedNodes));
     }
 
@@ -219,10 +258,10 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     }
     Request cooling = home;
     cooling.snapshot.hearthCooldownMs = 20 * 60 * 1000;
-    Result const flownHome = Search(graph, cooling, StuckEdges{}, aStar);
+    Result const flownHome = Search(graph, cooling, homeMap, aStar);
     if (sound(flownHome, cooling, "c) Ironforge -> Stormwind inn, hearth in 20 min"))
     {
-        optimal(flownHome, cooling, StuckEdges{}, "c) cooling");
+        optimal(flownHome, cooling, homeMap, "c) cooling");
         check(legCount(flownHome, LegType::Hearth) == 0, "c) the cooling hearth is used");
         check(legCount(flownHome, LegType::Flight) == 1, "c) no flight home");
         check(flownHome.totalSeconds > hearthed.totalSeconds, "c) the cooling hearth's route is not dearer");

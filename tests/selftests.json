@@ -4,7 +4,9 @@
             "file": "awareness-rules-selftest.cpp",
             "includes": [
                 "src/Ai/Awareness",
-                "src/Ai/World/Rpg"
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
