@@ -357,6 +357,11 @@ bool RowWorks(Row const& row)
         return untouched && WalksFree(FREEWALK) && WalksFree(HOLD | FREEWALK) && !WalksFree(0) &&
                !WalksFree(STATES & ~FREEWALK) && !WalksFree(HOLD) && !RidesFree(FREEWALK) && (FREEWALK & HOLD) == 0 &&
                !EndsStatus(0, FREEWALK);
+    // Only often makes the `often` trigger fire at every check; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "often")
+        return untouched && OftenFires(OFTEN) && OftenFires(HOLD | OFTEN) && !OftenFires(0) &&
+               !OftenFires(STATES & ~OFTEN) && !OftenFires(HOLD) && (OFTEN & HOLD) == 0 && !EndsStatus(0, OFTEN);
     // Only casttrace traces the combat engine; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "casttrace")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.traced && !units.traced &&
@@ -437,7 +442,7 @@ void TestTable()
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
               "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory, circuit, "
-              "freewalk",
+              "freewalk, often",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
