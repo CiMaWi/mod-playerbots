@@ -856,20 +856,25 @@ public:
         return true;
     }
 
-    // `playerbots route aboard <bot> <entry>` (tests): stands the bot on the deck of that docked ship or zeppelin on
-    // its map, as its passenger; the outcome is the world-log row Aboard placed|failed|refused:<why>
-    static bool HandleRouteAboardCommand(ChatHandler* handler, PlayerIdentifier target, uint32 entry)
+    // `playerbots route aboard <bot> <entry> [x y z]` (tests): stands the bot on the deck of that docked ship or
+    // zeppelin on its map, as its passenger; x y z: at that offset on the deck (a rider's logged place, PA76), refused
+    // more than the passenger check's half yard off the vessel's mesh; the outcome is the world-log row Aboard
+    // placed|failed|refused:<why>
+    static bool HandleRouteAboardCommand(ChatHandler* handler, PlayerIdentifier target, uint32 entry, Optional<float> x,
+                                         Optional<float> y, Optional<float> z)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
         if (!botAI)
             return false;
-        if (!entry)
+        if (!entry || x.has_value() != y.has_value() || y.has_value() != z.has_value())
         {
-            handler->SendErrorMessage("Usage: .playerbots route aboard <bot> <transport entry>");
+            handler->SendErrorMessage("Usage: .playerbots route aboard <bot> <transport entry> [x y z]");
             return false;
         }
         TravelOrder order;
         order.aboard = entry;
+        if (x)
+            order.aboardAt = TravelCrossing::Spot{*x, *y, *z};
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE aboard: {} on {} ordered", target.GetName(), entry);

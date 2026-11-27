@@ -31,7 +31,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "StartingHistoryRules.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "Transport.h"
 #include "TravelCrossingTypes.h"
@@ -360,7 +362,7 @@ CrossingPlan IssueCrossing(Player& bot, std::optional<PassengerMotion>& slot, Tr
 // `route aboard` (tests): the bot is stood on the first boarding row's deck point of the stop the vessel of that entry
 // nearest it stands at, a lift's or the tram's car as a ship. No explicit attach: PlayerbotAI's passenger check
 // attaches it to that vessel after the teleport (BeginAboard's intent). Refused: absent, away (at no stop), no_row
-void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry, TravelCrossing::Spot const* at)
 {
     Transport* transport = nullptr;
     float nearest = std::numeric_limits<float>::max();
@@ -403,13 +405,19 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     }
     // On the vessel's mesh nearest the first boarding row's deck point: the passenger check attaches a bot without a
     // move of its own only where it stands on the deck (TravelLifecycle::StandsOnDeck), and a row's deck point may lie
-    // off the mesh (G99: 0.61 yd at 164871)
-    TravelCrossing::Spot spot = stop->board[0].deck;
+    // off the mesh (G99: 0.61 yd at 164871). A named offset is taken only within that check's half yard of the mesh
+    TravelCrossing::Spot spot = at ? *at : stop->board[0].deck;
     TravelCrossing::Spot const rowSpot = spot;
     Position onMesh;
     bool const found = transport->GetNearestDeckPoint(Position(spot.x, spot.y, spot.z, 0.0f), onMesh);
     if (found)
         spot = {onMesh.GetPositionX(), onMesh.GetPositionY(), onMesh.GetPositionZ()};
+    if (at && (!found || TravelLegs::OffsetYards({at->x, at->y, at->z}, spot) > TravelLifecycle::DECK_MESH_YARDS))
+    {
+        LOG_INFO("playerbots", "[Route] {} aboard {} refused: off_mesh", bot->GetName(), entry);
+        EventLog::Emit(bot, EventLog::EventType::Aboard, "refused:off_mesh", entry);
+        return;
+    }
     Point const deck = DeckWorld(*transport, spot);
     LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck.X, deck.Y,
              deck.Z);
@@ -853,6 +861,40 @@ bool OffFirstBegins(Player* bot, HeldTrip& data, TravelLegs::OffFirstEnd end, ch
     return true;
 }
 
+namespace
+{
+// PA76 (G414): the bound of a rider that cannot get off (TravelLegs::StrandedStep), after a get-off tick: its
+// hearthstone, the stone's own spell (no bot teleport), cast at the stop right after its rows there were refused
+// again. The stone is looked at only then; boxed: OffFirst::boxed before the tick
+void LeaveStranded(PlayerbotAI* botAI, Player* bot, TravelLegs::Trip& trip, TravelLegs::Observation const& seen,
+                   TravelLegs::OffStep step, uint8 boxed)
+{
+    constexpr uint32 HEARTHSTONE_SPELL = 8690;  // the stone's spell (NewRpgRoute.cpp's HEARTHSTONE_SPELL)
+    using TravelLegs::OffStep;
+    using TravelLegs::Stone;
+    bool const ends = step == OffStep::Off || step == OffStep::Lost || step == OffStep::GiveUp;
+    if (!ends && trip.offFirst.boxed == boxed)
+        return;
+    Stone stone = Stone::Missing;
+    if (!ends && TestConstraints::HearthAllowed(botAI->testConstraints) &&
+        bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false))
+        stone =
+            bot->HasSpellCooldown(HEARTHSTONE_SPELL) || bot->IsNonMeleeSpellCast(false) ? Stone::Cooling : Stone::Ready;
+    TravelLegs::Stranded& stranded = botAI->GetTravel().StrandedRider();
+    TravelLegs::StrandedExit const exit =
+        TravelLegs::StrandedStep(stranded, trip.offFirst, step, boxed, seen.offset, stone);
+    if (exit == TravelLegs::StrandedExit::None)
+        return;
+    bool const hearth = exit == TravelLegs::StrandedExit::Hearth;
+    if (hearth && bot->IsMounted())
+        CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
+    bool const cast = hearth && botAI->DoSpecificAction("hearthstone", Event(), true);
+    TravelLegs::NoteStrandedExit(trip, stranded, cast);
+    LOG_DEBUG("playerbots", "[Route] {} stranded aboard {}: hearthstone {}", bot->GetName(), trip.offFirst.entry,
+              cast ? "cast" : "not cast");
+}
+}  // namespace
+
 // The get-off (TravelLegs::StepOffFirst) shares the leg's crossing and deck walk: it leaves by the leaving rows of the
 // stop the vessel stands at (StopStoodAt; a stop without rows is waited out), under the same stand test
 TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
@@ -882,6 +924,7 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
         if (rides)
             SeeTransport(bot, ridden, seen.transport);
     }
+    uint8 const boxed = trip.offFirst.boxed;
     TravelLegs::OffStep const step = TravelLegs::StepOffFirst(trip, seen);
     if (data.passengerMotion && !TravelLegs::CrossUnderWay(trip))
         TransportGeometry::DiscardMotion(*bot, data.passengerMotion);
@@ -889,6 +932,7 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
         WalkDeckToRow(botAI, bot, data, seen);
     else if (rides && step == TravelLegs::OffStep::Disembark)
         CrossByRow(bot, data, *ridden, seen);
+    LeaveStranded(botAI, bot, trip, seen, step, boxed);
     SendTransportNotes(bot, trip);
     return step;
 }

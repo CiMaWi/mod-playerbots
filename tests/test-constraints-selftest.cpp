@@ -44,6 +44,7 @@ struct Order
     std::uint32_t on{0};
     std::uint32_t off{0};
     std::uint32_t aboard{0};
+    std::optional<int> aboardAt;  // the order's deck offset (TravelCrossing::Spot): its identity is enough here
     std::uint32_t quest{0};
     bool field{false};
     float minutes{0.0f};
@@ -408,6 +409,18 @@ void TestTable()
         Merge(flushOrder, std::move(statusOrder));
         Check(flushOrder.flush && flushOrder.status == "grind" && flushOrder.entry == 3,
               "status order merged onto a flush: both stay");
+        Order placedAt = aboardOrder;
+        placedAt.aboardAt = 1;
+        Order plain;
+        plain.aboard = 7;
+        Merge(placedAt, std::move(plain));
+        Order named;
+        named.aboard = 8;
+        named.aboardAt = 2;
+        Order later = aboardOrder;
+        Merge(later, std::move(named));
+        Check(placedAt.aboard == 7 && !placedAt.aboardAt && later.aboard == 8 && later.aboardAt == 2,
+              "aboard merged: the later placement replaces the earlier with its offset or without one (PA76)");
     }
     Parsed const unknown = Parse("nofight,ghost");
     Check(unknown.set == 0 && unknown.bad == "ghost", "parse: an unknown name is refused with the word");
