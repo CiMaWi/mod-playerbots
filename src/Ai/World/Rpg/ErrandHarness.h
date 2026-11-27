@@ -238,6 +238,73 @@ inline void BagBuyReserve(std::vector<Check>& checks)
         !BagBuyAllowed(PRICE + RESERVE - 1, PRICE, RESERVE), "money " + std::to_string(PRICE + RESERVE - 1));
 }
 
+// NR13: a vendor stands by its route's seconds, not its straight distance. At a mounted 14 yd/s a repairer 5,300 yd
+// away is within the walk limit by the straight line; its route is over it
+inline void VendorRoute(std::vector<Check>& checks)
+{
+    constexpr float MOUNTED_YARDS_PER_SECOND = 14.0f;
+    constexpr float LIMIT_SECONDS = ERRAND_MAX_WALK_MINUTES * 60.0f;
+    ErrandSnapshot bot = Bot(0, 20);
+    bot.RepairDue = true;
+    TripRequest request = Request(bot);
+    request.YardsPerSecond = MOUNTED_YARDS_PER_SECOND;
+    std::size_t asked = 0;
+    std::vector<DroppedVendor> dropped;
+    auto const plan = [&](std::vector<ServiceStop> const& stops, auto const& seconds)
+    {
+        asked = 0;
+        dropped.clear();
+        return PlanTripByRoute(
+            request, stops, CollectOffers(bot, TravelProviders()),
+            [&asked, &seconds](ErrandPlace const& place)
+            {
+                ++asked;
+                return seconds(place);
+            },
+            dropped);
+    };
+    auto const text = [&](TripPlan const& trip)
+    {
+        std::string out = Describe(trip) + " searches " + std::to_string(asked) + " dropped:";
+        for (DroppedVendor const& vendor : dropped)
+            out += std::string(" ") + std::to_string(vendor.Entry) + "/" + vendor.Reason;
+        return out;
+    };
+    std::vector<ServiceStop> const farAndNear = {{PLAIN_VENDOR, At(600.0f, 0.0f), SERVICE_VENDOR},
+                                                 {REPAIR_HUB, At(5300.0f, 0.0f), SERVICE_VENDOR | SERVICE_REPAIR}};
+    TripPlan const straight = PlanTrip(request, farAndNear, CollectOffers(bot, TravelProviders()));
+    TripPlan const over =
+        plan(farAndNear, [](ErrandPlace const& place) { return place.X > 5000.0f ? LIMIT_SECONDS + 100.0f : 60.0f; });
+    bool const premise = std::any_of(straight.Stops.begin(), straight.Stops.end(),
+                                     [](TripStop const& stop) { return stop.Id == REPAIR_HUB; });
+    Add(checks, "vendor route: a vendor 5,300 yd straight with a route over the limit is dropped, the near one taken",
+        premise && over.Stops.size() == 1 && over.Stops[0].Id == PLAIN_VENDOR && dropped.size() == 1 &&
+            dropped[0].Entry == REPAIR_HUB && std::string(dropped[0].Reason) == VENDOR_ROUTE_TOO_FAR,
+        Describe(straight) + " | " + text(over));
+
+    bot.RepairDue = false;
+    std::vector<ServiceStop> const two = {{PLAIN_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR},
+                                          {ROAD_VENDOR, At(450.0f, 0.0f), SERVICE_VENDOR}};
+    TripPlan const none = plan(two, [](ErrandPlace const& place) { return place.X < 400.0f ? -1.0f : 60.0f; });
+    Add(checks, "vendor route: a near vendor with no route gives the next in order",
+        asked == 2 && none.Stops.size() == 1 && none.Stops[0].Id == ROAD_VENDOR && dropped.size() == 1 &&
+            std::string(dropped[0].Reason) == VENDOR_NO_ROUTE,
+        text(none));
+
+    TripPlan const fits = plan(two, [](ErrandPlace const&) { return LIMIT_SECONDS; });
+    Add(checks, "vendor route: a vendor whose route is at the limit is taken after one search",
+        asked == 1 && fits.Stops.size() == 1 && fits.Stops[0].Id == PLAIN_VENDOR && dropped.empty(), text(fits));
+
+    std::vector<ServiceStop> many;
+    for (uint32_t i = 0; i < VENDOR_ROUTE_SEARCHES + 2; ++i)
+        many.push_back({PLAIN_VENDOR + i, At(100.0f + 100.0f * i, 0.0f), SERVICE_VENDOR});
+    TripPlan const capped = plan(many, [](ErrandPlace const&) { return -1.0f; });
+    Add(checks, "vendor route: one start asks at most 8 routes, then a vendor stands by its straight distance",
+        asked == VENDOR_ROUTE_SEARCHES && dropped.size() == VENDOR_ROUTE_SEARCHES && capped.Stops.size() == 1 &&
+            capped.Stops[0].Id == PLAIN_VENDOR + VENDOR_ROUTE_SEARCHES,
+        text(capped));
+}
+
 // Two errands each worth less than the detour, worth more together: one stop does both (a sale and a turn-in whose
 // ender stands at the vendor, worth the detour less half the sale)
 inline void TwoAtOneStop(std::vector<Check>& checks)
@@ -2018,6 +2085,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     InvariantSearch(checks, seed, SEARCH_ITERATIONS);
     OneHub(checks);
     BagOnTheWay(checks);
+    VendorRoute(checks);
     DetourRefused(checks);
     DetourCap(checks);
     BagBuyReserve(checks);

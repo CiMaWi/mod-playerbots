@@ -1370,6 +1370,89 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     return plan;
 }
 
+// NR13: the vendor stops of a trip keep the errand walk limit by their route, not only the straight line: why a route
+// refuses a vendor (the words of its errand vendor_drop row)
+constexpr char const* VENDOR_NO_ROUTE = "no_route";
+constexpr char const* VENDOR_ROUTE_TOO_FAR = "route_too_far";
+// The route searches one errand start runs at most (a map thread); past them a vendor stands by its straight distance
+constexpr std::size_t VENDOR_ROUTE_SEARCHES = 8;
+
+struct DroppedVendor
+{
+    uint32_t Entry = 0;
+    ErrandPlace Place;
+    float RouteSeconds = 0.0f;  // 0 for no route
+    char const* Reason = "";
+};
+
+// A stop the bot opens to use its vendor: not one for its mailbox, banker or auctioneer alone
+inline bool UsesVendor(TripStop const& stop)
+{
+    return !stop.OnRoute && (stop.Services & SERVICE_VENDOR) &&
+           std::any_of(stop.Errands.begin(), stop.Errands.end(),
+                       [](ErrandOffer const& errand)
+                       {
+                           return errand.Kind != ErrandKind::Mail && errand.Kind != ErrandKind::BankWithdraw &&
+                                  errand.Kind != ErrandKind::BankDeposit && errand.Kind != ErrandKind::Auction;
+                       });
+}
+
+// PlanTrip, then the vendor stops it chose asked for their route's seconds from the start (`routeSeconds(place)`,
+// negative when there is none), in the trip's order. A vendor with no route or over the limit leaves the known stops,
+// with the vendors within STOP_JOIN_YARDS of it (the same walk), and the trip is planned again; an errand placed at
+// that vendor is left out with the same word
+template <typename RouteSeconds>
+inline TripPlan PlanTripByRoute(TripRequest const& request, std::vector<ServiceStop> stops,
+                                std::vector<ErrandOffer> offers, RouteSeconds const& routeSeconds,
+                                std::vector<DroppedVendor>& dropped)
+{
+    std::vector<ErrandPlace> fits;
+    std::vector<Refusal> leftOut;
+    std::size_t searches = 0;
+    for (;;)
+    {
+        TripPlan plan = PlanTrip(request, stops, offers);
+        bool replan = false;
+        for (TripStop const& stop : plan.Stops)
+        {
+            auto const here = [&stop](ErrandPlace const& place) { return Yards(place, stop.Place) <= STOP_JOIN_YARDS; };
+            if (searches >= VENDOR_ROUTE_SEARCHES || !UsesVendor(stop) || std::any_of(fits.begin(), fits.end(), here))
+                continue;
+
+            ++searches;
+            float const seconds = routeSeconds(stop.Place);
+            if (seconds >= 0.0f && seconds <= ERRAND_MAX_WALK_MINUTES * 60.0f)
+            {
+                fits.push_back(stop.Place);
+                continue;
+            }
+
+            char const* const reason = seconds < 0.0f ? VENDOR_NO_ROUTE : VENDOR_ROUTE_TOO_FAR;
+            dropped.push_back({stop.Id, stop.Place, std::max(seconds, 0.0f), reason});
+            stops.erase(std::remove_if(stops.begin(), stops.end(), [&here](ServiceStop const& service)
+                                       { return (service.Services & SERVICE_VENDOR) && here(service.Place); }),
+                        stops.end());
+            for (auto offer = offers.begin(); offer != offers.end();)
+            {
+                if (offer->Placed && (offer->Service & SERVICE_VENDOR) && here(offer->Place))
+                {
+                    leftOut.push_back({*offer, reason, 0.0f, 0.0f});
+                    offer = offers.erase(offer);
+                }
+                else
+                    ++offer;
+            }
+            replan = true;
+            break;
+        }
+        if (replan)
+            continue;
+
+        plan.Refused.insert(plan.Refused.end(), leftOut.begin(), leftOut.end());
+        return plan;
+    }
+}
+
 // How an errand trip's end is recorded (the status core's errand clean-up, CS14)
 enum class ErrandEndRow : uint8_t
 {
