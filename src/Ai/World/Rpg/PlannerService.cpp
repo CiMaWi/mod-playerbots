@@ -912,6 +912,10 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     bool const wasReplaced = GoalApply::OrderReplaced(goals);
     std::shared_ptr<Goals::GoalPlan const> const lastPlan = goals.plan;
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    // A plan with no option starts no goal, so no start writes its row: written here, so every plan taken that ranked
+    // nothing shows in the log (none:0)
+    if (answer->plan->ranked.options.empty())
+        LogGoal(bot, answer->plan->ranked);
     // A route goal's running order (questing WQ18b): its executor learns whether the new route still begins with it
     // (RefreshRoute). If not, its next tick ends the order as replaced and the new route's first order follows; the
     // goal's row is written again for the new route, once (part 3)
