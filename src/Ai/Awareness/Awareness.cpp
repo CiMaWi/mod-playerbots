@@ -1473,8 +1473,9 @@ void NoteAttack(PlayerbotAI* botAI, std::uint64_t targetGuid, std::string_view a
     if (!botAI || !EventLog::Wanted(EventLog::EventType::FightScene))
         return;
     Store& store = OwnStore(botAI);
+    store.notedCaller =
+        AwarenessRules::KeptCaller(store.notedTarget, store.notedCaller, targetGuid, AwarenessRules::CallerOf(action));
     store.notedTarget = targetGuid;
-    store.notedCaller = AwarenessRules::CallerOf(action);
 }
 
 void OnFightOpen(PlayerbotAI* botAI)

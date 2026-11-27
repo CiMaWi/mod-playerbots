@@ -1241,6 +1241,17 @@ void TestBegan()
     Check(CallerOf("attack anything") == Caller::Grind, "caller: attack anything is the grind");
     Check(CallerOf("new rpg attack quest target") == Caller::Quest, "caller: the quest executor's attack");
     Check(CallerOf("dps assist") == Caller::Other && CallerOf("") == Caller::Other, "caller: any other is other");
+    Check(KeptCaller(7, Caller::Grind, 7, Caller::Other) == Caller::Grind &&
+              KeptCaller(7, Caller::Quest, 7, Caller::Other) == Caller::Quest,
+          "kept: melee on the target a chooser noted keeps the chooser");
+    Check(KeptCaller(7, Caller::Grind, 9, Caller::Other) == Caller::Other,
+          "kept: a new target no chooser picked is other");
+    Check(KeptCaller(0, Caller::Grind, 7, Caller::Other) == Caller::Other,
+          "kept: after a fight's edge the stale caller does not stick");
+    Check(KeptCaller(7, Caller::Grind, 7, Caller::Quest) == Caller::Quest &&
+              KeptCaller(7, Caller::Other, 7, Caller::Grind) == Caller::Grind &&
+              KeptCaller(7, Caller::Quest, 9, Caller::Grind) == Caller::Grind,
+          "kept: a named chooser takes the note");
 }
 
 // AW5: the rows' fields packed as the SQL of awareness.sql unpacks them

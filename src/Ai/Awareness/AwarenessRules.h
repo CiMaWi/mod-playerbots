@@ -614,6 +614,13 @@ constexpr Caller CallerOf(std::string_view action)
     return Caller::Other;
 }
 
+// The note's caller when an attack is noted again: on the same target a caller that chose nothing (melee follows the
+// target a chooser set) keeps the first one; a new target or a named chooser takes the note
+constexpr Caller KeptCaller(std::uint64_t notedTarget, Caller notedCaller, std::uint64_t target, Caller caller)
+{
+    return target == notedTarget && caller == Caller::Other ? notedCaller : caller;
+}
+
 // The rows' packing (AW5; the world log's id is 32 bits, its amount 64): `.claude/docs/world-log.md`, the rows
 // FightScene, FightEnemy and DeathScene, and config/wlog-checks/awareness.sql unpack them
 constexpr std::uint32_t ROSE_NONE = 32767;  // seconds since the bot rose: none since the login, or longer
