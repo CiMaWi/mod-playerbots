@@ -190,7 +190,8 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
         Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, SOURCE_LEVELUP, consumables, potions);
     NoteHearthstoneLoss(bot, had, "restock");
 
-    if (sPlayerbotAIConfig.AutoUpgradeEquip)
+    // A persistent bot's gear comes from the world: the factory only creates it
+    if (sPlayerbotAIConfig.AutoUpgradeEquip && Upkeep::Granted(keepsPossessions))
     {
         factory.InitEquipment(true);
         NoteHearthstoneLoss(bot, had, "equipment");
