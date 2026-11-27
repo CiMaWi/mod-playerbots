@@ -341,6 +341,10 @@ public:
             {"stats", HandleAwStatsCommand, SEC_PLAYER, Console::Yes},
             {"judge", HandleAwJudgeCommand, SEC_GAMEMASTER, Console::Yes},
             {"safe", HandleAwSafeCommand, SEC_GAMEMASTER, Console::Yes},
+            {"danger", HandleAwDangerCommand, SEC_PLAYER, Console::Yes},
+            {"way", HandleAwWayCommand, SEC_GAMEMASTER, Console::Yes},
+            {"ways", HandleAwWaysCommand, SEC_GAMEMASTER, Console::Yes},
+            {"term", HandleAwTermCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
@@ -690,6 +694,34 @@ public:
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
         return botAI && Awareness::HandleSafeCommand(handler, botAI, std::string_view(rest));
+    }
+
+    // `playerbots aw danger [<player>] | <map> <x> <y> <z> <side> <level>` (AW36b): the known danger of a place, from
+    // the world data; naming another player is for game masters (the handler checks)
+    static bool HandleAwDangerCommand(ChatHandler* handler, Tail rest)
+    {
+        return Awareness::HandleDangerCommand(handler, std::string_view(rest));
+    }
+
+    // `playerbots aw way <bot> <map> <x> <y> <z> [expect=..]` (AW37a): the way the search answers for the bot now and
+    // its danger
+    static bool HandleAwWayCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && Awareness::HandleWayCommand(handler, botAI, std::string_view(rest));
+    }
+
+    // `playerbots aw ways <side> <level> | all` (AW37a): the capitals' ways to the hubs a level plays, judged; the
+    // world thread waits for its searches
+    static bool HandleAwWaysCommand(ChatHandler* handler, Tail rest)
+    {
+        return Awareness::HandleWaysCommand(handler, std::string_view(rest));
+    }
+
+    // `playerbots aw term off|on` (AW37a): the route search's danger term off or on again
+    static bool HandleAwTermCommand(ChatHandler* handler, Tail rest)
+    {
+        return Awareness::HandleTermCommand(handler, std::string_view(rest));
     }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update

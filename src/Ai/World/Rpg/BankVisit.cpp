@@ -191,15 +191,16 @@ bool SpaceStep(Player* bot, BankVisitData& visit, BankIn const& in, BankPlan con
     return false;
 }
 
-// One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit
-void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
+// One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit. True:
+// the item moved
+bool MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
 {
     Item* item = bot->GetItemByPos(next.bag, next.slot);
     uint32 const planNumber = static_cast<uint32>(visit.moved.size() + visit.refused.size());  // moves before it
     if (!item || item->GetGUID().GetCounter() != next.itemGuid)
     {
         visit.refused.push_back(next.itemGuid);  // not where the plan saw it this tick: left quietly
-        return;
+        return false;
     }
 
     bool const withdraw = next.kind == BankChoice::Withdraw;
@@ -220,7 +221,7 @@ void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan co
         else
             LOG_DEBUG("playerbots", "[Bank mail] {} bank visit: {} of item {} {}, error {}", bot->GetName(),
                       ChoiceWord(next.kind), next.entry, ReasonWord(refusal), static_cast<uint32>(result));
-        return;
+        return false;
     }
 
     visit.moved.push_back(next.itemGuid);
@@ -239,17 +240,18 @@ void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan co
             visit.verdicts.push_back(*planned);
             visit.verdicts.back().plan = planNumber;
         }
-        return;
+        return true;
     }
     verdict->choice = next.kind;
     if (!planned)
-        return;
+        return true;
     // The inputs of the plan that made the move (NR12a)
     verdict->reason = planned->reason;
     verdict->worth = planned->worth;
     verdict->payout = planned->payout;
     verdict->usage = planned->usage;
     verdict->plan = planNumber;
+    return true;
 }
 
 // One bank decision row per item of the visit's first plan, with what was really done with it
@@ -306,9 +308,8 @@ bool BankerInReach(Player* bot, WorldObject const& banker, float& /*range*/)
 
 // Bags and bank reads and the move: the bot's own map thread inside its AI update (see Withdraw). Planned again before
 // every move, so the bag slot a deposit frees serves a withdrawal that had no room
-VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
+BankMove NextMove(PlayerbotAI* botAI, Player* bot, BankVisitData& visit)
 {
-    BankVisitData& visit = botAI->bankMail.bankData;
     BankIn in = BuildBankIn(botAI);
     in.bot.auctionNext = visit.auctionNext;
     BankPlan const plan = PlanNextMove(in, visit.moved, visit.refused);
@@ -319,13 +320,21 @@ VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
     }
     // Room first (professions WR17): the deposits then fill a bank bag bought on this visit
     if (!visit.spaceDone && SpaceStep(bot, visit, in, plan))
-        return VisitTurn{VisitNext::Pending};
+        return BankMove::Stopped;
 
     if (plan.steps.empty())
-        return VisitTurn{VisitNext::End, VisitEnd::Done};
+        return BankMove::NoneLeft;
 
-    MoveItem(botAI, bot, visit, plan, plan.steps.front());
-    return VisitTurn{VisitNext::Pending};
+    return MoveItem(botAI, bot, visit, plan, plan.steps.front()) ? BankMove::Moved : BankMove::Stopped;
+}
+
+// One visit step: several moves (RunBankStep), so a visit does not wait an AI update per item
+VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
+{
+    if (RunBankStep([&] { return NextMove(botAI, bot, botAI->bankMail.bankData); }))
+        return VisitTurn{VisitNext::Pending};
+
+    return VisitTurn{VisitNext::End, VisitEnd::Done};
 }
 
 bool WriteBankEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, VisitEnd end)

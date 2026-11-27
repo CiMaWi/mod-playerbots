@@ -32,6 +32,10 @@ namespace WorldPvp
 // open-world map outside battlegrounds and arenas that PvpTest does not force. Such a bot attacks another player only
 // in PvP combat it is in or as the enemy it entered on by enthusiasm
 bool StartsByRules(PlayerbotAI* botAI);
+// The bot's map thread: whether the bot may take `unit` as its target by the realm's rule (MayTakePlayer). A unit of
+// no player's side (a creature) always passes. Asked where a bot takes a player: NearestEnemyPlayersValue (a rule
+// bot's scan), PossibleTargetsValue (the target lists) and AttackEnemyPlayerAction::NoteStart (the pick)
+bool MayTake(PlayerbotAI* botAI, Unit* unit);
 // EnemyPlayerValue: whether `bot` can attack `enemy` from where it is (InReach: the height between them, then its
 // line of sight)
 bool Reaches(Unit const* bot, Unit const* enemy);

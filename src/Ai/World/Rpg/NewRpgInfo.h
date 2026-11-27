@@ -214,6 +214,7 @@ struct NewRpgInfo
         bool trainerRiding{false};      // the trainer teaches riding (WU14), else the class trainer (WU13)
         bool trainerWeapon{false};      // a weapon master (WU15a)
         bool trainerProfession{false};  // a profession trainer (WR4b)
+        uint32 mountRank{0};            // the riding rank whose mount the trip planned here; 0 = none
         uint32 tameEntry{0};            // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
         // The tame at the stop (WU21b-2): the beast picked, the casts made, a cast whose channel's end is still to be
         // read, when the bot arrived or its last channel ended (the rest before a new try), the last cast and the

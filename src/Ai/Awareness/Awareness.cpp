@@ -10,15 +10,20 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "BotTravel.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatHelper.h"
 #include "Corpse.h"
 #include "Creature.h"
+#include "DBCStores.h"
+#include "DangerFold.h"
 #include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventWanted.h"
@@ -26,28 +31,43 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "HeldTrip.h"
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
 #include "PerfMonitor.h"
+#include "PlannerIndexes.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "RouteService.h"
+#include "SkillPathBridge.h"
+#include "StartingHistoryRules.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "TravelGraph.h"
+#include "TravelLegRules.h"
+#include "TravelMgr.h"
+#include "TravelPlaces.h"
 #include "UpkeepRules.h"
 #include "Util.h"
+#include "WaypointMgr.h"
 #include "World.h"
+#include "WorldLog.h"
+#include "WorldSession.h"
 
 namespace Awareness
 {
 using AwarenessRules::Busy;
 using AwarenessRules::Kind;
+using AwarenessRules::Motion;
 using AwarenessRules::Picture;
 using AwarenessRules::Rank;
 using AwarenessRules::Role;
@@ -107,6 +127,31 @@ Role RoleOf(Player* bot)
     if (PlayerbotAI::IsHeal(bot))
         return Role::Healer;
     return PlayerbotAI::IsRanged(bot) ? Role::Ranged : Role::Melee;
+}
+
+// A creature's kind of movement is its current generator (a pause keeps it); `generator` is unused for the others
+Motion MotionOf(Unit const* unit, bool byGenerator, MovementGeneratorType generator)
+{
+    if (!byGenerator)
+        return unit->isMoving() ? Motion::Other : Motion::Standing;
+    switch (generator)
+    {
+        case IDLE_MOTION_TYPE:
+            return Motion::Standing;
+        case RANDOM_MOTION_TYPE:
+        case ANIMAL_RANDOM_MOTION_TYPE:
+            return Motion::Wandering;
+        case WAYPOINT_MOTION_TYPE:
+        case ESCORT_MOTION_TYPE:
+        case FORMATION_MOTION_TYPE:
+            return Motion::Path;
+        case HOME_MOTION_TYPE:
+            return Motion::Home;
+        case CHASE_MOTION_TYPE:
+            return Motion::Chasing;
+        default:
+            return Motion::Other;
+    }
 }
 
 // The one grid visit: creatures, pets and players in one pass, both sides
@@ -205,6 +250,7 @@ struct Worker
 
         seen.levelDiff = static_cast<std::int16_t>(int(unit->GetLevel()) - int(bot->GetLevel()));
         seen.rank = creature && !pet ? RankOf(creature) : Rank::Normal;
+        seen.guard = creature && !pet && creature->IsGuard();
         seen.casts = player ? CastsByClass(seen.playerClass) : unit->GetMaxPower(POWER_MANA) > 0;
         seen.creatureType = unit->GetCreatureType();
         seen.healthPct = unit->GetHealthPct();
@@ -223,11 +269,14 @@ struct Worker
             !creature->IsCivilian() && !creature->IsImmuneToPC())
             seen.reachYards = creature->GetAggroRange(bot) + creature->m_CombatDistance;
 
+        MovementGeneratorType const generator =
+            creature ? creature->GetMotionMaster()->GetCurrentMovementGeneratorType() : NULL_MOTION_TYPE;
+        seen.motion = MotionOf(unit, creature && !pet, generator);
         if (creature && creature->IsInEvadeMode())
             seen.busy = Busy::Evading;
         else if (unit->IsInCombat())
             seen.busy = Busy::Fighting;
-        else if (creature && creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
+        else if (creature && generator == WAYPOINT_MOTION_TYPE)
         {
             seen.busy = Busy::OnPath;
             // Its velocity: toward the spline's next point at the spline's speed; 0 and 0 while it waits at a node
@@ -1328,6 +1377,258 @@ bool HandleStatsCommand(ChatHandler* handler)
     return true;
 }
 
+namespace
+{
+// The table's side of a team, SIDE_COUNT for none
+std::uint8_t SideIndex(TeamId side)
+{
+    return side == TEAM_ALLIANCE ? 0 : side == TEAM_HORDE ? 1 : DangerRules::SIDE_COUNT;
+}
+
+char const* GroundWord(DangerRules::Ground ground)
+{
+    switch (ground)
+    {
+        case DangerRules::Ground::Quiet:
+            return "quiet";
+        case DangerRules::Ground::Passable:
+            return "passable";
+        case DangerRules::Ground::Deadly:
+            return "deadly";
+    }
+    return "?";
+}
+
+std::string FactsText(DangerRules::CellFacts const& facts)
+{
+    std::string text;
+    static constexpr std::array<char const*, DangerRules::RANK_COUNT> RANKS{"normal", "elite", "rare", "boss"};
+    for (std::size_t r = 0; r < DangerRules::RANK_COUNT; ++r)
+        if (facts.count[r])
+            text += Acore::StringFormat("{}{} {} x{}", text.empty() ? "" : ", ", RANKS[r],
+                                        static_cast<unsigned>(facts.level[r]), static_cast<unsigned>(facts.count[r]));
+    if (facts.guards)
+        text += text.empty() ? "guards" : ", guards";
+    return text.empty() ? "none" : text;
+}
+
+constexpr char const* DANGER_USAGE =
+    "Usage: .playerbots aw danger [<player>] | <bot> check [expect=<same|near|apart|close|away|path|full|dead,..>] | "
+    "<map> <x> <y> <z> <alliance|horde> <level 1..255>";
+// `aw danger` times GroundAt over this many calls: the PerfMonitor row's count is known and the reply gives the mean
+constexpr int DANGER_TIMED_CALLS = 1000;
+}  // namespace
+
+DangerRules::CellFacts GroundFactsAt(std::uint32_t mapId, float x, float y, float z, TeamId side)
+{
+    return DangerRules::ReadPlace(DangerRules::Published(), mapId, x, y, z, SideIndex(side)).read.facts;
+}
+
+DangerRules::Ground GroundAt(std::uint32_t mapId, float x, float y, float z, std::uint8_t level, TeamId side,
+                             DangerRules::Condition condition)
+{
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness ground", nullptr) : nullptr;
+    DangerRules::Ground const ground = DangerRules::JudgeGround(GroundFactsAt(mapId, x, y, z, side), level, condition);
+    if (pmo)
+        pmo->finish();
+    return ground;
+}
+
+bool HandleDangerCommand(ChatHandler* handler, std::string_view rest)
+{
+    std::vector<std::string_view> words = Words(rest);
+    std::vector<std::string_view> expect;
+    if (!words.empty() && words.back().substr(0, 7) == "expect=")
+    {
+        if (!ParseExpect(words.back().substr(7), expect,
+                         {"same", "near", "apart", "close", "away", "path", "full", "dead"}))
+        {
+            handler->SendErrorMessage(DANGER_USAGE);
+            return false;
+        }
+        words.pop_back();
+    }
+    bool const check = words.size() == 2 && words[1] == "check";
+    if (!expect.empty() && !check)
+    {
+        handler->SendErrorMessage(DANGER_USAGE);
+        return false;
+    }
+    if (check)
+        words.pop_back();
+    PlayerbotAI* botAI = nullptr;
+    std::uint32_t mapId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    std::uint32_t level = 0;
+    TeamId side = TEAM_NEUTRAL;
+    DangerRules::Condition now = DangerRules::SICK;
+    std::string who = "place";
+    bool const place = words.size() == 6;
+    if (place)
+    {
+        Optional<std::uint32_t> const map = Acore::StringTo<std::uint32_t>(words[0]);
+        Optional<float> const px = Acore::StringTo<float>(words[1]);
+        Optional<float> const py = Acore::StringTo<float>(words[2]);
+        Optional<float> const pz = Acore::StringTo<float>(words[3]);
+        Optional<std::uint32_t> const lvl = Acore::StringTo<std::uint32_t>(words[5]);
+        side = words[4] == "alliance" || words[4] == "0" ? TEAM_ALLIANCE
+               : words[4] == "horde" || words[4] == "1"  ? TEAM_HORDE
+                                                         : TEAM_NEUTRAL;
+        if (!map || !px || !py || !pz || !lvl || *lvl < 1 || *lvl > 255 || side == TEAM_NEUTRAL)
+        {
+            handler->SendErrorMessage(DANGER_USAGE);
+            return false;
+        }
+        mapId = *map;
+        x = *px;
+        y = *py;
+        z = *pz;
+        level = *lvl;
+    }
+    else if (words.size() <= 1)
+    {
+        WorldSession* session = handler->GetSession();
+        if (!words.empty() && session && session->GetSecurity() < SEC_GAMEMASTER)
+        {
+            handler->SendErrorMessage("AW danger: naming a player is for game masters (it shows where that player is)");
+            return false;
+        }
+        Player* player = words.empty() ? handler->getSelectedPlayerOrSelf()
+                                       : ObjectAccessor::FindPlayerByName(std::string(words[0]));
+        botAI = player && check ? GET_PLAYERBOT_AI(player) : nullptr;
+        if (!player || !player->IsInWorld() || (check && !botAI))
+        {
+            handler->SendErrorMessage(DANGER_USAGE);
+            return false;
+        }
+        mapId = player->GetMapId();
+        x = player->GetPositionX();
+        y = player->GetPositionY();
+        z = player->GetPositionZ();
+        level = player->GetLevel();
+        side = player->GetTeamId();
+        now.healthPct = static_cast<std::uint8_t>(std::clamp(std::lround(player->GetHealthPct()), 0L, 100L));
+        now.sick = player->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+        who = player->GetName();
+    }
+    else
+    {
+        handler->SendErrorMessage(DANGER_USAGE);
+        return false;
+    }
+
+    std::uint8_t const botLevel = static_cast<std::uint8_t>(level);
+    DangerRules::Known const* known = DangerRules::Published();
+    DangerRules::PlaceReading const reading = DangerRules::ReadPlace(known, mapId, x, y, z, SideIndex(side));
+    std::string layers;
+    for (std::uint8_t i = 0; i < reading.layerCount; ++i)
+    {
+        DangerRules::Layer const& layer = reading.layers[i];
+        bool const read = i >= reading.read.firstRead && i < reading.read.firstRead + reading.read.readCount;
+        layers += Acore::StringFormat("{}{} {}..{}{}", layers.empty() ? "" : ", ", i, layer.zLo, layer.zHi,
+                                      read ? " read" : "");
+    }
+    auto const started = std::chrono::steady_clock::now();
+    for (int call = 0; call < DANGER_TIMED_CALLS; ++call)
+        GroundAt(mapId, x, y, z, botLevel, side);
+    double const nanos = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count() /
+                         DANGER_TIMED_CALLS;
+    DangerRules::CellFacts const& facts = reading.read.facts;
+    std::string const asIs =
+        place ? Acore::StringFormat("sick {}", GroundWord(DangerRules::JudgeGround(facts, botLevel, now)))
+              : Acore::StringFormat("now {} (health {} %, sick {})",
+                                    GroundWord(DangerRules::JudgeGround(facts, botLevel, now)),
+                                    static_cast<unsigned>(now.healthPct), now.sick ? 1 : 0);
+    std::string const cell = reading.cell ? Acore::StringFormat("cell {} {}", reading.cx, reading.cy) : "no cell";
+    std::string const line = Acore::StringFormat(
+        "AW danger {}: map {} {} z {:.1f} {} level {} | build {} | layers {} of {}{}{} | facts {} | deadlyBelow {} "
+        "passableBelow {} | healthy {}, {} | ground {:.0f} ns per call over {} calls",
+        who, mapId, cell, z,
+        side == TEAM_ALLIANCE ? "alliance"
+        : side == TEAM_HORDE  ? "horde"
+                              : "neutral",
+        level, known ? known->build : "none", static_cast<unsigned>(reading.read.readCount),
+        static_cast<unsigned>(reading.layerCount), layers.empty() ? "" : ": ", layers, FactsText(facts),
+        static_cast<unsigned>(DangerRules::DeadlyBelow(facts)),
+        static_cast<unsigned>(DangerRules::PassableBelow(facts)),
+        GroundWord(DangerRules::JudgeGround(facts, botLevel, DangerRules::HEALTHY)), asIs, nanos, DANGER_TIMED_CALLS);
+    if (!check)
+    {
+        LOG_INFO("playerbots", "{}", line);
+        handler->SendSysMessage(line);
+        return true;
+    }
+
+    // The check: the same place judged by the picture's facts, both for the bot healthy (scenario aw-danger)
+    Picture const& picture = Read(botAI, true);
+    Player* bot = botAI->GetBot();
+    // A patrol's way: the engine's waypoint path of a creature walking one, read by guid (no grid visit)
+    std::array<bool, AwarenessRules::PICTURE_SIZE> pathReaches{};
+    std::vector<float> points;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (unit.type != UnitType::Creature || unit.side != Side::Enemy)
+            continue;
+        Creature* creature = ObjectAccessor::GetCreature(*bot, ObjectGuid(unit.guid));
+        if (!creature || creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != WAYPOINT_MOTION_TYPE)
+            continue;
+        WaypointPath const* path = sWaypointMgr->GetPath(creature->GetWaypointPath());
+        if (!path)
+            continue;
+        points.clear();
+        for (WaypointNode const& node : path->Nodes)
+            points.insert(points.end(), {node.X, node.Y, node.Z});
+        pathReaches[i] = DangerRules::PathReaches(points, reading.cx, reading.cy, z);
+    }
+    DangerRules::PictureFacts const seen = DangerRules::FactsOfPicture(picture, reading.cx, reading.cy, z, pathReaches);
+    DangerRules::Ground const byFacts = DangerRules::JudgeGround(facts, botLevel, DangerRules::HEALTHY);
+    DangerRules::Ground const byPicture = DangerRules::JudgeGround(seen.facts, botLevel, DangerRules::HEALTHY);
+    DangerRules::Agreement const agreement = DangerRules::Agree(byFacts, byPicture);
+    std::string units;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        int const how = DangerRules::PictureCounts(unit, reading.cx, reading.cy, z, pathReaches[i]);
+        if (!how)
+            continue;
+        units += Acore::StringFormat(
+            "{}#{} lvl {} {} home {:.0f} yd dz {:+.0f}{}{}", units.empty() ? "" : ", ", unit.entry,
+            std::clamp(int(picture.self.level) + int(unit.levelDiff), 1, 255), AwarenessRules::Word(unit.rank),
+            DangerRules::SquareDistance(reading.cx, reading.cy, unit.homeX, unit.homeY), unit.homeZ - z,
+            how == 2   ? " place"
+            : how == 3 ? " path"
+                       : "",
+            unit.guard ? " guard" : "");
+    }
+    LOG_INFO("playerbots", "AW danger units {}: {}", who, units.empty() ? "none" : units);
+    std::uint16_t const enemiesLeftOut = picture.leftOut[SideIndex(Side::Enemy)];
+    std::uint32_t const dead = botAI->awareness ? botAI->awareness->deadSkipped : 0;
+    static constexpr std::array<std::string_view, 3> AGREEMENTS{"same", "near", "apart"};
+    std::vector<std::string_view> got{AGREEMENTS[static_cast<std::size_t>(agreement)]};
+    if (agreement != DangerRules::Agreement::Apart)
+        got.push_back("close");
+    if (seen.byPlace)
+        got.push_back("away");
+    if (seen.byPath)
+        got.push_back("path");
+    if (enemiesLeftOut)
+        got.push_back("full");
+    if (dead)
+        got.push_back("dead");
+    std::string const checkLine = Acore::StringFormat(
+        "AW danger check {}: facts {} picture {}: {} | picture facts {} by home {} by place {} by path {} | units {} "
+        "left out e{} dead {} || {}",
+        who, GroundWord(byFacts), GroundWord(byPicture), AGREEMENTS[static_cast<std::size_t>(agreement)],
+        FactsText(seen.facts), static_cast<unsigned>(seen.byHome), static_cast<unsigned>(seen.byPlace),
+        static_cast<unsigned>(seen.byPath), picture.count, enemiesLeftOut, dead, line);
+    Reply(handler, bot, checkLine, expect, got);
+    return true;
+}
+
 std::string MeterLine(bool reset)
 {
     std::uint64_t const nowReads = reads.load(std::memory_order_relaxed);
@@ -1449,6 +1750,10 @@ bool Enter(Player* bot, Store& store, Unit* unit, bool chosen, bool struckFirst,
         return false;
     Seen const now = DescribeOne(bot, store, unit);
     AwarenessRules::Reason const reason = ReasonOf(bot, store, now, chosen, struckFirst);
+    // The picture before it joined (not rebuilt): its kind before the chase the fight began
+    std::int16_t const slot =
+        store.built ? AwarenessRules::SlotOf(store.picture, now.guid) : AwarenessRules::NOT_IN_PICTURE;
+    Seen const* pictured = slot >= 0 ? &store.picture.units[slot] : nullptr;
     store.fightEnemies[store.fightEnemyCount++] = now.guid;
     AwarenessRules::EnemyRow row;
     row.tenths = getMSTimeDiff(store.fightStartMs, nowMs) / 100;
@@ -1458,6 +1763,7 @@ bool Enter(Player* bot, Store& store, Unit* unit, bool chosen, bool struckFirst,
     row.creatureType = now.creatureType;
     row.healthPct = Rounded(now.healthPct);
     row.type = now.type;
+    row.motion = AwarenessRules::MotionAtJoin(now.motion, pictured, getMSTimeDiff(store.picture.builtMs, nowMs));
     line = EnemyLine{now.entry, AwarenessRules::Word(reason), AwarenessRules::EnemyAmount(row)};
     return true;
 }
@@ -1473,8 +1779,9 @@ void NoteAttack(PlayerbotAI* botAI, std::uint64_t targetGuid, std::string_view a
     if (!botAI || !EventLog::Wanted(EventLog::EventType::FightScene))
         return;
     Store& store = OwnStore(botAI);
+    store.notedCaller =
+        AwarenessRules::KeptCaller(store.notedTarget, store.notedCaller, targetGuid, AwarenessRules::CallerOf(action));
     store.notedTarget = targetGuid;
-    store.notedCaller = AwarenessRules::CallerOf(action);
 }
 
 void OnFightOpen(PlayerbotAI* botAI)
@@ -1527,6 +1834,10 @@ void OnFightOpen(PlayerbotAI* botAI)
     row.guards = counts.guards;
     row.allies = counts.allies;
     row.nearby = counts.nearby;
+    row.moving = bot->isMoving();
+    // A held trip with no legs waits for a route: no leg under way
+    HeldTrip const* trip = botAI->GetTravel().Trip();
+    row.onLeg = trip && trip->CurrentLeg();
     EventLog::Emit(bot, EventLog::EventType::FightScene, AwarenessRules::Word(beginning), AwarenessRules::SceneId(row),
                    static_cast<int64>(AwarenessRules::SceneAmount(row)));
     for (std::size_t i = 0; i < count; ++i)
@@ -1795,5 +2106,746 @@ void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
         row.helperYards = std::min(Rounded(helper.yards), AwarenessRules::HELPER_NONE - 1);
     EventLog::Emit(bot, EventLog::EventType::DeathScene, AwarenessRules::Word(helper), killerEntry,
                    static_cast<int64>(AwarenessRules::DeathAmount(row)));
+}
+
+namespace
+{
+constexpr char const* WAY_USAGE =
+    "Usage: .playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe,..>]";
+constexpr char const* WAYS_USAGE = "Usage: .playerbots aw ways <alliance|horde> <level 1..80> | all";
+constexpr char const* TERM_USAGE = "Usage: .playerbots aw term <off|on>";
+// `aw ways`: each band's lines in the reply (Playerbots.log has every line); `all` asks these levels for both sides
+constexpr std::size_t WAYS_LISTED = 30;
+constexpr int WAYS_BAND_STEP = 5;
+constexpr int WAYS_BAND_TOP = 80;
+constexpr std::uint32_t WAYS_MONEY = 100000000;  // a purse no fare refuses
+// The capitals `aw ways` starts from (TravelPlaces' names), by Snapshot::team, with the race whose start flight points
+// a bot there has
+struct CapitalName
+{
+    char const* name;
+    std::uint32_t race;
+};
+constexpr std::array<CapitalName, 3> CAPITALS_ALLIANCE{
+    {{"stormwind", RACE_HUMAN}, {"ironforge", RACE_DWARF}, {"darnassus", RACE_NIGHTELF}}};
+constexpr std::array<CapitalName, 4> CAPITALS_HORDE{{{"orgrimmar", RACE_ORC},
+                                                     {"undercity", RACE_UNDEAD_PLAYER},
+                                                     {"thunderbluff", RACE_TAUREN},
+                                                     {"silvermoon", RACE_BLOODELF}}};
+
+struct Capital
+{
+    TravelPlaces::Place const* place = nullptr;
+    std::uint32_t race = 0;
+};
+
+// The side's flight points with their zones' brackets, as the factory reads them (AddHistoryFlightNodes)
+std::vector<StartingHistory::NodeInZone> TeamNodes(std::uint8_t team)
+{
+    std::vector<StartingHistory::NodeInZone> nodes;
+    for (auto const& [dbGuid, info] : sTravelMgr.GetFlightMasters(team ? TEAM_HORDE : TEAM_ALLIANCE))
+    {
+        StartingHistory::NodeInZone spot;
+        spot.node = info.taxiNodeId;
+        spot.hasBracket = sTravelMgr.GetZoneBracket(info.zoneId, spot.bracket.low, spot.bracket.high);
+        nodes.push_back(spot);
+    }
+    return nodes;
+}
+
+// The flight points the factory gives a bot of this race and level (PlayerbotFactory AddHistoryFlightNodes): its
+// race's start nodes and every node of the side's zones whose bracket ends below the level
+std::array<std::uint32_t, TravelRoute::TAXI_MASK_SIZE> HistoryMask(
+    std::uint32_t race, std::uint8_t level, std::vector<StartingHistory::NodeInZone> const& teamNodes)
+{
+    PlayerTaxi raceStart;
+    raceStart.InitTaxiNodesForLevel(race, CLASS_WARRIOR, level);
+    std::vector<std::uint32_t> startNodes;
+    for (std::uint32_t node = 1; node < sTaxiNodesStore.GetNumRows(); ++node)
+        if (raceStart.IsTaximaskNodeKnown(node))
+            startNodes.push_back(node);
+    TravelRoute::Snapshot snapshot;
+    for (std::uint32_t const node : StartingHistory::HistoryNodes(level, startNodes, teamNodes))
+        snapshot.LearnTaxiNode(node);
+    return snapshot.knownTaxi;
+}
+
+// The facts that make a link deadly, as `aw ways` prints them: guards, or each counted rank's letter, level and count
+// (N31x1, E48x2+N40x3)
+std::string FactsWord(DangerRules::CellFacts const& facts)
+{
+    if (facts.guards)
+        return "guards";
+    static constexpr std::array<char, 4> LETTERS{'N', 'E', 'R', 'B'};
+    std::string word;
+    for (std::size_t r = 0; r < DangerRules::RANK_COUNT && r < LETTERS.size(); ++r)
+        if (facts.count[r])
+            word += Acore::StringFormat("{}{}{}x{}", word.empty() ? "" : "+", LETTERS[r], int(facts.level[r]),
+                                        int(facts.count[r]));
+    return word.empty() ? "-" : word;
+}
+
+char const* VerdictWord(DangerRules::WayVerdict verdict)
+{
+    switch (verdict)
+    {
+        case DangerRules::WayVerdict::Clear:
+            return "clear";
+        case DangerRules::WayVerdict::LeastDeadly:
+            return "least_deadly";
+        case DangerRules::WayVerdict::Refused:
+            return "no_safe_way";
+    }
+    return "?";
+}
+
+DangerRules::Place PlaceOf(TravelRoute::Point const& point) { return {point.mapId, point.x, point.y, point.z}; }
+
+std::string AreaName(std::uint32_t id)
+{
+    AreaTableEntry const* const entry = sAreaTableStore.LookupEntry(id);
+    return entry && entry->area_name[0] ? entry->area_name[0] : "?";
+}
+
+char const* SideWord(std::uint8_t team) { return team ? "horde" : "alliance"; }
+
+// The route's legs and nodes: two answers alike take the same way
+std::vector<std::uint32_t> RouteKey(TravelRoute::Result const& result)
+{
+    std::vector<std::uint32_t> key;
+    for (TravelRoute::Leg const& leg : result.legs)
+    {
+        key.push_back(0x80000000u | static_cast<std::uint32_t>(leg.type));
+        key.insert(key.end(), leg.nodes.begin(), leg.nodes.end());
+    }
+    return key;
+}
+
+// What a pass of searches cost, each search timed alone
+struct PassTime
+{
+    double mean = 0.0;
+    std::uint32_t p50 = 0;
+    std::uint32_t p95 = 0;
+    std::uint32_t max = 0;
+};
+
+PassTime TimeOf(std::vector<std::uint32_t> micros)
+{
+    PassTime time;
+    if (micros.empty())
+        return time;
+    std::sort(micros.begin(), micros.end());
+    double sum = 0.0;
+    for (std::uint32_t const us : micros)
+        sum += us;
+    time.mean = sum / static_cast<double>(micros.size());
+    time.p50 = micros[micros.size() / 2];
+    time.p95 = micros[std::min(micros.size() - 1, micros.size() * 95 / 100)];
+    time.max = micros.back();
+    return time;
+}
+
+std::vector<TravelRoute::Result> SearchPass(TravelGraph const& graph, std::vector<TravelRoute::Request> const& requests,
+                                            TravelRoute::Params const& params, std::vector<std::uint32_t>& micros)
+{
+    TravelRoute::StuckEdges const none{};
+    std::vector<TravelRoute::Result> results;
+    results.reserve(requests.size());
+    micros.clear();
+    micros.reserve(requests.size());
+    for (TravelRoute::Request const& request : requests)
+    {
+        auto const started = std::chrono::steady_clock::now();
+        results.push_back(TravelRoute::Search(graph, request, none, params));
+        micros.push_back(static_cast<std::uint32_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count()));
+    }
+    return results;
+}
+
+// One side and level of `aw ways`: its lines (the summary first) and what the whole command sums
+struct BandOutcome
+{
+    std::vector<std::string> lines;
+    std::size_t ownZones = 0;  // zones of the level's own bracket the band asks
+    std::size_t ownCut = 0;    // of them cut off
+    std::size_t searches = 0;
+    std::vector<std::uint32_t> onMicros;
+    std::vector<std::uint32_t> offMicros;
+};
+
+// A hub's zone against the level: its bracket holds the level, starts above it (at most ZONE_LEVELS_ABOVE, Plays)
+// or ends below it
+enum class ZoneKind : std::uint8_t
+{
+    Own,
+    Ahead,
+    Below
+};
+constexpr std::array<char const*, 3> ZONE_KIND_WORDS{"own", "ahead", "below"};
+
+BandOutcome WaysBand(Planner::PlannerIndexes const& indexes, std::uint8_t team, std::uint8_t level)
+{
+    BandOutcome outcome;
+    TravelGraph const& graph = TravelGraph::Instance();
+    DangerRules::Known const* const known = DangerRules::Published();
+    bool const termOn = DangerRules::TermOn();
+    TravelRoute::Params const params = TravelRoute::ConfiguredParams();
+
+    std::vector<Capital> capitals;
+    auto const addCapital = [&capitals](CapitalName const& capital)
+    {
+        for (TravelPlaces::Place const& place : TravelPlaces::All())
+            if (std::string_view(place.name) == capital.name)
+                capitals.push_back({&place, capital.race});
+    };
+    if (team)
+        for (CapitalName const& capital : CAPITALS_HORDE)
+            addCapital(capital);
+    else
+        for (CapitalName const& capital : CAPITALS_ALLIANCE)
+            addCapital(capital);
+    std::vector<StartingHistory::NodeInZone> const teamNodes = TeamNodes(team);
+    // The flight points of a bot from each capital at a level, built once per level
+    auto const masksAt = [&capitals, &teamNodes](std::uint8_t at)
+    {
+        std::vector<std::array<std::uint32_t, TravelRoute::TAXI_MASK_SIZE>> masks;
+        for (Capital const& capital : capitals)
+            masks.push_back(HistoryMask(capital.race, at, teamNodes));
+        return masks;
+    };
+    // A bot of the capital's race with the flight points the factory gives its level, no hearthstone and no flying
+    // mount, with money for any fare: it flies where it knows both ends, rides ships, zeppelins, lifts and portals and
+    // walks the ground
+    auto const requestOf = [&capitals, team](std::size_t c, Planner::Hub const& hub, std::uint8_t at,
+                                             std::array<std::uint32_t, TravelRoute::TAXI_MASK_SIZE> const& mask)
+    {
+        TravelRoute::Request request;
+        request.snapshot.position = capitals[c].place->at;
+        request.snapshot.team = team;
+        request.snapshot.level = at;
+        request.snapshot.money = WAYS_MONEY;
+        request.snapshot.allowTransport = true;
+        request.snapshot.knownTaxi = mask;
+        request.goal = {hub.mapId, hub.x, hub.y, hub.z};
+        return request;
+    };
+
+    // The hubs of the zones the level plays (SkillPathBridge::Plays), the side's own and the neutral ones
+    struct HubAsk
+    {
+        std::size_t hub = 0;
+        ZoneKind kind = ZoneKind::Own;
+    };
+    std::vector<HubAsk> hubs;
+    std::size_t otherSide = 0;
+    std::size_t noZone = 0;
+    Planner::PlaceSide const enemy = team ? Planner::PlaceSide::Alliance : Planner::PlaceSide::Horde;
+    for (std::size_t i = 0; i < indexes.hubs.size(); ++i)
+    {
+        Planner::Hub const& hub = indexes.hubs[i];
+        if (hub.mapId != 0 && hub.mapId != 1 && hub.mapId != 530 && hub.mapId != 571)
+            continue;
+        if (hub.side == enemy)
+        {
+            ++otherSide;
+            continue;
+        }
+        Planner::ZoneRecord const* const zone = indexes.FindZone(hub.zoneId);
+        if (!zone)
+        {
+            ++noZone;
+            continue;
+        }
+        bool const open = zone->side == Planner::ZoneSide::Contested || zone->side == Planner::ZoneSide::Sanctuary ||
+                          (zone->side == Planner::ZoneSide::Alliance) == (team == 0);
+        if (!SkillPathBridge::Plays({zone->zoneId, zone->low, zone->high, zone->mapId, open}, level))
+            continue;
+        ZoneKind const kind = zone->low > level    ? ZoneKind::Ahead
+                              : zone->high < level ? ZoneKind::Below
+                                                   : ZoneKind::Own;
+        hubs.push_back({i, kind});
+    }
+
+    std::vector<TravelRoute::Request> requests;
+    requests.reserve(hubs.size() * capitals.size());
+    std::vector<std::array<std::uint32_t, TravelRoute::TAXI_MASK_SIZE>> const masks = masksAt(level);
+    for (HubAsk const& ask : hubs)
+        for (std::size_t c = 0; c < capitals.size(); ++c)
+            requests.push_back(requestOf(c, indexes.hubs[ask.hub], level, masks[c]));
+    outcome.searches = requests.size();
+
+    // The pass as published, then the same requests without the term on this thread alone (DangerRules::Unpriced):
+    // no other thread's search loses its term meanwhile
+    std::vector<TravelRoute::Result> const on = SearchPass(graph, requests, params, outcome.onMicros);
+    std::vector<TravelRoute::Result> off;
+    {
+        DangerRules::Unpriced const unpriced;
+        off = SearchPass(graph, requests, params, outcome.offMicros);
+    }
+
+    struct ZoneTally
+    {
+        ZoneKind kind = ZoneKind::Own;
+        std::size_t reached = 0;
+        std::size_t noSafe = 0;
+        std::vector<std::size_t> asks;  // its hubs, by index into `hubs`
+    };
+    std::map<std::uint32_t, ZoneTally> zones;
+    std::vector<std::string> hubLines;
+    std::vector<std::string> changedLines;
+    std::size_t noSafeHubs = 0;
+    std::size_t unreached = 0;
+    std::size_t changed = 0;
+    std::size_t okDiffers = 0;
+    std::size_t const perHub = capitals.size();
+    for (std::size_t h = 0; h < hubs.size(); ++h)
+    {
+        Planner::Hub const& hub = indexes.hubs[hubs[h].hub];
+        DangerRules::Place const goal{hub.mapId, hub.x, hub.y, hub.z};
+        std::size_t reached = 0;
+        std::size_t safe = 0;
+        std::size_t goalDeadly = 0;
+        std::size_t best = perHub;
+        DangerRules::DangerPart bestPart;
+        for (std::size_t c = 0; c < perHub; ++c)
+        {
+            std::size_t const r = h * perHub + c;
+            TravelRoute::Result const& result = on[r];
+            DangerRules::Place const start = PlaceOf(capitals[c].place->at);
+            if (result.ok != off[r].ok)
+                ++okDiffers;
+            if (!result.ok)
+                continue;
+            ++reached;
+            DangerRules::DangerPart part;
+            if (known)
+                part = DangerRules::WayDanger(*known, DangerRules::WalkLinksOf(graph, result.legs), start, goal, team,
+                                              level);
+            if (part.goal == DangerRules::Ground::Deadly)
+                ++goalDeadly;
+            if (!DangerRules::Refuses(part))
+                ++safe;
+            else if (best == perHub || part.deadlyLinks < bestPart.deadlyLinks ||
+                     (part.deadlyLinks == bestPart.deadlyLinks &&
+                      result.totalSeconds < on[h * perHub + best].totalSeconds))
+            {
+                best = c;
+                bestPart = part;
+            }
+            if (!off[r].ok || RouteKey(result) == RouteKey(off[r]))
+                continue;
+            ++changed;
+            DangerRules::DangerPart offPart;
+            if (known)
+                offPart = DangerRules::WayDanger(*known, DangerRules::WalkLinksOf(graph, off[r].legs), start, goal,
+                                                 team, level);
+            float const plain = result.totalSeconds - part.penaltySeconds -
+                                DangerRules::FIGHT_SECONDS * static_cast<float>(part.fights);
+            changedLines.push_back(Acore::StringFormat(
+                "AW ways {} {} changed {} -> hub #{} {} / {}: off {} deadly links {:.0f} yd {} fights {:.0f} s; on {} "
+                "deadly links {:.0f} yd {} fights {:.0f} s plain ({:+.0f} s)",
+                SideWord(team), level, capitals[c].place->name, hubs[h].hub, AreaName(hub.zoneId), AreaName(hub.areaId),
+                offPart.deadlyLinks, offPart.deadlyYards, offPart.fights, off[r].totalSeconds, part.deadlyLinks,
+                part.deadlyYards, part.fights, plain, plain - off[r].totalSeconds));
+        }
+        ZoneTally& zone = zones[hub.zoneId];
+        zone.kind = hubs[h].kind;
+        zone.asks.push_back(h);
+        if (!reached)
+        {
+            ++unreached;
+            continue;
+        }
+        ++zone.reached;
+        if (safe)
+            continue;
+        ++noSafeHubs;
+        ++zone.noSafe;
+        TravelRoute::Result const& way = on[h * perHub + best];
+        // Each deadly link of the best way: its yards, the yards of it deadly at the level and the facts that decide it
+        std::string deadlyLinks;
+        if (known)
+            for (std::uint32_t const index : DangerRules::WalkLinksOf(graph, way.legs))
+            {
+                DangerRules::LinkDanger const* const link = known->LinkOf(index, team);
+                if (!link || !DangerRules::TermOf(*link, level).deadly)
+                    continue;
+                deadlyLinks +=
+                    Acore::StringFormat("{}#{} {}/{:.0f} {}", deadlyLinks.empty() ? "" : " ", index, link->yards,
+                                        DangerRules::DeadlyYardsOfLink(*known, graph, index, team, level),
+                                        FactsWord(DangerRules::DecidingFactsOfLink(*known, graph, index, team, level)));
+            }
+        hubLines.push_back(Acore::StringFormat(
+            "AW ways {} {} hub #{} {} (zone {}, {}) / {}: map {} {:.0f} {:.0f} {:.0f}, no safe way from {} of {} (goal "
+            "deadly {}); best from {}: {} deadly links {:.0f} yd [link yd/deadly yd facts: {}], {} fights, start {} "
+            "goal {}, {:.0f} s (penalty {:.0f} s)",
+            SideWord(team), level, hubs[h].hub, AreaName(hub.zoneId), hub.zoneId,
+            ZONE_KIND_WORDS[static_cast<std::size_t>(hubs[h].kind)], AreaName(hub.areaId), hub.mapId, hub.x, hub.y,
+            hub.z, reached, perHub, goalDeadly, capitals[best].place->name, bestPart.deadlyLinks, bestPart.deadlyYards,
+            deadlyLinks, bestPart.fights, GroundWord(bestPart.start), GroundWord(bestPart.goal), way.totalSeconds,
+            bestPart.penaltySeconds));
+    }
+
+    // The first level above the band's at which a hub of the zone has a safe way, its hubs asked from each capital
+    // with that level's flight points; 0 when none has one up to the zone's top
+    TravelRoute::StuckEdges const noStuck{};
+    std::map<std::uint8_t, std::vector<std::array<std::uint32_t, TravelRoute::TAXI_MASK_SIZE>>> masksByLevel;
+    auto const opensAt = [&](ZoneTally const& zone, std::uint32_t high)
+    {
+        for (std::uint32_t at = level + 1u; at <= std::min<std::uint32_t>(high, WAYS_BAND_TOP); ++at)
+        {
+            std::uint8_t const up = static_cast<std::uint8_t>(at);
+            auto found = masksByLevel.find(up);
+            if (found == masksByLevel.end())
+                found = masksByLevel.emplace(up, masksAt(up)).first;
+            for (std::size_t const h : zone.asks)
+            {
+                Planner::Hub const& hub = indexes.hubs[hubs[h].hub];
+                for (std::size_t c = 0; c < capitals.size(); ++c)
+                {
+                    TravelRoute::Result const result =
+                        TravelRoute::Search(graph, requestOf(c, hub, up, found->second[c]), noStuck, params);
+                    if (result.ok && known &&
+                        !DangerRules::Refuses(DangerRules::WayDanger(
+                            *known, DangerRules::WalkLinksOf(graph, result.legs), PlaceOf(capitals[c].place->at),
+                            {hub.mapId, hub.x, hub.y, hub.z}, team, up)))
+                        return at;
+                }
+            }
+        }
+        return 0u;
+    };
+
+    // A zone is cut off when every hub of it the search reached has no safe way; one of the own bracket says from
+    // which level it opens
+    std::array<std::string, 3> cut;
+    std::array<std::size_t, 3> kinds{};
+    for (auto const& [zoneId, zone] : zones)
+    {
+        ++kinds[static_cast<std::size_t>(zone.kind)];
+        if (!zone.reached || zone.noSafe != zone.reached)
+            continue;
+        std::string& list = cut[static_cast<std::size_t>(zone.kind)];
+        list += Acore::StringFormat("{}{} ({})", list.empty() ? "" : ", ", AreaName(zoneId), zoneId);
+        if (zone.kind != ZoneKind::Own)
+            continue;
+        ++outcome.ownCut;
+        Planner::ZoneRecord const* const record = indexes.FindZone(zoneId);
+        std::uint32_t const high = record ? record->high : level;
+        std::uint32_t const opens = opensAt(zone, high);
+        list += opens ? Acore::StringFormat(" from {}", opens) : Acore::StringFormat(" none to {}", high);
+    }
+    outcome.ownZones = kinds[static_cast<std::size_t>(ZoneKind::Own)];
+    PassTime const onTime = TimeOf(outcome.onMicros);
+    PassTime const offTime = TimeOf(outcome.offMicros);
+    outcome.lines.push_back(Acore::StringFormat(
+        "AW ways {} {}: {} hubs in {} zones (own {}, ahead {}, below {}; other side {}, no zone {}), {} capitals, {} "
+        "searches a pass | no safe way: {} hubs; zones cut off: own [{}] ahead [{}] below [{}] | unreached {} hubs | "
+        "changed by the term {} (ok differs {}) | search on mean {:.0f} p50 {} p95 {} max {} us, off mean {:.0f} p50 "
+        "{} p95 {} max {} us | term {}, store {}",
+        SideWord(team), level, hubs.size(), zones.size(), kinds[0], kinds[1], kinds[2], otherSide, noZone,
+        capitals.size(), requests.size(), noSafeHubs, cut[0], cut[1], cut[2], unreached, changed, okDiffers,
+        onTime.mean, onTime.p50, onTime.p95, onTime.max, offTime.mean, offTime.p50, offTime.p95, offTime.max,
+        termOn ? "on" : "off", known ? known->build : "none"));
+    outcome.lines.insert(outcome.lines.end(), hubLines.begin(), hubLines.end());
+    outcome.lines.insert(outcome.lines.end(), changedLines.begin(), changedLines.end());
+    return outcome;
+}
+}  // namespace
+
+DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRoute::Point const& start,
+                              TravelRoute::Point const& goal, TeamId side, std::uint8_t level)
+{
+    DangerRules::Known const* const known = DangerRules::Published();
+    if (!known)
+        return {};
+    TravelGraph const& graph = TravelGraph::Instance();
+    std::vector<std::uint32_t> const walks =
+        graph.IsReady() ? DangerRules::WalkLinksOf(graph, legs) : std::vector<std::uint32_t>{};
+    return DangerRules::WayDanger(*known, walks, PlaceOf(start), PlaceOf(goal), SideIndex(side), level);
+}
+
+bool WayJudgeDue(PlayerbotAI* botAI)
+{
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    if (!trip)
+        return false;
+    DangerRules::JudgedPair const last = botAI->awareness ? botAI->awareness->judged : DangerRules::JudgedPair{};
+    return DangerRules::WayDue(true, trip->route.waiting, !trip->trip.legs.empty(), trip->tripId, trip->route.requestId,
+                               last);
+}
+
+void JudgeTripWay(PlayerbotAI* botAI)
+{
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    if (!trip || trip->trip.legs.empty())
+        return;
+    std::unique_ptr<Store>& own = botAI->awareness;
+    if (!own)
+        own = std::make_unique<Store>();
+    own->judged = {trip->tripId, trip->route.requestId};
+    // `aw term off` (a lab's walk test) judges nothing: the route was searched without the term
+    if (!DangerRules::TermOn())
+        return;
+    Player* const bot = botAI->GetBot();
+    TravelRoute::Point const goal{trip->dest.GetMapId(), trip->dest.GetPositionX(), trip->dest.GetPositionY(),
+                                  trip->dest.GetPositionZ()};
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    DangerRules::DangerPart const part =
+        WayOf(trip->trip.legs, trip->trip.legs.front().from, goal, bot->GetTeamId(), level);
+    // Spared: a GM's order (`route go` names its place); the leaving's trip joins it with AW38b
+    DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, !trip->place.empty());
+    char const* const choice = DangerRules::WayChoice(verdict);
+    if (!choice)
+        return;
+    std::uint32_t const tripId = trip->tripId;
+    char const* const goalWord = RpgStatus::TripGoal(botAI, trip->bindInn);
+    DangerRules::WayEffects const effects = DangerRules::EffectsOf(verdict);
+    for (std::uint8_t i = 0; i < effects.count; ++i)
+        switch (effects.order[i])
+        {
+            case DangerRules::WayEffect::Record:
+            {
+                // W2: before the end, so the next search and pick for this goal read the entry
+                FailedAttempts::Failure failure;
+                failure.goal = TravelLegs::FailurePoint(goal);
+                failure.spot = TravelLegs::FailurePoint(
+                    {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()});
+                botAI->GetTravel().NoteFailure(DangerRules::RECORD_WORD, failure, tripId);
+                break;
+            }
+            case DangerRules::WayEffect::Row:
+                // The value is the goal's ground (0 quiet, 1 passable, 2 deadly)
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Way, choice, goalWord,
+                                   static_cast<float>(part.goal),
+                                   {{"deadly_yd", part.deadlyYards},
+                                    {"deadly_links", static_cast<float>(part.deadlyLinks)},
+                                    {"fights", static_cast<float>(part.fights)}},
+                                   tripId);
+                break;
+            case DangerRules::WayEffect::End:
+                // Last: the end releases the trip
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned,
+                               {.source = DangerRules::END_SOURCE, .text = "no safe way"});
+                return;
+        }
+}
+
+bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
+{
+    std::vector<std::string_view> words = Words(rest);
+    std::vector<std::string_view> expect;
+    if (!words.empty() && words.back().substr(0, 7) == "expect=")
+    {
+        if (!ParseExpect(words.back().substr(7), expect, {"clear", "least", "routed", "safe", "nosafe"}))
+        {
+            handler->SendErrorMessage(WAY_USAGE);
+            return false;
+        }
+        words.pop_back();
+    }
+    bool const four = words.size() == 4;
+    Optional<std::uint32_t> const map = four ? Acore::StringTo<std::uint32_t>(words[0]) : std::nullopt;
+    Optional<float> const gx = four ? Acore::StringTo<float>(words[1]) : std::nullopt;
+    Optional<float> const gy = four ? Acore::StringTo<float>(words[2]) : std::nullopt;
+    Optional<float> const gz = four ? Acore::StringTo<float>(words[3]) : std::nullopt;
+    TravelGraph const& graph = TravelGraph::Instance();
+    if (!map || !gx || !gy || !gz || !graph.IsReady())
+    {
+        handler->SendErrorMessage(graph.IsReady() ? WAY_USAGE : "AW way: the travel graph is not ready");
+        return false;
+    }
+    Player* bot = botAI->GetBot();
+    // The request the bot's trip would make now (NewRpgTravelAction::RequestRoute): its snapshot, its constraints and
+    // the live entries of its record of failed attempts, with the stuck edges flagged now
+    TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, 0);
+    snapshot.hasHearthstone = snapshot.hasHearthstone && TestConstraints::HearthAllowed(botAI->testConstraints);
+    snapshot.allowTransport = true;
+    if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
+        snapshot.knownTaxi.fill(0);
+    if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))
+        snapshot.flyOutland = snapshot.flyNorthrend = false;
+    TravelRoute::Request request{snapshot, {*map, *gx, *gy, *gz}};
+    request.refused = FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime());
+    request.freeRides = TestConstraints::RidesFree(botAI->testConstraints);
+    static TravelRoute::StuckEdges const noStuck{};
+    std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
+    TravelRoute::StuckEdges const& edges = stuck ? *stuck : noStuck;
+    auto const started = std::chrono::steady_clock::now();
+    TravelRoute::Result const result = TravelRoute::Search(graph, request, edges, TravelRoute::ConfiguredParams());
+    auto const micros =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+
+    TeamId const side = bot->GetTeamId();
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    std::span<TravelRoute::Leg const> const legs =
+        result.ok ? std::span<TravelRoute::Leg const>(result.legs) : std::span<TravelRoute::Leg const>();
+    DangerRules::DangerPart const part = WayOf(legs, snapshot.position, request.goal, side, level);
+    DangerRules::WayVerdict const own = DangerRules::JudgeWay(part, false);
+    DangerRules::WayVerdict const order = DangerRules::JudgeWay(part, true);
+    bool const refuses = DangerRules::Refuses(part);
+    std::size_t walks = 0;
+    DangerRules::Known const* const known = DangerRules::Published();
+    for (std::size_t i = 0; i < legs.size(); ++i)
+    {
+        TravelRoute::Leg const& leg = legs[i];
+        std::vector<std::uint32_t> const links = DangerRules::WalkLinksOf(graph, legs.subspan(i, 1));
+        walks += links.size();
+        std::string deadly;
+        for (std::uint32_t const index : links)
+        {
+            DangerRules::LinkDanger const* const link = known ? known->LinkOf(index, SideIndex(side)) : nullptr;
+            if (!link || !DangerRules::TermOf(*link, level).deadly)
+                continue;
+            TravelGraphLink const& graphLink = graph.GetLink(index);
+            deadly += Acore::StringFormat("{}{} -> {} {} yd ({:.0f} deadly)", deadly.empty() ? ", deadly: " : "; ",
+                                          graph.GetName(graphLink.from), graph.GetName(graphLink.to), link->yards,
+                                          DangerRules::DeadlyYardsOfLink(*known, graph, index, SideIndex(side), level));
+        }
+        LOG_INFO("playerbots",
+                 "AW way {} leg {}/{}: {} {:.0f} s map {} {:.0f} {:.0f} {:.0f} -> {:.0f} {:.0f} {:.0f}, {} nodes, {} "
+                 "walk links{}",
+                 bot->GetName(), i + 1, legs.size(), TravelRoute::LegTypeWord(leg.type), leg.seconds, leg.from.mapId,
+                 leg.from.x, leg.from.y, leg.from.z, leg.to.x, leg.to.y, leg.to.z, leg.nodes.size(), links.size(),
+                 deadly);
+        if (leg.type != TravelRoute::LegType::Walk || leg.nodes.empty())
+            continue;
+        std::string points;
+        for (std::uint32_t const node : leg.nodes)
+        {
+            TravelGraphNode const& at = graph.GetNode(node);
+            points += Acore::StringFormat("{}{:.0f},{:.0f}", points.empty() ? "" : " ", at.x, at.y);
+        }
+        LOG_INFO("playerbots", "AW way {} leg {} points: {}", bot->GetName(), i + 1, points);
+    }
+    std::string const line = Acore::StringFormat(
+        "AW way {}: {} level {} map {} {:.0f} {:.0f} {:.0f} -> map {} {:.0f} {:.0f} {:.0f}: {}, {} legs, {:.0f} s "
+        "(penalty {:.0f} s), {} walk links | deadly {} links {:.0f} yd, fights {}, unquiet {}, start {} goal {} | "
+        "safe {}, own {}, order {} | term {} | search {} us",
+        bot->GetName(), SideWord(SideIndex(side)), level, snapshot.position.mapId, snapshot.position.x,
+        snapshot.position.y, snapshot.position.z, *map, *gx, *gy, *gz,
+        result.ok ? "ok" : TravelRoute::FailureWord(result.failure), result.legs.size(), result.totalSeconds,
+        part.penaltySeconds, walks, part.deadlyLinks, part.deadlyYards, part.fights, part.unquietLinks,
+        GroundWord(part.start), GroundWord(part.goal), refuses ? "no" : "yes", VerdictWord(own), VerdictWord(order),
+        DangerRules::TermOn() ? "on" : "off", micros);
+    LOG_INFO("playerbots", "{}", line);
+    if (expect.empty())
+    {
+        handler->SendSysMessage(line);
+        return true;
+    }
+    std::string missed;
+    for (std::string_view const word : expect)
+    {
+        bool const holds = !result.ok         ? false
+                           : word == "clear"  ? own == DangerRules::WayVerdict::Clear
+                           : word == "least"  ? own == DangerRules::WayVerdict::LeastDeadly
+                           : word == "safe"   ? !refuses
+                           : word == "nosafe" ? refuses
+                                              : true;  // routed
+        if (!holds)
+            missed += Acore::StringFormat("{}{}", missed.empty() ? "" : ",", word);
+    }
+    handler->SendSysMessage(
+        missed.empty() ? Acore::StringFormat("FIXTURE check {}: ok, {}", bot->GetName(), line)
+                       : Acore::StringFormat("FIXTURE check {}: gap, want {}; {}", bot->GetName(), missed, line));
+    return true;
+}
+
+bool HandleWaysCommand(ChatHandler* handler, std::string_view rest)
+{
+    std::vector<std::string_view> const words = Words(rest);
+    bool const all = words.size() == 1 && words[0] == "all";
+    Optional<std::uint32_t> const level = words.size() == 2 ? Acore::StringTo<std::uint32_t>(words[1]) : std::nullopt;
+    std::uint8_t const team = words.size() == 2 && (words[0] == "horde" || words[0] == "1") ? 1 : 0;
+    bool const sideGiven = words.size() == 2 && (team == 1 || words[0] == "alliance" || words[0] == "0");
+    if (!all && (!sideGiven || !level || *level < 1 || *level > static_cast<std::uint32_t>(WAYS_BAND_TOP)))
+    {
+        handler->SendErrorMessage(WAYS_USAGE);
+        return false;
+    }
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes = Planner::Indexes();
+    if (!indexes || !TravelGraph::Instance().IsReady())
+    {
+        handler->SendErrorMessage("AW ways: the planner's indexes or the travel graph are not ready");
+        return false;
+    }
+    std::string const before = TravelRoute::RouteServiceStatus();
+    auto const started = std::chrono::steady_clock::now();
+    std::vector<std::string> reply;
+    std::size_t bands = 0;
+    std::size_t cutBands = 0;
+    std::size_t bandsWithoutOwn = 0;
+    std::size_t searches = 0;
+    std::vector<std::uint32_t> onMicros;
+    std::vector<std::uint32_t> offMicros;
+    auto const band = [&](std::uint8_t side, std::uint8_t at)
+    {
+        BandOutcome const outcome = WaysBand(*indexes, side, at);
+        for (std::string const& line : outcome.lines)
+            LOG_INFO("playerbots", "{}", line);
+        std::size_t const shown = all ? 1 : std::min(outcome.lines.size(), WAYS_LISTED + 1);
+        reply.insert(reply.end(), outcome.lines.begin(), outcome.lines.begin() + shown);
+        ++bands;
+        cutBands += outcome.ownCut ? 1 : 0;
+        bandsWithoutOwn += outcome.ownCut == outcome.ownZones ? 1 : 0;
+        searches += outcome.searches;
+        onMicros.insert(onMicros.end(), outcome.onMicros.begin(), outcome.onMicros.end());
+        offMicros.insert(offMicros.end(), outcome.offMicros.begin(), outcome.offMicros.end());
+    };
+    if (all)
+    {
+        for (std::uint8_t side = 0; side < 2; ++side)
+            for (int at = WAYS_BAND_STEP; at <= WAYS_BAND_TOP; at += WAYS_BAND_STEP)
+                band(side, static_cast<std::uint8_t>(at));
+    }
+    else
+        band(team, static_cast<std::uint8_t>(*level));
+    auto const waited =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    PassTime const onTime = TimeOf(std::move(onMicros));
+    PassTime const offTime = TimeOf(std::move(offMicros));
+    std::string const total = Acore::StringFormat(
+        "AW ways {}: {} bands, {} with a zone of their own bracket cut off, bands without a zone of their own bracket "
+        "safe: {} | {} searches a pass, on mean {:.0f} p50 {} p95 {} max {} us, off mean {:.0f} p50 {} p95 {} max {} "
+        "us | the world thread waited {} ms",
+        all ? "all" : "band", bands, cutBands, bandsWithoutOwn, searches, onTime.mean, onTime.p50, onTime.p95,
+        onTime.max, offTime.mean, offTime.p50, offTime.p95, offTime.max, waited);
+    LOG_INFO("playerbots", "{}", total);
+    LOG_INFO("playerbots", "AW ways route service before: {}", before);
+    LOG_INFO("playerbots", "AW ways route service after: {}", TravelRoute::RouteServiceStatus());
+    for (std::string const& line : reply)
+        handler->SendSysMessage(line);
+    handler->SendSysMessage(total);
+    return true;
+}
+
+bool HandleTermCommand(ChatHandler* handler, std::string_view rest)
+{
+    std::vector<std::string_view> const words = Words(rest);
+    if (words.size() != 1 || (words[0] != "off" && words[0] != "on"))
+    {
+        handler->SendErrorMessage(TERM_USAGE);
+        return false;
+    }
+    if (!DangerRules::SetTerm(words[0] == "on"))
+    {
+        handler->SendErrorMessage("AW term: the fold has not published its store yet");
+        return false;
+    }
+    // A lab's switch (§4.5, AW.25): a night's Server.log must not hold this line
+    if (words[0] == "off")
+        LOG_WARN("server.loading",
+                 "danger term off: bots are routed by time alone, through any ground, until `aw term on` (a lab's "
+                 "switch, never main or lab5)");
+    DangerRules::Known const* const known = DangerRules::Published();
+    std::string const line = Acore::StringFormat("AW term {}: store {} with {} link entries of a graph of {} links",
+                                                 words[0], known ? known->build : "none",
+                                                 known ? known->links.size() : 0, known ? known->graphLinks : 0);
+    LOG_INFO("playerbots", "{}", line);
+    handler->SendSysMessage(line);
+    return true;
 }
 }  // namespace Awareness

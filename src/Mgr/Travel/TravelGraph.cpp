@@ -9,6 +9,7 @@
 #include "Chat.h"
 #include "ConditionMgr.h"
 #include "DBCStores.h"
+#include "DangerRules.h"
 #include "Field.h"
 #include "GameObjectData.h"
 #include "Log.h"
@@ -497,6 +498,7 @@ void TravelGraph::Load()
              carWindows.windows, carWindows.shared, carWindows.unmatched, carWindows.paused);
     for (TravelRideLeftOut const& ride : _ridesLeftOut)
         LOG_INFO("playerbots", "[Route] {}", RideLeftOutLine(ride));
+    DangerRules::FoldBeforeReady(*this);  // awareness (AW37a): the graph is ready only with its ways' danger folded
     Publish(loadMs, peakChunkRows);
 }
 

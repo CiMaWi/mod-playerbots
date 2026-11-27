@@ -158,11 +158,8 @@ UpkeepGather Synthetic()
         {VENDOR_REAGENT, ITEM_HORSE, 0, 0, 0, true},
         {VENDOR_NONE, ITEM_SWORD, 0, 0, 0, true},
     };
-    // The spells that use them: twice the same, one on no list (no position)
-    input.reagents = {{ITEM_POWDER, CLASS_MAGE, SPELL_ARCANE_INTELLECT},
-                      {ITEM_RUNE, CLASS_MAGE, SPELL_TELEPORT},
-                      {ITEM_POWDER, CLASS_MAGE, SPELL_ARCANE_INTELLECT},
-                      {ITEM_RUNE, CLASS_MAGE, 99999}};
+    // The spells that use them: twice the same
+    input.reagents = {{ITEM_POWDER, CLASS_MAGE}, {ITEM_RUNE, CLASS_MAGE}, {ITEM_POWDER, CLASS_MAGE}};
     input.emptyVendors = 1;
     input.missingItems = 2;
     return input;
@@ -299,18 +296,12 @@ void CheckOffers(UpkeepIndex const& index)
     Check(index.KindsOf(powder, CLASS_MAGE) == StockBit(UpkeepStock::Reagent) &&
               index.KindsOf(powder, CLASS_WARRIOR) == 0,
           "a reagent counts as stock only for the classes that use it");
-    auto const [runeFirst, runeLast] = index.ReagentSpells(CLASS_MAGE, ITEM_RUNE);
-    auto const [warriorFirst, warriorLast] = index.ReagentSpells(CLASS_WARRIOR, ITEM_POWDER);
-    TrainerList const* mageList = index.ClassList(CLASS_MAGE);
-    Check(index.reagentSpells.size() == 2 && runeLast - runeFirst == 1 && mageList &&
-              runeFirst->position == mageList->Find(SPELL_TELEPORT) && warriorFirst == warriorLast,
-          "each reagent knows the class list position of the spell that uses it (once; none off the list)");
 }
 
 bool SameIndex(UpkeepIndex const& a, UpkeepIndex const& b)
 {
     if (a.lists.size() != b.lists.size() || a.trainers.size() != b.trainers.size() ||
-        a.reagentClasses != b.reagentClasses || a.reagentSpells != b.reagentSpells)
+        a.reagentClasses != b.reagentClasses)
         return false;
     for (std::size_t i = 0; i < a.lists.size(); ++i)
         if (a.lists[i].kind != b.lists[i].kind || a.lists[i].requirement != b.lists[i].requirement ||

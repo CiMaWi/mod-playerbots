@@ -604,3 +604,9 @@ bool RecoverAction::Execute(Event /*event*/)
 }
 
 bool RecoverAction::isUseful() { return bot->IsAlive(); }
+
+bool WayDangerAction::Execute(Event /*event*/)
+{
+    Awareness::JudgeTripWay(botAI);
+    return true;
+}

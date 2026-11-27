@@ -9,7 +9,7 @@
 // prices and the gathering nodes' yields (WR9b), the worker build, the published index, its status lines and the
 // `playerbots professions index` command.
 //
-// The shape of the gather follows PlannerUpkeep.cpp (the SPELL_EFFECT_LEARN_SPELL pattern of AddReagents and the
+// The shape of the gather follows PlannerUpkeep.cpp (the SPELL_EFFECT_LEARN_SPELL pattern and the
 // trainer loop). The loot yields are read from the loot stores' tables, WR.9: no source index of our own.
 //
 // Drop rows (WR20a) come in a second stage: the world thread gathers the creature kinds with loot and their open-world

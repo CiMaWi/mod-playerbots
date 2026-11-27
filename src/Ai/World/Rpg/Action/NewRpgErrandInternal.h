@@ -139,7 +139,7 @@ enum class StableStep : uint8
 StableStep StableAtMaster(PlayerbotAI* botAI, Creature* master, NewRpgInfo::ErrandStop& stop, uint32& stored);
 
 // The shopping list at the errand's vendor, called by the errand visit (NewRpgVendor.cpp defines it)
-void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired);
+void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired, uint32 mountRank);
 }  // namespace NewRpgInternal
 
 #endif

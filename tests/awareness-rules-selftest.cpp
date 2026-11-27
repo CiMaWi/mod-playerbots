@@ -8,10 +8,12 @@
 // types for both sides, the distance against the disc of a unit's estimate, the age rule and why an enemy is in a
 // fight. Generated cases use a fixed seed, printed with every failure.
 // Build (Git Bash, module root):
-//   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/Awareness tests/awareness-rules-selftest.cpp
+//   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/Awareness /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
+//   tests/awareness-rules-selftest.cpp
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -19,14 +21,22 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <queue>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
 #include "AwarenessRules.h"
+#include "DangerFold.h"
+#include "DangerRules.h"
 #include "DeathEdgeRules.h"
 #include "DeathRowRules.h"
+#include "RouteRules.h"
 
 namespace
 {
@@ -113,6 +123,7 @@ void TestValues()
     Check(AllWordsDistinct<UnitType>() && AllStored<UnitType>(&Seen::type), "values: every unit type stored");
     Check(AllWordsDistinct<Busy>() && AllStored<Busy>(&Seen::busy), "values: every busy state stored, its word");
     Check(AllWordsDistinct<Known>() && AllStored<Known>(&Seen::known), "values: every way of knowing stored");
+    Check(AllWordsDistinct<Motion>() && AllStored<Motion>(&Seen::motion), "values: every kind of movement stored");
     Check(AllWordsDistinct<Role>(), "values: every role has its own word");
     Check(AllWordsDistinct<Reason>(), "values: every reason has its own word");
 
@@ -1241,6 +1252,17 @@ void TestBegan()
     Check(CallerOf("attack anything") == Caller::Grind, "caller: attack anything is the grind");
     Check(CallerOf("new rpg attack quest target") == Caller::Quest, "caller: the quest executor's attack");
     Check(CallerOf("dps assist") == Caller::Other && CallerOf("") == Caller::Other, "caller: any other is other");
+    Check(KeptCaller(7, Caller::Grind, 7, Caller::Other) == Caller::Grind &&
+              KeptCaller(7, Caller::Quest, 7, Caller::Other) == Caller::Quest,
+          "kept: melee on the target a chooser noted keeps the chooser");
+    Check(KeptCaller(7, Caller::Grind, 9, Caller::Other) == Caller::Other,
+          "kept: a new target no chooser picked is other");
+    Check(KeptCaller(0, Caller::Grind, 7, Caller::Other) == Caller::Other,
+          "kept: after a fight's edge the stale caller does not stick");
+    Check(KeptCaller(7, Caller::Grind, 7, Caller::Quest) == Caller::Quest &&
+              KeptCaller(7, Caller::Other, 7, Caller::Grind) == Caller::Grind &&
+              KeptCaller(7, Caller::Quest, 9, Caller::Grind) == Caller::Grind,
+          "kept: a named chooser takes the note");
 }
 
 // AW5: the rows' fields packed as the SQL of awareness.sql unpacks them
@@ -1282,7 +1304,16 @@ void TestRows()
     amount = SceneAmount(scene);
     Check(((id >> 14) & 127) == 100 && ((id >> 21) & 511) == 511 && ((amount >> 22) & 127) == 127 &&
               ((amount >> 29) & 127) == 127 && ((amount >> 36) & 127) == 127 && (amount >> 43) == 0,
-          "rows: FightScene power, guards, allies and near capped, nothing above bit 42");
+          "rows: FightScene power, guards, allies and near capped; not moving, no leg: nothing above bit 42");
+    scene.moving = true;
+    amount = SceneAmount(scene);
+    Check(((amount >> 36) & 127) == 127 && ((amount >> 43) & 1) == 1 && (amount >> 44) == 0,
+          "rows: FightScene moving is bit 43, beside a full near field");
+    scene.moving = false;
+    scene.onLeg = true;
+    amount = SceneAmount(scene);
+    Check(((amount >> 43) & 1) == 0 && ((amount >> 44) & 1) == 1 && (amount >> 45) == 0,
+          "rows: FightScene a trip leg under way is bit 44, nothing above it");
 
     EnemyRow enemy;
     enemy.tenths = 21;
@@ -1309,8 +1340,39 @@ void TestRows()
     plain.healthPct = 150;
     amount = EnemyAmount(plain);
     Check(((amount >> 25) & 1) == 0 && ((amount >> 26) & 31) == 31 && ((amount >> 31) & 127) == 100 &&
-              ((amount >> 38) & 3) == 0 && (amount >> 40) == 0,
-          "rows: FightEnemy without casts has no casts bit; creature type and health capped, nothing above bit 39");
+              ((amount >> 38) & 3) == 0 && ((amount >> 40) & 7) == 1 && (amount >> 43) == 0,
+          "rows: FightEnemy without casts has no casts bit; creature type and health capped, a standing unit's "
+          "motion 1, nothing above bit 42");
+    // The motion is stored plus 1, so 0 stays a row of an older build
+    bool motions = true;
+    for (int i = 0; i < static_cast<int>(Motion::Count); ++i)
+    {
+        plain.motion = static_cast<Motion>(i);
+        amount = EnemyAmount(plain);
+        motions = motions && ((amount >> 40) & 7) == static_cast<std::uint64_t>(i) + 1 && (amount >> 43) == 0 &&
+                  ((amount >> 38) & 3) == 0;
+    }
+    Check(motions, "rows: FightEnemy motion + 1 << 40 for every kind, apart from the unit type");
+    plain.motion = Motion::Count;
+    Check(((EnemyAmount(plain) >> 40) & 7) == static_cast<std::uint64_t>(Motion::Other) + 1,
+          "rows: FightEnemy a motion out of range is capped, never 0 or spilling");
+
+    // AW32b: the kind an enemy joins with: live, unless the chase; then the last picture's, when it is fresh
+    Seen wandered;
+    wandered.motion = Motion::Wandering;
+    Check(MotionAtJoin(Motion::Path, &wandered, 0) == Motion::Path &&
+              MotionAtJoin(Motion::Standing, &wandered, 0) == Motion::Standing,
+          "join: a live kind other than the chase is recorded as it is");
+    Check(MotionAtJoin(Motion::Chasing, &wandered, 0) == Motion::Wandering &&
+              MotionAtJoin(Motion::Chasing, &wandered, FRESH_OUTSIDE_MS) == Motion::Wandering,
+          "join: a chaser the fresh picture held keeps the picture's kind (the limit is still fresh)");
+    Check(MotionAtJoin(Motion::Chasing, &wandered, FRESH_OUTSIDE_MS + 1) == Motion::Chasing,
+          "join: a stale picture does not say how it moved");
+    Check(MotionAtJoin(Motion::Chasing, nullptr, 0) == Motion::Chasing,
+          "join: a chaser the picture did not hold is chasing");
+    wandered.motion = Motion::Chasing;
+    Check(MotionAtJoin(Motion::Chasing, &wandered, 0) == Motion::Chasing,
+          "join: a unit chasing in the picture already is chasing");
 
     DeathRow death;
     death.killerLevelDiff = 2;
@@ -4754,6 +4816,1636 @@ void TestReplay(char const* file)
     Check(rows > 0 && answered == rows, "replay: every fight of the fixture is answered");
 }
 
+// AW36b, known danger (DangerRules.h; INTERFACE.md §4.2, §4.3 and the invariants G1 to G10, H1 to H3 of §4.6)
+
+// A creature that counts for a place
+struct Member
+{
+    Rank rank = Rank::Normal;
+    std::uint8_t level = 1;
+    bool guard = false;
+};
+
+// The facts built of a set, as the hub's build makes them (tools/awareness/lib/danger.js, factsOf)
+DangerRules::CellFacts FactsOf(std::vector<Member> const& set)
+{
+    DangerRules::CellFacts facts;
+    for (Member const& member : set)
+    {
+        std::size_t const r = static_cast<std::size_t>(member.rank);
+        facts.level[r] = std::max(facts.level[r], member.level);
+        facts.count[r] = static_cast<std::uint8_t>(std::min(255, facts.count[r] + 1));
+        facts.guards = facts.guards || member.guard;
+    }
+    return facts;
+}
+
+bool SameFacts(DangerRules::CellFacts const& a, DangerRules::CellFacts const& b)
+{
+    return a.level == b.level && a.count == b.count && a.guards == b.guards;
+}
+
+// The facts without the rank Rare: what the store hands out of a row's facts (§4.2, No rare)
+DangerRules::CellFacts NoRare(DangerRules::CellFacts facts)
+{
+    std::size_t const rare = static_cast<std::size_t>(Rank::Rare);
+    facts.level[rare] = 0;
+    facts.count[rare] = 0;
+    return facts;
+}
+
+int DangerOf(DangerRules::Ground ground) { return static_cast<int>(ground); }
+
+// A creature's highest level in the world data
+constexpr int TOP_LEVEL = 83;
+
+std::vector<Member> GenSet(Generator& g, bool guards, std::size_t least = 0)
+{
+    static constexpr std::array<Rank, 7> RANKS{Rank::Normal, Rank::Normal, Rank::Normal, Rank::Elite,
+                                               Rank::Elite,  Rank::Rare,   Rank::Boss};
+    std::vector<Member> set(least + g.Next() % 7);
+    for (Member& member : set)
+    {
+        member.rank = RANKS[g.Next() % RANKS.size()];
+        member.level = static_cast<std::uint8_t>(1 + g.Next() % TOP_LEVEL);
+        member.guard = guards && g.Next() % 20 == 0;
+    }
+    return set;
+}
+
+DangerRules::Condition GenCondition(Generator& g)
+{
+    DangerRules::Condition condition;
+    condition.healthPct = static_cast<std::uint8_t>(1 + g.Next() % 100);
+    condition.sick = g.Next() % 5 == 0;
+    return condition;
+}
+
+// The engine's aggro reach of a creature against a player (Creature::GetAggroRange, without auras and rates)
+float EngineReach(float detection, int botLevel, int creatureLevel)
+{
+    int const diff = std::max(-25, botLevel - creatureLevel);
+    return std::clamp(detection - static_cast<float>(diff), 5.0f, 45.0f);
+}
+
+// The first failing case of an invariant is printed once, with the seed of its generator
+void Count(int& failures, char const* what, std::uint32_t seed, int index)
+{
+    if (!failures++)
+        std::printf("  %s: first failing case %d (seed %u)\n", what, index, seed);
+}
+
+// §4.2's rule at the numbers of today's table STRENGTH, the gate's Hillsbrad lines and the thresholds' values
+void TestGroundFixed()
+{
+    using DangerRules::Ground;
+    using DangerRules::HEALTHY;
+    using DangerRules::JudgeGround;
+    using DangerRules::SICK;
+    auto const one = [](Rank rank, int level)
+    { return FactsOf({Member{rank, static_cast<std::uint8_t>(level), false}}); };
+    DangerRules::Condition const half{50, false};
+    DangerRules::Condition const quarter{25, false};
+    Check(
+        JudgeGround(one(Rank::Normal, 26), 20, HEALTHY) == Ground::Deadly &&
+            JudgeGround(one(Rank::Normal, 26), 21, HEALTHY) == Ground::Passable,
+        "ground: an ordinary creature outweighs a healthy bot from 6 levels above (Hillsbrad's footman, Horde 20/21)");
+    Check(JudgeGround(one(Rank::Elite, 22), 20, HEALTHY) == Ground::Deadly &&
+              JudgeGround(one(Rank::Elite, 21), 20, HEALTHY) == Ground::Passable &&
+              JudgeGround(one(Rank::Rare, 22), 20, HEALTHY) == Ground::Deadly &&
+              JudgeGround(one(Rank::Rare, 21), 20, HEALTHY) == Ground::Passable,
+          "ground: an elite or a rare outweighs a healthy bot from 2 levels above");
+    Check(JudgeGround(one(Rank::Boss, 29), 40, HEALTHY) == Ground::Deadly &&
+              JudgeGround(one(Rank::Boss, 28), 40, HEALTHY) == Ground::Passable,
+          "ground: a boss outweighs a healthy bot down to 11 levels below it");
+    Check(JudgeGround(one(Rank::Normal, 24), 20, half) == Ground::Deadly &&
+              JudgeGround(one(Rank::Normal, 23), 20, half) == Ground::Passable &&
+              JudgeGround(one(Rank::Elite, 20), 20, half) == Ground::Deadly &&
+              JudgeGround(one(Rank::Elite, 19), 20, half) == Ground::Passable &&
+              JudgeGround(one(Rank::Boss, 27), 40, half) == Ground::Deadly &&
+              JudgeGround(one(Rank::Boss, 26), 40, half) == Ground::Passable,
+          "ground: at half health from 4 levels above, an elite from its own level, a boss from 13 below");
+    Check(JudgeGround(one(Rank::Normal, 26), 40, SICK) == Ground::Deadly &&
+              JudgeGround(one(Rank::Normal, 25), 40, SICK) == Ground::Quiet,
+          "ground: a sick bot finds every ground deadly down to 14 levels below it, 15 below is quiet");
+    Check(AwarenessRules::Strength(STRENGTH.rank[static_cast<std::size_t>(Rank::Boss)], -15, 100.0f) >
+                  AwarenessRules::Strength(STRENGTH.player, 0, 25.0f) &&
+              JudgeGround(one(Rank::Boss, 25), 40, quarter) == Ground::Quiet,
+          "ground: the quiet line comes first, a boss 15 below outweighs a bot at a quarter and its ground is quiet");
+    Check(JudgeGround(FactsOf({Member{Rank::Normal, 1, true}}), 80, HEALTHY) == Ground::Deadly &&
+              JudgeGround(DangerRules::CellFacts{}, 1, SICK) == Ground::Quiet,
+          "ground: a guard of level 1 is deadly for a bot of 80, nothing is quiet for a sick bot of 1");
+    Check(DangerRules::TakenUpTo(0) == 5 && DangerRules::TakenUpTo(1) == 1 && DangerRules::TakenUpTo(2) == 1 &&
+              DangerRules::TakenUpTo(3) == -12,
+          "ground: a healthy bot takes an ordinary creature up to 5 levels above, an elite or rare 1, a boss -12");
+    Check(DangerRules::DeadlyBelow(one(Rank::Normal, 26)) == 21 &&
+              DangerRules::PassableBelow(one(Rank::Normal, 26)) == 41 &&
+              DangerRules::DeadlyBelow(one(Rank::Boss, 29)) == 41 &&
+              DangerRules::PassableBelow(one(Rank::Boss, 29)) == 44,
+          "ground: the thresholds of an ordinary creature of 26 (21, 41) and a boss of 29 (41, 44)");
+    Check(DangerRules::DeadlyBelow(FactsOf({Member{Rank::Normal, 1, true}})) == 255 &&
+              DangerRules::PassableBelow(FactsOf({Member{Rank::Normal, 1, true}})) == 255 &&
+              DangerRules::DeadlyBelow(DangerRules::CellFacts{}) == 0 &&
+              DangerRules::PassableBelow(DangerRules::CellFacts{}) == 0,
+          "ground: the thresholds are 255 with guards and 0 where nothing counts");
+    DangerRules::CellFacts many;
+    many.level[0] = 10;
+    many.count[0] = 200;
+    DangerRules::CellFacts more = many;
+    more.count[0] = 100;
+    more.level[0] = 12;
+    DangerRules::CellFacts const merged = DangerRules::Merge(many, more);
+    Check(merged.count[0] == 255 && merged.level[0] == 12 && !merged.guards,
+          "ground: a merge takes the higher level and adds the counts, capped at 255");
+}
+
+// G1 to G8, G10 and H3 over generated sets of creatures, bots and conditions
+void TestGroundGenerated()
+{
+    using DangerRules::Ground;
+    using DangerRules::JudgeGround;
+    Generator g;
+    g.state = SEED + 36;
+    std::uint32_t const seed = g.state;
+    constexpr int CASES = 3000;
+    std::printf("AW36b ground: %d generated sets, seed %u\n", CASES, seed);
+    int g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0, g8 = 0, g10 = 0, h3 = 0;
+    for (int i = 0; i < CASES; ++i)
+    {
+        // G1: total over raw facts the build never writes (a count at level 0, levels to 255, health above 100)
+        DangerRules::CellFacts raw;
+        for (std::size_t r = 0; r < DangerRules::RANK_COUNT; ++r)
+        {
+            raw.level[r] = static_cast<std::uint8_t>(g.Next() % 256);
+            raw.count[r] = static_cast<std::uint8_t>(g.Next() % 3 ? g.Next() % 256 : 0);
+        }
+        raw.guards = g.Next() % 10 == 0;
+        DangerRules::Condition const rawCondition{static_cast<std::uint8_t>(g.Next() % 256), g.Next() % 2 == 0};
+        for (int level = 0; level <= 255; ++level)
+        {
+            Ground const a = JudgeGround(raw, static_cast<std::uint8_t>(level), rawCondition);
+            Ground const b = JudgeGround(raw, static_cast<std::uint8_t>(level), rawCondition);
+            if (DangerOf(a) > DangerOf(Ground::Deadly) || a != b)
+                Count(g1, "G1 total", seed, i);
+        }
+
+        std::vector<Member> const set = GenSet(g, i % 2 == 0);
+        DangerRules::CellFacts const facts = FactsOf(set);
+        DangerRules::Condition const condition = GenCondition(g);
+        DangerRules::Condition const notSick{condition.healthPct, false};
+        DangerRules::Condition const sick{condition.healthPct, true};
+        std::uint8_t const lower = static_cast<std::uint8_t>(1 + g.Next() % condition.healthPct);
+        std::vector<Member> const other = GenSet(g, i % 3 == 0);
+        DangerRules::CellFacts const otherFacts = FactsOf(other);
+        DangerRules::CellFacts const merged = DangerRules::Merge(facts, otherFacts);
+        std::vector<Member> both = set;
+        both.insert(both.end(), other.begin(), other.end());
+        if (!SameFacts(merged, DangerRules::Merge(otherFacts, facts)) || !SameFacts(merged, FactsOf(both)))
+            Count(h3, "H3 merge", seed, i);
+
+        // G5: the order of the set does not matter, a member twice changes only its count
+        std::vector<Member> shuffled = set;
+        for (std::size_t k = shuffled.size(); k > 1; --k)
+            std::swap(shuffled[k - 1], shuffled[g.Next() % k]);
+        if (!SameFacts(FactsOf(shuffled), facts))
+            Count(g5, "G5 order", seed, i);
+        if (!set.empty())
+        {
+            Member const twice = set[g.Next() % set.size()];
+            std::vector<Member> doubled = set;
+            doubled.push_back(twice);
+            DangerRules::CellFacts expected = facts;
+            std::size_t const r = static_cast<std::size_t>(twice.rank);
+            expected.count[r] = static_cast<std::uint8_t>(std::min(255, expected.count[r] + 1));
+            if (!SameFacts(FactsOf(doubled), expected))
+                Count(g5, "G5 order", seed, i);
+        }
+
+        // G6: one more creature, a higher level or a higher rank of one
+        std::vector<DangerRules::CellFacts> worse;
+        std::vector<Member> added = set;
+        added.push_back(GenSet(g, i % 2 == 0, 1).front());
+        worse.push_back(FactsOf(added));
+        if (!set.empty())
+        {
+            std::size_t const k = g.Next() % set.size();
+            std::vector<Member> raised = set;
+            raised[k].level = static_cast<std::uint8_t>(std::min(255, raised[k].level + 1 + int(g.Next() % 10)));
+            worse.push_back(FactsOf(raised));
+            std::vector<Member> ranked = set;
+            ranked[k].rank = ranked[k].rank == Rank::Normal ? (g.Next() % 2 ? Rank::Elite : Rank::Rare) : Rank::Boss;
+            worse.push_back(FactsOf(ranked));
+        }
+
+        bool const guarded = facts.guards;
+        for (int level = 1; level <= 80; ++level)
+        {
+            std::uint8_t const bot = static_cast<std::uint8_t>(level);
+            Ground const here = JudgeGround(facts, bot, condition);
+            Ground const healthy = JudgeGround(facts, bot, DangerRules::HEALTHY);
+            // G2
+            if (DangerOf(JudgeGround(facts, static_cast<std::uint8_t>(level + 1), condition)) > DangerOf(here))
+                Count(g2, "G2 a higher level", seed, i);
+            // G3
+            if (guarded && (here != Ground::Deadly || healthy != Ground::Deadly ||
+                            JudgeGround(facts, bot, DangerRules::SICK) != Ground::Deadly))
+                Count(g3, "G3 guards", seed, i);
+            // G6
+            for (DangerRules::CellFacts const& w : worse)
+                if (DangerOf(JudgeGround(w, bot, condition)) < DangerOf(here))
+                    Count(g6, "G6 more creatures", seed, i);
+            // G7: less health, the sick bot, quiet in every condition
+            Ground const sickHere = JudgeGround(facts, bot, sick);
+            Ground const notSickHere = JudgeGround(facts, bot, notSick);
+            if (DangerOf(JudgeGround(facts, bot, DangerRules::Condition{lower, condition.sick})) < DangerOf(here) ||
+                sickHere == Ground::Passable || (sickHere == Ground::Quiet) != (notSickHere == Ground::Quiet) ||
+                (healthy == Ground::Quiet) != (notSickHere == Ground::Quiet))
+                Count(g7, "G7 less health", seed, i);
+            // H3: a merge is never less dangerous than either
+            if (DangerOf(JudgeGround(merged, bot, condition)) <
+                std::max(DangerOf(here), DangerOf(JudgeGround(otherFacts, bot, condition))))
+                Count(h3, "H3 merge", seed, i);
+            // G10
+            if ((healthy == Ground::Deadly) != (level < DangerRules::DeadlyBelow(facts)) ||
+                (healthy == Ground::Quiet) != (level >= DangerRules::PassableBelow(facts)))
+                Count(g10, "G10 thresholds", seed, i);
+            if (guarded)
+                continue;
+            // G8: quiet exactly when every creature is 15 or more below, and then each reaches 5 yd
+            bool everyBelow = true;
+            for (Member const& member : set)
+                everyBelow = everyBelow && member.level + DangerRules::QUIET_LEVELS_BELOW <= level;
+            if ((healthy == Ground::Quiet) != everyBelow)
+                Count(g8, "G8 the quiet line", seed, i);
+            if (everyBelow)
+                for (Member const& member : set)
+                    if (EngineReach(20.0f, level, member.level) != 5.0f)
+                        Count(g8, "G8 the quiet line", seed, i);
+            // G4: deadly for a bot that is not sick exactly when not quiet and its picture with the strongest member
+            // alone against it is outweighed
+            bool outweighed = false;
+            if (!set.empty())
+            {
+                Member strongest = set.front();
+                for (Member const& member : set)
+                    if (CreatureStrength(member.rank, member.level - level) >
+                        CreatureStrength(strongest.rank, strongest.level - level))
+                        strongest = member;
+                Picture const picture = Linked({Foe(101, strongest.level - level, BOT, strongest.rank)},
+                                               static_cast<float>(condition.healthPct));
+                outweighed = !JudgeSides(picture, THE_BOT).holds;
+            }
+            if ((notSickHere == Ground::Deadly) != (!everyBelow && outweighed))
+                Count(g4, "G4 the picture's line", seed, i);
+        }
+    }
+    Check(!g1, "G1: JudgeGround is total and answers alike for the same inputs");
+    Check(!g2, "G2: a higher bot level never makes ground more dangerous");
+    Check(!g3, "G3: guards are deadly at every level and in every condition");
+    Check(!g4, "G4: deadly for a bot not sick exactly when not quiet and JudgeSides says outweighed");
+    Check(!g5, "G5: the facts of a set do not depend on its order, a member twice changes only its count");
+    Check(!g6, "G6: one more creature, a higher level or rank never makes ground less dangerous");
+    Check(!g7, "G7: less health never less dangerous, sick is quiet or deadly, quiet in every condition");
+    Check(!g8, "G8: quiet exactly when every creature is 15 or more below, and then each reaches 5 yd");
+    Check(!g10, "G10: deadly exactly below DeadlyBelow, quiet exactly from PassableBelow, levels 1 to 80");
+    Check(!h3, "H3: a merge does not depend on its order and is never less dangerous than either");
+}
+
+// A generated cell and side of the table: layers in order of height, more than the reach apart (H2 by construction)
+struct GenLayer
+{
+    std::int16_t zLo = 0;
+    std::int16_t zHi = 0;
+    std::vector<Member> members;
+};
+
+struct GenCell
+{
+    std::uint16_t map = 0;
+    std::int16_t cx = 0;
+    std::int16_t cy = 0;
+    std::uint8_t side = 0;
+    std::vector<GenLayer> layers;
+};
+
+std::vector<DangerRules::Row> RowsOf(std::vector<GenCell> const& cells)
+{
+    std::vector<DangerRules::Row> rows;
+    for (GenCell const& cell : cells)
+        for (std::size_t i = 0; i < cell.layers.size(); ++i)
+        {
+            DangerRules::Row row;
+            row.map = cell.map;
+            row.cx = cell.cx;
+            row.cy = cell.cy;
+            row.side = cell.side;
+            row.layer = static_cast<std::uint8_t>(i);
+            row.value.zLo = cell.layers[i].zLo;
+            row.value.zHi = cell.layers[i].zHi;
+            row.value.facts = FactsOf(cell.layers[i].members);
+            rows.push_back(row);
+        }
+    return rows;
+}
+
+DangerRules::BuildRow GoodBuild(std::size_t rows)
+{
+    DangerRules::BuildRow build;
+    build.build = "selftest";
+    build.cellYards = DangerRules::CELL_YARDS;
+    build.heightReachYards = DangerRules::HEIGHT_REACH_YARDS;
+    build.rowCount = static_cast<std::uint32_t>(rows);
+    build.maxLayers = 4;
+    return build;
+}
+
+// H1, H2 and the load: generated tables assembled, read at heights in, between and beyond their layers, and the
+// tables the load refuses
+void TestGroundLayers()
+{
+    Generator g;
+    g.state = SEED + 3602;
+    std::uint32_t const seed = g.state;
+    constexpr std::array<std::uint16_t, 4> MAPS{0, 1, 530, 571};
+    std::vector<GenCell> cells;
+    std::vector<std::uint64_t> taken;
+    for (int k = 0; k < 400; ++k)
+    {
+        GenCell cell;
+        cell.map = MAPS[g.Next() % MAPS.size()];
+        cell.cx = static_cast<std::int16_t>(static_cast<int>(g.Next() % 9) - 4);
+        cell.cy = static_cast<std::int16_t>(static_cast<int>(g.Next() % 9) - 4);
+        cell.side = static_cast<std::uint8_t>(g.Next() % 2);
+        std::uint64_t const key = DangerRules::CellKey(DangerRules::MapIndex(cell.map), cell.cx, cell.cy, cell.side);
+        if (std::find(taken.begin(), taken.end(), key) != taken.end())
+            continue;
+        taken.push_back(key);
+        static constexpr std::array<int, 5> SPANS{0, 0, 3, 20, 60};
+        static constexpr std::array<int, 7> GAPS{1, 1, 2, 10, 26, 27, 60};
+        int z = static_cast<int>(g.Next() % 901) - 300;
+        std::size_t const count = 1 + g.Next() % 4;
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            GenLayer layer;
+            layer.zLo = static_cast<std::int16_t>(z);
+            layer.zHi = static_cast<std::int16_t>(z + SPANS[g.Next() % SPANS.size()]);
+            layer.members = GenSet(g, true, 1);
+            z = layer.zHi + DangerRules::HEIGHT_REACH_YARDS + GAPS[g.Next() % GAPS.size()];
+            cell.layers.push_back(layer);
+        }
+        cells.push_back(cell);
+    }
+    std::vector<DangerRules::Row> rows = RowsOf(cells);
+    for (std::size_t k = rows.size(); k > 1; --k)
+        std::swap(rows[k - 1], rows[g.Next() % k]);
+    std::printf("AW36b layers: %zu generated cells, %zu rows, seed %u\n", cells.size(), rows.size(), seed);
+    DangerRules::Known known;
+    std::string const refusal = DangerRules::Assemble({GoodBuild(rows.size())}, rows, known);
+    Check(refusal.empty() && known.keys.size() == cells.size() && known.layers.size() == rows.size(),
+          "load: a generated table in any row order is taken, every cell and side once");
+    if (!refusal.empty())
+        std::printf("  refused: %s\n", refusal.c_str());
+
+    int h1 = 0, h2 = 0, place = 0;
+    int heights = 0;
+    for (std::size_t c = 0; c < cells.size(); ++c)
+    {
+        GenCell const& cell = cells[c];
+        std::vector<float> zs;
+        for (std::size_t i = 0; i < cell.layers.size(); ++i)
+        {
+            float const lo = cell.layers[i].zLo;
+            float const hi = cell.layers[i].zHi;
+            float const reach = static_cast<float>(DangerRules::HEIGHT_REACH_YARDS);
+            for (float z : {lo, hi, (lo + hi) / 2.0f, lo - reach, lo - reach - 0.5f, hi + reach, hi + reach + 0.5f})
+                zs.push_back(z);
+            if (i > 0)
+                zs.push_back((cell.layers[i - 1].zHi + lo) / 2.0f);
+            zs.push_back(g.Range(lo - 100.0f, hi + 100.0f));
+        }
+        zs.push_back(cell.layers.front().zLo - 200.0f);
+        zs.push_back(cell.layers.back().zHi + 200.0f);
+        for (float const z : zs)
+        {
+            ++heights;
+            std::vector<Member> reached;
+            std::uint8_t reachedLayers = 0;
+            for (GenLayer const& layer : cell.layers)
+                if (layer.zLo - DangerRules::HEIGHT_REACH_YARDS <= z &&
+                    z <= layer.zHi + DangerRules::HEIGHT_REACH_YARDS)
+                {
+                    reached.insert(reached.end(), layer.members.begin(), layer.members.end());
+                    ++reachedLayers;
+                }
+            float const x = (cell.cx + g.Range(0.0f, 0.999f)) * DangerRules::CELL_YARDS;
+            float const y = (cell.cy + g.Range(0.0f, 0.999f)) * DangerRules::CELL_YARDS;
+            DangerRules::PlaceReading const read = DangerRules::ReadPlace(&known, cell.map, x, y, z, cell.side);
+            if (!read.cell || read.cx != cell.cx || read.cy != cell.cy || read.layerCount != cell.layers.size() ||
+                !SameFacts(read.read.facts, NoRare(FactsOf(reached))) || read.read.readCount != reachedLayers)
+                Count(h1, "H1 height", seed, static_cast<int>(c));
+            if (read.read.readCount > 2)
+                Count(h2, "H2 two layers at most", seed, static_cast<int>(c));
+        }
+        // Another map, the neutral side and a cell without rows know nothing
+        float const x = (cell.cx + 0.5f) * DangerRules::CELL_YARDS;
+        float const y = (cell.cy + 0.5f) * DangerRules::CELL_YARDS;
+        float const z = cell.layers.front().zLo;
+        if (DangerRules::ReadPlace(&known, 13, x, y, z, cell.side).layerCount ||
+            DangerRules::ReadPlace(&known, cell.map, x, y, z, 2).layerCount ||
+            DangerRules::ReadPlace(&known, cell.map, x + 300.0f, y, z, cell.side).layerCount ||
+            DangerRules::ReadPlace(nullptr, cell.map, x, y, z, cell.side).layerCount)
+            Count(place, "place: no rows", seed, static_cast<int>(c));
+    }
+    std::printf("AW36b layers: %d heights read\n", heights);
+    Check(!h1, "H1: the facts read at a height are those of the layers within reach of it (no rare), and of no other");
+    Check(!h2, "H2: a height of a valid table reads two layers at most");
+    Check(!place, "ground: another map, the neutral side, a cell without rows and no store read nothing");
+    int cx = 0, cy = 0;
+    Check(DangerRules::CellOf(-0.01f, 24.99f, cx, cy) && cx == -1 && cy == 0 &&
+              DangerRules::CellOf(25.0f, -25.0f, cx, cy) && cx == 1 && cy == -1 &&
+              DangerRules::CellOf(-25.01f, 0.0f, cx, cy) && cx == -2 && cy == 0,
+          "ground: a cell is floor(x / 25), negative coordinates too");
+    Check(!DangerRules::CellOf(std::nanf(""), 0.0f, cx, cy) && !DangerRules::CellOf(1.0e9f, 0.0f, cx, cy),
+          "ground: a coordinate that is no number or outside the table has no cell");
+
+    // The load's refusals (H2 and the build row), each with a reason
+    std::vector<DangerRules::Row> const good = RowsOf(cells);
+    auto const refused =
+        [](std::vector<DangerRules::BuildRow> const& builds, std::vector<DangerRules::Row> const& table)
+    {
+        DangerRules::Known scratch;
+        return !DangerRules::Assemble(builds, table, scratch).empty();
+    };
+    DangerRules::BuildRow otherEdge = GoodBuild(good.size());
+    otherEdge.cellYards = 50;
+    DangerRules::BuildRow otherReach = GoodBuild(good.size());
+    otherReach.heightReachYards = 20;
+    DangerRules::BuildRow fewerLayers = GoodBuild(good.size());
+    fewerLayers.maxLayers = 1;
+    Check(refused({GoodBuild(0)}, {}) && refused({}, good) &&
+              refused({GoodBuild(good.size()), GoodBuild(good.size())}, good),
+          "load: an empty table, a missing build row and two build rows are refused");
+    Check(refused({otherEdge}, good) && refused({otherReach}, good) && refused({GoodBuild(good.size() - 1)}, good) &&
+              refused({fewerLayers}, good),
+          "load: another cell edge, another reach in height, a row count the build does not name and more layers than "
+          "its max_layers are refused");
+    GenCell pair;
+    pair.layers = {GenLayer{0, 10, {Member{}}}, GenLayer{37, 40, {Member{}}}};
+    Check(!refused({GoodBuild(2)}, RowsOf({pair})), "load: two layers 27 yd apart are taken");
+    pair.layers[1].zLo = 36;
+    Check(refused({GoodBuild(2)}, RowsOf({pair})), "load: two layers 26 yd apart are refused (H2)");
+    pair.layers[1].zLo = 45;
+    Check(refused({GoodBuild(2)}, RowsOf({pair})), "load: a layer whose z_lo lies above its z_hi is refused");
+    pair.layers[1].zLo = 37;
+    std::vector<DangerRules::Row> gap = RowsOf({pair});
+    gap[1].layer = 2;
+    std::vector<DangerRules::Row> twice = RowsOf({pair});
+    twice[1].layer = 0;
+    std::vector<DangerRules::Row> lowFirst = RowsOf({pair});
+    std::swap(lowFirst[0].layer, lowFirst[1].layer);
+    Check(refused({GoodBuild(2)}, gap) && refused({GoodBuild(2)}, twice) && refused({GoodBuild(2)}, lowFirst),
+          "load: a missing layer, a layer twice and layers out of the order of height are refused");
+    std::vector<DangerRules::Row> otherMap = RowsOf({pair});
+    otherMap[0].map = 13;
+    otherMap[1].map = 13;
+    std::vector<DangerRules::Row> neutral = RowsOf({pair});
+    neutral[0].side = 2;
+    neutral[1].side = 2;
+    Check(refused({GoodBuild(2)}, otherMap) && refused({GoodBuild(2)}, neutral),
+          "load: a row of another map or of no side is refused");
+
+    // The publish: one atomic pointer, a second publish keeps the first object
+    DangerRules::Known const* before = DangerRules::Published();
+    auto first = std::make_unique<DangerRules::Known>();
+    first->build = "first";
+    DangerRules::Known const* one = DangerRules::Publish(std::move(first));
+    auto second = std::make_unique<DangerRules::Known>();
+    second->build = "second";
+    DangerRules::Known const* two = DangerRules::Publish(std::move(second));
+    Check(!before && DangerRules::Published() == two && one->build == "first" && two->build == "second",
+          "store: nothing before the load, the newest publish is read and an older object stays");
+}
+
+// G9, the twin: the hub's JavaScript copy and this rule answer the same pinned table
+// (tests/data/aw-ground-cases.tsv, generated by the hub's tools/awareness/danger-check.js --export-twin)
+void TestGroundTwin(char const* file)
+{
+    std::ifstream in(file);
+    if (!in)
+    {
+        std::printf("AW36b twin: no data (%s)\n", file);
+        Check(false, "G9: tests/data/aw-ground-cases.tsv is read");
+        return;
+    }
+    auto const factsFrom = [](std::istringstream& cells, DangerRules::CellFacts& facts)
+    {
+        int value = 0;
+        for (std::size_t r = 0; r < DangerRules::RANK_COUNT; ++r)
+        {
+            if (!(cells >> value))
+                return false;
+            facts.level[r] = static_cast<std::uint8_t>(value);
+        }
+        for (std::size_t r = 0; r < DangerRules::RANK_COUNT; ++r)
+        {
+            if (!(cells >> value))
+                return false;
+            facts.count[r] = static_cast<std::uint8_t>(value);
+        }
+        if (!(cells >> value))
+            return false;
+        facts.guards = value != 0;
+        return true;
+    };
+    std::vector<std::vector<DangerRules::Layer>> layers;
+    int grounds = 0, answers = 0, heights = 0, bad = 0, unread = 0;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.empty() || line[0] == '#')
+            continue;
+        std::istringstream cells(line);
+        std::string kind;
+        cells >> kind;
+        DangerRules::CellFacts facts;
+        if (kind == "ground")
+        {
+            int healthPct = 0, sick = 0, deadlyBelow = 0, passableBelow = 0;
+            std::string expected;
+            if (!factsFrom(cells, facts) || !(cells >> healthPct >> sick >> deadlyBelow >> passableBelow >> expected))
+            {
+                ++unread;
+                continue;
+            }
+            DangerRules::Condition const condition{static_cast<std::uint8_t>(healthPct), sick != 0};
+            std::string got;
+            for (int level = 1; level <= 80; ++level)
+                got += "QPD"[DangerOf(DangerRules::JudgeGround(facts, static_cast<std::uint8_t>(level), condition))];
+            ++grounds;
+            answers += 80;
+            if (got != expected || DangerRules::DeadlyBelow(facts) != deadlyBelow ||
+                DangerRules::PassableBelow(facts) != passableBelow)
+                if (!bad++)
+                    std::printf("  twin differs: %s\n", line.c_str());
+        }
+        else if (kind == "layer")
+        {
+            int cell = 0, layer = 0, zLo = 0, zHi = 0;
+            if (!(cells >> cell >> layer >> zLo >> zHi) || !factsFrom(cells, facts) || cell < 0)
+            {
+                ++unread;
+                continue;
+            }
+            if (layers.size() <= static_cast<std::size_t>(cell))
+                layers.resize(cell + 1);
+            // A layer line is a row: taken as the load takes it, without its rare (§4.2, No rare)
+            layers[cell].push_back(DangerRules::Layer{static_cast<std::int16_t>(zLo), static_cast<std::int16_t>(zHi),
+                                                      DangerRules::WithoutRare(facts)});
+        }
+        else if (kind == "height")
+        {
+            int cell = 0, read = 0;
+            double z = 0.0;
+            if (!(cells >> cell >> z >> read) || !factsFrom(cells, facts) || cell < 0 ||
+                static_cast<std::size_t>(cell) >= layers.size())
+            {
+                ++unread;
+                continue;
+            }
+            DangerRules::Reading const got =
+                DangerRules::ReadLayers(layers[cell].data(), layers[cell].size(), static_cast<float>(z));
+            ++heights;
+            if (got.readCount != read || !SameFacts(got.facts, facts))
+                if (!bad++)
+                    std::printf("  twin differs: %s\n", line.c_str());
+        }
+        else
+            ++unread;
+    }
+    std::printf("AW36b twin %s: %d ground lines (%d answers), %d heights, %d differ, %d unread\n", file, grounds,
+                answers, heights, bad, unread);
+    Check(grounds > 0 && heights > 0 && !bad && !unread,
+          "G9: the twin table is answered as the hub's copy answers it, every line read");
+}
+
+// AW36b: the picture's facts for the live check (aw-danger): which units count for a cell and height, and how
+void TestPictureFacts()
+{
+    using DangerRules::FactsOfPicture;
+    using DangerRules::Ground;
+    using DangerRules::HEALTHY;
+    using DangerRules::JudgeGround;
+    // The cell 4 4 (100..125 by 100..125), the place at height 50, a bot of level 20
+    auto const unit = [](float x, float y, float z, int levelDiff, Rank rank)
+    {
+        Seen seen;
+        seen.side = Side::Enemy;
+        seen.kind = Kind::Creature;
+        seen.type = UnitType::Creature;
+        seen.x = seen.homeX = x;
+        seen.y = seen.homeY = y;
+        seen.z = seen.homeZ = z;
+        seen.levelDiff = static_cast<std::int16_t>(levelDiff);
+        seen.rank = rank;
+        seen.reachYards = 20.0f;
+        return seen;
+    };
+    auto const pictureOf = [](std::vector<Seen> const& units)
+    {
+        Picture picture;
+        picture.self.level = 20;
+        for (Seen const& seen : units)
+            picture.units[picture.count++] = seen;
+        return picture;
+    };
+    Check(DangerRules::SquareDistance(4, 4, 110.0f, 110.0f) == 0.0f &&
+              std::fabs(DangerRules::SquareDistance(4, 4, 151.0f, 110.0f) - 26.0f) < 0.01f &&
+              std::fabs(DangerRules::SquareDistance(4, 4, 74.0f, 74.0f) - std::hypot(26.0f, 26.0f)) < 0.01f,
+          "picture facts: the distance to a cell's square is 0 inside it and to its edge or corner outside");
+    DangerRules::PictureFacts const near = FactsOfPicture(
+        pictureOf({unit(140.0f, 110.0f, 60.0f, 6, Rank::Normal), unit(110.0f, 90.0f, 40.0f, 2, Rank::Elite),
+                   unit(110.0f, 110.0f, 50.0f, 3, Rank::Normal)}),
+        4, 4, 50.0f);
+    Check(near.facts.level[0] == 26 && near.facts.count[0] == 2 && near.facts.level[1] == 22 &&
+              near.facts.count[1] == 1 && near.byHome == 3 && !near.byPlace && !near.facts.guards &&
+              JudgeGround(near.facts, 20, HEALTHY) == Ground::Deadly,
+          "picture facts: enemies within reach of the square and height count by rank, the highest level and count");
+    Seen far = unit(160.0f, 110.0f, 50.0f, 0, Rank::Normal);
+    Seen high = unit(110.0f, 110.0f, 80.0f, 0, Rank::Normal);
+    Seen ally = unit(110.0f, 110.0f, 50.0f, 0, Rank::Normal);
+    ally.side = Side::Ally;
+    Seen neither = unit(110.0f, 110.0f, 50.0f, 0, Rank::Normal);
+    neither.side = Side::Neither;
+    Seen player = unit(110.0f, 110.0f, 50.0f, 0, Rank::Normal);
+    player.type = UnitType::Player;
+    Seen pet = unit(110.0f, 110.0f, 50.0f, 0, Rank::Normal);
+    pet.type = UnitType::Pet;
+    Seen calm = unit(110.0f, 110.0f, 50.0f, 0, Rank::Normal);
+    calm.reachYards = 0.0f;
+    DangerRules::PictureFacts const none =
+        FactsOfPicture(pictureOf({far, high, ally, neither, player, pet, calm}), 4, 4, 50.0f);
+    Check(!none.byHome && !none.byPlace && JudgeGround(none.facts, 20, HEALTHY) == Ground::Quiet,
+          "picture facts: beyond the reach or the height, an ally, a neutral, a player, a pet and one that would not "
+          "attack count nothing");
+    DangerRules::PictureFacts const rare =
+        FactsOfPicture(pictureOf({unit(110.0f, 110.0f, 50.0f, 10, Rank::Rare)}), 4, 4, 50.0f);
+    Check(!rare.byHome && !rare.byPlace && !rare.facts.count[static_cast<std::size_t>(Rank::Rare)] &&
+              JudgeGround(rare.facts, 20, HEALTHY) == Ground::Quiet,
+          "picture facts: a rare counts nothing, as the store hands out none (§4.2, No rare)");
+    Seen guard = calm;
+    guard.guard = true;
+    Seen away = far;
+    away.x = 112.0f;
+    DangerRules::PictureFacts const other = FactsOfPicture(pictureOf({guard, away}), 4, 4, 50.0f);
+    Check(other.facts.guards && other.byHome == 1 && other.byPlace == 1 && other.facts.count[0] == 2,
+          "picture facts: a guard counts without a reach; a creature away from its home counts by its place now");
+    // A patrol 35 yd off the square whose path crosses it, and paths that pass too far or too high
+    Seen patrol = far;
+    std::array<bool, AwarenessRules::PICTURE_SIZE> paths{};
+    paths[0] = true;
+    DangerRules::PictureFacts const walking = FactsOfPicture(pictureOf({patrol}), 4, 4, 50.0f, paths);
+    Check(walking.byPath == 1 && walking.facts.count[0] == 1 && !walking.byHome && !walking.byPlace &&
+              !FactsOfPicture(pictureOf({patrol}), 4, 4, 50.0f).facts.count[0],
+          "picture facts: a patrol whose path reaches the cell counts by its path, only when the path is given");
+    Check(DangerRules::PathReaches({140.0f, 160.0f, 50.0f, 140.0f, 60.0f, 50.0f}, 4, 4, 50.0f) &&
+              !DangerRules::PathReaches({160.0f, 160.0f, 50.0f, 160.0f, 140.0f, 50.0f}, 4, 4, 50.0f) &&
+              !DangerRules::PathReaches({140.0f, 160.0f, 90.0f, 140.0f, 60.0f, 90.0f}, 4, 4, 50.0f) &&
+              DangerRules::PathReaches({112.0f, 112.0f, 60.0f}, 4, 4, 50.0f) &&
+              !DangerRules::PathReaches({}, 4, 4, 50.0f),
+          "picture facts: a path reaches a cell by a segment within the reach and one point within the height");
+    Check(DangerRules::Agree(Ground::Quiet, Ground::Quiet) == DangerRules::Agreement::Same &&
+              DangerRules::Agree(Ground::Passable, Ground::Deadly) == DangerRules::Agreement::Near &&
+              DangerRules::Agree(Ground::Deadly, Ground::Quiet) == DangerRules::Agreement::Apart,
+          "picture facts: two answers agree, lie one step apart, or quiet against deadly");
+}
+
+// AW37a: the danger of a link, the term and a way's danger (INTERFACE.md §4.4 to §4.6, L1 to L5 and R1 to R9)
+
+// A planted table on map 0, assembled as the load assembles it; no rows, no cells
+DangerRules::Known Planted(std::vector<DangerRules::Row> rows)
+{
+    DangerRules::Known known;
+    if (rows.empty())
+        return known;
+    std::size_t const count = rows.size();
+    std::string const refusal = DangerRules::Assemble({GoodBuild(count)}, std::move(rows), known);
+    if (!refusal.empty())
+        std::printf("  planted table refused: %s\n", refusal.c_str());
+    return known;
+}
+
+DangerRules::Row PlantedRow(int cx, int cy, std::uint8_t side, std::uint8_t layer, int zLo, int zHi,
+                            DangerRules::CellFacts const& facts)
+{
+    DangerRules::Row row;
+    row.cx = static_cast<std::int16_t>(cx);
+    row.cy = static_cast<std::int16_t>(cy);
+    row.side = side;
+    row.layer = layer;
+    row.value.zLo = static_cast<std::int16_t>(zLo);
+    row.value.zHi = static_cast<std::int16_t>(zHi);
+    row.value.facts = facts;
+    return row;
+}
+
+// Rows over the cells [cxLo, cxHi] x [cyLo, cyHi] and both sides, each planted at `percent`: one layer at the ground,
+// a quarter of them a second one beyond its reach
+std::vector<DangerRules::Row> GenRows(Generator& g, int cxLo, int cxHi, int cyLo, int cyHi, std::uint32_t percent)
+{
+    std::vector<DangerRules::Row> rows;
+    for (int cx = cxLo; cx <= cxHi; ++cx)
+        for (int cy = cyLo; cy <= cyHi; ++cy)
+            for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+            {
+                if (g.Next() % 100 >= percent)
+                    continue;
+                int const zLo = -6 + static_cast<int>(g.Next() % 5);
+                int const zHi = zLo + static_cast<int>(g.Next() % 8);
+                rows.push_back(PlantedRow(cx, cy, side, 0, zLo, zHi, FactsOf(GenSet(g, g.Next() % 8 == 0, 1))));
+                if (g.Next() % 4)
+                    continue;
+                int const high = zHi + DangerRules::HEIGHT_REACH_YARDS + 1 + static_cast<int>(g.Next() % 30);
+                rows.push_back(PlantedRow(cx, cy, side, 1, high, high + static_cast<int>(g.Next() % 6),
+                                          FactsOf(GenSet(g, false, 1))));
+            }
+    return rows;
+}
+
+bool SameDanger(DangerRules::LinkDanger const& a, DangerRules::LinkDanger const& b)
+{
+    return a.deadlyBelow == b.deadlyBelow && a.passableBelow == b.passableBelow && a.fights == b.fights &&
+           a.yards == b.yards;
+}
+
+bool SameFold(std::array<DangerRules::LinkDanger, DangerRules::SIDE_COUNT> const& a,
+              std::array<DangerRules::LinkDanger, DangerRules::SIDE_COUNT> const& b)
+{
+    return SameDanger(a[0], b[0]) && SameDanger(a[1], b[1]);
+}
+
+// §4.4's fold at hand-made links: a stretch, a clipped corner, a short link, crowds, guards, height and maps
+void TestLinkFoldFixed()
+{
+    using DangerRules::Place;
+    auto const facts = [](Rank rank, int level, std::size_t count)
+    { return FactsOf(std::vector<Member>(count, Member{rank, static_cast<std::uint8_t>(level), false})); };
+    auto const fold = [](DangerRules::Known const& known, std::vector<Place> const& line)
+    { return DangerRules::FoldLink(&known, line); };
+    // An ordinary creature of 30 in the cell (2, 0), x 50 to 75, for the Alliance
+    DangerRules::Known const one = Planted({PlantedRow(2, 0, 0, 0, -5, 5, facts(Rank::Normal, 30, 1))});
+    auto const across = fold(one, {{0, 0.0f, 10.0f, 0.0f}, {0, 100.0f, 10.0f, 0.0f}});
+    Check(across[0].deadlyBelow == 25 && across[0].passableBelow == 45 && across[0].yards == 100 &&
+              across[0].fights == 0 && across[1].deadlyBelow == 0 && across[1].passableBelow == 0 &&
+              across[1].yards == 100,
+          "fold: 25 yd beside a creature of 30 are deadly below 25 and not quiet below 45, for its side alone");
+    auto const corner = fold(one, {{0, 70.0f, 10.0f, 0.0f}, {0, 170.0f, 10.0f, 0.0f}});
+    Check(corner[0].deadlyBelow == 0 && corner[0].passableBelow == 0 && corner[0].yards == 100,
+          "fold: a corner clipped for one step of 5 yd is no stretch");
+    auto const twenty = fold(one, {{0, 0.0f, 10.0f, 0.0f}, {0, 70.0f, 10.0f, 0.0f}});
+    Check(DangerRules::DEADLY_MIN_YARDS == 25.0 && twenty[0].deadlyBelow == 0 && twenty[0].passableBelow == 0 &&
+              twenty[0].yards == 70,
+          "fold: 20 yd of a 70 yd link in the creature's cell are no stretch, one cell's edge of 25 yd is (L2)");
+    std::vector<Place> const acrossLine{{0, 0.0f, 10.0f, 0.0f}, {0, 100.0f, 10.0f, 0.0f}};
+    DangerRules::CellFacts const deciding = DangerRules::DecidingFactsOf(&one, acrossLine, 0, 20);
+    Check(deciding.level[0] == 30 && deciding.count[0] == 1 &&
+              DangerRules::HighestLevel(DangerRules::DecidingFactsOf(&one, acrossLine, 0, 25)) < 0 &&
+              DangerRules::HighestLevel(DangerRules::DecidingFactsOf(&one, acrossLine, 1, 20)) < 0,
+          "fold: the facts that make a line deadly are the creature of 30 for a bot of 20, none for 25 or the Horde");
+    auto const inside = fold(one, {{0, 55.0f, 10.0f, 0.0f}, {0, 59.0f, 10.0f, 0.0f}});
+    Check(inside[0].deadlyBelow == 25 && inside[0].yards == 4, "fold: a link of 4 yd inside the cell is deadly");
+    auto const empty = fold(one, {{0, 55.0f, 10.0f, 0.0f}});
+    Check(empty[0].deadlyBelow == 0 && empty[0].yards == 0, "fold: a line of one point folds nothing");
+
+    std::vector<DangerRules::Row> crowdRows;
+    std::vector<DangerRules::Row> loneRows;
+    for (int cx = 0; cx < 8; ++cx)
+    {
+        crowdRows.push_back(PlantedRow(cx, 0, 1, 0, -5, 5, facts(Rank::Normal, 10, 4)));
+        loneRows.push_back(PlantedRow(cx, 0, 1, 0, -5, 5, facts(Rank::Normal, 10, 1)));
+    }
+    std::vector<Place> const road{{0, 0.0f, 10.0f, 0.0f}, {0, 200.0f, 10.0f, 0.0f}};
+    auto const crowded = fold(Planted(crowdRows), road);
+    auto const lone = fold(Planted(loneRows), road);
+    Check(crowded[1].fights == 4 && lone[1].fights == 1 && crowded[0].fights == 0,
+          "fold: four fights in 200 yd of crowded cells, one beside single creatures");
+
+    DangerRules::Known const guarded =
+        Planted({PlantedRow(2, 0, 1, 0, -5, 5, FactsOf({Member{Rank::Normal, 1, true}}))});
+    auto const town = fold(guarded, {{0, 0.0f, 10.0f, 0.0f}, {0, 100.0f, 10.0f, 0.0f}});
+    Check(town[1].deadlyBelow == 255 && town[1].passableBelow == 255, "fold: guards make a link deadly at every level");
+
+    auto const over = fold(one, {{0, 0.0f, 10.0f, 40.0f}, {0, 100.0f, 10.0f, 40.0f}});
+    auto const within = fold(one, {{0, 0.0f, 10.0f, 30.0f}, {0, 100.0f, 10.0f, 30.0f}});
+    Check(over[0].deadlyBelow == 0 && over[0].passableBelow == 0 && over[0].yards == 100 && within[0].deadlyBelow == 25,
+          "fold: a link 35 yd over the layer takes nothing from it, 25 yd over it reads it (L5)");
+    auto const climb = fold(one, {{0, 0.0f, 10.0f, 0.0f}, {0, 100.0f, 10.0f, 100.0f}});
+    Check(climb[0].deadlyBelow == 0 && climb[0].yards == 141,
+          "fold: a climb reads each step at its height, 50 to 75 yd up it passes over the layer");
+    auto const split = fold(one, {{0, 0.0f, 10.0f, 0.0f}, {1, 100.0f, 10.0f, 0.0f}});
+    Check(split[0].yards == 0 && split[0].deadlyBelow == 0, "fold: a segment between two maps folds nothing");
+}
+
+// L1, L2, L3 and L5 over generated tables and lines
+void TestLinkFoldGenerated()
+{
+    using DangerRules::Place;
+    Generator g;
+    g.state = SEED + 37;
+    std::uint32_t const seed = g.state;
+    constexpr int CASES = 1500;
+    std::printf("AW37a fold: %d generated links, seed %u\n", CASES, seed);
+    int l1 = 0, l2 = 0, l3 = 0, l5 = 0, yards = 0, deadly = 0, cut = 0;
+    for (int i = 0; i < CASES; ++i)
+    {
+        std::vector<DangerRules::Row> rows = GenRows(g, -4, 8, -4, 8, 25);
+        DangerRules::Known const known = Planted(rows);
+
+        // An axis-aligned line on multiples of 5 yd: every step lies whole in one cell, so the fold's yards in a cell
+        // are the line's yards inside its box
+        int x = 5 * (static_cast<int>(g.Next() % 40) - 10);
+        int y = 5 * (static_cast<int>(g.Next() % 40) - 10);
+        float const z = g.Range(-4.0f, 4.0f);
+        std::vector<Place> line{{0, static_cast<float>(x), static_cast<float>(y), z}};
+        std::uint32_t const segments = 1 + g.Next() % 4;
+        for (std::uint32_t s = 0; s < segments; ++s)
+        {
+            int const length = 5 * static_cast<int>(1 + g.Next() % 12);
+            std::uint32_t const direction = g.Next() % 4;
+            x += direction == 0 ? length : direction == 1 ? -length : 0;
+            y += direction == 2 ? length : direction == 3 ? -length : 0;
+            line.push_back({0, static_cast<float>(x), static_cast<float>(y), z});
+        }
+        auto const folded = DangerRules::FoldLink(&known, line);
+
+        // The line's yards in every cell box it crosses, with the cell's thresholds at the line's height
+        struct Stretch
+        {
+            double yards;
+            std::uint8_t deadlyBelow;
+            std::uint8_t passableBelow;
+        };
+        std::array<std::vector<Stretch>, DangerRules::SIDE_COUNT> stretches;
+        double total = 0.0;
+        for (std::size_t s = 1; s < line.size(); ++s)
+        {
+            Place const& a = line[s - 1];
+            Place const& b = line[s];
+            bool const alongX = a.y == b.y;
+            double const lo = std::min(alongX ? a.x : a.y, alongX ? b.x : b.y);
+            double const hi = std::max(alongX ? a.x : a.y, alongX ? b.x : b.y);
+            total += hi - lo;
+            double const across = alongX ? a.y : a.x;
+            int const fixedCell = static_cast<int>(std::floor(across / DangerRules::CELL_YARDS));
+            for (int c = static_cast<int>(std::floor(lo / DangerRules::CELL_YARDS)); c * DangerRules::CELL_YARDS < hi;
+                 ++c)
+            {
+                double const yards = std::min(hi, (c + 1.0) * DangerRules::CELL_YARDS) -
+                                     std::max(lo, static_cast<double>(c) * DangerRules::CELL_YARDS);
+                if (yards <= 0.0)
+                    continue;
+                float const mid = (static_cast<float>(c) + 0.5f) * DangerRules::CELL_YARDS;
+                float const fixed = (static_cast<float>(fixedCell) + 0.5f) * DangerRules::CELL_YARDS;
+                for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+                {
+                    DangerRules::PlaceReading const place =
+                        DangerRules::ReadPlace(&known, 0, alongX ? mid : fixed, alongX ? fixed : mid, z, side);
+                    stretches[side].push_back({yards, DangerRules::DeadlyBelow(place.read.facts),
+                                               DangerRules::PassableBelow(place.read.facts)});
+                }
+            }
+        }
+        for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+        {
+            DangerRules::LinkDanger const& link = folded[side];
+            if (link.passableBelow < link.deadlyBelow)
+                Count(l1, "L1 passable below deadly", seed, i);
+            deadly += link.deadlyBelow > 1;
+            for (int level = 1; level <= 80; ++level)
+            {
+                double deadlyYards = 0.0;
+                double unquietYards = 0.0;
+                for (Stretch const& stretch : stretches[side])
+                {
+                    deadlyYards += level < stretch.deadlyBelow ? stretch.yards : 0.0;
+                    unquietYards += level < stretch.passableBelow ? stretch.yards : 0.0;
+                }
+                double const need = std::min(DangerRules::DEADLY_MIN_YARDS, total);
+                bool const deadlyLink = level < link.deadlyBelow;
+                // L2: DEADLY_MIN_YARDS or more in deadly cells is deadly, no yard in them is not; and on these lines
+                // the exact rule, min(DEADLY_MIN_YARDS, the link's yards)
+                if ((deadlyYards >= DangerRules::DEADLY_MIN_YARDS && !deadlyLink) ||
+                    (deadlyYards == 0.0 && deadlyLink) || deadlyLink != (deadlyYards >= need) ||
+                    (level < link.passableBelow) != (unquietYards >= need))
+                    Count(l2, "L2 deadly yards", seed, i);
+                // The deadly yards the console prints are the fold's own: the line's yards in cells deadly at the level
+                if (std::abs(DangerRules::DeadlyYardsOf(&known, line, side, static_cast<std::uint8_t>(level)) -
+                             deadlyYards) > 0.01)
+                    Count(yards, "deadly yards of a line", seed, i);
+                cut += deadlyYards > 0.0 && deadlyYards < need;
+            }
+        }
+
+        // L3: the reverse line, the rows in another order, and a free line with heights and its reverse
+        std::vector<Place> const reversed(line.rbegin(), line.rend());
+        std::vector<DangerRules::Row> shuffledRows = rows;
+        for (std::size_t k = shuffledRows.size(); k > 1; --k)
+            std::swap(shuffledRows[k - 1], shuffledRows[g.Next() % k]);
+        DangerRules::Known const shuffled = Planted(shuffledRows);
+        std::vector<Place> free;
+        std::uint32_t const points = 2 + g.Next() % 5;
+        for (std::uint32_t p = 0; p < points; ++p)
+            free.push_back({0, g.Range(-100.0f, 200.0f), g.Range(-100.0f, 200.0f), g.Range(-10.0f, 40.0f)});
+        std::vector<Place> const freeReversed(free.rbegin(), free.rend());
+        if (!SameFold(folded, DangerRules::FoldLink(&known, reversed)) ||
+            !SameFold(folded, DangerRules::FoldLink(&shuffled, line)) ||
+            !SameFold(DangerRules::FoldLink(&known, free), DangerRules::FoldLink(&known, freeReversed)))
+            Count(l3, "L3 reverse and order", seed, i);
+
+        // L5: a layer more than HEIGHT_REACH_YARDS above the line (guards, the strongest facts) takes nothing; a line
+        // high over every layer takes nothing
+        std::vector<DangerRules::Row> raised = rows;
+        for (DangerRules::Row const& row : rows)
+        {
+            auto const same = [&row](DangerRules::Row const& other)
+            { return other.cx == row.cx && other.cy == row.cy && other.side == row.side; };
+            if (std::count_if(rows.begin(), rows.end(), same) == 1)
+                raised.push_back(PlantedRow(row.cx, row.cy, row.side, 1, 61 + static_cast<int>(g.Next() % 20), 90,
+                                            FactsOf({Member{Rank::Boss, 83, true}})));
+        }
+        DangerRules::Known const raisedKnown = Planted(raised);
+        std::vector<Place> high = line;
+        for (Place& place : high)
+            place.z = 200.0f;
+        auto const highFold = DangerRules::FoldLink(&known, high);
+        if (!SameFold(folded, DangerRules::FoldLink(&raisedKnown, line)) || highFold[0].deadlyBelow ||
+            highFold[0].passableBelow || highFold[1].deadlyBelow || highFold[1].passableBelow || highFold[0].fights ||
+            highFold[1].fights)
+            Count(l5, "L5 height", seed, i);
+    }
+    Check(!l1, "L1: passableBelow >= deadlyBelow, a link deadly for a level is deadly for every lower one");
+    Check(!l2, "L2: DEADLY_MIN_YARDS in deadly cells make a deadly link, no yard in them does not");
+    Check(!l3, "L3: the fold of a link and of its reverse are the same, in any order of the cells");
+    Check(!l5, "L5: a layer beyond HEIGHT_REACH_YARDS of the line's height adds nothing to its fold");
+    Check(!yards, "DeadlyYardsOf: the yards of a line in cells deadly at a level, by the fold's steps");
+    Check(deadly > CASES / 10 && cut > 0, "fold cases: deadly links and stretches shorter than a deadly one");
+}
+
+// G11: a generated table and the same table with every row's rare level and count set to 0 assemble to stores that
+// answer alike, every place at every level in three conditions, and fold a link alike (§4.2, No rare)
+void TestNoRareGenerated()
+{
+    using DangerRules::Place;
+    Generator g;
+    g.state = SEED + 3711;
+    std::uint32_t const seed = g.state;
+    constexpr int CASES = 60;
+    std::size_t const rare = static_cast<std::size_t>(Rank::Rare);
+    std::array<DangerRules::Condition, 3> const conditions{DangerRules::HEALTHY, DangerRules::Condition{50, false},
+                                                           DangerRules::SICK};
+    std::printf("AW37a no rare: %d generated tables, seed %u\n", CASES, seed);
+    int g11 = 0, rareRows = 0, decided = 0;
+    for (int i = 0; i < CASES; ++i)
+    {
+        std::vector<DangerRules::Row> rows = GenRows(g, -2, 4, -2, 4, 40);
+        std::vector<DangerRules::Row> without = rows;
+        for (DangerRules::Row& row : without)
+        {
+            rareRows += row.value.facts.count[rare] > 0;
+            decided += DangerRules::DeadlyBelow(row.value.facts) != DangerRules::DeadlyBelow(NoRare(row.value.facts));
+            row.value.facts = NoRare(row.value.facts);
+        }
+        DangerRules::Known const with = Planted(rows);
+        DangerRules::Known const plain = Planted(without);
+        for (int cx = -2; cx <= 4; ++cx)
+            for (int cy = -2; cy <= 4; ++cy)
+                for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+                {
+                    float const x = (static_cast<float>(cx) + g.Range(0.0f, 0.999f)) * DangerRules::CELL_YARDS;
+                    float const y = (static_cast<float>(cy) + g.Range(0.0f, 0.999f)) * DangerRules::CELL_YARDS;
+                    for (float const z : {g.Range(-8.0f, 8.0f), g.Range(30.0f, 70.0f)})
+                    {
+                        DangerRules::CellFacts const a = DangerRules::ReadPlace(&with, 0, x, y, z, side).read.facts;
+                        DangerRules::CellFacts const b = DangerRules::ReadPlace(&plain, 0, x, y, z, side).read.facts;
+                        bool alike = true;
+                        for (int level = 1; alike && level <= 80; ++level)
+                            for (DangerRules::Condition const& condition : conditions)
+                                alike = alike &&
+                                        DangerRules::JudgeGround(a, static_cast<std::uint8_t>(level), condition) ==
+                                            DangerRules::JudgeGround(b, static_cast<std::uint8_t>(level), condition);
+                        if (!alike)
+                            Count(g11, "G11 a place", seed, i);
+                    }
+                }
+        std::vector<Place> line;
+        std::uint32_t const points = 2 + g.Next() % 5;
+        for (std::uint32_t p = 0; p < points; ++p)
+            line.push_back({0, g.Range(-50.0f, 125.0f), g.Range(-50.0f, 125.0f), g.Range(-5.0f, 5.0f)});
+        if (!SameFold(DangerRules::FoldLink(&with, line), DangerRules::FoldLink(&plain, line)))
+            Count(g11, "G11 a link", seed, i);
+    }
+    Check(!g11,
+          "G11: a table with and without its rows' rares answers alike at every place, level and condition, "
+          "and folds a link alike");
+    Check(rareRows > 0 && decided > 0, "G11 cases: rows with a rare, and rows whose rare alone moves DeadlyBelow");
+}
+
+// R6, R7 and R9 on every combination, and §4.5's table
+void TestWayRules()
+{
+    using DangerRules::Ground;
+    using DangerRules::WayVerdict;
+    int failures = 0;
+    for (int start = 0; start < 3; ++start)
+        for (int goal = 0; goal < 3; ++goal)
+            for (int links : {0, 1, 3})
+                for (bool spared : {false, true})
+                {
+                    DangerRules::DangerPart part;
+                    part.start = static_cast<Ground>(start);
+                    part.goal = static_cast<Ground>(goal);
+                    part.deadlyLinks = static_cast<std::uint16_t>(links);
+                    bool const refuses = DangerRules::Refuses(part);
+                    WayVerdict const verdict = DangerRules::JudgeWay(part, spared);
+                    bool const ok =
+                        (part.goal != Ground::Deadly || refuses) &&
+                        (part.start != Ground::Deadly || part.goal == Ground::Deadly || !refuses) &&
+                        (part.start == Ground::Deadly || part.goal == Ground::Deadly || refuses == (links > 0)) &&
+                        (verdict == WayVerdict::Refused) == (refuses && !spared) &&
+                        (verdict == WayVerdict::Clear) == (!links && part.goal != Ground::Deadly);
+                    failures += !ok;
+                }
+    Check(!failures, "R6, R7, R9: the way rules over every start, goal, deadly links and spared");
+    DangerRules::DangerPart way;
+    way.deadlyLinks = 1;
+    DangerRules::DangerPart out = way;
+    out.start = Ground::Deadly;
+    DangerRules::DangerPart into;
+    into.goal = Ground::Deadly;
+    Check(DangerRules::JudgeWay(way, false) == WayVerdict::Refused &&
+              DangerRules::JudgeWay(way, true) == WayVerdict::LeastDeadly &&
+              DangerRules::JudgeWay(out, false) == WayVerdict::LeastDeadly &&
+              DangerRules::JudgeWay(into, false) == WayVerdict::Refused &&
+              DangerRules::JudgeWay(into, true) == WayVerdict::LeastDeadly &&
+              DangerRules::JudgeWay(DangerRules::DangerPart{}, false) == WayVerdict::Clear,
+          "way rules: §4.5's table (a deadly link, a way out, a deadly goal, a clear way)");
+}
+
+constexpr float RUN_SPEED = 7.0f;  // the snapshot's default run speed, yd/s
+
+// A grid of nodes 40 yd apart on map 0, a neighbour linked both ways by a walk link at `percent`, a third of the links
+// (and always the first) bent through a point beside the straight line
+bool BuildGrid(TravelGraph& graph, Generator& g, int columns, int rows, float x0, float y0, std::uint32_t percent)
+{
+    TravelGraphBuilder builder;
+    auto const idOf = [columns](int c, int r) { return static_cast<std::uint32_t>(1 + r * columns + c); };
+    auto const at = [x0, y0](int c, int r)
+    { return DangerRules::Place{0, x0 + 40.0f * static_cast<float>(c), y0 + 40.0f * static_cast<float>(r), 0.0f}; };
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < columns; ++c)
+            builder.AddNode(idOf(c, r), "grid", 0, at(c, r).x, at(c, r).y, 0.0f);
+    struct Bent
+    {
+        std::uint32_t a;
+        std::uint32_t b;
+        std::array<DangerRules::Place, 3> points;
+    };
+    std::vector<Bent> bents;
+    auto const span = [](DangerRules::Place const& a, DangerRules::Place const& b)
+    { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); };
+    auto const add = [&](int c, int r, int c2, int r2)
+    {
+        DangerRules::Place const from = at(c, r);
+        DangerRules::Place const to = at(c2, r2);
+        float distance = span(from, to);
+        if (bents.empty() || g.Next() % 3 == 0)
+        {
+            float const off = g.Range(-12.0f, 12.0f);
+            DangerRules::Place const mid{0, (from.x + to.x) / 2 + (r == r2 ? 0.0f : off),
+                                         (from.y + to.y) / 2 + (r == r2 ? off : 0.0f), g.Range(-3.0f, 3.0f)};
+            bents.push_back({idOf(c, r), idOf(c2, r2), {from, mid, to}});
+            distance = span(from, mid) + span(mid, to);
+        }
+        for (auto const& [a, b] : {std::pair{idOf(c, r), idOf(c2, r2)}, std::pair{idOf(c2, r2), idOf(c, r)}})
+        {
+            TravelGraphBuilder::LinkRow row;
+            row.fromId = a;
+            row.toId = b;
+            row.type = 1;
+            row.distance = distance;
+            builder.AddLink(row);
+        }
+    };
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < columns; ++c)
+        {
+            if (c + 1 < columns && g.Next() % 100 < percent)
+                add(c, r, c + 1, r);
+            if (r + 1 < rows && g.Next() % 100 < percent)
+                add(c, r, c, r + 1);
+        }
+    std::string error;
+    if (!builder.EndLinks(error))
+    {
+        std::printf("  grid: %s\n", error.c_str());
+        return false;
+    }
+    for (Bent const& bent : bents)
+    {
+        for (std::uint32_t nr = 0; nr < 3; ++nr)
+            builder.AddPoint(bent.a, bent.b, nr, 0, bent.points[nr].x, bent.points[nr].y, bent.points[nr].z);
+        for (std::uint32_t nr = 0; nr < 3; ++nr)
+            builder.AddPoint(bent.b, bent.a, nr, 0, bent.points[2 - nr].x, bent.points[2 - nr].y,
+                             bent.points[2 - nr].z);
+    }
+    if (!builder.Finish(graph, error))
+    {
+        std::printf("  grid: %s\n", error.c_str());
+        return false;
+    }
+    graph.Publish(0, 0);
+    return true;
+}
+
+// The plain Dijkstra over the walk links (R1's reference): a link's seconds at the run speed, with the term of the
+// published store or without, deadly links left out for `safeOnly`
+struct RefWay
+{
+    bool ok = false;
+    double seconds = 0.0;
+    std::vector<std::uint32_t> links;
+};
+
+RefWay Reference(TravelGraph const& graph, std::uint32_t from, std::uint32_t to, std::uint8_t side, std::uint8_t level,
+                 bool term, bool safeOnly)
+{
+    std::size_t const nodes = graph.NodeCount();
+    double const none = std::numeric_limits<double>::infinity();
+    std::vector<double> best(nodes, none);
+    std::vector<std::uint32_t> via(nodes, std::numeric_limits<std::uint32_t>::max());
+    using Item = std::pair<double, std::uint32_t>;
+    std::priority_queue<Item, std::vector<Item>, std::greater<Item>> open;
+    DangerRules::Known const* const known = DangerRules::Published();
+    best[from] = 0.0;
+    open.push({0.0, from});
+    while (!open.empty())
+    {
+        auto const [seconds, node] = open.top();
+        open.pop();
+        if (seconds > best[node])
+            continue;
+        for (TravelGraphLink const& link : graph.LinksOf(node))
+        {
+            std::uint32_t const index = graph.IndexOfLink(link);
+            DangerRules::LinkDanger const* const danger = known ? known->LinkOf(index, side) : nullptr;
+            if (safeOnly && danger && DangerRules::TermOf(*danger, level).deadly)
+                continue;
+            double const cost = link.distance / RUN_SPEED +
+                                (term ? DangerRules::LinkTerm(graph.LinkCount(), index, side, level) : 0.0f);
+            if (best[node] + cost < best[link.to])
+            {
+                best[link.to] = best[node] + cost;
+                via[link.to] = index;
+                open.push({best[link.to], link.to});
+            }
+        }
+    }
+    RefWay way;
+    if (best[to] == none)
+        return way;
+    way.ok = true;
+    way.seconds = best[to];
+    for (std::uint32_t node = to; node != from;)
+    {
+        way.links.push_back(via[node]);
+        node = graph.GetLink(via[node]).from;
+    }
+    std::reverse(way.links.begin(), way.links.end());
+    return way;
+}
+
+TravelRoute::Result SearchWay(TravelGraph const& graph, std::uint32_t from, std::uint32_t to, std::uint8_t side,
+                              std::uint8_t level)
+{
+    TravelGraphNode const& a = graph.GetNode(from);
+    TravelGraphNode const& b = graph.GetNode(to);
+    TravelRoute::Request request;
+    request.snapshot.position = {a.mapId, a.x, a.y, a.z};
+    request.snapshot.team = side;
+    request.snapshot.level = level;
+    request.goal = {b.mapId, b.x, b.y, b.z};
+    return TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+}
+
+double BaseSeconds(TravelGraph const& graph, std::vector<std::uint32_t> const& links)
+{
+    double seconds = 0.0;
+    for (std::uint32_t const index : links)
+        seconds += graph.GetLink(index).distance / RUN_SPEED;
+    return seconds;
+}
+
+bool Near(double a, double b) { return std::fabs(a - b) <= 0.01 + 1e-5 * std::max(std::fabs(a), std::fabs(b)); }
+
+void PublishForTest(DangerRules::Known const* known)
+{
+    DangerRules::Store::published.store(known, std::memory_order_release);
+}
+
+// L4, the fold of a graph, and R1 to R9 over generated graphs with planted cells, the plain Dijkstra as the reference
+void TestWayTerm()
+{
+    using DangerRules::Ground;
+    DangerRules::Known const* const before = DangerRules::Published();
+    Generator g;
+    g.state = SEED + 38;
+    std::uint32_t const seed = g.state;
+
+    // L4 and the probe of the seam: two nodes 40 yd apart through guards' cells
+    {
+        TravelGraph graph;
+        bool const built = BuildGrid(graph, g, 2, 1, 1000.0f, 1000.0f, 100);
+        std::vector<DangerRules::Row> rows;
+        for (int cx = 38; cx <= 42; ++cx)
+            for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+                rows.push_back(PlantedRow(cx, 40, side, 0, -10, 10, FactsOf({Member{Rank::Normal, 1, true}})));
+        DangerRules::Known const facts = Planted(rows);
+        DangerRules::Known folded = facts;
+        bool const done = built && DangerRules::FoldGraph(facts, graph, folded.links);
+        folded.graphLinks = graph.LinkCount();
+        DangerRules::Known off = facts;
+        off.graphLinks = graph.LinkCount();
+        std::uint32_t const links = static_cast<std::uint32_t>(graph.LinkCount());
+        PublishForTest(nullptr);
+        bool const noStore = done && DangerRules::LinkTerm(links, 0, 0, 1) == 0.0f;
+        TravelRoute::Result const plain = done ? SearchWay(graph, 0, 1, 0, 20) : TravelRoute::Result{};
+        PublishForTest(&off);
+        bool const termOff = DangerRules::LinkTerm(links, 0, 0, 1) == 0.0f;
+        PublishForTest(&folded);
+        float const term = DangerRules::LinkTerm(links, 0, 0, 20);
+        bool const otherGraph = DangerRules::LinkTerm(links + 1, 0, 0, 20) == 0.0f &&
+                                DangerRules::LinkTerm(links, links, 0, 20) == 0.0f &&
+                                DangerRules::LinkTerm(links, 0, 2, 20) == 0.0f;
+        TravelRoute::Result const priced = done ? SearchWay(graph, 0, 1, 0, 20) : TravelRoute::Result{};
+        Check(done && links == 2 && folded.links.size() == links * DangerRules::SIDE_COUNT &&
+                  term == DangerRules::DEADLY_LINK_SECONDS +
+                              DangerRules::DEADLY_SECONDS_PER_YARD * static_cast<float>(folded.links[0].yards),
+              "L4: the guards' link costs an hour and 10 s per yard for a bot of 20");
+        Check(noStore && termOff && otherGraph,
+              "L4: no store, a store without links (aw term off), another graph's count, index or side: term 0");
+        bool const searchPrices = plain.ok && priced.ok && priced.totalSeconds > plain.totalSeconds + 1000.0f;
+        Check(searchPrices, "seam: the search prices the term (RouteRules.h LinkSeconds)");
+
+        // L6: under Unpriced every term this thread asks is 0, another thread asking meanwhile gets the term, a nested
+        // scope restores the outer one, and the term is back when the scope ends
+        bool l6 = done && term > 0.0f;
+        {
+            DangerRules::Unpriced const outer;
+            for (std::uint32_t index = 0; index < links; ++index)
+                for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+                    l6 = l6 && DangerRules::LinkTerm(links, index, side, 20) == 0.0f;
+            float other = -1.0f;
+            std::thread asker([&other, links] { other = DangerRules::LinkTerm(links, 0, 0, 20); });
+            asker.join();
+            l6 = l6 && other == term;
+            {
+                DangerRules::Unpriced const inner;
+                l6 = l6 && DangerRules::LinkTerm(links, 0, 0, 20) == 0.0f;
+            }
+            l6 = l6 && DangerRules::LinkTerm(links, 0, 0, 20) == 0.0f;
+            TravelRoute::Result const unpriced = done ? SearchWay(graph, 0, 1, 0, 20) : TravelRoute::Result{};
+            l6 = l6 && unpriced.ok && plain.ok && Near(unpriced.totalSeconds, plain.totalSeconds);
+        }
+        l6 = l6 && DangerRules::LinkTerm(links, 0, 0, 20) == term;
+        // A thread under its own scope while this one asks
+        std::atomic<int> stage{0};
+        float inside = -1.0f;
+        std::thread holder(
+            [&stage, &inside, links]
+            {
+                DangerRules::Unpriced const scope;
+                inside = DangerRules::LinkTerm(links, 0, 0, 20);
+                stage.store(1);
+                while (stage.load() != 2)
+                    std::this_thread::yield();
+            });
+        while (stage.load() != 1)
+            std::this_thread::yield();
+        float const meanwhile = DangerRules::LinkTerm(links, 0, 0, 20);
+        stage.store(2);
+        holder.join();
+        l6 = l6 && inside == 0.0f && meanwhile == term;
+        Check(l6,
+              "L6: Unpriced prices nothing on its own thread, another thread's term is unchanged, scopes nest and "
+              "the term is back after the scope");
+    }
+
+    constexpr int CASES = 300;
+    constexpr int PAIRS = 4;
+    std::printf("AW37a ways: %d generated graphs, %d ways each, seed %u%s\n", CASES, PAIRS, seed,
+                "");
+    int graphs = 0, fold = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0, r7 = 0, r8 = 0, r9 = 0, walks = 0;
+    int deadlyAnswers = 0, refused = 0, outOf = 0, clear = 0, deadlyGoals = 0, risen = 0, ways = 0;
+    for (int i = 0; i < CASES; ++i)
+    {
+        TravelGraph graph;
+        float const x0 = 25.0f * static_cast<float>(g.Next() % 20) + g.Range(0.0f, 25.0f);
+        float const y0 = 25.0f * static_cast<float>(g.Next() % 20) + g.Range(0.0f, 25.0f);
+        if (!BuildGrid(graph, g, 5, 4, x0, y0, 80))
+            continue;
+        ++graphs;
+        int const cxLo = static_cast<int>(std::floor(x0 / DangerRules::CELL_YARDS)) - 1;
+        int const cyLo = static_cast<int>(std::floor(y0 / DangerRules::CELL_YARDS)) - 1;
+        DangerRules::Known const facts = Planted(GenRows(g, cxLo, cxLo + 8, cyLo, cyLo + 6, 20));
+        DangerRules::Known folded = facts;
+        DangerRules::FoldGraph(facts, graph, folded.links);
+        folded.graphLinks = graph.LinkCount();
+        DangerRules::Known off = facts;
+        off.graphLinks = graph.LinkCount();
+
+        // The graph's fold is FoldLink over each link's line, the same both ways; no term is negative (R1)
+        std::vector<DangerRules::Place> line;
+        for (std::uint32_t index = 0; index < graph.LinkCount(); ++index)
+        {
+            TravelGraphLink const& link = graph.GetLink(index);
+            DangerRules::LineOf(graph, link, line);
+            auto const one = DangerRules::FoldLink(&facts, line);
+            std::uint32_t backIndex = index;
+            for (TravelGraphLink const& other : graph.LinksOf(link.to))
+                if (other.to == link.from)
+                    backIndex = graph.IndexOfLink(other);
+            for (std::uint8_t side = 0; side < DangerRules::SIDE_COUNT; ++side)
+            {
+                if (!SameDanger(one[side], *folded.LinkOf(index, side)) ||
+                    !SameDanger(*folded.LinkOf(index, side), *folded.LinkOf(backIndex, side)))
+                    Count(fold, "the graph's fold", seed, i);
+                for (int level = 1; level <= 80; level += 7)
+                    if (DangerRules::TermOf(*folded.LinkOf(index, side), static_cast<std::uint8_t>(level)).seconds <
+                        0.0f)
+                        Count(r1, "R1 a negative term", seed, i);
+            }
+        }
+
+        std::uint32_t const nodes = static_cast<std::uint32_t>(graph.NodeCount());
+        for (int pair = 0; pair < PAIRS; ++pair)
+        {
+            std::uint32_t const from = g.Next() % nodes;
+            std::uint32_t const to = (from + 1 + g.Next() % (nodes - 1)) % nodes;
+            std::uint8_t const side = static_cast<std::uint8_t>(g.Next() % 2);
+            std::uint8_t const level = static_cast<std::uint8_t>(1 + g.Next() % 80);
+            TravelGraphNode const& a = graph.GetNode(from);
+            TravelGraphNode const& b = graph.GetNode(to);
+            DangerRules::Place const start{a.mapId, a.x, a.y, a.z};
+            DangerRules::Place const goal{b.mapId, b.x, b.y, b.z};
+
+            PublishForTest(&folded);
+            RefWay const priced = Reference(graph, from, to, side, level, true, false);
+            RefWay const base = Reference(graph, from, to, side, level, false, false);
+            RefWay const safe = Reference(graph, from, to, side, level, true, true);
+            TravelRoute::Result const with = SearchWay(graph, from, to, side, level);
+            PublishForTest(nullptr);
+            TravelRoute::Result const none = SearchWay(graph, from, to, side, level);
+            PublishForTest(&off);
+            TravelRoute::Result const termOff = SearchWay(graph, from, to, side, level);
+            PublishForTest(&folded);
+            if (!base.ok)
+                continue;
+            ++ways;
+
+            // R1: no way is cheaper with the term; the search answers as the plain Dijkstra over the same costs
+            if (!priced.ok || priced.seconds + 1e-6 < base.seconds)
+                Count(r1, "R1 cheaper with the term", seed, i);
+            if (!with.ok || !Near(with.totalSeconds, priced.seconds))
+                Count(r1, "R1 the search against the reference", seed, i);
+            // R2: with no store and with the term off, today's answer; the term closes no way
+            if (!none.ok || !Near(none.totalSeconds, base.seconds) || !termOff.ok ||
+                !Near(termOff.totalSeconds, base.seconds) || !with.ok)
+                Count(r2, "R2 no store, term off", seed, i);
+            // The route's walk links (WalkLinksOf) are a chain from start to goal whose seconds are the answer's
+            if (none.ok)
+            {
+                std::vector<std::uint32_t> const links = DangerRules::WalkLinksOf(graph, none.legs);
+                bool chain =
+                    !links.empty() && graph.GetLink(links.front()).from == from && graph.GetLink(links.back()).to == to;
+                for (std::size_t k = 1; chain && k < links.size(); ++k)
+                    chain = graph.GetLink(links[k - 1]).to == graph.GetLink(links[k]).from;
+                if (!chain || !Near(BaseSeconds(graph, links), none.totalSeconds))
+                    Count(walks, "the route's walk links", seed, i);
+            }
+
+            DangerRules::DangerPart const part = DangerRules::WayDanger(folded, priced.links, start, goal, side, level);
+            // R3: a deadly link only when no way without one costs less; on these graphs (every way far shorter than
+            // DEADLY_LINK_SECONDS) only when every way has one
+            if (part.deadlyLinks && safe.ok)
+                Count(r3, "R3 a deadly link with a safe way", seed, i);
+            // R4: the way's seconds are its links' own, its fights' and its penalty
+            if (!Near(priced.seconds, BaseSeconds(graph, priced.links) + DangerRules::FIGHT_SECONDS * part.fights +
+                                          part.penaltySeconds))
+                Count(r4, "R4 the reference's seconds", seed, i);
+            if (with.ok)
+            {
+                std::vector<std::uint32_t> const links = DangerRules::WalkLinksOf(graph, with.legs);
+                DangerRules::DangerPart const searched =
+                    DangerRules::WayDanger(folded, links, start, goal, side, level);
+                if (!Near(with.totalSeconds, BaseSeconds(graph, links) + DangerRules::FIGHT_SECONDS * searched.fights +
+                                                 searched.penaltySeconds))
+                    Count(r4, "R4 the search's seconds", seed, i);
+            }
+            // R5 to R7 and R9 on the answer
+            bool const refuses = DangerRules::Refuses(part);
+            if (part.start != Ground::Deadly && part.goal != Ground::Deadly && refuses != (part.deadlyLinks > 0))
+                Count(r5, "R5 refused exactly with a deadly link", seed, i);
+            if (part.goal == Ground::Deadly && !refuses)
+                Count(r6, "R6 a deadly goal", seed, i);
+            if (part.start == Ground::Deadly && part.goal != Ground::Deadly && refuses)
+                Count(r7, "R7 a way out", seed, i);
+            for (bool const spared : {false, true})
+            {
+                DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, spared);
+                if ((verdict == DangerRules::WayVerdict::Refused) != (refuses && !spared) ||
+                    (verdict == DangerRules::WayVerdict::Clear) != (!part.deadlyLinks && part.goal != Ground::Deadly))
+                    Count(r9, "R9 the verdict", seed, i);
+            }
+            deadlyAnswers += part.deadlyLinks > 0;
+            refused += refuses;
+            outOf += part.start == Ground::Deadly && part.deadlyLinks && !refuses;
+            clear += !part.deadlyLinks && part.goal != Ground::Deadly;
+            deadlyGoals += part.goal == Ground::Deadly;
+
+            // R8 over every level: once a level's way from ground not deadly for it is not refused, no higher level's
+            // is (a way out of deadly ground is no such way: at a level for which the start is no longer deadly the
+            // same links can be refused)
+            bool kept = false;
+            bool wasRefused = false;
+            for (int up = 1; up <= 80; ++up)
+            {
+                std::uint8_t const at = static_cast<std::uint8_t>(up);
+                RefWay const way = Reference(graph, from, to, side, at, true, false);
+                DangerRules::DangerPart const upPart = DangerRules::WayDanger(folded, way.links, start, goal, side, at);
+                bool const upRefused = DangerRules::Refuses(upPart);
+                if (kept && upRefused)
+                    Count(r8, "R8 refused at a higher level", seed, i);
+                if (!upRefused && upPart.start != Ground::Deadly)
+                {
+                    risen += wasRefused && !kept;
+                    kept = true;
+                }
+                wasRefused = wasRefused || upRefused;
+            }
+        }
+    }
+    PublishForTest(before);
+    std::printf(
+        "  %d graphs, %d ways: %d with a deadly link, %d refused, %d out of deadly ground, %d clear, %d to a "
+        "deadly goal, %d refused below a level and kept above it\n",
+        graphs, ways, deadlyAnswers, refused, outOf, clear, deadlyGoals, risen);
+    Check(graphs == CASES && !fold, "the graph's fold: FoldLink over each walk link's line, the same both ways");
+    Check(!walks, "WalkLinksOf: a route's walk links are a chain from start to goal with the route's seconds");
+    Check(!r1, "R1: a term is never negative, no way is cheaper with it (and the search answers as the reference)");
+    Check(!r2, "R2: with no store and with the term off the search answers as today's; the term closes no way");
+    Check(!r3, "R3: on ways shorter than DEADLY_LINK_SECONDS a deadly link only when every way has one");
+    Check(!r4, "R4: a way's seconds are its links' own plus fights x FIGHT_SECONDS plus penaltySeconds");
+    Check(!r5, "R5: from and to ground not deadly, refused exactly when the answer has a deadly link");
+    Check(!r6, "R6: a way to a goal in deadly ground is refused whatever its links");
+    Check(!r7, "R7: a way out of deadly ground is not refused unless its goal is deadly");
+    Check(!r8, "R8: a way kept at a level is kept at every higher one (from ground not deadly for it)");
+    Check(!r9, "R9: Refused exactly when Refuses and not spared, Clear exactly with no deadly link nor goal");
+    Check(deadlyAnswers > 0 && refused > 0 && outOf > 0 && clear > 0 && deadlyGoals > 0 && risen > 0,
+          "way cases: deadly answers, refusals, ways out, clear ways, deadly goals and a refusal a level outgrows");
+}
+
+// R11, the user's case (R2 and R3 in one; batch K2): from S to G on map 0 a long walk through quiet ground, and a
+// shortcut behind two portals open to every level, a short walk on map 1 through cells deadly for the level. With the
+// store the answer is the long walk with no portal leg; with no store, and under Unpriced, the shortcut
+void TestShortcutGenerated()
+{
+    DangerRules::Known const* const before = DangerRules::Published();
+    Generator g;
+    g.state = SEED + 3712;
+    std::uint32_t const seed = g.state;
+    constexpr int CASES = 60;
+    std::printf("AW37a shortcut: %d generated graphs, seed %u\n", CASES, seed);
+    int built = 0, deadly = 0, r11 = 0;
+    auto const portalLegs = [](TravelRoute::Result const& result)
+    {
+        return std::count_if(
+            result.legs.begin(), result.legs.end(), [](TravelRoute::Leg const& leg)
+            { return leg.type == TravelRoute::LegType::Portal || leg.type == TravelRoute::LegType::StaticPortal; });
+    };
+    for (int i = 0; i < CASES; ++i)
+    {
+        float const x0 = g.Range(-2000.0f, 2000.0f);
+        float const y0 = g.Range(-2000.0f, 2000.0f);
+        float const across = g.Range(150.0f, 450.0f);  // S to G, more than DIRECT_YARDS
+        float const aside = g.Range(200.0f, 800.0f);   // the long walk's detour
+        float const x1 = g.Range(-2000.0f, 2000.0f);
+        float const y1 = g.Range(-2000.0f, 2000.0f);
+        float const shortcut = g.Range(30.0f, 200.0f);  // the walk on map 1
+        std::uint8_t const side = static_cast<std::uint8_t>(g.Next() % 2);
+        std::uint8_t const level = static_cast<std::uint8_t>(1 + g.Next() % 70);
+        bool const guards = g.Next() % 4 == 0;
+        // Nodes 1 S, 2 and 3 the detour's corners, 4 G on map 0; 5 and 6 the shortcut's ends on map 1
+        struct At
+        {
+            std::uint32_t map;
+            float x;
+            float y;
+        };
+        std::array<At, 6> const at{{{0, x0, y0},
+                                    {0, x0 + aside, y0},
+                                    {0, x0 + aside, y0 + across},
+                                    {0, x0, y0 + across},
+                                    {1, x1, y1},
+                                    {1, x1, y1 + shortcut}}};
+        TravelGraphBuilder builder;
+        for (std::uint32_t n = 0; n < at.size(); ++n)
+            builder.AddNode(n + 1, "shortcut", at[n].map, at[n].x, at[n].y, 0.0f);
+        std::array<std::pair<std::uint32_t, std::uint32_t>, 8> const walks{
+            {{1, 2}, {2, 1}, {2, 3}, {3, 2}, {3, 4}, {4, 3}, {5, 6}, {6, 5}}};
+        for (auto const& [from, to] : walks)
+        {
+            TravelGraphBuilder::LinkRow row;
+            row.fromId = from;
+            row.toId = to;
+            row.type = 1;
+            row.distance = std::hypot(at[from - 1].x - at[to - 1].x, at[from - 1].y - at[to - 1].y);
+            builder.AddLink(row);
+        }
+        for (auto const& [from, to] : {std::pair{1u, 5u}, std::pair{6u, 4u}})
+        {
+            TravelGraphBuilder::LinkRow row;  // both sides, no level: open to every level
+            row.fromId = from;
+            row.toId = to;
+            row.type = 2;
+            row.object = 1000 + from;
+            row.extraCost = 3.0f;
+            builder.AddLink(row);
+        }
+        std::string error;
+        TravelGraph graph;
+        bool ok = builder.EndLinks(error);
+        if (ok)
+            for (auto const& [from, to] : walks)
+                for (std::uint32_t nr = 0; nr < 2; ++nr)
+                {
+                    At const& point = at[(nr ? to : from) - 1];
+                    builder.AddPoint(from, to, nr, point.map, point.x, point.y, 0.0f);
+                }
+        if (!ok || !builder.Finish(graph, error))
+        {
+            std::printf("  shortcut: %s\n", error.c_str());
+            continue;
+        }
+        graph.Publish(0, 0);
+        ++built;
+
+        // The cells along the shortcut, deadly for the level: an ordinary creature 6 to 15 levels above, or guards
+        std::vector<DangerRules::Row> rows;
+        int const cx = static_cast<int>(std::floor(x1 / DangerRules::CELL_YARDS));
+        for (int cy = static_cast<int>(std::floor(y1 / DangerRules::CELL_YARDS));
+             cy <= static_cast<int>(std::floor((y1 + shortcut) / DangerRules::CELL_YARDS)); ++cy)
+            for (std::uint8_t rowSide = 0; rowSide < DangerRules::SIDE_COUNT; ++rowSide)
+            {
+                Member const member{Rank::Normal,
+                                    static_cast<std::uint8_t>(std::min(TOP_LEVEL, level + 6 + int(g.Next() % 10))),
+                                    guards};
+                rows.push_back(PlantedRow(cx, cy, rowSide, 0, -5, 5, FactsOf({member})));
+                rows.back().map = 1;
+            }
+        DangerRules::Known const facts = Planted(rows);
+        DangerRules::Known folded = facts;
+        DangerRules::FoldGraph(facts, graph, folded.links);
+        folded.graphLinks = graph.LinkCount();
+        for (TravelGraphLink const& link : graph.LinksOf(4))
+        {
+            DangerRules::LinkDanger const* const danger = folded.LinkOf(graph.IndexOfLink(link), side);
+            deadly += link.to == 5 && danger && DangerRules::TermOf(*danger, level).deadly;
+        }
+
+        double const longWalk = (2.0 * aside + across) / RUN_SPEED;
+        PublishForTest(&folded);
+        TravelRoute::Result const priced = SearchWay(graph, 0, 3, side, level);
+        TravelRoute::Result unpriced;
+        {
+            DangerRules::Unpriced const scope;
+            unpriced = SearchWay(graph, 0, 3, side, level);
+        }
+        PublishForTest(nullptr);
+        TravelRoute::Result const none = SearchWay(graph, 0, 3, side, level);
+        if (!priced.ok || portalLegs(priced) || !Near(priced.totalSeconds, longWalk))
+            Count(r11, "R11 with the store", seed, i);
+        if (!none.ok || portalLegs(none) != 2 || !(none.totalSeconds < longWalk))
+            Count(r11, "R11 no store", seed, i);
+        if (!unpriced.ok || portalLegs(unpriced) != 2 || !Near(unpriced.totalSeconds, none.totalSeconds))
+            Count(r11, "R11 under Unpriced", seed, i);
+    }
+    PublishForTest(before);
+    Check(built == CASES && deadly == CASES,
+          "R11 cases: every graph built, its shortcut's walk deadly for the bot's level and side");
+    Check(!r11,
+          "R11: the store keeps the long walk through quiet ground with no portal leg; with no store and under "
+          "Unpriced the shortcut through deadly ground");
+}
+
 }  // namespace
 
 // AW14: a caller's row about a candidate it leaves, at most once per candidate and minute
@@ -4762,6 +6454,123 @@ void TestRowDue()
     Check(RowDue(0, 1000), "row due: never written, due");
     Check(!RowDue(1000, 1000) && !RowDue(1000, 1000 + TARGET_ROW_SECONDS - 1), "row due: not within the minute");
     Check(RowDue(1000, 1000 + TARGET_ROW_SECONDS) && RowDue(1000, 5000), "row due: due from the minute on");
+}
+
+// AW37b, the trigger `way danger` (INTERFACE.md §4.8). W1: over generated trips and their routes (a held trip, its
+// request waited for or applied, replans with a new request id, a next trip), a route applied is judged exactly once
+// and a trip with no new route is never judged again. W2: a refusal's effects run record, row, end, and after the
+// record's note (under RECORD_WORD, the cause table's goal row) the record refuses the goal's place as the status
+// ends. W3: a spared trip and a way out of deadly ground to a goal that is not deadly are never ended
+void TestWayTrigger()
+{
+    using DangerRules::Ground;
+    using DangerRules::WayEffect;
+    using DangerRules::WayVerdict;
+    Generator g;
+    g.state = SEED ^ 0x37b;
+    int w1 = 0;
+    int applied = 0;
+    constexpr int TRIPS = 400;
+    DangerRules::JudgedPair last;
+    std::uint32_t tripId = 0;
+    std::uint32_t requestId = 0;
+    for (int t = 0; t < TRIPS; ++t)
+    {
+        ++tripId;
+        int const routes = 1 + static_cast<int>(g.Next() % 3);  // the first route and its replans
+        for (int r = 0; r < routes; ++r)
+        {
+            ++requestId;
+            int judged = 0;
+            bool heldApplied = false;
+            int const ticks = 2 + static_cast<int>(g.Next() % 8);
+            int const waitTicks = static_cast<int>(g.Next() % 3);
+            for (int k = 0; k < ticks; ++k)
+            {
+                bool const held = g.Next() % 10 != 0;
+                bool const waiting = k < waitTicks;
+                bool const hasLegs = !waiting;
+                heldApplied = heldApplied || (held && !waiting);
+                if (DangerRules::WayDue(held, waiting, hasLegs, tripId, requestId, last))
+                {
+                    ++judged;
+                    w1 += waiting || !hasLegs || !held;
+                    last = {tripId, requestId};
+                }
+            }
+            w1 += judged != (heldApplied ? 1 : 0);
+            applied += heldApplied;
+        }
+    }
+    // a fixed run: the first applied tick judges, the same pair never again, a replan's new request again
+    DangerRules::JudgedPair fixed;
+    bool const first = DangerRules::WayDue(true, false, true, 5, 9, fixed);
+    fixed = {5, 9};
+    bool const again = DangerRules::WayDue(true, false, true, 5, 9, fixed);
+    bool const replan = DangerRules::WayDue(true, false, true, 5, 10, fixed);
+    bool const waiting = DangerRules::WayDue(true, true, false, 5, 10, fixed);
+    bool const none = DangerRules::WayDue(false, false, true, 6, 11, fixed);
+    bool const noLegs = DangerRules::WayDue(true, false, false, 6, 11, fixed);
+    Check(!w1 && applied > TRIPS && first && !again && replan && !waiting && !none && !noLegs,
+          "W1: a route applied to a held trip is judged once; no new route, no judgement");
+
+    // W2: the order of the effects per verdict, and the record's answer at the end
+    DangerRules::WayEffects const refused = DangerRules::EffectsOf(WayVerdict::Refused);
+    DangerRules::WayEffects const least = DangerRules::EffectsOf(WayVerdict::LeastDeadly);
+    DangerRules::WayEffects const clear = DangerRules::EffectsOf(WayVerdict::Clear);
+    bool const order = refused.count == 3 && refused.order[0] == WayEffect::Record &&
+                       refused.order[1] == WayEffect::Row && refused.order[2] == WayEffect::End && least.count == 1 &&
+                       least.order[0] == WayEffect::Row && clear.count == 0;
+    bool const words = !std::strcmp(DangerRules::WayChoice(WayVerdict::Refused), "refused") &&
+                       !std::strcmp(DangerRules::WayChoice(WayVerdict::LeastDeadly), "least_deadly") &&
+                       DangerRules::WayChoice(WayVerdict::Clear) == nullptr &&
+                       !std::strcmp(DangerRules::END_SOURCE, "abort:danger");
+    FailedAttempts::CauseRow const* const row = FailedAttempts::FindCause(DangerRules::RECORD_WORD);
+    int w2 = 0;
+    for (int i = 0; i < 200; ++i)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.goal = {0, g.Range(-9000.0f, 3000.0f), g.Range(-6000.0f, 2000.0f), g.Range(0.0f, 150.0f)};
+        failure.spot = {0, failure.goal.X + g.Range(300.0f, 3000.0f), failure.goal.Y, failure.goal.Z};
+        std::uint32_t const now = 1000 + g.Next() % 100000;
+        bool refusedAtEnd = false;
+        bool openBefore = false;
+        for (std::uint8_t e = 0; e < refused.count; ++e)
+            if (refused.order[e] == WayEffect::Record)
+                FailedAttempts::NoteFailure(record, DangerRules::RECORD_WORD, failure, now, 600000);
+            else if (refused.order[e] == WayEffect::End)
+                refusedAtEnd = FailedAttempts::IsPlaceRefused(record, failure.goal, now + 50) == "trip_deaths";
+            else
+                openBefore = FailedAttempts::IsPlaceRefused(record, failure.goal, now).empty();
+        w2 += !refusedAtEnd || openBefore;
+    }
+    Check(order && words, "W2: a refusal writes the record, then its row, then ends; a least deadly way only a row");
+    Check(row && row->target == FailedAttempts::Target::Goal && !w2,
+          "W2: after a refusal's note the record refuses the goal's place under trip_deaths");
+
+    // W3: generated parts; a spared trip, or a way out of deadly ground to a goal that is not deadly, has no end,
+    // and every refused way of the bot's own trip ends
+    int w3 = 0;
+    for (int i = 0; i < 2000; ++i)
+    {
+        DangerRules::DangerPart part;
+        part.start = static_cast<Ground>(g.Next() % 3);
+        part.goal = static_cast<Ground>(g.Next() % 3);
+        part.deadlyLinks = static_cast<std::uint16_t>(g.Next() % 4);
+        part.deadlyYards = part.deadlyLinks ? g.Range(10.0f, 3000.0f) : 0.0f;
+        for (bool const spared : {false, true})
+        {
+            DangerRules::WayEffects const effects = DangerRules::EffectsOf(DangerRules::JudgeWay(part, spared));
+            bool ends = false;
+            for (std::uint8_t e = 0; e < effects.count; ++e)
+                ends = ends || effects.order[e] == WayEffect::End;
+            bool const out = part.start == Ground::Deadly && part.goal != Ground::Deadly;
+            w3 += ends && (spared || out);
+            w3 += !ends && !spared && DangerRules::Refuses(part);
+        }
+    }
+    Check(!w3, "W3: a GM's order and a way out of deadly ground to a goal not deadly are never ended");
 }
 
 int main(int argc, char** argv)
@@ -4799,6 +6608,18 @@ int main(int argc, char** argv)
     TestAw12Generated();
     TestReplay(argc > 2 ? argv[2] : "tests/data/aw-fights.tsv");
     TestRowDue();
+    TestGroundFixed();
+    TestGroundGenerated();
+    TestGroundLayers();
+    TestGroundTwin(argc > 3 ? argv[3] : "tests/data/aw-ground-cases.tsv");
+    TestPictureFacts();
+    TestLinkFoldFixed();
+    TestLinkFoldGenerated();
+    TestNoRareGenerated();
+    TestWayRules();
+    TestWayTerm();
+    TestShortcutGenerated();
+    TestWayTrigger();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

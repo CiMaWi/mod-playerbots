@@ -165,7 +165,7 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
 // The planner's bag purchase at the vendor (Planner::OrderedBag): the bag its plan weighed is bought here, not by the
 // generic buy's own worth test, which judges by the trigger's slot measure and may refuse what the plan chose (WT63c,
 // lab14 seed 75779019: a trip to the planner's bag vendor sold and bought no bag). A test bot logs the outcome word
-void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
+void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor, uint64 reserve)
 {
     Player* bot = botAI->GetBot();
     uint32 const item = Planner::OrderedBag(botAI);
@@ -180,8 +180,12 @@ void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
         word = "no_order";
     else if (!proto || !items || slot >= items->GetItemCount())
         word = "vendor_lacks";
-    else if (price > bot->GetMoney())
-        word = "money";
+    else if (!WorldTravel::BagBuyAllowed(bot->GetMoney(), price, reserve))
+    {
+        word = "reserve";
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "bag", word, static_cast<float>(price),
+                           {{"money", static_cast<float>(bot->GetMoney())}, {"reserve", static_cast<float>(reserve)}});
+    }
     else
     {
         uint32 const before = bot->GetItemCount(item, false);
@@ -189,6 +193,9 @@ void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
         if (bot->GetItemCount(item, false) > before)
         {
             EventLog::Emit(bot, EventLog::EventType::Inventory, "bag_bought", item, price);
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Upkeep, "bag", "bought", static_cast<float>(price),
+                {{"money_after", static_cast<float>(bot->GetMoney())}, {"reserve", static_cast<float>(reserve)}});
             Planner::NoteBagBought(botAI);
             botAI->DoSpecificAction("equip upgrades packet action");
         }
@@ -359,8 +366,13 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
         if (shopping)
         {
-            ShopAtVendor(botAI, vendor, repaired);
-            BuyOrderedBag(botAI, vendor);
+            ShopAtVendor(botAI, vendor, repaired, stop.mountRank);
+            // NR21: the ordered bag must leave the visit's upkeep reserve, read after the shopping (ErrandNeeds
+            // refreshes on the money the shopping spent)
+            std::shared_ptr<Planner::UpkeepIndex const> const index =
+                Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+            if (index)
+                BuyOrderedBag(botAI, vendor, ErrandNeeds(botAI, index)->needs.reserve);
         }
 
         if (bot->GetMoney() >= MIN_VENDOR_BALANCE)

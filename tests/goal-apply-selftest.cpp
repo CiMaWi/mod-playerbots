@@ -3003,6 +3003,89 @@ int main()
                   !repairEnd(GoalKind::BuyBag, Outcome::Finished, true, NOW + 1),
               "a due repair stamps only a finished errand: an end from outside and a bag trip with its bag stamp "
               "nothing");
+        // NR14: an errand to a stop of its own (riding, training, the tame) that finished without what it went for
+        // waits out the retry time as the due repair does: the due stop ranks first and would start the trip again
+        auto const ownEnd = [](char const* reason, bool done, Outcome outcome)
+        {
+            BotGoals goals;
+            Active errand = GoalOf(GoalKind::Errand, 4732, Source::Planner);
+            errand.reason = reason;
+            goals.slot.Set(std::move(errand));
+            goals.ownStopDone = done;
+            NoteInterludeEnd(goals, GoalKind::Errand, outcome, NOW);
+            return RetryWaits(goals, GoalKind::Errand, NOW + 1);
+        };
+        bool ownMissed = true;
+        for (char const* reason : {Goals::TRAINING_REASON, Goals::RIDING_REASON, Goals::PET_REASON})
+            ownMissed = ownMissed && ownEnd(reason, false, Outcome::Finished) &&
+                        !ownEnd(reason, true, Outcome::Finished) && !ownEnd(reason, false, Outcome::Interrupted);
+        Check(ownMissed && !ownEnd("bags_full", false, Outcome::Finished),
+              "an errand to a stop of its own that finished without its result waits out the retry time, one that got "
+              "it clears; an end from outside and a sale errand read nothing of it (mutant: any finish clears, the "
+              "due stop restarts the trip at once)");
+        // NR14c: the missed goal's own wait doubles per miss in a row (5, 10, 20, then 40 min): a due stop that keeps
+        // failing, or whose start keeps refusing, is tried less and less often; its success, a miss of another goal
+        // or a new level starts the count anew, and another goal of the kind waits only the kind's retry time
+        {
+            constexpr std::uint8_t LEVEL = 20;
+            Active riding = GoalOf(GoalKind::Errand, 4732, Source::Planner);
+            riding.reason = Goals::RIDING_REASON;
+            Active training = GoalOf(GoalKind::Errand, 911, Source::Planner);
+            training.reason = Goals::TRAINING_REASON;
+            BotGoals goals;
+            goals.slot.Set(Active{riding});
+            auto const missAt = [&goals](std::uint32_t at)
+            {
+                goals.ownStopDone = false;
+                NoteInterludeEnd(goals, GoalKind::Errand, Outcome::Finished, at, false, LEVEL);
+            };
+            // waits exactly `times` retry times from `at`
+            auto const waitsFor = [&goals](Active const& goal, std::uint32_t at, std::uint32_t times)
+            {
+                return MissedWaits(goals, goal, LEVEL, at + times * RETRY - 1) &&
+                       !MissedWaits(goals, goal, LEVEL, at + times * RETRY);
+            };
+            std::uint32_t at = NOW;
+            bool grows = true;
+            for (std::uint32_t const times : {1u, 2u, 4u, 8u, 8u})
+            {
+                missAt(at);
+                grows = grows && waitsFor(riding, at, times);
+                at += times * RETRY;
+            }
+            Check(grows && !MissedWaits(goals, training, LEVEL, NOW + 1) &&
+                      !RetryWaits(goals, GoalKind::Errand, at - RETRY),
+                  "a goal missed in a row waits 5, 10, 20, 40 and again 40 minutes; another goal of the kind waits "
+                  "only the kind's 5 minutes (mutant: the wait stays 5 minutes, the due stop loops for ever)");
+            Check(!MissedWaits(goals, riding, LEVEL + 1, at - 1),
+                  "a new level starts the count anew: its due needs are new (mutant: the level is not compared)");
+            missAt(at);
+            goals.ownStopDone = true;
+            NoteInterludeEnd(goals, GoalKind::Errand, Outcome::Finished, at + 1, false, LEVEL);
+            bool const cleared = !MissedWaits(goals, riding, LEVEL, at + 2);
+            missAt(at + 2);
+            bool const anew = waitsFor(riding, at + 2, 1);
+            goals.slot.Set(Active{training});
+            missAt(at + 3);
+            goals.slot.Set(Active{riding});
+            missAt(at + 4);
+            Check(cleared && anew && waitsFor(riding, at + 4, 1),
+                  "the goal's success ends its count, and so does a miss of another goal (mutant: the count never "
+                  "resets)");
+            BotGoals refused;
+            NoteRefused(refused, riding, LEVEL, NOW);
+            bool const once = MissedWaits(refused, riding, LEVEL, NOW + RETRY - 1) &&
+                              !MissedWaits(refused, riding, LEVEL, NOW + RETRY);
+            NoteRefused(refused, riding, LEVEL, NOW + RETRY);
+            bool const twice = MissedWaits(refused, riding, LEVEL, NOW + 3 * RETRY - 1) &&
+                               !MissedWaits(refused, riding, LEVEL, NOW + 3 * RETRY);
+            BotGoals rested;
+            NoteRefused(rested, GoalOf(GoalKind::Rest, 0, Source::Planner), LEVEL, NOW);
+            Check(once && twice && !RetryWaits(refused, GoalKind::Errand, NOW + 1) &&
+                      !MissedWaits(rested, GoalOf(GoalKind::Rest, 0, Source::Planner), LEVEL, NOW + 1),
+                  "a refused start waits as a miss and grows the same way; it holds back only that goal, a rest's "
+                  "refusal nothing (mutant: refusals stamp nothing, every plan runs the errand start again)");
+        }
         bool rest = true;
         for (Outcome outcome : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned, Outcome::Finished})
             rest = rest && !stamps(GoalKind::Rest, outcome, false);

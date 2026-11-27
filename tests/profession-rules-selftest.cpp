@@ -437,6 +437,22 @@ void CheckSoonLevels()
     std::cout << "\n";
 }
 
+// A profession tool a bot holds (PLAN NR20): a TOOLS row by its item id, or an item with a tool category; no plain item
+void CheckTools()
+{
+    constexpr uint32_t JEWELER_KIT = 20815;
+    constexpr uint32_t SIMPLE_GRINDER = 20824;
+    constexpr uint32_t TRUESILVER_PICK = 2902;  // a pick of a higher rank: its category, not a TOOLS row
+    constexpr uint32_t LINEN_CLOTH = 2589;      // a trade good no cast asks for as a tool
+    Check(ProfessionRules::IsProfessionTool(JEWELER_KIT, false) &&
+              ProfessionRules::IsProfessionTool(SIMPLE_GRINDER, false),
+          "a jeweler's kit and grinder are tools by their TOOLS rows, with no tool category");
+    Check(ProfessionRules::IsProfessionTool(TRUESILVER_PICK, true) &&
+              !ProfessionRules::IsProfessionTool(TRUESILVER_PICK, false),
+          "an item with a tool category is a tool; without the category the same item is not");
+    Check(!ProfessionRules::IsProfessionTool(LINEN_CLOTH, false), "a plain item is no tool");
+}
+
 void CheckAdopt()
 {
     TraitRules::BotTraits const traits = TraitRules::Roll(77, 1, 1, ProfessionRules::WARRIOR);
@@ -602,6 +618,7 @@ int main()
     CheckFit();
     CheckPartners();
     CheckSoonLevels();
+    CheckTools();
     CheckAdopt();
     CheckWords();
     CheckDeterminism();

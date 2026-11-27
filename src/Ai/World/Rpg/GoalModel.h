@@ -94,9 +94,10 @@ constexpr float NEAR_VENDOR_MINUTES = 2.0f;
 constexpr float VISIT_MINUTES = 1.0f;
 constexpr std::uint32_t ORDER_PRESSURE_PERCENT = 15;  // an orderly bot sells this much earlier, an untidy one later
 constexpr std::uint32_t PRESSURE_MIN_PERCENT = 50;
-// The repair option's worth: the minutes a bot with broken or badly worn gear would lose (its rule is upkeep's
-// UpkeepNeeds::RepairErrandDue; the due option ranks first, whatever its worth)
-constexpr float REPAIR_MINUTES_SAVED = 10.0f;
+// A due errand's worth: the minutes a bot with broken or badly worn gear would lose, or one that waits for a stop
+// upkeep makes worth a trip of its own (its rules are upkeep's: UpkeepNeeds::RepairErrandDue, OwnStop); the due
+// option ranks first, whatever its worth
+constexpr float DUE_ERRAND_MINUTES_SAVED = 10.0f;
 constexpr std::uint32_t BAG_BUDGET_PERCENT = 50;
 
 constexpr float REST_BASE = 0.5f;  // rests below this share of health or mana, caution raises it, drive lowers it
@@ -112,6 +113,16 @@ constexpr char const* SICK_REASON = "sick";  // a sick bot rests; the sick gate 
 // NR3 (NR.4): a sick bot outside every safe area with an errand wanted, its hearthstone ready and bound in a safe area:
 // it uses the stone, then runs its errand at the inn (the errand option's place is the bind)
 constexpr char const* SICK_HEARTH_REASON = "sick_hearth";
+// NR14 (NR.14): an errand to a stop of its own (OwnStop), named by the stop it starts with
+constexpr char const* TRAINING_REASON = "training";
+constexpr char const* RIDING_REASON = "riding";
+constexpr char const* PET_REASON = "pet";
+constexpr char const* NOFIGHT_REASON = "nofight";  // a test's nofight (Situation::fightsHeld) leaves the tame out
+
+inline bool OwnStopReason(std::string_view reason)
+{
+    return reason == TRAINING_REASON || reason == RIDING_REASON || reason == PET_REASON;
+}
 constexpr float HEARTH_CAST_MINUTES = 10.0f / 60.0f;  // the hearthstone's cast
 // The questing test's setting (Playerbots.Test.QuestingOnly, questing WQ37): an option that does not serve levelling
 constexpr char const* QUESTING_ONLY_REASON = "questing_only";
@@ -438,6 +449,26 @@ struct CraftQueue
     bool safe{false};          // NR3, a sick bot's only: the station lies in the bot's safe area (Vendor::safe)
 };
 
+// NR14 (NR.14): a stop upkeep's need rules make worth a trip of its own once the gold pays it (UpkeepNeedRules.h
+// TrainingErrandDue, RidingErrandDue, PetErrandDue). NeedBridge sets due, target and place from the needs list; the
+// walk and its safety come from the map thread's facts. The goal model keeps no threshold of its own
+struct OwnStop
+{
+    bool due{false};
+    std::uint32_t target{0};   // the need's trainer key, else its mount vendor; the pet's beast entry
+    Place place;               // the beast's spawn; unset for a trainer or vendor
+    float walkMinutes{-1.0f};  // < 0: none known
+    bool safe{false};          // NR3, a sick bot's only: the walk stays in the bot's safe area (Vendor::safe)
+};
+
+// A trainer's or mount vendor's spawn within the errand walk that trades with the bot (the map thread's)
+struct StopSeen
+{
+    std::uint32_t entry{0};  // the creature entry
+    float walkMinutes{0.0f};
+    bool safe{false};  // NR3, a sick bot's only (Vendor::safe)
+};
+
 struct BagOffer
 {
     std::uint32_t item{0};
@@ -511,6 +542,16 @@ struct Situation
     bool trainingUnpayable{false};  // a due trainer spell the gold cannot pay (NeedBridge): money may be earned
     Bags bags;
     CraftQueue craft;
+    OwnStop training;  // NR14: the class trainer
+    OwnStop riding;    // the riding trainer, or the mount vendor for a known rank
+    OwnStop pet;       // a hunter's beast to tame
+    // The stops the own stops' walks come from (NeedBridge::PlaceOwnStops), nearest first: the class trainers of the
+    // bot's class and the riding trainers, and the vendors that sell a mount for gold
+    std::vector<StopSeen> trainersSeen;
+    std::vector<StopSeen> mountVendorsSeen;
+    // The map thread left the list out: the last plan found none of its stops due (Planner FillOwnStopsSeen)
+    bool trainersSkipped{false};
+    bool mountVendorsSkipped{false};
     std::vector<BagOffer> bagOffers;
     std::vector<Inn> inns;
     // NR3 (NR.4), a sick bot's only (Upkeep::SafeAreas on the map thread): it stands in a safe area; its bind lies in
@@ -570,7 +611,9 @@ struct Option : Goal
     float steadyPerMinute{0.0f};  // valuePerMinute without the one-off part: a rate the bot keeps up
     float bonus{0.0f};   // the class-quest unlock bonus in valuePerMinute (AddClassQuests); the stay test takes it off
     bool forced{false};  // ranks above everything and replaces any goal: a sick bot's rest (AddSickRest)
-    bool due{false};     // ranks right after forced and replaces any goal but itself: a due repair (NE.3, AddErrand)
+    // ranks right after forced and replaces any goal but itself: the errand for a due repair (NE.3) or a stop of its
+    // own (NR14); AddErrand makes one errand option, so one option at most is due
+    bool due{false};
     // The sick gate's facts (NR3, NR.4): the option starts no fight, and every stop of its route keeps to the safe area
     // (Upkeep::SafeLeg). Only the options that set both pass while the bot is sick; a healthy bot's ignore them
     bool peaceful{false};
@@ -783,8 +826,9 @@ private:
     }
 
     // The questing test's keep list (questing WQ37, WQ.50 item 5): quests, a move to another zone or hub, rest, the
-    // hearthstone, a bag, an errand for full bags or a repair; money only while a due repair or training is beyond
-    // the gold. A grind, a gather, a fishing trip, a craft trip and travel elsewhere are not kept. O(1)
+    // hearthstone, a bag, an errand for full bags, a repair or a stop of its own (training, riding, the pet: NR14);
+    // money only while a due repair or training is beyond the gold. A grind, a gather, a fishing trip, a craft trip and
+    // travel elsewhere are not kept. O(1)
     bool ServesLevelling(Option const& option) const
     {
         switch (option.kind)
@@ -797,7 +841,7 @@ private:
                 return true;
             case GoalKind::Errand:
                 return option.reason == "bags_full" || option.reason == "bags_full_vendor_near" ||
-                       option.reason == "repair";
+                       option.reason == "repair" || OwnStopReason(option.reason);
             case GoalKind::Money:
                 return _situation.trainingUnpayable ||
                        (UpkeepNeeds::RepairDue(_bot.brokenItems, _bot.lowestDurabilityPercent) &&
@@ -1291,7 +1335,30 @@ private:
             AddSickHearthErrand(repairWanted, bagsPressed, rates);
             return;
         }
-        if (!known(bags.vendor) && !repair && !craft)
+        // NR14 (NR.14): the stops of their own upkeep makes due, in the needs' fixed order (training, riding, the pet);
+        // the first known one names the trip when nothing above does, the trip takes the others as any trip does. The
+        // tame fights: a sick bot or one under a test's nofight is not offered it (NR.4)
+        OwnStop const* const owns[] = {&_situation.training, &_situation.riding, &_situation.pet};
+        char const* const ownReasons[] = {TRAINING_REASON, RIDING_REASON, PET_REASON};
+        std::size_t first = std::size(owns);
+        std::uint32_t ownDue = 0;
+        for (std::size_t i = 0; i < std::size(owns); ++i)
+        {
+            OwnStop const& stop = *owns[i];
+            if (!stop.due)
+                continue;
+            if (owns[i] == &_situation.pet && (sick || _situation.fightsHeld))
+            {
+                ++_ranked.considered;
+                _ranked.dropped.push_back({GoalKind::Errand, stop.target, sick ? SICK_REASON : NOFIGHT_REASON});
+                continue;
+            }
+            if (stop.walkMinutes < 0.0f || !std::isfinite(stop.walkMinutes) || (sick && !stop.safe))
+                continue;
+            ++ownDue;
+            first = std::min(first, i);
+        }
+        if (!known(bags.vendor) && !repair && !craft && !ownDue)
             return;
 
         Option option;
@@ -1320,7 +1387,7 @@ private:
         }
         if (repair)
         {
-            option.expected += REPAIR_MINUTES_SAVED * _ranked.referenceRate;
+            option.expected += DUE_ERRAND_MINUTES_SAVED * _ranked.referenceRate;
             option.due = true;
             if (option.reason.empty())
             {
@@ -1339,6 +1406,21 @@ private:
                 option.reason = "craft";
                 option.target = 0;
                 option.minutes = queue.walkMinutes + VISIT_MINUTES + queue.minutes;
+            }
+        }
+        // A stop of its own is due as a repair is: upkeep's rule said it is worth the trip, it ranks first
+        if (ownDue)
+        {
+            option.expected += static_cast<float>(ownDue) * DUE_ERRAND_MINUTES_SAVED * _ranked.referenceRate;
+            option.due = true;
+            if (option.reason.empty())
+            {
+                OwnStop const& stop = *owns[first];
+                option.reason = ownReasons[first];
+                option.target = stop.target;
+                option.place = stop.place;
+                option.minutes = stop.walkMinutes + VISIT_MINUTES;
+                option.peaceful = owns[first] != &_situation.pet;
             }
         }
         if (!option.reason.empty())
@@ -1367,7 +1449,7 @@ private:
         option.place = _bot.hearth;
         option.minutes = HEARTH_CAST_MINUTES + VISIT_MINUTES;
         option.expected =
-            repairWanted ? REPAIR_MINUTES_SAVED * _ranked.referenceRate : BagsSaved(rates) * _model.need.exchange;
+            repairWanted ? DUE_ERRAND_MINUTES_SAVED * _ranked.referenceRate : BagsSaved(rates) * _model.need.exchange;
         option.reason = SICK_HEARTH_REASON;
         option.peaceful = true;
         option.safeStops = true;
@@ -1578,6 +1660,12 @@ struct GoalPlan
     std::uint32_t gatherBagsFull{0};  // Situation::gatherBagsFull: the map thread's skip row (WPC9)
     std::uint32_t gatherUnarmed{0};   // Situation::gatherUnarmed: the map thread's skip row (WPC10)
     RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
+    // NR14: the own stops the plan found due, whose spawns the next snapshot seeks (Planner FillOwnStopsSeen): the
+    // trainers for due class training or riding, the mount vendors for due riding. A wanted list its snapshot skipped
+    // (ownStopsSkipped) left the due stop without a walk: the map thread asks for the next plan at once
+    bool trainersWanted{false};
+    bool mountVendorsWanted{false};
+    bool ownStopsSkipped{false};
 };
 
 // The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
@@ -1945,6 +2033,10 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     plan.gatherRefusedLevels = situation.gatherRefusedLevels;
     plan.gatherBagsFull = situation.gatherBagsFull;
     plan.gatherUnarmed = situation.gatherUnarmed;
+    plan.trainersWanted = situation.training.due || situation.riding.due;
+    plan.mountVendorsWanted = situation.riding.due;
+    plan.ownStopsSkipped = (plan.trainersWanted && situation.trainersSkipped) ||
+                           (plan.mountVendorsWanted && situation.mountVendorsSkipped);
     return plan;
 }
 
@@ -2122,7 +2214,7 @@ inline Replan DecideReplan(ReplanInput const& in)
         return replan;
     }
 
-    // A due repair replaces any goal but itself (it is the only due option, so a due current is it)
+    // A due errand replaces any goal but itself (it is the only due option, so a due current is it)
     if (best != none && options[best].due)
     {
         replan.verdict = ReplanVerdict::Switch;

@@ -102,6 +102,7 @@ void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
     EventLog::Emit(bot, EventLog::EventType::TrainerVisit, "class", creature->GetEntry(), int64(paid));
     if (learned)
     {
+        Planner::NoteOwnStopDone(botAI);
         char const* const reason = need.funded < need.copper ? "short" : (need.due ? "due" : "joined");
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "train", reason, static_cast<float>(paid),
                            {{"spells", static_cast<float>(learned)},
@@ -170,6 +171,7 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
     EventLog::Emit(bot, EventLog::EventType::TrainerVisit, "riding", creature->GetEntry(), int64(paid));
     if (!refusal)
     {
+        Planner::NoteOwnStopDone(botAI);
         EventLog::Emit(bot, EventLog::EventType::RidingBought, "rank", spell->SpellId, int64(paid));
         WorldLog::Decision(
             bot, WorldLogFormat::DecisionKind::Upkeep, "buy",

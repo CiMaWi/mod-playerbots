@@ -527,6 +527,26 @@ void TestGroup()
     Check(Near(bot.flee, 35.0f) && Near(bot.fleeNow, 20.0f), "group: new traits keep the cached hold");
 }
 
+// AW44: of all 64 combinations of the facts, exactly one refuses the player
+void TestTake()
+{
+    int refused = 0;
+    for (int bits = 0; bits < 64; ++bits)
+    {
+        TakeFacts facts;
+        facts.pvpRealm = bits & 1;
+        facts.openWorld = bits & 2;
+        facts.battleground = bits & 4;
+        facts.duel = bits & 8;
+        facts.fightsBot = bits & 16;
+        facts.fightsGroup = bits & 32;
+        bool const expected = bits != 2;  // only the open world: a normal realm, no duel, nobody fought
+        Check(MayTakePlayer(facts) == expected, "take: facts " + std::to_string(bits));
+        refused += MayTakePlayer(facts) ? 0 : 1;
+    }
+    Check(refused == 1, "take: refused in exactly one case");
+}
+
 // Who starts by the rules and whose engaged edges are tracked (PvpTest's forced fighters too); the pet's call-off; the
 // reach test; the nearest graveyard (ported from WP4-WP6's wiring selftest)
 void TestPlaces()
@@ -625,6 +645,7 @@ int main()
     TestPetReact();
     TestGroup();
     TestPlaces();
+    TestTake();
     TestConfigValues();
     std::printf("fight-enthusiasm-selftest: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

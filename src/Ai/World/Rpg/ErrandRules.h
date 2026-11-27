@@ -260,6 +260,7 @@ struct CraftAt
     uint32_t Focus = 0;  // the spell focus of its station; 0 = none (done at any stop)
     float WorthCopper = 0.0f;
     bool Carried = false;  // the bot lights the station itself (a cook's campfire, WR15): done at any stop too
+    uint32_t Slots = 0;    // bag slots its first cast takes beyond what its reagents free
 };
 
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
@@ -487,7 +488,8 @@ inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<Errand
 // station the bot lights itself (WR15) needs no station stop: any stop takes the craft, and its worth may open a trip
 inline void ProvideCraft(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Craft.Spell)
+    // A product that finds no room even after the trip's sale is not planned
+    if (!snapshot.Craft.Spell || snapshot.Craft.Slots > snapshot.FreeSlots + snapshot.SellableSlots)
         return;
 
     ErrandOffer offer;
@@ -789,8 +791,8 @@ struct TripRequest
 struct Refusal
 {
     ErrandOffer Offer;
-    char const* Reason = "";  // detour_not_worth, too_far, no_stop; place_refused (KeepUnrefusedErrands)
-    float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth)
+    char const* Reason = "";  // detour_not_worth, detour_cap, too_far, no_stop; place_refused (KeepUnrefusedErrands)
+    float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth, detour_cap)
     float WalkMinutes = 0.0f;
 };
 
@@ -947,6 +949,59 @@ inline void RankBeforeMount(std::vector<TripStop>& stops)
         std::rotate(stops.begin() + static_cast<std::ptrdiff_t>(vendor),
                     stops.begin() + static_cast<std::ptrdiff_t>(trainer),
                     stops.begin() + static_cast<std::ptrdiff_t>(trainer) + 1);
+}
+
+// The first errand of a kind at a stop, or its errands' end
+inline std::vector<ErrandOffer>::iterator FindErrand(TripStop& stop, ErrandKind kind)
+{
+    return std::find_if(stop.Errands.begin(), stop.Errands.end(),
+                        [kind](ErrandOffer const& errand) { return errand.Kind == kind; });
+}
+
+// A stop the trip has vendor business at: the bot sells there, whatever else it came for
+inline bool SellsAt(TripStop const& stop)
+{
+    return (stop.Services & SERVICE_VENDOR) &&
+           std::any_of(stop.Errands.begin(), stop.Errands.end(), [](ErrandOffer const& errand)
+                       { return (errand.Service & (SERVICE_VENDOR | SERVICE_REPAIR)) != 0; });
+}
+
+// Full bags sell before they craft (NR22): a bank stop that withdraws comes before the trip's last vendor stop, and the
+// craft after it, its station's stop moved or, without a station, the errand alone
+inline void SellBeforeCraft(std::vector<TripStop>& stops)
+{
+    std::size_t sale = stops.size();
+    for (std::size_t i = 0; i < stops.size(); ++i)
+        if (SellsAt(stops[i]))
+            sale = i;
+    if (sale == stops.size())
+        return;
+
+    auto const at = [&stops](std::size_t i) { return stops.begin() + static_cast<std::ptrdiff_t>(i); };
+    for (std::size_t i = sale + 1; i < stops.size(); ++i)
+        if (FindErrand(stops[i], ErrandKind::BankWithdraw) != stops[i].Errands.end())
+        {
+            std::rotate(at(sale), at(i), at(i + 1));
+            ++sale;
+        }
+    // A trip holds one craft
+    for (std::size_t i = 0; i < sale; ++i)
+    {
+        auto const craft = FindErrand(stops[i], ErrandKind::Craft);
+        if (craft == stops[i].Errands.end())
+            continue;
+
+        if (craft->Service)
+            std::rotate(at(i), at(i + 1), at(sale + 1));
+        else
+        {
+            stops[sale].Errands.push_back(*craft);
+            stops[i].Errands.erase(craft);
+            if (stops[i].Errands.empty() && !stops[i].OnRoute)
+                stops.erase(at(i));
+        }
+        return;
+    }
 }
 
 // The detour rule: an errand joins a stop already on the trip when one can take it; a new stop opens only when the
@@ -1159,18 +1214,35 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     rideAlong();
     stockJoin();
     std::size_t detours = 0;
-    while (detours < MAX_DETOUR_STOPS)
+    // The pending offers of a detour that pays but finds no slot left under the cap, as the last round saw them
+    std::vector<bool> capped;
+    for (;;)
     {
+        capped.assign(offers.size(), false);
         bool found = false;
         float bestGain = 0.0f;
         std::size_t bestCandidate = 0;
         std::size_t bestIndex = 0;
         float bestMinutes = 0.0f;
         StockPair bestPair;
-        auto const consider =
-            [&](std::size_t c, std::size_t index, float minutes, float worth, float cost, StockPair const& pair)
+        bool const rankPending = rank < offers.size() && !done[rank];
+        auto const consider = [&](std::size_t c, std::size_t index, float minutes, float worth, float cost,
+                                  StockPair const& pair, bool withStock)
         {
-            if (!(worth > cost) || (found && !(worth - cost > bestGain)))
+            if (!(worth > cost))
+                return;
+            if (detours + (pair.Banker ? 2 : 1) > MAX_DETOUR_STOPS)
+            {
+                for (std::size_t i = 0; i < offers.size(); ++i)
+                {
+                    bool const takes =
+                        i == stock ? withStock : StopTakes(candidates[c], offers[i]) && !(i == mount && rankPending);
+                    if (!done[i] && takes)
+                        capped[i] = true;
+                }
+                return;
+            }
+            if (found && !(worth - cost > bestGain))
                 return;
 
             found = true;
@@ -1180,7 +1252,6 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             bestMinutes = minutes;
             bestPair = pair;
         };
-        bool const rankPending = rank < offers.size() && !done[rank];
         bool const stockPending = stock < offers.size() && !done[stock];
         std::size_t const auctionStop = auctionAt(plan.Stops);
         for (std::size_t c = 0; c < candidates.size(); ++c)
@@ -1202,7 +1273,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
                 WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
             bool const inReach = minutes <= ERRAND_MAX_WALK_MINUTES;
             if (takes && inReach)
-                consider(c, index, minutes, worth, DetourCost(request.Rates, minutes), StockPair());
+                consider(c, index, minutes, worth, DetourCost(request.Rates, minutes), StockPair(), false);
             if (!stockPending)
                 continue;
 
@@ -1211,16 +1282,15 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             if (inReach && auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction]))
             {
                 StockPair const pair = pairWith(c, index, minutes);
-                if (pair.Found && (!pair.Banker ||
-                                   (pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES && detours + 2 <= MAX_DETOUR_STOPS)))
-                    consider(c, index, minutes, withStock, pair.Cost, pair);
+                if (pair.Found && (!pair.Banker || pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES))
+                    consider(c, index, minutes, withStock, pair.Cost, pair, true);
             }
             // A banker in front of the trip's auction stop
             StockInsert front;
             if (auctionStop < plan.Stops.size() && inFront(plan.Stops, auctionStop, c, c + 1, front) &&
                 front.Minutes <= ERRAND_MAX_WALK_MINUTES)
                 consider(c, front.Index, front.Minutes, withStock, DetourCost(request.Rates, front.Minutes),
-                         StockPair());
+                         StockPair(), true);
         }
         if (!found)
             break;
@@ -1304,12 +1374,98 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
                 refusal.WalkMinutes = minutes;
             }
             reachable = true;
-            refusal.Reason = "detour_not_worth";
         }
+        // detour_cap only where the cap alone held a paying detour back
+        if (reachable)
+            refusal.Reason = capped[i] || (paired && capped[stock]) ? "detour_cap" : "detour_not_worth";
         plan.Refused.push_back(refusal);
     }
     RankBeforeMount(plan.Stops);
+    SellBeforeCraft(plan.Stops);
     return plan;
+}
+
+// NR13: the vendor stops of a trip keep the errand walk limit by their route, not only the straight line: why a route
+// refuses a vendor (the words of its errand vendor_drop row)
+constexpr char const* VENDOR_NO_ROUTE = "no_route";
+constexpr char const* VENDOR_ROUTE_TOO_FAR = "route_too_far";
+// The route searches one errand start runs at most (a map thread); past them a vendor stands by its straight distance
+constexpr std::size_t VENDOR_ROUTE_SEARCHES = 8;
+
+struct DroppedVendor
+{
+    uint32_t Entry = 0;
+    ErrandPlace Place;
+    float RouteSeconds = 0.0f;  // 0 for no route
+    char const* Reason = "";
+};
+
+// A stop the bot opens to use its vendor: not one for its mailbox, banker or auctioneer alone
+inline bool UsesVendor(TripStop const& stop)
+{
+    return !stop.OnRoute && (stop.Services & SERVICE_VENDOR) &&
+           std::any_of(stop.Errands.begin(), stop.Errands.end(),
+                       [](ErrandOffer const& errand)
+                       {
+                           return errand.Kind != ErrandKind::Mail && errand.Kind != ErrandKind::BankWithdraw &&
+                                  errand.Kind != ErrandKind::BankDeposit && errand.Kind != ErrandKind::Auction;
+                       });
+}
+
+// PlanTrip, then the vendor stops it chose asked for their route's seconds from the start (`routeSeconds(place)`,
+// negative when there is none), in the trip's order. A vendor with no route or over the limit leaves the known stops,
+// with the vendors within STOP_JOIN_YARDS of it (the same walk), and the trip is planned again; an errand placed at
+// that vendor is left out with the same word
+template <typename RouteSeconds>
+inline TripPlan PlanTripByRoute(TripRequest const& request, std::vector<ServiceStop> stops,
+                                std::vector<ErrandOffer> offers, RouteSeconds const& routeSeconds,
+                                std::vector<DroppedVendor>& dropped)
+{
+    std::vector<ErrandPlace> fits;
+    std::vector<Refusal> leftOut;
+    std::size_t searches = 0;
+    for (;;)
+    {
+        TripPlan plan = PlanTrip(request, stops, offers);
+        bool replan = false;
+        for (TripStop const& stop : plan.Stops)
+        {
+            auto const here = [&stop](ErrandPlace const& place) { return Yards(place, stop.Place) <= STOP_JOIN_YARDS; };
+            if (searches >= VENDOR_ROUTE_SEARCHES || !UsesVendor(stop) || std::any_of(fits.begin(), fits.end(), here))
+                continue;
+
+            ++searches;
+            float const seconds = routeSeconds(stop.Place);
+            if (seconds >= 0.0f && seconds <= ERRAND_MAX_WALK_MINUTES * 60.0f)
+            {
+                fits.push_back(stop.Place);
+                continue;
+            }
+
+            char const* const reason = seconds < 0.0f ? VENDOR_NO_ROUTE : VENDOR_ROUTE_TOO_FAR;
+            dropped.push_back({stop.Id, stop.Place, std::max(seconds, 0.0f), reason});
+            stops.erase(std::remove_if(stops.begin(), stops.end(), [&here](ServiceStop const& service)
+                                       { return (service.Services & SERVICE_VENDOR) && here(service.Place); }),
+                        stops.end());
+            for (auto offer = offers.begin(); offer != offers.end();)
+            {
+                if (offer->Placed && (offer->Service & SERVICE_VENDOR) && here(offer->Place))
+                {
+                    leftOut.push_back({*offer, reason, 0.0f, 0.0f});
+                    offer = offers.erase(offer);
+                }
+                else
+                    ++offer;
+            }
+            replan = true;
+            break;
+        }
+        if (replan)
+            continue;
+
+        plan.Refused.insert(plan.Refused.end(), leftOut.begin(), leftOut.end());
+        return plan;
+    }
 }
 
 // How an errand trip's end is recorded (the status core's errand clean-up, CS14)
@@ -1319,6 +1475,9 @@ enum class ErrandEndRow : uint8_t
     Abort,  // errand_abort: no stop was visited
     Sick    // errand_sick: resurrection sickness ended the trip; its minutes do not count
 };
+
+// An ordered bag is bought only when the money left after its price still covers the visit's upkeep reserve (NR21)
+inline bool BagBuyAllowed(uint64_t money, uint64_t price, uint64_t reserve) { return money >= price + reserve; }
 
 // Every end stamps the errand check; only a healthy trip with a visited stop adds its minutes to t
 inline ErrandEndRow ErrandEnd(SlotMeasure& measure, uint32_t nowMs, float minutes, bool visited, bool sick)

@@ -974,6 +974,53 @@ inline void CheckOneStepper(Checker& checker)
     checker.Check(differ == 0, "the one stepper ends every sequence as a stepper per kind does: " + first);
 }
 
+// A visit's steps over `moves` planned items, the refused one (counted from 1; 0 none) leaving the plan: the moves each
+// step made until the step that ends the visit
+inline std::vector<uint32_t> BankSteps(uint32_t moves, uint32_t refusedAt)
+{
+    std::vector<uint32_t> steps;
+    uint32_t left = moves;
+    uint32_t tried = 0;
+    bool goesOn = true;
+    while (goesOn && steps.size() <= moves + 1)
+    {
+        uint32_t made = 0;
+        goesOn = RunBankStep(
+            [&]
+            {
+                if (!left)
+                    return BankMove::NoneLeft;
+                --left;
+                if (++tried == refusedAt)
+                    return BankMove::Stopped;
+                ++made;
+                return BankMove::Moved;
+            });
+        steps.push_back(made);
+    }
+    return steps;
+}
+
+// The bank visit's moves per step (NR.15)
+inline void CheckBankSteps(Checker& checker)
+{
+    auto const check = [&](uint32_t moves, uint32_t refusedAt, std::vector<uint32_t> const& expected)
+    {
+        std::vector<uint32_t> const steps = BankSteps(moves, refusedAt);
+        std::string made;
+        for (uint32_t step : steps)
+            made += (made.empty() ? "" : ",") + std::to_string(step);
+        checker.Check(steps == expected, "a visit of " + std::to_string(moves) + " moves, refusal at " +
+                                             std::to_string(refusedAt) + ": moves per step " + made);
+    };
+    check(0, 0, {0});
+    check(1, 0, {1});
+    check(8, 0, {8, 0});
+    check(30, 0, {8, 8, 8, 6});
+    check(30, 11, {8, 2, 8, 8, 3});  // the refusal ends the second step after two moves
+    check(8, 8, {7, 0});
+}
+
 }  // namespace VisitLifecycleDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -984,6 +1031,7 @@ inline VisitLifecycleDetail::Result RunVisitLifecycleSelftest(std::vector<std::s
     Checker checker(lines, result);
     CheckWords(checker);
     CheckRenewal(checker);
+    CheckBankSteps(checker);
     CheckEveryStateAndEvent(checker);
     CheckSearch(checker);
     CheckOneState(checker);

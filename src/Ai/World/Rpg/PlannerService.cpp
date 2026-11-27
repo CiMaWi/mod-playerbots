@@ -702,7 +702,10 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             if (goal.source == GoalApply::Source::Planner)
             {
                 order.reason = goal.reason.c_str();
-                order.vendor = goal.target;
+                // A stop of its own (NR14) names a trainer key, a mount vendor or a beast: the trip plans it as the
+                // due need it is, not as an ordered vendor
+                if (!Goals::OwnStopReason(goal.reason))
+                    order.vendor = goal.target;
                 if (goal.kind == Goals::GoalKind::BuyBag)
                 {
                     std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr;
@@ -762,7 +765,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::Active goal = GoalApply::FromOption(option, GoalApply::Source::Planner, now);
     if (!GoalApply::MayReplace(goals.slot.Query(), goal.source))
         return GoalApply::StartResult::Refused;
-    if (GoalApply::RetryWaits(goals, goal.kind, now))
+    if (GoalApply::RetryWaits(goals, goal.kind, now) || GoalApply::MissedWaits(goals, goal, bot->GetLevel(), now))
     {
         retrySkips.fetch_add(1, std::memory_order_relaxed);
         return GoalApply::StartResult::Retry;
@@ -781,12 +784,15 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     NoteStalled(bot, goals);
     if (result == GoalApply::StartResult::Stalled)
         stalledSkips.fetch_add(1, std::memory_order_relaxed);
+    if (result == GoalApply::StartResult::Refused)
+        GoalApply::NoteRefused(goals, goal, bot->GetLevel(), now);
     if (result != GoalApply::StartResult::Started)
     {
         goals.circuitPlan = std::move(held);
         return result;
     }
     goals.bagBought = false;  // a new order buys its own bag (OrderedBag)
+    goals.ownStopDone = false;
     goals.slot.Set(std::move(goal));
     if (goals.plan)
         LogGoal(bot, GoalApply::ChosenFirst(goals.plan->ranked, index));
@@ -946,6 +952,9 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     }
     // A wanted material only creatures too far above the bot give (professions WR20c): one skip row per change
     Goals::GoalPlan const& taken = *answer->plan;
+    // A due stop of its own whose list this plan's snapshot left out (NR14c): the next snapshot seeks it
+    if (taken.ownStopsSkipped)
+        botAI->planner.snapshotDue = true;
     if (taken.gatherRefusedItem && WorldLog::Active() &&
         (!lastPlan || lastPlan->gatherRefusedItem != taken.gatherRefusedItem))
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
@@ -1151,6 +1160,72 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
                : 0.0f;
 }
 
+// NR14: the stops of the planner's errands of their own within the errand walk that trade with the bot, nearest
+// first, as the errand start finds them (TrainerSpawns, its mount vendors in reach): the class trainers of the bot's
+// class and the riding trainers, the vendors that sell a mount for gold; a sick bot's (`sick`, NR3) safe when its
+// walk stays in its safe area. Only the lists the last plan wants (GoalPlan::trainersWanted, mountVendorsWanted; both
+// before a bot's first plan): the job finds the due needs, so a plan that finds a stop due whose list was skipped asks
+// for the next plan at once (GoalPlan::ownStopsSkipped), whose snapshot seeks it.
+// A pass over the trainers or the mount offers and a ring search that stops at STOPS_SEEN kept spawns per list; the
+// job's NeedBridge::PlaceOwnStops picks the due stop's walk from them
+void FillOwnStopsSeen(Player* bot, PlannerIndexes const& indexes, Goals::GoalPlan const* lastPlan,
+                      Goals::Situation& situation, Upkeep::SafeAreas const* sick)
+{
+    bool const trainersWanted = !lastPlan || lastPlan->trainersWanted;
+    bool const vendorsWanted = !lastPlan || lastPlan->mountVendorsWanted;
+    situation.trainersSkipped = !trainersWanted;
+    situation.mountVendorsSkipped = !vendorsWanted;
+    if (!trainersWanted && !vendorsWanted)
+        return;
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!index)
+        return;
+    constexpr std::size_t STOPS_SEEN = 16;
+    float const runSpeed = bot->GetSpeed(MOVE_RUN);
+    float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
+    auto const seen = [&](ServiceKind kind, auto const& serves, std::vector<Goals::StopSeen>& out)
+    {
+        auto const keep = [&](Service const& spawn) { return serves(spawn.entry) && Trades(bot, spawn); };
+        for (Nearby const& found : indexes.NearestWhere(kind, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                                        bot->GetPositionZ(), STOPS_SEEN, keep, reach))
+        {
+            Service const& spawn = indexes.services[found.index];
+            out.push_back({spawn.entry, WorldTravel::WalkMinutes(found.distance, runSpeed),
+                           sick && SafeWalk(bot, indexes, *sick, spawn)});
+        }
+    };
+    if (trainersWanted)
+    {
+        std::vector<UpkeepTrainer const*> trainers;
+        for (UpkeepTrainer const& trainer : index->trainers)
+            if (trainer.kind == TrainerKind::Mount ||
+                (trainer.kind == TrainerKind::Class && trainer.requirement == bot->getClass()))
+                trainers.push_back(&trainer);
+        seen(
+            ServiceKind::Trainer,
+            [&trainers](uint32 entry)
+            {
+                return std::any_of(
+                    trainers.begin(), trainers.end(), [entry](UpkeepTrainer const* trainer)
+                    { return std::binary_search(trainer->entries.begin(), trainer->entries.end(), entry); });
+            },
+            situation.trainersSeen);
+    }
+    if (!vendorsWanted)
+        return;
+    std::vector<uint32> mountVendors;
+    for (VendorOffer const& offer : index->Offers(UpkeepStock::Mount))
+        if (offer.GoldOnly())
+            mountVendors.push_back(offer.vendorEntry);
+    std::sort(mountVendors.begin(), mountVendors.end());
+    mountVendors.erase(std::unique(mountVendors.begin(), mountVendors.end()), mountVendors.end());
+    if (!mountVendors.empty())
+        seen(
+            ServiceKind::Vendor, [&mountVendors](uint32 entry)
+            { return std::binary_search(mountVendors.begin(), mountVendors.end(), entry); },
+            situation.mountVendorsSeen);
+}
+
 // The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the
 // model weighs a bind at an inn only then (GoalModel AddHearth). The stays near inns (NR.5) are noted either way. A
 // sick bot's (`sick`, NR3) inn is safe when its walk there stays in its safe area
@@ -1262,6 +1337,8 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
                                            bindZone, bot->m_homebindAreaId, nullptr));
         }
         FillErrandSeen(botAI, bot, *indexes, situation, sick ? &*sick : nullptr);
+        GoalApply::BotGoals const* const goals = botAI->planner.goals.get();
+        FillOwnStopsSeen(bot, *indexes, goals ? goals->plan.get() : nullptr, situation, sick ? &*sick : nullptr);
         FillInnSeen(botAI, bot, *indexes, situation, sick ? &*sick : nullptr);
     }
     return situation;
@@ -1693,7 +1770,7 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
         Goals::GoalKind const kind = state.goals->slot.Query().kind;
         bool const repairDue = kind == Goals::GoalKind::Errand && outcome == StatusEnd::Outcome::Finished &&
                                WorldTravel::RepairErrandWanted(botAI->GetBot());
-        GoalApply::NoteInterludeEnd(*state.goals, kind, outcome, getMSTime(), repairDue);
+        GoalApply::NoteInterludeEnd(*state.goals, kind, outcome, getMSTime(), repairDue, botAI->GetBot()->GetLevel());
     }
 }
 
@@ -1771,6 +1848,23 @@ void NoteSickOpen(PlayerbotAI* botAI, bool open)
 
 QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot) { return GoalsOf(botAI, bot).questStalls; }
 
+void ResetPlanner(PlayerbotAI* botAI, StatusEnd::ResetList const& list)
+{
+    // The path is the bot's profession plan, neither its place nor its AI state: dropped with the goals, it took the
+    // keep of every material with it, and a due material withdrawn from the bank was sold at the next vendor (NR15a)
+    GoalApply::BotGoals const* const goals = botAI->planner.goals.get();
+    std::shared_ptr<SkillPath::Path const> path =
+        goals && list.skillPath == StatusEnd::ResetEffect::Kept ? goals->path : nullptr;
+    uint32 const pathMs = goals ? goals->pathMs : 0;
+    StatusEnd::ApplyReset(list.planner, botAI->planner);
+    Player* const bot = botAI->GetBot();
+    if (!path || !bot)
+        return;
+    GoalApply::BotGoals& fresh = GoalsOf(botAI, bot);
+    fresh.path = std::move(path);
+    fresh.pathMs = pathMs;
+}
+
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
 {
     Planner::BotState& state = botAI->planner;
@@ -1832,6 +1926,12 @@ void NoteBagBought(PlayerbotAI* botAI)
 {
     if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
         goals->bagBought = true;
+}
+
+void NoteOwnStopDone(PlayerbotAI* botAI)
+{
+    if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
+        goals->ownStopDone = true;
 }
 
 bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)

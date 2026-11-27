@@ -29,6 +29,7 @@
 #include "Config.h"
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
+#include "DangerRules.h"
 #include "DatabaseEnv.h"
 #include "DefensiveTacticStrategy.h"
 #include "FlightMap.h"
@@ -162,6 +163,10 @@ public:
 
         // Before the statements, which name the tables: a database without one refuses the start and names its update
         if (!PlayerbotsRequiredTables::Check())
+            return false;
+
+        // Known danger (awareness): read once before the world loads; a table without its generated rows refuses here
+        if (!DangerRules::Load())
             return false;
 
         if (!PlayerbotsDatabase.PrepareStatements())

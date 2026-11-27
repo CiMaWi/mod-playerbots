@@ -1255,6 +1255,8 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 UpkeepNeeds::NeedList needs;
                 path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs);
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(needs));
+                NeedBridge::PlaceOwnStops(filled, needs, *upkeep, snapshot.race, snapshot.cls, snapshot.position,
+                                          snapshot.runSpeed);
                 // The gather circuit at the path's prices (professions WR13b), against the zone's other gatherers
                 uint32 competing = 0;
                 if (context.crowding)
