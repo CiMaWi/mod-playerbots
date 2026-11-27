@@ -42,6 +42,7 @@
 #include "StringFormat.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "World.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 #include "WorldPvp.h"
@@ -542,6 +543,39 @@ public:
 }  // namespace
 
 bool StartsByRules(PlayerbotAI* botAI) { return StartsByRules(PlaceOf(botAI)); }
+
+bool MayTake(PlayerbotAI* botAI, Unit* unit)
+{
+    // A pet or charm is on its player's side
+    Player* const side = unit->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!side)
+        return true;
+    Player* const bot = botAI->GetBot();
+    Map const* const map = bot->GetMap();
+    TakeFacts facts;
+    facts.pvpRealm = sWorld->IsPvPRealm();
+    facts.openWorld = map && !map->Instanceable();
+    facts.battleground = bot->InBattleground() || bot->InArena();
+    facts.duel = bot->duel && bot->duel->Opponent == side;
+    if (MayTakePlayer(facts))
+        return true;
+    // Only the enemy's combat references are read (it is on the bot's map): group members may be on another map's
+    // thread, so they are named by guid
+    auto const fights = [&](ObjectGuid guid)
+    {
+        return guid && (unit->GetCombatManager().IsInCombatWith(guid) ||
+                        (side != unit && side->FindMap() == map && side->GetCombatManager().IsInCombatWith(guid)));
+    };
+    facts.fightsBot = fights(bot->GetGUID()) || fights(bot->GetPetGUID());
+    if (MayTakePlayer(facts))
+        return true;
+    if (Player const* const master = botAI->GetMaster())
+        facts.fightsGroup = fights(master->GetGUID());
+    if (Group const* const group = bot->GetGroup())
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            facts.fightsGroup = facts.fightsGroup || fights(slot.guid);
+    return MayTakePlayer(facts);
+}
 
 bool Reaches(Unit const* bot, Unit const* enemy)
 {

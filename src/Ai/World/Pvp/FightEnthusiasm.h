@@ -47,6 +47,30 @@ constexpr bool StartsByRules(BotPlace const& place)
     return place.persistent && place.openWorld && !place.battleground && !place.forced;
 }
 
+// What is known when a bot is about to take a player, or a player's pet or charm, as its target (AW44, AW.28)
+struct TakeFacts
+{
+    // sWorld->IsPvPRealm()
+    bool pvpRealm = false;
+    // An open-world map (not instanceable)
+    bool openWorld = false;
+    bool battleground = false;
+    // A duel of the bot with that player
+    bool duel = false;
+    // The player or the unit is in combat with the bot or its pet
+    bool fightsBot = false;
+    // The player or the unit is in combat with a member of the bot's group, its master included
+    bool fightsGroup = false;
+};
+
+// On a normal realm (world PvP off) a bot begins no fight with a player: in the open world, outside a duel, it takes
+// a player only who fights it or its group. Every other case is allowed, so on a PvP realm nothing changes
+constexpr bool MayTakePlayer(TakeFacts const& facts)
+{
+    return facts.pvpRealm || !facts.openWorld || facts.battleground || facts.duel || facts.fightsBot ||
+           facts.fightsGroup;
+}
+
 // Whose engaged edges are tracked (and written as PvpEnthusiasm engaged rows): the bots that start by the rules and
 // PvpTest's forced fighters (onsight) in the same places, whose rows carry the pvptest tag
 constexpr bool TracksEngaged(BotPlace const& place)

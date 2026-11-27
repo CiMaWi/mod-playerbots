@@ -61,11 +61,13 @@ char const* EnemyRefusal(PlayerbotAI* botAI, Player* bot, Unit* unit, bool const
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
 {
-    // World PvP (WP23): a bot that starts fights by the rules takes only an enemy its enthusiasm lets it enter on
+    // World PvP (WP23): a bot that starts fights by the rules takes only an enemy its enthusiasm lets it enter on, and
+    // on a normal realm only one that fights its side (AW44)
     if (WorldPvp::StartsByRules(botAI))
-        return unit->IsPlayer() && WorldPvp::MayEnter(botAI, unit, Refusal(unit, true));
+        return unit->IsPlayer() && WorldPvp::MayTake(botAI, unit) &&
+               WorldPvp::MayEnter(botAI, unit, Refusal(unit, true));
 
-    // Today's scan
+    // Today's scan (its parent filter asks the realm's rule)
     return !Refusal(unit, false);
 }
 

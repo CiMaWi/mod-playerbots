@@ -72,7 +72,14 @@ bool PossibleTargetsValue::AcceptUnit(Unit* unit)
         // Skip restrictions if in duel with this player
         if (bot->duel && bot->duel->Opponent == unit)
             return true;
+    }
 
+    // A bot begins no fight with a player on a normal realm (AW44), nor with a player's pet
+    if (!WorldPvp::MayTake(botAI, unit))
+        return false;
+
+    if (unit->IsPlayer())
+    {
         // World PvP (WP4, WP23): a bot that starts fights by the rules attacks another player only in a fight it is in
         // or as the enemy it entered on by enthusiasm (its colours replace the level filter below); after it left its
         // fight, not one it leaves alone (WP38a: the target list's refusal; the enemy player value's combat references
