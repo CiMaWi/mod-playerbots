@@ -76,6 +76,8 @@ public:
     VesselOffTrace& VesselOffTraced() { return vesselOffTrace; }
     // DeckMove's refusal trace (G414, debug log only): when it last wrote one, 0 never
     uint32& DeckRefusalTracedMs() { return deckRefusalTracedMs; }
+    // PA76 (G414): the bound of a rider that cannot get off (TravelLegs::StrandedStep), across trips
+    TravelLegs::Stranded& StrandedRider() { return strandedRider; }
     uint32 TripHolder() const { return hold.Holder(); }
     // UpdateAI's travel hook ahead of the AI's delays: passenger check, aboard placement, pending dismount, loot
     // interaction and trip progress, mount trace
@@ -133,6 +135,7 @@ private:
     HeldTrip vesselOff;                                            // the trip-less get-off (VesselOff)
     VesselOffTrace vesselOffTrace;                                 // its debug trace (VesselOffTraced)
     uint32 deckRefusalTracedMs = 0;                                // DeckMove's refusal trace (DeckRefusalTracedMs)
+    TravelLegs::Stranded strandedRider;                            // StrandedRider
     FailedAttempts::Record failures;                               // the record of failed attempts (NoteFailure)
     Ground::Memo ground;                                           // the ground bound's memory (GroundMemo)
 };

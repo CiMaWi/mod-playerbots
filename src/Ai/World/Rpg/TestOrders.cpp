@@ -54,7 +54,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         return constrained;
     }
     if (order.aboard)
-        PlaceAboard(botAI, bot, order.aboard);
+        PlaceAboard(botAI, bot, order.aboard, order.aboardAt ? &*order.aboardAt : nullptr);
     if (order.flush)
         botAI->GetTravel().FlushMeshMoves(getMSTime());
     bool const applied = constrained || order.aboard || order.flush;

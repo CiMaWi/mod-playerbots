@@ -50,6 +50,10 @@ constexpr float APART_YARDS = 1.5f;
 // a point is not where the feet stand)
 constexpr float ARRIVE_YARDS = 0.5f;
 constexpr float ARRIVE_HEIGHT_YARDS = 2.0f;
+// One floor (pathing PA96): two places whose heights differ by more than their distance across times this, plus
+// ARRIVE_HEIGHT_YARDS, stand on two floors (one under the other), whatever their 3D distance; a slope of one in one
+// (45 degrees) is steeper than the floor a bot stands on beside a target
+constexpr float FLOOR_SLOPE = 1.0f;
 constexpr float FRONT_DEGREES = 60.0f;
 constexpr float BEHIND_DEGREES = 120.0f;
 // The mesh half's sampling (NavMeshSnap::StandPoint)
@@ -231,6 +235,22 @@ inline bool InBand(Target const& target, float x, float y, float z)
            (target.capYards <= 0.0f || yards <= target.capYards);
 }
 
+// Whether two places stand on one floor (FLOOR_SLOPE, PA96)
+inline bool OnFloor(float ax, float ay, float az, float bx, float by, float bz)
+{
+    return std::fabs(az - bz) <= Distance(ax, ay, 0.0f, bx, by, 0.0f) * FLOOR_SLOPE + ARRIVE_HEIGHT_YARDS;
+}
+
+// Whether the target stands on a floor the band holds (PA96): a joined point in the band within ARRIVE_HEIGHT_YARDS
+// of its height. A floating target (the floor under it far below) has none, and its band stays 3D
+inline bool Floored(Target const& target, std::vector<Candidate> const& candidates)
+{
+    for (Candidate const& c : candidates)
+        if (c.joined && std::fabs(c.z - target.z) <= ARRIVE_HEIGHT_YARDS && InBand(target, c.x, c.y, c.z))
+            return true;
+    return false;
+}
+
 // Front within FRONT_DEGREES of the target's facing, behind beyond BEHIND_DEGREES, beside between
 inline Side SideOf(Target const& target, float x, float y)
 {
@@ -262,14 +282,18 @@ inline std::size_t Spread(std::uint64_t key, std::size_t count)
     return count ? static_cast<std::size_t>(key % count) : 0;
 }
 
-// PA.16's order over the candidates; `key` spreads the bots (the offline check passes 0)
-inline Answer Pick(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+// PA.16's order over the candidates; `key` spreads the bots (the offline check passes 0). `floored` (Floored): the
+// band keeps the target's floor, no point under or over it (PA96: a banker's band reached the floor below him)
+inline Answer PickOn(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key, bool floored)
 {
     Answer answer;
     std::vector<std::size_t> band;
     for (std::size_t i = 0; i < candidates.size(); ++i)
-        if (InBand(target, candidates[i].x, candidates[i].y, candidates[i].z))
+    {
+        Candidate const& c = candidates[i];
+        if (InBand(target, c.x, c.y, c.z) && (!floored || OnFloor(c.x, c.y, c.z, target.x, target.y, target.z)))
             band.push_back(i);
+    }
     if (band.empty())
         return answer;
 
@@ -341,6 +365,11 @@ inline Answer Pick(Target const& target, std::vector<Candidate> const& candidate
     Candidate const& chosen = candidates[answer.index];
     answer.yards = Distance(chosen.x, chosen.y, chosen.z, target.x, target.y, target.z);
     return answer;
+}
+
+inline Answer Pick(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+{
+    return PickOn(target, candidates, key, Floored(target, candidates));
 }
 
 inline char const* Word(Why why)
@@ -516,6 +545,41 @@ inline float PointYards(float bx, float by, float bz, float px, float py, float 
     if (std::fabs(bz - pz) > ARRIVE_HEIGHT_YARDS)
         return Distance(bx, by, bz, px, py, pz);
     return Distance(bx, by, 0.0f, px, py, 0.0f);
+}
+
+// The core's reach as the band measures it: its greatest distance plus the margin it keeps inside the core's check
+inline float ReachYards(Target const& target) { return target.maxYards + MARGIN_YARDS; }
+
+// Where an approach may answer There (pathing PA96): the core's own check passes from the bot (to the model box or
+// centre to centre, below the core's reach, and within the caller's bound), and the bot stands on its stand point's
+// floor (OnFloor). The 3D check alone passes a bot on the floor below a target within reach
+inline bool Reaches(Target const& target, std::array<float, 3> const& point, std::array<float, 3> const& bot)
+{
+    float const centre = Distance(bot[0], bot[1], bot[2], target.x, target.y, target.z);
+    return CoreYards(target, bot[0], bot[1], bot[2]) < ReachYards(target) &&
+           (target.capYards <= 0.0f || centre < target.capYards + MARGIN_YARDS) &&
+           OnFloor(point[0], point[1], point[2], bot[0], bot[1], bot[2]);
+}
+
+enum class Arrival : std::uint8_t
+{
+    Walk,     // the walk's measure says not yet
+    There,    // arrived, and Reaches holds
+    ToPoint,  // within the band's reach off the point, Reaches refuses: the walk goes on to the point
+    Short     // on the point, Reaches refuses: the approach ends (no_path), a walk to where it stands would not end
+};
+
+// An approach's arrival (PA96): the walk's own measure first (on its point: PointYards within ARRIVE_YARDS; else 3D
+// to the target's place within the band's reach, CentreReach), then Reaches, asked only then (reaches() -> bool)
+template <class ReachesFn>
+Arrival Arrive(bool atPoint, float pointYards, float placeYards, float standReach, ReachesFn&& reaches)
+{
+    bool const onPoint = pointYards <= ARRIVE_YARDS;
+    if (!(atPoint ? onPoint : placeYards <= standReach))
+        return Arrival::Walk;
+    if (reaches())
+        return Arrival::There;
+    return onPoint ? Arrival::Short : Arrival::ToPoint;
 }
 
 // The world log's `stand` row (WL.9): the side, or none; ok, no_sight (the best joined point out of sight),

@@ -525,7 +525,7 @@ void ByPlace(Counts& counts)
 
 // G350: the approach arrives at its stand point, not within the band's reach of the target (Alandelius stood 1.07 yd
 // off the vendor, his point 2.89 yd out). Each case beside its mutant
-void Arrival(Counts& counts)
+void PointArrival(Counts& counts)
 {
     Target const vendor = ForCreature(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, BOT_SIZE_YARDS, 5.5f);
     float const point[3]{2.89f, 0.0f, 0.0f};
@@ -540,6 +540,99 @@ void Arrival(Counts& counts)
                  "arrival: over its point on another floor the bot has not arrived");
     counts.Check(APART_YARDS - ARRIVE_YARDS >= BODY_YARDS,
                  "arrival: one bot an arrival's width off its point stays a body from the next point");
+}
+
+// PA96: an approach answers There only where the core's own check passes from the bot, on its point's floor, and the
+// band keeps the target's floor (G455: the Underbelly's banker, a point and the bot on the floor 7.5-9.7 yd below
+// him, 1.5 yd across, answered There 9.74 yd off, beyond the core's 8.5). Each case beside its mutant (the old rule)
+void CoreArrival(Counts& counts)
+{
+    Target const banker = ForCreature(0.0f, 0.0f, 0.0f, 0.0f, 1.5f, BOT_SIZE_YARDS, 10.0f);
+    counts.Check(std::fabs(banker.maxYards - 8.0f) < 0.001f && std::fabs(ReachYards(banker) - 8.5f) < 0.001f,
+                 "core: the banker's band reaches 8.0, the core 8.5");
+    // The band: the upper floor around him (joined, the flood from below reaches none), the floor below reached and
+    // out of sight
+    std::vector<Candidate> floors;
+    for (int i = 0; i < 7; ++i)
+    {
+        floors.push_back(Polar(-30.0f + 10.0f * static_cast<float>(i), 3.0f + 0.3f * static_cast<float>(i), 0.1f));
+        floors.back().reachable = false;
+    }
+    for (int i = 0; i < 6; ++i)
+        floors.push_back(Polar(60.0f * static_cast<float>(i), 1.0f + 0.2f * static_cast<float>(i), -7.6f, true, false));
+    bool upper = Floored(banker, floors);
+    bool lower = false;
+    for (std::uint64_t key = 0; key < KEYS; ++key)
+    {
+        Answer const answer = Pick(banker, floors, key);
+        upper = upper && answer.why == Why::Found && floors[answer.index].z > -1.0f && !answer.reached;
+        Answer const old = PickOn(banker, floors, key, false);
+        lower = lower || (old.why == Why::Found && floors[old.index].z < -7.0f);
+    }
+    counts.Check(upper, "band: the floor below the banker is no stand point, for every bot (his own floor, unreached)");
+    counts.Check(lower, "mutant killed: the band in 3D only (a reached point on the floor below)");
+    std::vector<Candidate> ground;
+    for (int i = 0; i < 8; ++i)
+        ground.push_back(Polar(45.0f * static_cast<float>(i), 2.0f + 0.3f * static_cast<float>(i), 0.0f));
+    Target const hover = ForCreature(0.0f, 0.0f, 6.5f, 0.0f, 3.0f, BOT_SIZE_YARDS, 10.0f);
+    counts.Check(!Floored(hover, ground) && Pick(hover, ground, 0).why == Why::Found,
+                 "band: a floating target has no floor of its own, the ground under it serves");
+
+    auto const arrive =
+        [&banker](bool atPoint, std::array<float, 3> const& point, std::array<float, 3> const& bot, bool old)
+    {
+        float const pointYards = PointYards(bot[0], bot[1], bot[2], point[0], point[1], point[2]);
+        float const placeYards = Distance(bot[0], bot[1], bot[2], banker.x, banker.y, banker.z);
+        return Arrive(atPoint, pointYards, placeYards, CentreReach(banker),
+                      [&] { return old || Reaches(banker, point, bot); });
+    };
+    // On a point at the band's edge, 0.4 yd across and 1.9 yd under it: 8.52 yd off, beyond the core
+    std::array<float, 3> const edge{7.9f, 0.0f, 0.0f};
+    std::array<float, 3> const under{8.3f, 0.0f, -1.9f};
+    counts.Check(arrive(true, edge, under, false) == StandRules::Arrival::Short,
+                 "arrive: on its point beyond the core's reach the approach ends, no walk to where it stands");
+    counts.Check(arrive(true, edge, under, true) == StandRules::Arrival::There,
+                 "mutant killed: on its point, whatever the core");
+    counts.Check(arrive(true, edge, {7.7f, 0.2f, 0.3f}, false) == StandRules::Arrival::There,
+                 "arrive: on its point on the target's floor, There");
+    // Under its point by more than the arrival's height slack (the Underbelly's 9.6 yd)
+    counts.Check(arrive(true, {1.0f, 0.5f, -7.65f}, {1.0f, 0.5f, -9.55f}, false) == StandRules::Arrival::Short,
+                 "arrive: under a point a floor away, 9.6 yd off, the approach ends");
+    // Unreached (the band's reach of the place): within it 1.0 yd across and 6.5 yd under the banker, his point on his
+    // floor 4 yd out; the plan's case 1.5 yd across and 9.7 yd under walks on
+    std::array<float, 3> const front{4.0f, 0.0f, 0.0f};
+    counts.Check(arrive(false, front, {1.0f, 0.0f, -6.5f}, false) == StandRules::Arrival::ToPoint,
+                 "arrive: within the reach on the floor below, the bot walks on to its point");
+    counts.Check(arrive(false, front, {1.0f, 0.0f, -6.5f}, true) == StandRules::Arrival::There,
+                 "mutant killed: within the band's reach, whatever the floor");
+    counts.Check(arrive(false, front, {1.5f, 0.0f, -9.7f}, false) == StandRules::Arrival::Walk,
+                 "arrive: 1.5 yd across and 9.7 yd under, the bot walks (the plan's case)");
+    int asks = 0;
+    StandRules::Arrival const walking = Arrive(true, 3.0f, 9.0f, 8.0f,
+                                               [&asks]
+                                               {
+                                                   ++asks;
+                                                   return true;
+                                               });
+    counts.Check(walking == StandRules::Arrival::Walk && asks == 0,
+                 "arrive: the core is asked only where the walk says arrived");
+    // A boxed object for a far caller: its band's reach 11.2 yd centre to centre, the core's 10 yd to the box
+    Box const box{-0.5f, -0.5f, 0.0f, 0.5f, 0.5f, 1.5f};
+    float const rotation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    Target const mailbox =
+        ForObject(0.0f, 0.0f, 0.0f, 0.0f, OBJECT_MAILBOX, &box, rotation, 0.4f, BOT_SIZE_YARDS, 20.0f);
+    auto const boxed = [&mailbox](std::array<float, 3> const& bot, bool old)
+    {
+        std::array<float, 3> const point{9.5f, 0.0f, 0.0f};
+        return Arrive(false, PointYards(bot[0], bot[1], bot[2], point[0], point[1], point[2]),
+                      Distance(bot[0], bot[1], bot[2], 0.0f, 0.0f, 0.0f), CentreReach(mailbox),
+                      [&] { return old || Reaches(mailbox, point, bot); });
+    };
+    counts.Check(CentreReach(mailbox) > 10.6f && boxed({10.6f, 0.0f, 0.0f}, false) == StandRules::Arrival::ToPoint &&
+                     boxed({9.8f, 0.0f, 0.0f}, false) == StandRules::Arrival::There,
+                 "arrive: a boxed object's band reach centre to centre, the core's to the box");
+    counts.Check(boxed({10.6f, 0.0f, 0.0f}, true) == StandRules::Arrival::There,
+                 "mutant killed: a boxed object centre to centre");
 }
 
 // PA47: the approach's target from the live creature or object, the caller's reach measured between the two bodies'
@@ -595,7 +688,8 @@ int main()
     RingChecks(counts);
     ApproachTargets(counts);
     ByPlace(counts);
-    Arrival(counts);
+    PointArrival(counts);
+    CoreArrival(counts);
 
     struct Mutant
     {

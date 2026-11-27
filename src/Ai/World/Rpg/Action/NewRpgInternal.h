@@ -40,8 +40,8 @@ using TravelLifecycle::PassengerMotion;
 using TravelLifecycle::Point;
 namespace TransportGeometry = TravelTransportGeometry;
 
-// Transport legs, called by the test orders (`route aboard`)
-void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
+// Transport legs, called by the test orders (`route aboard`; at: the named offset on the deck, null: by the first row)
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry, TravelCrossing::Spot const* at = nullptr);
 
 // Transport legs, called by the route follower (NewRpgTransport.cpp defines them)
 bool AtTransportLeg(TravelLegs::Trip const& trip);
@@ -129,6 +129,9 @@ std::vector<uint32> GivenUpQuests(Player* bot);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
+// A fly leg's landing check near its end (NewRpgFlyLanding.cpp; pathing PA56, PA73): TravelLegs::ChooseLanding on the
+// engine's ground, open sky and navmesh walk, before the descent; one fly_landing trip row; bot's map thread
+TravelLegs::LandingCheck CheckLanding(Player* bot, TravelLegs::Trip& trip, uint32 tripId);
 // A walk off the graph as the bot starts it (NewRpgTravelWalk.cpp; WT56, WT64i): TravelWalk::StartPiece on the judge's
 // reader, GoTo::ProbeCarried; per probe step a straight path that aims and the order's smooth path that is judged
 // (TravelWalk::OrderStep), done within arriveYards (the waypoint's reach), on the bot's map thread

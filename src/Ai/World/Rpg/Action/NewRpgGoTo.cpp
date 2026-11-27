@@ -195,7 +195,9 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     // no_path, its row names the rule's word. A point the bot's floor is known to lead to is walked to and arrived at
     // (StandRules::PointYards within ARRIVE_YARDS); where the mesh cannot tell (a taxi or a vessel carries the bot, no
     // flood: NavMeshSnap::ReachedFrom) or the flood reached no joined point (the row's `unreached`, G353), the
-    // approach arrives within the band's reach of the target as before (StandRules::ArrivesOnPoint)
+    // approach arrives within the band's reach of the target as before (StandRules::ArrivesOnPoint). Either way it
+    // answers There only where the core's own check passes from the bot, on its point's floor (StandRules::Arrive,
+    // PA96): off its point the bot walks on to it, on it the approach ends no_path (row `stand none short`)
     if (::GoTo::RepickStand(walk.object == guid, walk.reach, distance, object->GetExactDist(walk.anchor)))
     {
         StandRules::Target const target = StandTargetOf(bot, object, distance);
@@ -232,8 +234,57 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     }
     WorldPosition const anchor = walk.anchor;
     WorldPosition const point = walk.point;
-    return JudgedWalk(walk, anchor, point, walk.atPoint ? StandRules::ARRIVE_YARDS : walk.standReach, false, endsStatus,
-                      quiet);
+    // The arrival (PA96): the walk's measure, then the core's check and the point's floor from where the bot stands,
+    // with the live object's target, built only when the walk's measure says arrived
+    std::array<float, 3> const at{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    std::array<float, 3> const on{point.GetPositionX(), point.GetPositionY(), point.GetPositionZ()};
+    StandRules::Target live;
+    bool asked = false;
+    bool reaches = false;
+    auto const reachesNow = [&]
+    {
+        live = StandTargetOf(bot, object, distance);
+        asked = true;
+        reaches = StandRules::Reaches(live, on, at);
+        return reaches;
+    };
+    // The arrival's row: value the bot's core distance, the core's reach, its height over the target, on its point's
+    // floor (1) or not (0)
+    auto const arrivalRow = [&](char const* reason)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Stand, "none", reason,
+                           StandRules::CoreYards(live, at[0], at[1], at[2]),
+                           {{"reach", StandRules::ReachYards(live)},
+                            {"dz", at[2] - live.z},
+                            {"floor", StandRules::OnFloor(on[0], on[1], on[2], at[0], at[1], at[2]) ? 1.0f : 0.0f}},
+                           object->GetEntry());
+    };
+    switch (StandRules::Arrive(walk.atPoint, StandRules::PointYards(at[0], at[1], at[2], on[0], on[1], on[2]),
+                               bot->GetExactDist(anchor), walk.standReach, reachesNow))
+    {
+        case StandRules::Arrival::Short:
+            arrivalRow("short");
+            LOG_DEBUG("playerbots",
+                      "[Route] {} approach to ({:.1f}, {:.1f}, {:.1f}) short on its point: core {:.1f} yd of {:.1f}, "
+                      "{:.1f} yd over the target; asked from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, {:.1f})",
+                      bot->GetName(), live.x, live.y, live.z, StandRules::CoreYards(live, at[0], at[1], at[2]),
+                      StandRules::ReachYards(live), at[2] - live.z, at[0], at[1], at[2], on[0], on[1], on[2]);
+            if (::GoTo::MarksFailure(quiet))
+                EventLog::Emit(bot, EventLog::EventType::Stuck, "no_path",
+                               static_cast<uint32>(botAI->rpgInfo.GetStatus()));
+            return FailGoTo(walk, endsStatus, "no_path", StatusEnd::Outcome::Abandoned);
+        case StandRules::Arrival::ToPoint:
+            walk.atPoint = true;
+            break;
+        default:
+            break;
+    }
+    ::GoTo::Answer const answer = JudgedWalk(
+        walk, anchor, point, walk.atPoint ? StandRules::ARRIVE_YARDS : walk.standReach, false, endsStatus, quiet);
+    // The guard (check approach_there_out_of_reach): a There the arrival did not grant
+    if (answer == ::GoTo::Answer::There && !(asked ? reaches : reachesNow()))
+        arrivalRow("there_short");
+    return answer;
 }
 
 GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target,
@@ -376,11 +427,12 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             LOG_DEBUG("playerbots",
                       "[Route] {} {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
                       "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried; {} search {}, {} "
-                      "points; refused by the {} (type 0x{:x}, last step {:.1f} yd)",
+                      "points; refused by the {} (type 0x{:x}, last step {:.1f} yd); asked from ({:.1f}, {:.1f}, "
+                      "{:.1f}) to ({:.1f}, {:.1f}, {:.1f})",
                       bot->GetName(), trips ? "local piece" : "approach", place.GetPositionX(), place.GetPositionY(),
                       place.GetPositionZ(), facts.yards, reach, answer.type, lastStep, end.x, end.y, end.z, endYards,
                       wide ? "wide" : "plain", TravelWalk::WhyWord(answer.why), answer.points.size(), refusedBy,
-                      order.type, order.lastStep);
+                      order.type, order.lastStep, from.x, from.y, from.z, to.x, to.y, to.z);
         }
         return carried;
     };
