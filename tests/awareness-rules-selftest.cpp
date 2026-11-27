@@ -3751,6 +3751,26 @@ void TestAw9Fixed()
     Check(!KeepsOnFoot(facts), "recover: a sick bot is not held: the sickness alone keeps none on foot");
     facts.own.clear = false;
     Check(RecoverStep(facts) == RecoverAct::Move, "recover: sick on a reached place: move");
+
+    // AW41: one recovery for every risen bot, and its end: restored, or the bound passed. Sick or not, mana or not
+    for (bool const sick : {false, true})
+        for (bool const usesMana : {false, true})
+        {
+            RecoverFacts risen;
+            risen.sick = sick;
+            risen.usesMana = usesMana;
+            risen.healthPct = 50;
+            risen.powerPct = 10;
+            risen.sinceRiseSeconds = RECOVER_BOUND_SECONDS - 1;
+            Check(!RecoveryOver(risen), "recovery: half health before the bound is not over");
+            risen.sinceRiseSeconds = RECOVER_BOUND_SECONDS;
+            Check(RecoveryOver(risen), "recovery: at the bound it is over, restored or not");
+            risen.sinceRiseSeconds = 0;
+            risen.healthPct = RECOVER_HEALTH_PCT;
+            Check(RecoveryOver(risen) == !usesMana, "recovery: whole health ends it at once without mana only");
+            risen.powerPct = RECOVER_POWER_PCT;
+            Check(RecoveryOver(risen), "recovery: restored it is over");
+        }
 }
 
 void TestAw9Generated()
@@ -3845,6 +3865,8 @@ void TestAw9Generated()
         bool const done = !facts.sick && (restored || pastBound);
         counterexamples += done != (act == RecoverAct::Done);
         counterexamples += done == Recovering(facts);
+        // AW41: the end of the one recovery, which the hand-over of a sick bot reads
+        counterexamples += RecoveryOver(facts) != (restored || pastBound);
         counterexamples += act == RecoverAct::Move && facts.own.clear;
         counterexamples += act == RecoverAct::Rest && !facts.own.clear;
     }

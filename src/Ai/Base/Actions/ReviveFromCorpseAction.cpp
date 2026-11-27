@@ -610,11 +610,11 @@ bool RecoverAction::Execute(Event /*event*/)
         }
     }
 
-    // A sick bot is not held: upkeep's sickness rule makes its status `rest`, and only the move above acts
-    if (facts.sick)
+    // AW41: a sick bot has the same recovery and the same end of it; past that end only the move above acts on it
+    if (facts.sick && AwarenessRules::RecoveryOver(facts))
         return false;
 
-    // The rest: it stops, eats and drinks what it has, and sits; the tick is held so its status resumes unchanged
+    // The rest: it stops, eats and drinks what it has, and sits
     if (bot->isMoving())
     {
         bot->GetMotionMaster()->Clear();
@@ -631,7 +631,8 @@ bool RecoverAction::Execute(Event /*event*/)
         if (bot->getStandState() == UNIT_STAND_STATE_STAND)
             bot->SetStandState(UNIT_STAND_STATE_SIT);
     }
-    return true;
+    // The tick is held so the status resumes unchanged; a sick bot is not held (upkeep's sickness rule rests it)
+    return !facts.sick;
 }
 
 bool RecoverAction::isUseful() { return bot->IsAlive(); }

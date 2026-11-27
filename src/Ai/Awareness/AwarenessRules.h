@@ -1962,11 +1962,15 @@ constexpr bool Restored(RecoverFacts const& facts)
     return facts.healthPct >= RECOVER_HEALTH_PCT && (!facts.usesMana || facts.powerPct >= RECOVER_POWER_PCT);
 }
 
-// Recovering: sick, or within the bound of the rise and not restored. The trigger asks only this (no judgement)
-constexpr bool Recovering(RecoverFacts const& facts)
+// AW41: the end of the one recovery every risen bot has, sick or not: restored, or the bound of the rise passed. A sick
+// bot's hand-over reads it (WorldTravel::SickErrandOpen)
+constexpr bool RecoveryOver(RecoverFacts const& facts)
 {
-    return facts.sick || (facts.sinceRiseSeconds < RECOVER_BOUND_SECONDS && !Restored(facts));
+    return Restored(facts) || facts.sinceRiseSeconds >= RECOVER_BOUND_SECONDS;
 }
+
+// Recovering: sick, or the recovery not over. The trigger asks only this (no judgement)
+constexpr bool Recovering(RecoverFacts const& facts) { return facts.sick || !RecoveryOver(facts); }
 
 // A bot the recovery holds keeps on foot (the mount policy's on-foot fact): mounted it can neither eat nor drink, and
 // the rise's speed change asks for a mount at once (AWL2: every risen bot with a mount rode the recovery's minute out

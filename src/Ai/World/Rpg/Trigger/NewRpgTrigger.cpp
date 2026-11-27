@@ -85,10 +85,11 @@ bool WorldTravel::SickErrandOpen(PlayerbotAI* botAI)
     Player* bot = botAI->GetBot();
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     AwarenessRules::RecoverFacts facts;
-    bool const restored = sick && Awareness::RecoverFactsOf(botAI, facts) && AwarenessRules::Restored(facts);
+    // AW41: needs and errands' `restored` is the recovery's end (restored, or its bound passed)
+    bool const over = sick && Awareness::RecoverFactsOf(botAI, facts) && AwarenessRules::RecoveryOver(facts);
     bool const clear =
-        restored && AwarenessRules::JudgePoint(Awareness::Look(botAI), bot->GetPositionX(), bot->GetPositionY()).clear;
-    return Upkeep::SickErrandOpen(sick, restored, clear);
+        over && AwarenessRules::JudgePoint(Awareness::Look(botAI), bot->GetPositionX(), bot->GetPositionY()).clear;
+    return Upkeep::SickErrandOpen(sick, over, clear);
 }
 
 bool WorldTravel::SickGoalRuns(PlayerbotAI* botAI)
@@ -140,9 +141,9 @@ bool InventoryPressureTrigger::IsActive()
     uint32 const nowMs = getMSTime();
     bool const bagsDue = WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs);
     // NR3: a sick bot looks at recover's hand-over at each check (WorldTravel::SickErrandOpen; its point judgement
-    // only for a restored bot). A planner bot's plan follows the hand-over in any status: the planner is told once
-    // (Planner::NoteSickOpen acts on the change only; the goals job's snapshot keeps the same edge, NR3c). Any other
-    // bot looks in a status an errand may end only, and the errand check then starts the errand
+    // only for a bot whose recovery is over). A planner bot's plan follows the hand-over in any status: the planner is
+    // told once (Planner::NoteSickOpen acts on the change only; the goals job's snapshot keeps the same edge, NR3c).
+    // Any other bot looks in a status an errand may end only, and the errand check then starts the errand
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     // A planner bot's errands are the planner's (planning 3.19): full bags or gear due for repair only tell it that
     // the situation changed, once per retry time each, in any status; no needs list here. The gear is looked at every
