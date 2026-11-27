@@ -319,6 +319,9 @@ struct ErrandSnapshot
     // The auction plan (WA3b fills the stock, WA4b the wanted lines)
     uint32_t AuctionStockWorth = 0;   // copper listing the bag stock fetches above a vendor's payout (CarriedKeeps)
     uint32_t AuctionWantedWorth = 0;  // copper the wanted lines of its buy list are worth to it
+    // Needs and errands NR12b: copper listing the banked sale stock fetches above a vendor's payout
+    // (BankKnowledge::stockGain): the auction offer counts it, and a banker before the auction stop withdraws it
+    uint32_t BankStockWorth = 0;
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -603,17 +606,31 @@ inline void ProvideMail(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
     offers.push_back(offer);
 }
 
-// Due items waiting in the bank, weighted by orderliness
+// The withdrawal of the banked sale stock (NR12b): worth the stock's gain over the vendor, which PlanTrip counts only
+// with an auction stop after it, so the stock is never fetched without its auction nor its auction drawn without it
+constexpr uint32_t STOCK_WITHDRAW_ID = 1;
+
+// Due items waiting in the bank, weighted by orderliness; and the banked sale stock's withdrawal for an auction
 inline void ProvideBankWithdraw(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Governed || !snapshot.BankDueCount)
+    if (!snapshot.Governed)
         return;
 
     ErrandOffer offer;
     offer.Kind = ErrandKind::BankWithdraw;
     offer.Service = SERVICE_BANKER;
-    offer.WorthCopper = static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
-    offers.push_back(offer);
+    if (snapshot.BankDueCount)
+    {
+        offer.WorthCopper =
+            static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
+        offers.push_back(offer);
+    }
+    if (snapshot.BankStockWorth)
+    {
+        offer.Id = STOCK_WITHDRAW_ID;
+        offer.WorthCopper = static_cast<float>(snapshot.BankStockWorth);
+        offers.push_back(offer);
+    }
 }
 
 // Kept items out of the bags: the slots they free are worth the same as a sale's until the next stop, unweighted
@@ -633,11 +650,12 @@ inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<Erran
 // Auction stock in the bags (WA3b) and the buy list's wanted lines (WA4b): worth what listing the stock fetches above
 // a vendor's payout plus what the wanted lines save under their ceilings at their typical prices, against the detour
 // like any errand (selling and buying share one stop); an auctioneer beside a stop the bot makes anyway joins it. It
-// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later
+// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later. Banked
+// sale stock (NR12b) makes the offer too, worth nothing of its own: its gain is the withdrawal's (PlanTrip)
 inline void ProvideAuction(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
     uint64_t const worth = static_cast<uint64_t>(snapshot.AuctionStockWorth) + snapshot.AuctionWantedWorth;
-    if (!snapshot.Governed || !worth)
+    if (!snapshot.Governed || (!worth && !snapshot.BankStockWorth))
         return;
 
     ErrandOffer offer;
@@ -670,6 +688,18 @@ inline void MergeServiceStops(std::vector<ServiceStop>& stops, std::vector<Servi
         else
             stops.push_back(extra);
     }
+}
+
+// NR12b: an auction errand is still ahead of a running trip from stop `from` on (that stop's own while its flag
+// stands): the bank visit there finds the sale stock due for it. A stop's flag drops once its errand ran, so an
+// auction stop before the bank's makes nothing due
+template <typename Stop>
+inline bool AuctionAhead(std::vector<Stop> const& stops, std::size_t from)
+{
+    for (std::size_t s = from; s < stops.size(); ++s)
+        if (stops[s].auction)
+            return true;
+    return false;
 }
 
 // The travel plan's providers; a later plan adds its row to its own copy of this table, PlanTrip stays as it is
@@ -945,11 +975,25 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         done[i] = true;
         plan.Refused.push_back({offers[i], "too_far", 0.0f, minutes});
     }
-    auto const join = [&plan, &offers, &done]()
+    // NR12b: the banked sale stock is one errand of two stops, its withdrawal at a banker and its listing at an
+    // auctioneer after it (or at the same stop, the withdrawal first). The withdrawal carries the stock's gain, the
+    // auction offer only what the bags' stock and the wanted lines are worth; the gain counts only for a stop that
+    // completes the pair, against its own detour and that of a banker stop it still needs, each new stop a detour as
+    // for any errand. A bank stop past the auction would fetch the stock for nothing
+    std::size_t stock = offers.size();
+    std::size_t auction = offers.size();
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        if (offers[i].Kind == ErrandKind::BankWithdraw && offers[i].Id == STOCK_WITHDRAW_ID)
+            stock = i;
+        else if (offers[i].Kind == ErrandKind::Auction)
+            auction = i;
+    }
+    auto const join = [&plan, &offers, &done, stock]()
     {
         for (std::size_t i = 0; i < offers.size(); ++i)
             for (TripStop& stop : plan.Stops)
-                if (!done[i] && StopTakes(stop, offers[i]))
+                if (!done[i] && i != stock && StopTakes(stop, offers[i]))
                 {
                     stop.Errands.push_back(offers[i]);
                     done[i] = true;
@@ -1005,22 +1049,146 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         join();
     };
 
+    // The first stop of `stops` that holds the auction errand, or that takes it while it is pending; the size if none
+    auto const auctionAt = [&offers, &done, auction](std::vector<TripStop> const& stops)
+    {
+        if (auction == offers.size())
+            return stops.size();
+
+        std::size_t at = 0;
+        auto const holds = [](ErrandOffer const& errand) { return errand.Kind == ErrandKind::Auction; };
+        while (at < stops.size() &&
+               !(done[auction] ? std::any_of(stops[at].Errands.begin(), stops[at].Errands.end(), holds)
+                               : StopTakes(stops[at], offers[auction])))
+            ++at;
+        return at;
+    };
+    // The banker in front of stop `before` of `stops`: of the candidates [first, last) with one, the place and index
+    // that add the fewest minutes; false when none takes the withdrawal. The walk limit is the caller's. A banker that
+    // takes the pending auction too is no second stop: the auction would join it and leave its own stop empty; it is
+    // weighed as a stop of its own
+    struct StockInsert
+    {
+        std::size_t Candidate = 0;
+        std::size_t Index = 0;
+        float Minutes = 0.0f;
+    };
+    auto const inFront = [&candidates, &offers, &done, &request, stock, auction](std::vector<TripStop> const& stops,
+                                                                                 std::size_t before, std::size_t first,
+                                                                                 std::size_t last, StockInsert& best)
+    {
+        bool found = false;
+        for (std::size_t c = first; c < last; ++c)
+        {
+            if (!StopTakes(candidates[c], offers[stock]) ||
+                (auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction])))
+                continue;
+
+            ErrandPlace const& place = candidates[c].Place;
+            for (std::size_t s = 0; s <= before; ++s)
+            {
+                ErrandPlace const& from = s ? stops[s - 1].Place : request.Start;
+                float const minutes =
+                    WalkMinutes(Yards(from, place) + Yards(place, stops[s].Place) - Yards(from, stops[s].Place),
+                                request.YardsPerSecond);
+                if (!std::isfinite(minutes) || (found && !(minutes < best.Minutes)))
+                    continue;
+
+                found = true;
+                best = {c, s, minutes};
+            }
+        }
+        return found;
+    };
+    // Candidate `c`, inserted at `index` with `minutes` of its own and taking the pending auction, completes the pair
+    // when a banker comes before it: a stop of the trip (no further minutes) or a stop of its own in front (Banker).
+    // Each new stop is a detour of its own, as for any errand
+    struct StockPair
+    {
+        bool Found = false;
+        bool Banker = false;
+        StockInsert Insert;
+        float Cost = 0.0f;
+    };
+    auto const pairWith = [&plan, &candidates, &offers, &request, &auctionAt, &inFront, stock](
+                              std::size_t c, std::size_t index, float minutes)
+    {
+        StockPair pair;
+        std::vector<TripStop> stops = plan.Stops;
+        stops.insert(stops.begin() + static_cast<std::ptrdiff_t>(index), candidates[c]);
+        std::size_t const at = auctionAt(stops);
+        if (at == stops.size())
+            return pair;
+
+        pair.Cost = DetourCost(request.Rates, minutes);
+        for (std::size_t s = 0; s <= at; ++s)
+            if (StopTakes(stops[s], offers[stock]))
+            {
+                pair.Found = true;
+                return pair;
+            }
+        if (!inFront(stops, at, 0, candidates.size(), pair.Insert))
+            return pair;
+
+        pair.Found = true;
+        pair.Banker = true;
+        pair.Cost += DetourCost(request.Rates, pair.Insert.Minutes);
+        return pair;
+    };
+    // The pair on stops the trip makes anyway: the withdrawal goes first at the first stop with a banker up to the
+    // auction's
+    auto const stockJoin = [&plan, &offers, &done, &auctionAt, stock]()
+    {
+        if (stock == offers.size() || done[stock])
+            return;
+
+        std::size_t const at = auctionAt(plan.Stops);
+        if (at == plan.Stops.size())
+            return;
+
+        for (std::size_t s = 0; s <= at; ++s)
+            if (StopTakes(plan.Stops[s], offers[stock]))
+            {
+                plan.Stops[s].Errands.insert(plan.Stops[s].Errands.begin(), offers[stock]);
+                done[stock] = true;
+                return;
+            }
+    };
+
     join();
     rideAlong();
-    for (std::size_t detours = 0; detours < MAX_DETOUR_STOPS; ++detours)
+    stockJoin();
+    std::size_t detours = 0;
+    while (detours < MAX_DETOUR_STOPS)
     {
         bool found = false;
         float bestGain = 0.0f;
         std::size_t bestCandidate = 0;
         std::size_t bestIndex = 0;
         float bestMinutes = 0.0f;
+        StockPair bestPair;
+        auto const consider =
+            [&](std::size_t c, std::size_t index, float minutes, float worth, float cost, StockPair const& pair)
+        {
+            if (!(worth > cost) || (found && !(worth - cost > bestGain)))
+                return;
+
+            found = true;
+            bestGain = worth - cost;
+            bestCandidate = c;
+            bestIndex = index;
+            bestMinutes = minutes;
+            bestPair = pair;
+        };
         bool const rankPending = rank < offers.size() && !done[rank];
+        bool const stockPending = stock < offers.size() && !done[stock];
+        std::size_t const auctionStop = auctionAt(plan.Stops);
         for (std::size_t c = 0; c < candidates.size(); ++c)
         {
             float worth = 0.0f;
             bool takes = false;
             for (std::size_t i = 0; i < offers.size(); ++i)
-                if (!done[i] && StopTakes(candidates[c], offers[i]))
+                if (!done[i] && i != stock && StopTakes(candidates[c], offers[i]))
                 {
                     if (i == rank && mount < offers.size() && !done[mount])
                         worth += offers[mount].WorthCopper;
@@ -1028,24 +1196,31 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
                         worth += offers[i].WorthCopper;
                     takes = true;
                 }
-            if (!takes)
-                continue;
 
             std::size_t index = 0;
             float const minutes =
                 WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
-            if (!(minutes <= ERRAND_MAX_WALK_MINUTES))
+            bool const inReach = minutes <= ERRAND_MAX_WALK_MINUTES;
+            if (takes && inReach)
+                consider(c, index, minutes, worth, DetourCost(request.Rates, minutes), StockPair());
+            if (!stockPending)
                 continue;
 
-            float const cost = DetourCost(request.Rates, minutes);
-            if (!(worth > cost) || (found && !(worth - cost > bestGain)))
-                continue;
-
-            found = true;
-            bestGain = worth - cost;
-            bestCandidate = c;
-            bestIndex = index;
-            bestMinutes = minutes;
+            float const withStock = worth + offers[stock].WorthCopper;
+            // The stop takes the pending auction: the banker before it comes too (a second stop when of its own)
+            if (inReach && auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction]))
+            {
+                StockPair const pair = pairWith(c, index, minutes);
+                if (pair.Found && (!pair.Banker ||
+                                   (pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES && detours + 2 <= MAX_DETOUR_STOPS)))
+                    consider(c, index, minutes, withStock, pair.Cost, pair);
+            }
+            // A banker in front of the trip's auction stop
+            StockInsert front;
+            if (auctionStop < plan.Stops.size() && inFront(plan.Stops, auctionStop, c, c + 1, front) &&
+                front.Minutes <= ERRAND_MAX_WALK_MINUTES)
+                consider(c, front.Index, front.Minutes, withStock, DetourCost(request.Rates, front.Minutes),
+                         StockPair());
         }
         if (!found)
             break;
@@ -1053,11 +1228,38 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         TripStop stop = candidates[bestCandidate];
         stop.DetourMinutes = bestMinutes;
         plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
+        ++detours;
+        if (bestPair.Banker)
+        {
+            TripStop banker = candidates[bestPair.Insert.Candidate];
+            banker.DetourMinutes = bestPair.Insert.Minutes;
+            plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestPair.Insert.Index),
+                              std::move(banker));
+            ++detours;
+        }
         join();
         rideAlong();
+        stockJoin();
     }
 
-    // What is left: no place takes it, every place is beyond the walk limit, or no detour pays
+    // What is left: no place takes it, every place is beyond the walk limit, or no detour pays. Banked stock left
+    // without its withdrawal leaves the trip whole: an auction errand that holds nothing else comes off its stop, and
+    // the auction's refusal carries the stock's gain and the pair's cost (the withdrawal makes no row of its own)
+    bool const stockLeft = stock < offers.size() && !done[stock] &&
+                           (auction == offers.size() || !done[auction] || !(offers[auction].WorthCopper > 0.0f));
+    if (stockLeft)
+    {
+        done[stock] = true;
+        if (auction < offers.size() && done[auction])
+        {
+            for (TripStop& stop : plan.Stops)
+                stop.Errands.erase(
+                    std::remove_if(stop.Errands.begin(), stop.Errands.end(),
+                                   [](ErrandOffer const& errand) { return errand.Kind == ErrandKind::Auction; }),
+                    stop.Errands.end());
+            done[auction] = false;
+        }
+    }
     for (std::size_t i = 0; i < offers.size(); ++i)
     {
         if (done[i])
@@ -1066,22 +1268,36 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         Refusal refusal;
         refusal.Offer = offers[i];
         refusal.Reason = "no_stop";
+        bool const paired = stockLeft && i == auction;
+        if (paired)
+            refusal.Offer.WorthCopper += offers[stock].WorthCopper;
         bool reachable = false;
-        for (TripStop const& candidate : candidates)
+        for (std::size_t c = 0; c < candidates.size(); ++c)
         {
-            if (!StopTakes(candidate, offers[i]))
+            if (!StopTakes(candidates[c], offers[i]))
                 continue;
 
             std::size_t index = 0;
-            float const minutes =
-                WalkMinutes(InsertYards(request.Start, plan.Stops, candidate.Place, index), request.YardsPerSecond);
-            if (!(minutes <= ERRAND_MAX_WALK_MINUTES))
+            float minutes =
+                WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
+            float cost = DetourCost(request.Rates, minutes);
+            // Banked stock alone: the pair's banker must be in reach too, and its detour adds to the cost
+            StockPair const pair =
+                paired && minutes <= ERRAND_MAX_WALK_MINUTES ? pairWith(c, index, minutes) : StockPair();
+            if (paired && minutes <= ERRAND_MAX_WALK_MINUTES && !pair.Found)
+                continue;
+            if (!(minutes <= ERRAND_MAX_WALK_MINUTES) ||
+                (pair.Banker && !(pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES)))
             {
                 if (!reachable)
                     refusal.Reason = "too_far";
                 continue;
             }
-            float const cost = DetourCost(request.Rates, minutes);
+            if (pair.Found)
+            {
+                cost = pair.Cost;
+                minutes += pair.Banker ? pair.Insert.Minutes : 0.0f;
+            }
             if (!reachable || cost < refusal.CostCopper)
             {
                 refusal.CostCopper = cost;

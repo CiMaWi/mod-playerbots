@@ -162,11 +162,19 @@ struct Candidate
     size_t mail = 0;
     MailItemIn const* item = nullptr;
 };
+
+// A mail with no money whose every item the core would refuse the bot
+inline bool HoldsOnlyHeldCopies(MailIn const& mail)
+{
+    return !mail.money && !mail.items.empty() &&
+           std::all_of(mail.items.begin(), mail.items.end(), [](MailItemIn const& item) { return item.untakeable; });
+}
 }  // namespace MailRulesDetail
 
 // WB.5: mail not yet delivered and cash-on-delivery mail are left alone; money first (it needs no space); then items
 // by worth, highest first, while they fit; an item that does not fit stays and its worth is seen; a mail with nothing
-// left in it (text only included) is marked read and deleted; no bag item is ever destroyed for mail.
+// left in it (text only included) is marked read and deleted; no bag item is ever destroyed for mail. A mail an
+// earlier visit left only for unique copies is not opened again while the core still refuses them (needs NR.7).
 inline VisitPlan PlanMailVisit(std::vector<MailIn> const& mails, BagSpace const& space, MailOptions const& options)
 {
     using namespace MailRulesDetail;
@@ -185,6 +193,8 @@ inline VisitPlan PlanMailVisit(std::vector<MailIn> const& mails, BagSpace const&
             verdict.reason = MailReason::NotDelivered;
         else if (mail.cod)
             verdict.reason = MailReason::Cod;
+        else if (HoldsOnlyHeldCopies(mail) && Contains(options.uniqueMails, mail.id))
+            verdict.reason = MailReason::Unique;
         else if (plan.mailsOpened < options.mailsPerVisit)
         {
             opened[i] = true;
@@ -270,6 +280,27 @@ inline VisitPlan PlanMailVisit(std::vector<MailIn> const& mails, BagSpace const&
     }
 
     return plan;
+}
+
+// The opened mails that hold worth the bot saw and left: the seen worth counts them
+inline std::vector<uint32_t> SeenMailIds(VisitPlan const& plan)
+{
+    std::vector<uint32_t> ids;
+    for (MailVerdict const& verdict : plan.verdicts)
+        if (verdict.worthLeft)
+            ids.push_back(verdict.mailId);
+    return ids;
+}
+
+// The mails nothing more can be taken from but unique copies (left now, or skipped as remembered). A mail with a
+// take still pending is none: an interrupted visit has more to take from it
+inline std::vector<uint32_t> UniqueMailIds(VisitPlan const& plan)
+{
+    std::vector<uint32_t> ids;
+    for (MailVerdict const& verdict : plan.verdicts)
+        if (verdict.reason == MailReason::Unique && !verdict.itemsTaken)
+            ids.push_back(verdict.mailId);
+    return ids;
 }
 
 // The orderliness trait (a unit in -1..1) as the weight of the bank-mail errands: 1 + spread * unit, so 0.5 .. 1.5 and

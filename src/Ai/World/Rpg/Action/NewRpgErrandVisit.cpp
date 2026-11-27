@@ -154,7 +154,8 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
         if (!spot)
             reason = "no_banker";
         else
-            started = BankMail::BeginBankVisit(botAI, *spot);
+            // NR12b: with an auction errand still ahead on the trip, the sale stock is due for it
+            started = BankMail::BeginBankVisit(botAI, *spot, WorldTravel::AuctionAhead(errands->stops, errands->stop));
     }
     if (!started)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, WorldTravel::ErrandKindName(kind), reason, 0.0f);
