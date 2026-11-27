@@ -260,6 +260,12 @@ public:
         keep.wearable = slots.first != NULL_SLOT && IsWearable(bot, proto, dueLevel);
         if (!keep.wearable)
             return in;
+        if (proto->InventoryType == INVTYPE_RELIC)
+        {
+            keep.relic = true;
+            keep.slotEmpty = !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slots.first);
+            return in;
+        }
 
         StatsWeightCalculator& calculator = Calculator();
         keep.score = calculator.CalculateItem(proto->ItemId, randomPropertyId);

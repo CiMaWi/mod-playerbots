@@ -110,6 +110,9 @@ struct KeepItemIn
     float score = 0.0f;
     float wornScore = 0.0f;
     bool slotEmpty = false;
+    // A relic (idol, libram, totem, sigil) fits by its kind alone, as the random gear's relics skip the stat table
+    // (RandomItemMgr::CanEquipArmor): no score, kept only for an empty relic slot
+    bool relic = false;
     // The item usage (WearAnswer::ItemUsage): its answer for the item now (ItemUsage's number), read instead of the
     // prediction's fields
     WearAnswer wearAnswer = WearAnswer::Predicted;
@@ -202,7 +205,7 @@ inline KeepAnswer GearForLaterLevel(KeepItemIn const& item, KeepBotIn const& bot
             return {};
         return {true, item.useWorth, std::max(item.requiredLevel, uint8_t{1}), "gear_for_level"};
     }
-    if (!item.wearable || item.score <= 0.0f)
+    if (!item.wearable || (item.relic ? !item.slotEmpty : item.score <= 0.0f))
         return {};
     if (item.requiredLevel > bot.level && item.requiredLevel - bot.level > bot.horizon)
         return {};

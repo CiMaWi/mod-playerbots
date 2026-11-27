@@ -183,6 +183,13 @@ inline void CheckUpgrade(Checker& checker)
     checker.Check(!slight.keeps && clear.keeps, "an upgrade must beat the worn score times the threshold");
     checker.Check(DecideKeep(empty, bot).keeps, "an empty slot: any score above 0 is an upgrade");
     checker.Check(!DecideKeep(nothing, bot).keeps, "an item that scores 0 is never kept");
+    KeepItemIn relic = Gear(116, 12, 0.0f, 0.0f);
+    relic.relic = true;
+    relic.slotEmpty = true;
+    KeepItemIn relicWorn = Gear(117, 12, BETTER, 0.0f);
+    relicWorn.relic = true;
+    checker.Check(DecideKeep(relic, bot).keeps && !DecideKeep(relicWorn, bot).keeps,
+                  "a relic is kept for an empty relic slot without a score, never with a relic worn");
     checker.Check(!DecideKeep(cannot, bot).keeps, "an item the class does not wear is not kept");
 }
 
