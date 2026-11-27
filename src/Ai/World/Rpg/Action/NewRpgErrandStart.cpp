@@ -141,11 +141,14 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     if (known.bank.carried.level == bot->GetLevel())
         snapshot.AuctionStockWorth = known.bank.carried.auctionGain;
     snapshot.AuctionWantedWorth = WantedWorthOf(botAI, bot);
+    // NR12b: the banked sale stock's gain draws an auctioneer and the banker before it, only together (PlanTrip)
+    snapshot.BankStockWorth = known.bank.stockGain;
 
     bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
-    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
-    // The auction plan's worths (WA3b stock; WA4b wanted lines): an auctioneer joins the stops only for them
-    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth;
+    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots || snapshot.BankStockWorth;
+    // The auction plan's worths (WA3b stock; WA4b wanted lines; NR12b banked stock): an auctioneer joins the stops only
+    // for them
+    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth || snapshot.BankStockWorth;
     std::shared_ptr<Planner::PlannerIndexes const> const indexes =
         Planner::IndexesReady() ? Planner::Indexes() : nullptr;
     if (!indexes || (!mail && !bank && !auction))

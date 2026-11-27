@@ -224,7 +224,11 @@ bool WriteMailEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, Visi
 
     MailKnowledge& known = botAI->bankMail.mail;
     if (last)
+    {
         known.seenCopper = last->seenAfter;
+        known.seenMails = SeenMailIds(*last);
+        known.uniqueMails = UniqueMailIds(*last);
+    }
     RefreshMailKnowledge(bot, known);
     bool const took = visit.itemsTaken > 0;
     visit = MailVisitData{};
@@ -331,7 +335,7 @@ bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
     if (!BeginVisit(botAI, VisitKind::Mail, &spot))
         return false;
     botAI->bankMail.mailData = MailVisitData{};
-    botAI->bankMail.mailData.options = BuildMailOptions();
+    botAI->bankMail.mailData.options = BuildMailOptions(botAI->bankMail.mail.uniqueMails);
     return true;
 }
 

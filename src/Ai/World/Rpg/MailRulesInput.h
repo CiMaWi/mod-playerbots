@@ -24,8 +24,8 @@ namespace BankMail
 std::vector<MailIn> BuildMailIn(PlayerbotAI* botAI);
 // Free slots of the backpack and the plain bags, and the room on partial stacks there
 BagSpace BuildBagSpace(Player* bot);
-// The configured mails per visit; no refusals
-MailOptions BuildMailOptions();
+// The configured mails per visit and the mails remembered as left for unique copies; no refusals
+MailOptions BuildMailOptions(std::vector<uint32_t> const& uniqueMails);
 }  // namespace BankMail
 
 #endif

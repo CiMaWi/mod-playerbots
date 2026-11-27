@@ -47,7 +47,9 @@ inline BotBankMail AfterReset(BotBankMail const& before)
 // Mail list reads (Player::GetMails) happen only on the bot's own map thread inside its AI update or on the world
 // thread; never on a planner worker, never for another bot from a map thread, and no Mail* is kept past the call.
 uint16 CountWaitingMail(Player const* bot);
-void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail);
+// The units waiting per item: every mail not deleted, expired or cash on delivery, delivered or not (a won lot is paid)
+void ReadMailUnits(Player* bot, MailKnowledge& mail);
+void RefreshMailKnowledge(Player* bot, MailKnowledge& mail);
 
 // The watch's facts about a visit to a spot on mapId that started at startedMs
 VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32 limitMs);

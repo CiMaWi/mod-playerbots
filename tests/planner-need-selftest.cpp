@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "AuctionBuyList.h"
+#include "BankMailTypes.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "NeedGoalBridge.h"
@@ -1250,6 +1251,36 @@ void PathLive(UpkeepIndex const& index, std::string const& root)
 }
 }  // namespace
 
+// Needs and errands NR.7: units waiting in the mail count as had, for the path's line and the use line
+void WaitingInMail()
+{
+    constexpr std::uint32_t ITEM = 2589;
+    std::vector<BankMail::WaitingUnits> waiting;
+    BankMail::AddUnits(waiting, ITEM, 12);
+    BankMail::AddUnits(waiting, ITEM, 8);
+    std::vector<SkillPath::Material> materials(1);
+    materials[0].item = ITEM;
+    materials[0].used = 20;
+    materials[0].wanted = 20;
+    materials[0].copperEach = 100;
+    materials[0].source = static_cast<std::uint8_t>(Materials::Kind::Auction);
+    auto const none = [](std::uint32_t) { return 0u; };
+    auto const held = [&waiting](std::uint32_t item) { return BankMail::UnitsOf(waiting, item); };
+    AuctionRules::CopperWeight const atReserve{1.0f, 1.0f};
+    auto const pathLines = [&](auto const& heldNow)
+    {
+        return AuctionRules::BuyList(
+            AuctionRules::PathLines(materials, materials[0].source, atReserve, heldNow, none, none));
+    };
+    Check(pathLines(none).size() == 1, "control: without the mail the path line asks for the 20 units");
+    Check(pathLines(held).empty(), "a path line of 20 units with 20 in the mail asks for 0");
+    auto const useLines = [&](std::uint32_t units)
+    { return AuctionRules::BuyList({AuctionRules::UseLine(ITEM, units, 100, 0, 0, atReserve)}); };
+    Check(useLines(20).size() == 1, "control: without the mail the use line asks for the 20 units");
+    Check(useLines(BankMail::UnitsLacking(20, BankMail::UnitsOf(waiting, ITEM))).empty(),
+          "a use line of 20 units with 20 in the mail asks for 0");
+}
+
 int main(int argc, char** argv)
 {
     std::string root;
@@ -1268,6 +1299,7 @@ int main(int argc, char** argv)
     ReserveCovered(index);
     FrugalSavesEarlier(index);
     SickRests(index);
+    WaitingInMail();
     InvariantSearch(index, seed, count);
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

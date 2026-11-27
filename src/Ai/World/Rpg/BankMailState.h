@@ -30,9 +30,14 @@ struct MailKnowledge
     uint16 waiting{0};     // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
     uint32 seenCopper{0};  // worth the bot saw in mail it read and left in the box; in memory only
     // Copper of delivered auction house mail not taken yet (a sale's proceeds, a bid back): the house's notice told
-    // the bot of it (auction WA3b; RefreshMailKnowledge counts it from the mail list)
+    // the bot of it (auction WA3b; RefreshMailKnowledge counts it from the mail list), the seen mails left out
     uint32 expectedCopper{0};
     uint32 refreshedMs{0};  // when waiting was last counted; 0 = never
+    // Needs and errands NR.7, all in memory: the units waiting per item (ReadMailUnits), the mails whose leftovers
+    // seenCopper holds and the mails left only for unique copies (skipped while the bot holds them)
+    std::vector<WaitingUnits> units;
+    std::vector<uint32> seenMails;
+    std::vector<uint32> uniqueMails;
 };
 
 // An item the bot keeps in its bank for a later level
@@ -51,6 +56,7 @@ struct BankKnowledge
     CarriedKeeps carried;        // the bag items it keeps for a later level, for the item usage (RefreshCarriedKeeps)
     uint16 freeSlots{0};         // free bank slots: the 28 item slots and the plain bank bags' slots (WR17)
     uint16 slots{0};             // the bank's 28 item slots and its plain bags' slots
+    uint32 stockGain{0};         // NR12b: the banked sale stock's listing worth above a vendor's payout, copper
     bool built{false};           // set at login (BuildBankKnowledge)
 };
 
@@ -84,8 +90,9 @@ struct BankVisitData
     uint32 deposited{0};
     uint32 withdrawn{0};
     std::vector<SpaceAnswer>
-        space;              // professions WR17: the bank-space steps taken, then the decision that stopped them
-    bool spaceDone{false};  // the bank-space rule has nothing more to do on this visit
+        space;                // professions WR17: the bank-space steps taken, then the decision that stopped them
+    bool spaceDone{false};    // the bank-space rule has nothing more to do on this visit
+    bool auctionNext{false};  // NR12b: an auction errand of the trip follows (KeepBotIn::auctionNext)
 };
 
 // The craft's own data of a craft visit (CraftVisit.h, professions WR7; the lifecycle is BotBankMail::visit): one
