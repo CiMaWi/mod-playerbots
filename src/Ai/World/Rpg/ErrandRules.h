@@ -792,7 +792,7 @@ struct Refusal
 {
     ErrandOffer Offer;
     char const* Reason = "";  // detour_not_worth, detour_cap, too_far, no_stop; place_refused (KeepUnrefusedErrands)
-    float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth)
+    float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth, detour_cap)
     float WalkMinutes = 0.0f;
 };
 
@@ -1214,18 +1214,35 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
     rideAlong();
     stockJoin();
     std::size_t detours = 0;
-    while (detours < MAX_DETOUR_STOPS)
+    // The pending offers of a detour that pays but finds no slot left under the cap, as the last round saw them
+    std::vector<bool> capped;
+    for (;;)
     {
+        capped.assign(offers.size(), false);
         bool found = false;
         float bestGain = 0.0f;
         std::size_t bestCandidate = 0;
         std::size_t bestIndex = 0;
         float bestMinutes = 0.0f;
         StockPair bestPair;
-        auto const consider =
-            [&](std::size_t c, std::size_t index, float minutes, float worth, float cost, StockPair const& pair)
+        bool const rankPending = rank < offers.size() && !done[rank];
+        auto const consider = [&](std::size_t c, std::size_t index, float minutes, float worth, float cost,
+                                  StockPair const& pair, bool withStock)
         {
-            if (!(worth > cost) || (found && !(worth - cost > bestGain)))
+            if (!(worth > cost))
+                return;
+            if (detours + (pair.Banker ? 2 : 1) > MAX_DETOUR_STOPS)
+            {
+                for (std::size_t i = 0; i < offers.size(); ++i)
+                {
+                    bool const takes =
+                        i == stock ? withStock : StopTakes(candidates[c], offers[i]) && !(i == mount && rankPending);
+                    if (!done[i] && takes)
+                        capped[i] = true;
+                }
+                return;
+            }
+            if (found && !(worth - cost > bestGain))
                 return;
 
             found = true;
@@ -1235,7 +1252,6 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             bestMinutes = minutes;
             bestPair = pair;
         };
-        bool const rankPending = rank < offers.size() && !done[rank];
         bool const stockPending = stock < offers.size() && !done[stock];
         std::size_t const auctionStop = auctionAt(plan.Stops);
         for (std::size_t c = 0; c < candidates.size(); ++c)
@@ -1257,7 +1273,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
                 WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
             bool const inReach = minutes <= ERRAND_MAX_WALK_MINUTES;
             if (takes && inReach)
-                consider(c, index, minutes, worth, DetourCost(request.Rates, minutes), StockPair());
+                consider(c, index, minutes, worth, DetourCost(request.Rates, minutes), StockPair(), false);
             if (!stockPending)
                 continue;
 
@@ -1266,16 +1282,15 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             if (inReach && auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction]))
             {
                 StockPair const pair = pairWith(c, index, minutes);
-                if (pair.Found && (!pair.Banker ||
-                                   (pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES && detours + 2 <= MAX_DETOUR_STOPS)))
-                    consider(c, index, minutes, withStock, pair.Cost, pair);
+                if (pair.Found && (!pair.Banker || pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES))
+                    consider(c, index, minutes, withStock, pair.Cost, pair, true);
             }
             // A banker in front of the trip's auction stop
             StockInsert front;
             if (auctionStop < plan.Stops.size() && inFront(plan.Stops, auctionStop, c, c + 1, front) &&
                 front.Minutes <= ERRAND_MAX_WALK_MINUTES)
                 consider(c, front.Index, front.Minutes, withStock, DetourCost(request.Rates, front.Minutes),
-                         StockPair());
+                         StockPair(), true);
         }
         if (!found)
             break;
@@ -1360,9 +1375,9 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             }
             reachable = true;
         }
-        // Worth above its cheapest detour but no detour left under the cap: detour_cap; else the detour is not worth it
+        // detour_cap only where the cap alone held a paying detour back
         if (reachable)
-            refusal.Reason = refusal.Offer.WorthCopper > refusal.CostCopper ? "detour_cap" : "detour_not_worth";
+            refusal.Reason = capped[i] || (paired && capped[stock]) ? "detour_cap" : "detour_not_worth";
         plan.Refused.push_back(refusal);
     }
     RankBeforeMount(plan.Stops);

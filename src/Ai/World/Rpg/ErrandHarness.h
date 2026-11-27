@@ -223,6 +223,21 @@ inline void DetourCap(std::vector<Check>& checks)
                           detourCount(cheap) == 3;
     Add(checks, "detour cap: a fourth turn-in worth below its detour, with three detours taken, is detour_not_worth",
         notWorth, Describe(cheap));
+
+    // A mount no trainer on the trip makes buyable is worth more than its detour with every slot free: not the cap
+    ErrandOffer rank;
+    rank.Kind = ErrandKind::Ride;
+    rank.Service = SERVICE_RIDING_TRAINER;
+    rank.WorthCopper = 5000.0f;
+    ErrandOffer mount = rank;
+    mount.Service = SERVICE_MOUNT_VENDOR;
+    TripPlan const gated =
+        PlanTrip(Request(bot), {{MOUNT_VENDOR, At(300.0f, 0.0f), SERVICE_MOUNT_VENDOR}}, {rank, mount});
+    bool const notCap = gated.Stops.empty() && gated.Refused.size() == 2 &&
+                        std::string(gated.Refused[1].Reason) == "detour_not_worth" &&
+                        gated.Refused[1].Offer.WorthCopper > gated.Refused[1].CostCopper;
+    Add(checks, "detour cap: a paying mount waiting for its rank, with detours free, is not detour_cap", notCap,
+        Describe(gated));
 }
 
 // An ordered bag is bought only when the money left after its price covers the visit's reserve: above, at and below
