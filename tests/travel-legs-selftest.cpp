@@ -1276,6 +1276,34 @@ void CheckSkyLanding()
               refused.waypoints.back().at.z == cave.z,
           "H4 cave landing, no node joined: not refused before the descent, or the planned landing changed");
 
+    // PA99: a cave's own nodes nearest the end lie under its rock; they are not open, cost no walk, and the mouth
+    // behind them is reached. The walk is asked of LANDING_NODES open nodes at most
+    std::vector<Point> covered;
+    for (int k = 0; k < 6; ++k)
+        covered.push_back({571, cave.x - 10.0f * static_cast<float>(k + 1), cave.y, cave.z});
+    std::vector<Point> behind = covered;
+    behind.push_back(mouth);
+    Trip mouthTrip = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(
+              mouthTrip, line, [&behind]() { return behind; }, open, PointsAt({mouth})) ==
+                  TravelLegs::LandingCheck::Node &&
+              mouthTrip.waypoints.back().at.x == mouth.x,
+          "H4 cave landing: the open mouth behind six covered nodes not reached");
+    std::vector<Point> ridges;
+    for (int k = 0; k < 6; ++k)
+        ridges.push_back({571, cave.x - 20.0f * static_cast<float>(k + 1), cave.y + 50.0f, 1100.0f});
+    std::uint32_t walked = 0;
+    Trip capped = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(
+              capped, line, [&ridges]() { return ridges; }, PointsAt(ridges),
+              [&walked](Point const&)
+              {
+                  ++walked;
+                  return false;
+              }) == TravelLegs::LandingCheck::Refused &&
+              walked == TravelLegs::LANDING_NODES,
+          "H4 cave landing: the walk not asked of the first LANDING_NODES open nodes only");
+
     Trip open_ = StartedTrip({leg}, 0);
     asked = 0;
     Check(TravelLegs::ChooseLanding(

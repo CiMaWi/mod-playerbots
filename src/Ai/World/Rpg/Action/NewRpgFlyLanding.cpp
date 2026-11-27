@@ -42,14 +42,15 @@ char const* LandingWord(TravelLegs::LandingCheck check, bool checked)
     return "unchecked";
 }
 
-// The graph nodes a landing may move to (pathing PA73): the LANDING_NODES nearest the end, within LANDING_NODE_YARDS
-// (2D), not read indoors (playerbots_travelnode.outdoor 0) and no wait stop, with a walk link (a walk leaves there);
-// nearest first. Their z is the node's; the check finds the ground below it
+// The graph nodes a landing may move to (pathing PA73, PA99): of the LANDING_NODE_SCAN nearest the end, those within
+// LANDING_NODE_YARDS (2D), not read indoors (playerbots_travelnode.outdoor 0) and no wait stop, with a walk link (a
+// walk leaves there); nearest first. Their z is the node's; the check finds the ground below it. ChooseLanding asks
+// the walk of LANDING_NODES open ones at most
 std::vector<TravelRoute::Point> LandingNodes(TravelRoute::Point const& end)
 {
     TravelGraph const& graph = TravelGraph::Instance();
     std::vector<TravelRoute::Point> nodes;
-    for (std::uint32_t const index : graph.NearestNodes(end.mapId, end.x, end.y, end.z, TravelLegs::LANDING_NODES))
+    for (std::uint32_t const index : graph.NearestNodes(end.mapId, end.x, end.y, end.z, TravelLegs::LANDING_NODE_SCAN))
     {
         TravelGraphNode const& node = graph.GetNode(index);
         std::span<TravelGraphLink const> const links = graph.LinksOf(index);

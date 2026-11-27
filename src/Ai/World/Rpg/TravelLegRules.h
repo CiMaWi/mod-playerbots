@@ -63,8 +63,9 @@ constexpr float LANDING_CHECK_YARDS = 150.0f;  // the landing spot is checked fr
 constexpr float LANDING_SEARCH_YARDS = 60.0f;  // an indoor landing moves at most this far back along the flight
 constexpr float LANDING_STEP_YARDS = 4.0f;     // the outdoor search's step
 constexpr float LANDING_SKY_YARDS = 3.0f;      // a surface this far above a landing's floor covers it (OpenSky)
-constexpr std::size_t LANDING_NODES = 4;       // graph nodes nearest the end asked once the line has no landing
-constexpr float LANDING_NODE_YARDS = 300.0f;   // and only within this (2D), about one wide path call's reach
+constexpr std::size_t LANDING_NODES = 4;       // open graph nodes a walk is asked from once the line has no landing
+constexpr std::size_t LANDING_NODE_SCAN = 16;  // nodes nearest the end looked at for them (a cave's own nodes first)
+constexpr float LANDING_NODE_YARDS = 450.0f;   // and only within this (2D): a cave's mouth lies up to 390 yd out
 constexpr std::uint8_t FLY_MOUNT_TRIES = 3;    // real mount tries (NoteMountTry) before the takeoff fails
 constexpr std::uint32_t FLY_MOUNT_RETRY_MS = 5 * 1000;  // a mount cast is tried again after this
 constexpr float FLY_MIN_CLEARANCE_YARDS = 15.0f;        // the real-height check: at least this above the ground ahead
@@ -2760,7 +2761,9 @@ enum class LandingCheck : std::uint8_t
 // The landing rule (pathing PA73, G418): a fly leg lands under the open sky on floor a walk joins to its end. The
 // planned landing when it is open; else the line's joined open point (LandingIndex); else the first of nodes() (the
 // graph nodes nearest the end that a walk leaves, nearest first: the glue's pick, asked only here) that is open and
-// joined; else refused. The refusal and the moves happen before the descent, so the bot never comes down under a roof
+// joined, the walk asked of the first LANDING_NODES open ones only (PA99: a cave's own nodes under its rock, nearest
+// the end, are not open and cost no walk; before, they filled the four nodes asked and the mouth was never reached);
+// else refused. The refusal and the moves happen before the descent, so the bot never comes down under a roof
 template <class Nodes, class Open, class Joined>
 LandingCheck ChooseLanding(Trip& trip, std::vector<Point> const& line, Nodes const& nodes, Open const& open,
                            Joined const& joined)
@@ -2771,9 +2774,16 @@ LandingCheck ChooseLanding(Trip& trip, std::vector<Point> const& line, Nodes con
         Point const landing = line.empty() || *index + 1 == line.size() ? planned : line[*index];
         return MoveLanding(trip, landing) ? LandingCheck::Moved : LandingCheck::Kept;
     }
+    std::size_t walks = 0;
     for (Point const& node : nodes())
-        if (open(node) && joined(node))
+    {
+        if (!open(node))
+            continue;
+        if (joined(node))
             return MoveLanding(trip, node) ? LandingCheck::Node : LandingCheck::Kept;
+        if (++walks >= LANDING_NODES)
+            break;
+    }
     trip.landingChecked = true;
     return LandingCheck::Refused;
 }
