@@ -62,3 +62,5 @@ local.properties
 # (wow-bots hub, .claude/docs/server-tools.md, Travel graph)
 #
 /data/sql/playerbots/updates/*_playerbots_travelnode*_merged-*.sql
+# The known danger table's generated rows (awareness; the hub's tools/awareness/danger-build.js)
+/data/sql/playerbots/updates/*_playerbots_known_danger_rows.sql

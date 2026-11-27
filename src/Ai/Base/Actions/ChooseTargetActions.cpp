@@ -29,6 +29,10 @@ bool AttackEnemyPlayerAction::isUseful()
 
 bool AttackEnemyPlayerAction::NoteStart(Unit* target)
 {
+    // On a normal realm a pick begins no fight (AW44): refused before the entering row
+    if (!WorldPvp::MayTake(botAI, target))
+        return false;
+
     // World PvP (WP39): a rule bot makes its pick here, after every refusal, on an enemy it is not in combat with
     // (being attacked costs nothing): the entering row and, in the start-cost share, the cost. A refused note is no
     // attack

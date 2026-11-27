@@ -789,6 +789,8 @@ bool RecoveringTrigger::IsActive()
            !(facts.sick && WorldTravel::SickGoalRuns(botAI));
 }
 
+bool WayDangerTrigger::IsActive() { return Awareness::WayJudgeDue(botAI); }
+
 bool IsFallingTrigger::IsActive() { return bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING); }
 
 bool IsFallingFarTrigger::IsActive() { return bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING_FAR); }

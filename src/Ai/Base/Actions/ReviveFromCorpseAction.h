@@ -51,4 +51,14 @@ public:
     bool isUseful() override;
 };
 
+// AW37b: judges the way of the route the bot's trip was given (awareness INTERFACE.md §4.8): a trip of its own with no
+// safe way is ended and its goal written to the record. Asked by the trigger `way danger`, once per route
+class WayDangerAction : public Action
+{
+public:
+    WayDangerAction(PlayerbotAI* botAI) : Action(botAI, "way danger") {}
+
+    bool Execute(Event event) override;
+};
+
 #endif
