@@ -8,6 +8,7 @@
 #define _PLAYERBOT_SKILLPATHBRIDGE_H
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -322,6 +323,9 @@ struct Computed
 {
     UpkeepNeeds::NeedList needs;
     SkillPath::Path path;
+    // The parts' microseconds, for their PerfMonitor rows: both needs lists, and the weigh with the second choice
+    std::uint64_t needsMicros{0};
+    std::uint64_t weighMicros{0};
 };
 
 inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep,
@@ -329,13 +333,21 @@ inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& up
                         SkillPath::PathWorld const& world, std::vector<ZoneBracket> const& zones,
                         std::vector<std::uint32_t> const& categories)
 {
+    using Clock = std::chrono::steady_clock;
+    auto const micros = [](Clock::time_point from, Clock::time_point to)
+    { return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count()); };
     UpkeepNeeds::NeedRates const base = WithoutPath(rates);
     Computed computed;
+    Clock::time_point const started = Clock::now();
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, base);
+    Clock::time_point const needed = Clock::now();
     SkillPath::PathBot const bot = BotOf(snapshot, inputs, computed.needs, zones, categories);
     computed.path = SkillPath::Weigh(bot, world);
     computed.path.second = SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world);
+    Clock::time_point const weighed = Clock::now();
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithPath(base, computed.path));
+    computed.needsMicros = micros(started, needed) + micros(weighed, Clock::now());
+    computed.weighMicros = micros(needed, weighed);
     return computed;
 }
 

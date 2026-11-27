@@ -48,8 +48,8 @@ private:
     // The cast in flight: the bite clicked, the miss or the refusal counted. True while it waits
     bool Watch(NewRpgInfo::DoFish& data);
     void Finish(char const* word);
-    // A test bot's trace of the branch a tick waits in, one "[Probe]" line at each change
-    void Trace(NewRpgInfo::DoFish const& data, char const* where);
+    // Keeps the branch a tick waits in (the deadline's trace); a test bot's trace, one "[Probe]" line at each change
+    void Trace(NewRpgInfo::DoFish& data, char const* where);
 
     char const* traced = nullptr;
 };

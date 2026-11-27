@@ -73,11 +73,13 @@ enum class Choice : std::uint8_t
     Keep,
     Skip,
     Disenchant,
-    Estimate  // WR25a: a circuit's or fishing trip's plan, written beside its start row
+    Estimate,  // WR25a: a circuit's or fishing trip's plan, written beside its start row
+    TimedOut   // WPC8: the trace of a stop written off timed_out at a live node, written beside its stop row
 };
-constexpr std::size_t CHOICE_COUNT = 11;
-constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {
-    "learn", "rank", "recipe", "tool", "craft", "gather", "fish", "keep", "skip", "disenchant", "estimate"};
+constexpr std::size_t CHOICE_COUNT = 12;
+constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"learn", "rank",       "recipe",   "tool",
+                                                                     "craft", "gather",     "fish",     "keep",
+                                                                     "skip",  "disenchant", "estimate", "timed_out"};
 
 enum class Reason : std::uint8_t
 {
