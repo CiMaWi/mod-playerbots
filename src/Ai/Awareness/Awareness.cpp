@@ -36,6 +36,7 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"
+#include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
 #include "PerfMonitor.h"
@@ -52,12 +53,14 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelGraph.h"
+#include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "TravelPlaces.h"
 #include "UpkeepRules.h"
 #include "Util.h"
 #include "WaypointMgr.h"
 #include "World.h"
+#include "WorldLog.h"
 #include "WorldSession.h"
 
 namespace Awareness
@@ -2562,6 +2565,72 @@ DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRout
     std::vector<std::uint32_t> const walks =
         graph.IsReady() ? DangerRules::WalkLinksOf(graph, legs) : std::vector<std::uint32_t>{};
     return DangerRules::WayDanger(*known, walks, PlaceOf(start), PlaceOf(goal), SideIndex(side), level);
+}
+
+bool WayJudgeDue(PlayerbotAI* botAI)
+{
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    if (!trip)
+        return false;
+    DangerRules::JudgedPair const last = botAI->awareness ? botAI->awareness->judged : DangerRules::JudgedPair{};
+    return DangerRules::WayDue(true, trip->route.waiting, !trip->trip.legs.empty(), trip->tripId, trip->route.requestId,
+                               last);
+}
+
+void JudgeTripWay(PlayerbotAI* botAI)
+{
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    if (!trip || trip->trip.legs.empty())
+        return;
+    std::unique_ptr<Store>& own = botAI->awareness;
+    if (!own)
+        own = std::make_unique<Store>();
+    own->judged = {trip->tripId, trip->route.requestId};
+    // `aw term off` (a lab's walk test) judges nothing: the route was searched without the term
+    if (!DangerRules::TermOn())
+        return;
+    Player* const bot = botAI->GetBot();
+    TravelRoute::Point const goal{trip->dest.GetMapId(), trip->dest.GetPositionX(), trip->dest.GetPositionY(),
+                                  trip->dest.GetPositionZ()};
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    DangerRules::DangerPart const part =
+        WayOf(trip->trip.legs, trip->trip.legs.front().from, goal, bot->GetTeamId(), level);
+    // Spared: a GM's order (`route go` names its place); the leaving's trip joins it with AW38b
+    DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, !trip->place.empty());
+    char const* const choice = DangerRules::WayChoice(verdict);
+    if (!choice)
+        return;
+    std::uint32_t const tripId = trip->tripId;
+    char const* const goalWord = RpgStatus::TripGoal(botAI, trip->bindInn);
+    DangerRules::WayEffects const effects = DangerRules::EffectsOf(verdict);
+    for (std::uint8_t i = 0; i < effects.count; ++i)
+        switch (effects.order[i])
+        {
+            case DangerRules::WayEffect::Record:
+            {
+                // W2: before the end, so the next search and pick for this goal read the entry
+                FailedAttempts::Failure failure;
+                failure.goal = TravelLegs::FailurePoint(goal);
+                failure.spot = TravelLegs::FailurePoint(
+                    {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()});
+                botAI->GetTravel().NoteFailure(DangerRules::RECORD_WORD, failure, tripId);
+                break;
+            }
+            case DangerRules::WayEffect::Row:
+                // The value is the goal's ground (0 quiet, 1 passable, 2 deadly)
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Way, choice, goalWord,
+                                   static_cast<float>(part.goal),
+                                   {{"deadly_yd", part.deadlyYards},
+                                    {"deadly_links", static_cast<float>(part.deadlyLinks)},
+                                    {"fights", static_cast<float>(part.fights)}},
+                                   tripId);
+                break;
+            case DangerRules::WayEffect::End:
+                // Last: the end releases the trip
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned,
+                               {.source = DangerRules::END_SOURCE, .text = "no safe way"});
+                return;
+        }
 }
 
 bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)

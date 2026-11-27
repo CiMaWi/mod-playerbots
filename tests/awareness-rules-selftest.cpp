@@ -5890,10 +5890,6 @@ void TestWayRules()
           "way rules: §4.5's table (a deadly link, a way out, a deadly goal, a clear way)");
 }
 
-// AW37a2 puts the term into the search (the one statement in RouteRules.h LinkSeconds) and sets this true. Until then
-// the checks of the search's own answer with a term (R1 and R4 on the search) wait and the reference's run; the probe
-// fails as soon as the search prices the term while this is false
-constexpr bool SEAM_IN = true;
 constexpr float RUN_SPEED = 7.0f;  // the snapshot's default run speed, yd/s
 
 // A grid of nodes 40 yd apart on map 0, a neighbour linked both ways by a walk link at `percent`, a third of the links
@@ -6097,8 +6093,7 @@ void TestWayTerm()
         Check(noStore && termOff && otherGraph,
               "L4: no store, a store without links (aw term off), another graph's count, index or side: term 0");
         bool const searchPrices = plain.ok && priced.ok && priced.totalSeconds > plain.totalSeconds + 1000.0f;
-        Check(searchPrices == SEAM_IN, SEAM_IN ? "seam: the search prices the term (RouteRules.h LinkSeconds)"
-                                               : "seam: the search prices no term before AW37a2's statement");
+        Check(searchPrices, "seam: the search prices the term (RouteRules.h LinkSeconds)");
 
         // L6: under Unpriced every term this thread asks is 0, another thread asking meanwhile gets the term, a nested
         // scope restores the outer one, and the term is back when the scope ends
@@ -6147,7 +6142,7 @@ void TestWayTerm()
     constexpr int CASES = 300;
     constexpr int PAIRS = 4;
     std::printf("AW37a ways: %d generated graphs, %d ways each, seed %u%s\n", CASES, PAIRS, seed,
-                SEAM_IN ? "" : " (the search's priced answer waits for AW37a2's statement)");
+                "");
     int graphs = 0, fold = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0, r7 = 0, r8 = 0, r9 = 0, walks = 0;
     int deadlyAnswers = 0, refused = 0, outOf = 0, clear = 0, deadlyGoals = 0, risen = 0, ways = 0;
     for (int i = 0; i < CASES; ++i)
@@ -6219,7 +6214,7 @@ void TestWayTerm()
             // R1: no way is cheaper with the term; the search answers as the plain Dijkstra over the same costs
             if (!priced.ok || priced.seconds + 1e-6 < base.seconds)
                 Count(r1, "R1 cheaper with the term", seed, i);
-            if (SEAM_IN && (!with.ok || !Near(with.totalSeconds, priced.seconds)))
+            if (!with.ok || !Near(with.totalSeconds, priced.seconds))
                 Count(r1, "R1 the search against the reference", seed, i);
             // R2: with no store and with the term off, today's answer; the term closes no way
             if (!none.ok || !Near(none.totalSeconds, base.seconds) || !termOff.ok ||
@@ -6246,7 +6241,7 @@ void TestWayTerm()
             if (!Near(priced.seconds, BaseSeconds(graph, priced.links) + DangerRules::FIGHT_SECONDS * part.fights +
                                           part.penaltySeconds))
                 Count(r4, "R4 the reference's seconds", seed, i);
-            if (SEAM_IN && with.ok)
+            if (with.ok)
             {
                 std::vector<std::uint32_t> const links = DangerRules::WalkLinksOf(graph, with.legs);
                 DangerRules::DangerPart const searched =
@@ -6461,6 +6456,123 @@ void TestRowDue()
     Check(RowDue(1000, 1000 + TARGET_ROW_SECONDS) && RowDue(1000, 5000), "row due: due from the minute on");
 }
 
+// AW37b, the trigger `way danger` (INTERFACE.md §4.8). W1: over generated trips and their routes (a held trip, its
+// request waited for or applied, replans with a new request id, a next trip), a route applied is judged exactly once
+// and a trip with no new route is never judged again. W2: a refusal's effects run record, row, end, and after the
+// record's note (under RECORD_WORD, the cause table's goal row) the record refuses the goal's place as the status
+// ends. W3: a spared trip and a way out of deadly ground to a goal that is not deadly are never ended
+void TestWayTrigger()
+{
+    using DangerRules::Ground;
+    using DangerRules::WayEffect;
+    using DangerRules::WayVerdict;
+    Generator g;
+    g.state = SEED ^ 0x37b;
+    int w1 = 0;
+    int applied = 0;
+    constexpr int TRIPS = 400;
+    DangerRules::JudgedPair last;
+    std::uint32_t tripId = 0;
+    std::uint32_t requestId = 0;
+    for (int t = 0; t < TRIPS; ++t)
+    {
+        ++tripId;
+        int const routes = 1 + static_cast<int>(g.Next() % 3);  // the first route and its replans
+        for (int r = 0; r < routes; ++r)
+        {
+            ++requestId;
+            int judged = 0;
+            bool heldApplied = false;
+            int const ticks = 2 + static_cast<int>(g.Next() % 8);
+            int const waitTicks = static_cast<int>(g.Next() % 3);
+            for (int k = 0; k < ticks; ++k)
+            {
+                bool const held = g.Next() % 10 != 0;
+                bool const waiting = k < waitTicks;
+                bool const hasLegs = !waiting;
+                heldApplied = heldApplied || (held && !waiting);
+                if (DangerRules::WayDue(held, waiting, hasLegs, tripId, requestId, last))
+                {
+                    ++judged;
+                    w1 += waiting || !hasLegs || !held;
+                    last = {tripId, requestId};
+                }
+            }
+            w1 += judged != (heldApplied ? 1 : 0);
+            applied += heldApplied;
+        }
+    }
+    // a fixed run: the first applied tick judges, the same pair never again, a replan's new request again
+    DangerRules::JudgedPair fixed;
+    bool const first = DangerRules::WayDue(true, false, true, 5, 9, fixed);
+    fixed = {5, 9};
+    bool const again = DangerRules::WayDue(true, false, true, 5, 9, fixed);
+    bool const replan = DangerRules::WayDue(true, false, true, 5, 10, fixed);
+    bool const waiting = DangerRules::WayDue(true, true, false, 5, 10, fixed);
+    bool const none = DangerRules::WayDue(false, false, true, 6, 11, fixed);
+    bool const noLegs = DangerRules::WayDue(true, false, false, 6, 11, fixed);
+    Check(!w1 && applied > TRIPS && first && !again && replan && !waiting && !none && !noLegs,
+          "W1: a route applied to a held trip is judged once; no new route, no judgement");
+
+    // W2: the order of the effects per verdict, and the record's answer at the end
+    DangerRules::WayEffects const refused = DangerRules::EffectsOf(WayVerdict::Refused);
+    DangerRules::WayEffects const least = DangerRules::EffectsOf(WayVerdict::LeastDeadly);
+    DangerRules::WayEffects const clear = DangerRules::EffectsOf(WayVerdict::Clear);
+    bool const order = refused.count == 3 && refused.order[0] == WayEffect::Record &&
+                       refused.order[1] == WayEffect::Row && refused.order[2] == WayEffect::End && least.count == 1 &&
+                       least.order[0] == WayEffect::Row && clear.count == 0;
+    bool const words = !std::strcmp(DangerRules::WayChoice(WayVerdict::Refused), "refused") &&
+                       !std::strcmp(DangerRules::WayChoice(WayVerdict::LeastDeadly), "least_deadly") &&
+                       DangerRules::WayChoice(WayVerdict::Clear) == nullptr &&
+                       !std::strcmp(DangerRules::END_SOURCE, "abort:danger");
+    FailedAttempts::CauseRow const* const row = FailedAttempts::FindCause(DangerRules::RECORD_WORD);
+    int w2 = 0;
+    for (int i = 0; i < 200; ++i)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.goal = {0, g.Range(-9000.0f, 3000.0f), g.Range(-6000.0f, 2000.0f), g.Range(0.0f, 150.0f)};
+        failure.spot = {0, failure.goal.X + g.Range(300.0f, 3000.0f), failure.goal.Y, failure.goal.Z};
+        std::uint32_t const now = 1000 + g.Next() % 100000;
+        bool refusedAtEnd = false;
+        bool openBefore = false;
+        for (std::uint8_t e = 0; e < refused.count; ++e)
+            if (refused.order[e] == WayEffect::Record)
+                FailedAttempts::NoteFailure(record, DangerRules::RECORD_WORD, failure, now, 600000);
+            else if (refused.order[e] == WayEffect::End)
+                refusedAtEnd = FailedAttempts::IsPlaceRefused(record, failure.goal, now + 50) == "trip_deaths";
+            else
+                openBefore = FailedAttempts::IsPlaceRefused(record, failure.goal, now).empty();
+        w2 += !refusedAtEnd || openBefore;
+    }
+    Check(order && words, "W2: a refusal writes the record, then its row, then ends; a least deadly way only a row");
+    Check(row && row->target == FailedAttempts::Target::Goal && !w2,
+          "W2: after a refusal's note the record refuses the goal's place under trip_deaths");
+
+    // W3: generated parts; a spared trip, or a way out of deadly ground to a goal that is not deadly, has no end,
+    // and every refused way of the bot's own trip ends
+    int w3 = 0;
+    for (int i = 0; i < 2000; ++i)
+    {
+        DangerRules::DangerPart part;
+        part.start = static_cast<Ground>(g.Next() % 3);
+        part.goal = static_cast<Ground>(g.Next() % 3);
+        part.deadlyLinks = static_cast<std::uint16_t>(g.Next() % 4);
+        part.deadlyYards = part.deadlyLinks ? g.Range(10.0f, 3000.0f) : 0.0f;
+        for (bool const spared : {false, true})
+        {
+            DangerRules::WayEffects const effects = DangerRules::EffectsOf(DangerRules::JudgeWay(part, spared));
+            bool ends = false;
+            for (std::uint8_t e = 0; e < effects.count; ++e)
+                ends = ends || effects.order[e] == WayEffect::End;
+            bool const out = part.start == Ground::Deadly && part.goal != Ground::Deadly;
+            w3 += ends && (spared || out);
+            w3 += !ends && !spared && DangerRules::Refuses(part);
+        }
+    }
+    Check(!w3, "W3: a GM's order and a way out of deadly ground to a goal not deadly are never ended");
+}
+
 int main(int argc, char** argv)
 {
     TestValues();
@@ -6507,6 +6619,7 @@ int main(int argc, char** argv)
     TestWayRules();
     TestWayTerm();
     TestShortcutGenerated();
+    TestWayTrigger();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

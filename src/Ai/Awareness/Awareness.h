@@ -99,6 +99,8 @@ struct Store
     std::unique_ptr<WalkCache> walks;
     // AW8: the return from death under way
     DeadMemo dead;
+    // AW37b: the last route the trigger `way danger` judged (DangerRules::WayDue)
+    DangerRules::JudgedPair judged;
 };
 
 // What is around the bot now, both sides; rebuilt first when it is older than its age (AwarenessRules::IsFresh)
@@ -199,6 +201,13 @@ DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRout
 // and for an order; the legs and their deadly links (yards and deadly yards) in Playerbots.log. With expect= a
 // FIXTURE check line. No reply word is "refused" or "error": the scenario runner fails a bot on them
 bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
+// The trigger `way danger` (AW37b, INTERFACE.md §4.8): the bot's held trip has a route applied that was not judged
+// yet (DangerRules::WayDue). Two integer compares while no new route came; it makes no store
+bool WayJudgeDue(PlayerbotAI* botAI);
+// Its action: keeps the pair, then (the term on) judges the way of the trip's legs for the bot's side and level. A
+// refused way writes its goal to the record (DangerRules::RECORD_WORD), the `way` row and ends the status
+// (abort:danger); a least deadly one writes the row. A GM's order (`route go`: its place is named) is spared
+void JudgeTripWay(PlayerbotAI* botAI);
 // `playerbots aw ways <alliance|horde> <level> | all`: from each capital of the side to every hub of the zones a bot
 // of that level plays, for a bot of the capital's race with the flight points the factory gives its level: the hubs
 // with no safe way (each deadly link with its yards, deadly yards and deciding facts), the zones cut off (one of the

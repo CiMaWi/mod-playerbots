@@ -772,6 +772,67 @@ inline WayVerdict JudgeWay(DangerPart const& part, bool spared)
     return part.deadlyLinks > 0 ? WayVerdict::LeastDeadly : WayVerdict::Clear;
 }
 
+// The trigger `way danger` (AW37b, INTERFACE.md §4.8, W1-W3): the route a held trip was given is judged once. The
+// record's word for a refused goal is the trip's third death's (TravelLegs::TRIP_DEATHS_WORD; the cause table is
+// pathing's), the trip's abort source the status core writes as its Travel row
+inline constexpr char const* RECORD_WORD = "trip_deaths";
+inline constexpr char const* END_SOURCE = "abort:danger";
+
+// The last route judged: the trip's world-log id and its route request's id (request ids run on across trips)
+struct JudgedPair
+{
+    std::uint32_t trip = 0;
+    std::uint32_t request = 0;
+};
+
+// W1: a held trip whose route is no longer waited for and has legs, under another pair than the last judged
+inline bool WayDue(bool held, bool waiting, bool hasLegs, std::uint32_t tripId, std::uint32_t requestId,
+                   JudgedPair const& last)
+{
+    return held && !waiting && hasLegs && (tripId != last.trip || requestId != last.request);
+}
+
+// W2: what a verdict does, in its order: a refusal writes the goal to the record, then its row, then ends the status
+enum class WayEffect : std::uint8_t
+{
+    Record,
+    Row,
+    End
+};
+
+struct WayEffects
+{
+    std::array<WayEffect, 3> order{};
+    std::uint8_t count = 0;
+};
+
+inline WayEffects EffectsOf(WayVerdict verdict)
+{
+    switch (verdict)
+    {
+        case WayVerdict::Refused:
+            return {{WayEffect::Record, WayEffect::Row, WayEffect::End}, 3};
+        case WayVerdict::LeastDeadly:
+            return {{WayEffect::Row}, 1};
+        default:
+            return {};
+    }
+}
+
+// The `way` row's choice; null: no row
+inline char const* WayChoice(WayVerdict verdict)
+{
+    switch (verdict)
+    {
+        case WayVerdict::Refused:
+            return "refused";
+        case WayVerdict::LeastDeadly:
+            return "least_deadly";
+        default:
+            return nullptr;
+    }
+}
+
 // Reads the two tables once at the start (DangerLoad.cpp) and publishes the store; false logs why and refuses the start
 bool Load();
 // The fold (DangerLoad.cpp, AW37a): folds every walk link of the graph and publishes a new store with the links. The

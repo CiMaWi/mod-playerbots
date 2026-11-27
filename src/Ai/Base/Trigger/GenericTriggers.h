@@ -918,6 +918,16 @@ public:
     bool IsActive() override;
 };
 
+// AW37b: the bot's held trip has a route that was not judged by the known danger yet (awareness INTERFACE.md §4.8).
+// Constant time: the trip's two ids against the last judged pair
+class WayDangerTrigger : public Trigger
+{
+public:
+    WayDangerTrigger(PlayerbotAI* botAI) : Trigger(botAI, "way danger") {}
+
+    bool IsActive() override;
+};
+
 class IsFallingTrigger : public Trigger
 {
 public:
