@@ -53,6 +53,9 @@ void DropOwnTarget(Player& bot)
     context->GetValue<Unit*>("current target")->Set(nullptr);
     context->GetValue<GuidVector>("prioritized targets")->Reset();
     context->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
+    // a hunter's Auto Shot outlives its target, and the core's IsNonMeleeSpellCast(false) counts it: the bot would
+    // loot, use and equip nothing for the rest of the session
+    bot.InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
     bot.AttackStop();
     botAI->ChangeEngine(BOT_STATE_NON_COMBAT);
 }
