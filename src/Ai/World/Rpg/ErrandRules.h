@@ -1322,6 +1322,9 @@ enum class ErrandEndRow : uint8_t
     Sick    // errand_sick: resurrection sickness ended the trip; its minutes do not count
 };
 
+// An ordered bag is bought only when the money left after its price still covers the visit's upkeep reserve (NR21)
+inline bool BagBuyAllowed(uint64_t money, uint64_t price, uint64_t reserve) { return money >= price + reserve; }
+
 // Every end stamps the errand check; only a healthy trip with a visited stop adds its minutes to t
 inline ErrandEndRow ErrandEnd(SlotMeasure& measure, uint32_t nowMs, float minutes, bool visited, bool sick)
 {

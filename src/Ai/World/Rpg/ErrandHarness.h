@@ -225,6 +225,19 @@ inline void DetourCap(std::vector<Check>& checks)
         notWorth, Describe(cheap));
 }
 
+// An ordered bag is bought only when the money left after its price covers the visit's reserve: above, at and below
+inline void BagBuyReserve(std::vector<Check>& checks)
+{
+    constexpr uint64_t PRICE = 2000;
+    constexpr uint64_t RESERVE = 5000;
+    Add(checks, "bag: money above the price and the reserve buys the bag",
+        BagBuyAllowed(PRICE + RESERVE + 1, PRICE, RESERVE), "money " + std::to_string(PRICE + RESERVE + 1));
+    Add(checks, "bag: money exactly the price and the reserve buys the bag",
+        BagBuyAllowed(PRICE + RESERVE, PRICE, RESERVE), "money " + std::to_string(PRICE + RESERVE));
+    Add(checks, "bag: money one copper short of the price and the reserve is refused",
+        !BagBuyAllowed(PRICE + RESERVE - 1, PRICE, RESERVE), "money " + std::to_string(PRICE + RESERVE - 1));
+}
+
 // Two errands each worth less than the detour, worth more together: one stop does both (a sale and a turn-in whose
 // ender stands at the vendor, worth the detour less half the sale)
 inline void TwoAtOneStop(std::vector<Check>& checks)
@@ -1958,6 +1971,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     BagOnTheWay(checks);
     DetourRefused(checks);
     DetourCap(checks);
+    BagBuyReserve(checks);
     TwoAtOneStop(checks);
     SaleRuleKept(checks);
     GreyOnlyNoTrip(checks);
