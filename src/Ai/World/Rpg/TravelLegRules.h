@@ -62,6 +62,9 @@ constexpr float FLY_CLIMB_YARDS = 30.0f;       // the climb after the takeoff an
 constexpr float LANDING_CHECK_YARDS = 150.0f;  // the landing spot is checked from this close (2D; NeedsLandingCheck)
 constexpr float LANDING_SEARCH_YARDS = 60.0f;  // an indoor landing moves at most this far back along the flight
 constexpr float LANDING_STEP_YARDS = 4.0f;     // the outdoor search's step
+constexpr float LANDING_SKY_YARDS = 3.0f;      // a surface this far above a landing's floor covers it (OpenSky)
+constexpr std::size_t LANDING_NODES = 4;       // graph nodes nearest the end asked once the line has no landing
+constexpr float LANDING_NODE_YARDS = 300.0f;   // and only within this (2D), about one wide path call's reach
 constexpr std::uint8_t FLY_MOUNT_TRIES = 3;    // real mount tries (NoteMountTry) before the takeoff fails
 constexpr std::uint32_t FLY_MOUNT_RETRY_MS = 5 * 1000;  // a mount cast is tried again after this
 constexpr float FLY_MIN_CLEARANCE_YARDS = 15.0f;        // the real-height check: at least this above the ground ahead
@@ -2640,25 +2643,27 @@ inline bool CheckHeight(Trip& trip, std::vector<float> const& samples)
 // The landing spot's check (WU11b): a fly leg planned onto an indoor goal (an inn's floor) comes down on the roof
 // above it, more than LANDING_YARDS from the leg's end. Once per fly leg, on the descent within LANDING_CHECK_YARDS
 // (2D) of the landing, where the bot has the landing's grid loaded, the follower asks whether the landing lies under
-// the open sky (the flight map cannot tell: indoors is a WMO property)
+// the open sky (the flight map cannot tell: indoors is a WMO property). Every fly leg is checked once (pathing PA73,
+// G418), a leg of two waypoints (fewer than 3 planned points: no descent point) too
 inline bool NeedsLandingCheck(Trip const& trip, Point const& bot)
 {
     if (trip.landingChecked || trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Fly ||
-        trip.waypoints.size() < 3 || trip.next + 2 < trip.waypoints.size())
+        trip.waypoints.size() < 2 || trip.next + 2 < trip.waypoints.size())
         return false;
     Point const& landing = trip.waypoints.back().at;
     return bot.mapId == landing.mapId && std::hypot(bot.x - landing.x, bot.y - landing.y) <= LANDING_CHECK_YARDS;
 }
 
 // The points the check looks at: back from the landing towards the last flight point every LANDING_STEP_YARDS, at
-// most LANDING_SEARCH_YARDS, at the landing's height; the farthest first, the landing last
+// most LANDING_SEARCH_YARDS, at the landing's height; the farthest first, the landing last. A leg of two waypoints
+// runs back towards its takeoff
 inline std::vector<Point> LandingLine(Trip const& trip)
 {
     std::vector<Waypoint> const& points = trip.waypoints;
-    if (points.size() < 3)
+    if (points.size() < 2)
         return {};
     Point const& landing = points.back().at;
-    Point const& before = points[points.size() - 3].at;
+    Point const& before = points[points.size() >= 3 ? points.size() - 3 : 0].at;
     float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
     std::size_t const steps =
         gap > 0.0f ? static_cast<std::size_t>(std::min(gap, LANDING_SEARCH_YARDS) / LANDING_STEP_YARDS) : 0;
@@ -2674,31 +2679,33 @@ inline std::vector<Point> LandingLine(Trip const& trip)
     return line;
 }
 
-// outdoors(point) -> may a bot stand there under the open sky; joined(point) -> does the navmesh walk from there end
-// at the landing (the walk in's probe; pathing PA56, G356: a point back along the line read outdoors in a sealed
-// pocket or inside the rock under the landing). The landing (the line's last point) when it is outdoors or no point
-// is; else the outdoor point nearest to it that is joined, nearest first (joined asked of outdoor points only);
-// nullopt when outdoor points exist and none is joined: the fly leg does not come down there (ChooseLanding)
-template <class Outdoors, class Joined>
-std::optional<std::size_t> LandingIndex(std::vector<Point> const& line, Outdoors const& outdoors, Joined const& joined)
+// Open sky over a landing (pathing PA73, G418): its floor (the ground found below it), the terrain's height there and
+// the highest surface found searching down from the descent's height; terrain or a roof more than LANDING_SKY_YARDS
+// above the floor covers it (a cave under a hill, ice, a hall). The terrain status alone is no such test: a cave's
+// floor under its rock can read `outdoors`, and a descent onto it loses the mount in the volume over it and falls
+// onto the rock. Arches and canopies with collision cover; a terrain hole reads the terrain's height across it
+inline bool OpenSky(float floorZ, float terrainZ, float coverZ)
+{
+    return floorZ > FLY_NO_GROUND && terrainZ <= floorZ + LANDING_SKY_YARDS && coverZ <= floorZ + LANDING_SKY_YARDS;
+}
+
+// open(point) -> may a bot stand there outdoors under the open sky (OpenSky); joined(point) -> does the navmesh walk
+// from there end at the landing (the walk in's probe; pathing PA56, G356: a point back along the line read outdoors in
+// a sealed pocket or inside the rock under the landing). The landing (the line's last point) when it is open; else the
+// open point nearest to it that is joined, nearest first (joined asked of open points only); nullopt when none is:
+// no landing on the line (PA73: before, a line without any open point kept the planned landing under its roof)
+template <class Open, class Joined>
+std::optional<std::size_t> LandingIndex(std::vector<Point> const& line, Open const& open, Joined const& joined)
 {
     if (line.empty())
         return std::size_t{0};
     std::size_t const landing = line.size() - 1;
-    if (outdoors(line[landing]))
+    if (open(line[landing]))
         return landing;
-    bool outdoorSeen = false;
     for (std::size_t k = landing; k-- > 0;)
-    {
-        if (!outdoors(line[k]))
-            continue;
-        outdoorSeen = true;
-        if (joined(line[k]))
+        if (open(line[k]) && joined(line[k]))
             return k;
-    }
-    if (outdoorSeen)
-        return std::nullopt;
-    return landing;
+    return std::nullopt;
 }
 
 // Marks the check done. A landing more than SAME_POINT_YARDS from the planned one ends the fly leg there, with the
@@ -2706,18 +2713,22 @@ std::optional<std::size_t> LandingIndex(std::vector<Point> const& line, Outdoors
 inline bool MoveLanding(Trip& trip, Point const& landing)
 {
     trip.landingChecked = true;
-    if (trip.legIdx >= trip.legs.size() || trip.waypoints.size() < 3)
+    if (trip.legIdx >= trip.legs.size() || trip.waypoints.size() < 2)
         return false;
     Leg& fly = trip.legs[trip.legIdx];
     Point const planned = fly.to;
     if (fly.type != LegType::Fly || landing.mapId != planned.mapId || Distance(landing, planned) <= SAME_POINT_YARDS)
         return false;
     std::size_t const count = trip.waypoints.size();
-    Point const before = trip.waypoints[count - 3].at;
-    float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
-    float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
-    trip.waypoints[count - 2].at = {landing.mapId, landing.x + (before.x - landing.x) * share,
-                                    landing.y + (before.y - landing.y) * share, before.z};
+    // A leg of two waypoints has no descent point: it flies to its landing directly
+    if (count >= 3)
+    {
+        Point const before = trip.waypoints[count - 3].at;
+        float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
+        float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
+        trip.waypoints[count - 2].at = {landing.mapId, landing.x + (before.x - landing.x) * share,
+                                        landing.y + (before.y - landing.y) * share, before.z};
+    }
     trip.waypoints[count - 1].at = landing;
     fly.to = landing;
     if (!fly.flightPoints.empty())
@@ -2731,28 +2742,36 @@ inline bool MoveLanding(Trip& trip, Point const& landing)
     return true;
 }
 
-// The landing check's outcome (CheckLanding, NewRpgRoute.cpp): the planned landing kept, moved back along the line,
-// or refused: no outdoor point joined to it, the leg fails `landing` before its descent (the glue's LegFailed; the
-// record keys the leg) and the replan leaves that landing out
+// The landing check's outcome (CheckLanding, NewRpgFlyLanding.cpp): the planned landing kept (open sky), moved back
+// along the line, moved to a graph node (Node), or refused: the leg fails `landing` before its descent (the glue's
+// LegFailed; the record keys the leg) and the replan leaves that landing out
 enum class LandingCheck : std::uint8_t
 {
     Kept,
     Moved,
+    Node,
     Refused
 };
 
-template <class Outdoors, class Joined>
-LandingCheck ChooseLanding(Trip& trip, std::vector<Point> const& line, Outdoors const& outdoors, Joined const& joined)
+// The landing rule (pathing PA73, G418): a fly leg lands under the open sky on floor a walk joins to its end. The
+// planned landing when it is open; else the line's joined open point (LandingIndex); else the first of nodes() (the
+// graph nodes nearest the end that a walk leaves, nearest first: the glue's pick, asked only here) that is open and
+// joined; else refused. The refusal and the moves happen before the descent, so the bot never comes down under a roof
+template <class Nodes, class Open, class Joined>
+LandingCheck ChooseLanding(Trip& trip, std::vector<Point> const& line, Nodes const& nodes, Open const& open,
+                           Joined const& joined)
 {
-    std::optional<std::size_t> const index = LandingIndex(line, outdoors, joined);
-    if (!index)
-    {
-        trip.landingChecked = true;
-        return LandingCheck::Refused;
-    }
     Point const planned = trip.waypoints.empty() ? Point{} : trip.waypoints.back().at;
-    Point const landing = line.empty() || *index + 1 == line.size() ? planned : line[*index];
-    return MoveLanding(trip, landing) ? LandingCheck::Moved : LandingCheck::Kept;
+    if (std::optional<std::size_t> const index = LandingIndex(line, open, joined))
+    {
+        Point const landing = line.empty() || *index + 1 == line.size() ? planned : line[*index];
+        return MoveLanding(trip, landing) ? LandingCheck::Moved : LandingCheck::Kept;
+    }
+    for (Point const& node : nodes())
+        if (open(node) && joined(node))
+            return MoveLanding(trip, node) ? LandingCheck::Node : LandingCheck::Kept;
+    trip.landingChecked = true;
+    return LandingCheck::Refused;
 }
 
 // A flight leg's first hop (its first two graph nodes), the edge a failed taxi start is reported on;

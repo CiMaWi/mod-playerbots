@@ -1092,9 +1092,10 @@ void CheckLanding()
           "landing: indoors, not the outdoor point nearest to the landing");
     Check(TravelLegs::LandingIndex(
               line, [](Point const&) { return true; }, joinedAll) == line.size() - 1 &&
-              TravelLegs::LandingIndex(
-                  line, [](Point const&) { return false; }, joinedAll) == line.size() - 1,
-          "landing: outdoors or no outdoor point, not the planned landing");
+              !TravelLegs::LandingIndex(
+                   line, [](Point const&) { return false; }, joinedAll)
+                   .has_value(),
+          "landing: open, not the planned landing; no open point (PA73), a landing on the line");
 
     Trip kept = trip;
     Check(!TravelLegs::MoveLanding(kept, kept.waypoints.back().at) && kept.landingChecked && kept.legs.size() == 1 &&
@@ -1154,8 +1155,8 @@ std::vector<std::pair<bool, std::string>> JoinedLandingCase(LandingRule rule)
                         "H1 joined landing: the joined point (index 1), not the pocket (index 6)");
     checks.emplace_back(!rule(line, outdoors, none).has_value(),
                         "H2 none joined: no landing, not the planned indoor one");
-    checks.emplace_back(rule(line, none, none) == std::optional<std::size_t>(7),
-                        "no outdoor point: the planned landing (as before)");
+    checks.emplace_back(!rule(line, none, none).has_value(),
+                        "H4 no open-sky point within 60 yd (PA73, G418): no landing on the line, not the planned one");
     checks.emplace_back(rule(line, LinePoints(line, {6, 7}), none) == std::optional<std::size_t>(7),
                         "the landing outdoors: the planned landing, joined not asked");
     return checks;
@@ -1206,6 +1207,87 @@ std::optional<std::size_t> KeepPlanned(std::vector<Point> const& line, LandingPr
     return index ? index : std::optional<std::size_t>(line.size() - 1);
 }
 
+// PA73 (G418): today's rule before PA73, a line without any open-sky point keeps the planned landing under the roof
+std::optional<std::size_t> NoSkyKeepsPlanned(std::vector<Point> const& line, LandingPredicate const& outdoors,
+                                             LandingPredicate const& joined)
+{
+    std::optional<std::size_t> const index = TravelLegs::LandingIndex(line, outdoors, joined);
+    bool const anyOpen = std::any_of(line.begin(), line.end(), [&outdoors](Point const& at) { return outdoors(at); });
+    return index || anyOpen ? index : std::optional<std::size_t>(line.size() - 1);
+}
+
+// PA73 (G418): a landing under rock or ice. OpenSky reads the terrain and the cover over a floor. H4 a cave landing
+// whose line has no open point lands at the nearest open graph node a walk joins to the end, with the walk in, or is
+// refused before its descent; the nodes are asked only then. A fly leg of two waypoints is checked too
+LandingPredicate PointsAt(std::vector<Point> const& points)
+{
+    return [points](Point const& point)
+    {
+        return std::any_of(points.begin(), points.end(), [&point](Point const& at)
+                           { return std::fabs(point.x - at.x) < 0.01f && std::fabs(point.y - at.y) < 0.01f; });
+    };
+}
+
+void CheckSkyLanding()
+{
+    Check(!TravelLegs::OpenSky(969.7f, 1173.0f, 969.7f), "open sky: a cave floor under a hill's terrain is open");
+    Check(!TravelLegs::OpenSky(1147.5f, 1120.0f, 1160.7f), "open sky: a cave floor under its ice ceiling is open");
+    Check(TravelLegs::OpenSky(100.0f, 98.0f, 100.0f) && TravelLegs::OpenSky(100.0f, 102.5f, 102.5f),
+          "open sky: a floor with nothing over it (or a step under 3 yd) is covered");
+    Check(!TravelLegs::OpenSky(TravelLegs::FLY_NO_GROUND, -60000.0f, -60000.0f), "open sky: no floor found is open");
+
+    Point const cave{571, 7620.4f, -1609.4f, 969.7f};
+    Point const mouth{571, 7313.96f, -1611.88f, 944.6f};
+    Point const sealed{571, 7600.0f, -1500.0f, 1100.0f};  // nearer the end, open, the walk does not join it
+    Leg leg = MakeLeg(LegType::Fly, {571, 8038.0f, -2645.0f, 1150.0f}, cave, {}, 60.0f);
+    leg.flightPoints = {{571, 8038.0f, -2645.0f, 1150.0f}, {571, 7800.0f, -2000.0f, 1250.0f}, cave};
+    LandingPredicate const open = PointsAt({sealed, mouth});
+    LandingPredicate const none = PointsAt({});
+    std::uint32_t asked = 0;
+    auto const nodes = [&asked, sealed, mouth]()
+    {
+        ++asked;
+        return std::vector<Point>{sealed, mouth};
+    };
+
+    Trip trip = StartedTrip({leg}, 0);
+    std::vector<Point> const line = TravelLegs::LandingLine(trip);
+    std::size_t const count = trip.waypoints.size();
+    bool const node =
+        TravelLegs::ChooseLanding(trip, line, nodes, open, PointsAt({mouth})) == TravelLegs::LandingCheck::Node;
+    Point const descent = trip.waypoints[count - 2].at;
+    Check(node && asked == 1 && trip.landingChecked && trip.legs.size() == 2 && trip.legs[0].to.x == mouth.x &&
+              trip.waypoints.back().at.x == mouth.x &&
+              std::hypot(descent.x - mouth.x, descent.y - mouth.y) <= TravelLegs::FLY_CLIMB_YARDS + 0.01f &&
+              descent.z == trip.waypoints[count - 3].at.z && trip.legs[1].type == LegType::Walk &&
+              trip.legs[1].from.x == mouth.x && trip.legs[1].to.x == cave.x,
+          "H4 cave landing: not at the joined open node (not the nearer unjoined one), its descent and the walk in");
+
+    Trip refused = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(refused, line, nodes, open, none) == TravelLegs::LandingCheck::Refused &&
+              refused.landingChecked && refused.legs.size() == 1 && refused.waypoints.back().at.x == cave.x &&
+              refused.waypoints.back().at.z == cave.z,
+          "H4 cave landing, no node joined: not refused before the descent, or the planned landing changed");
+
+    Trip open_ = StartedTrip({leg}, 0);
+    asked = 0;
+    Check(TravelLegs::ChooseLanding(
+              open_, line, nodes, [](Point const&) { return true; }, none) == TravelLegs::LandingCheck::Kept &&
+              asked == 0 && open_.landingChecked && open_.legs.size() == 1,
+          "landing under open sky: not kept, or the graph nodes asked");
+
+    Point const takeoff{571, 7700.0f, -1650.0f, 1000.0f};
+    Trip hop = StartedTrip({MakeLeg(LegType::Fly, takeoff, cave, {}, 10.0f)}, 0);
+    std::vector<Point> const hopLine = TravelLegs::LandingLine(hop);
+    Check(hop.waypoints.size() == 2 && TravelLegs::NeedsLandingCheck(hop, takeoff) && hopLine.size() == 16 &&
+              hopLine.back().x == cave.x && hopLine.front().x > cave.x,
+          "two-waypoint fly leg: not checked, or its line not back towards the takeoff");
+    Check(TravelLegs::ChooseLanding(hop, hopLine, nodes, open, PointsAt({mouth})) == TravelLegs::LandingCheck::Node &&
+              hop.waypoints.size() == 2 && hop.waypoints.back().at.x == mouth.x && hop.legs.size() == 2 &&
+              hop.legs[1].to.x == cave.x && !TravelLegs::NeedsLandingCheck(hop, takeoff),
+          "two-waypoint fly leg: a cave landing not moved to the node, or checked again");
+}
+
 void CheckJoinedLanding()
 {
     for (auto const& [ok, name] : JoinedLandingCase(RealLandingIndex))
@@ -1220,6 +1302,7 @@ void CheckJoinedLanding()
     LandingMutant const landingMutants[] = {
         {"mutant killed: H1 the outdoors-only predicate picks the pocket", OutdoorsOnly},
         {"mutant killed: H2 keep the planned indoor landing", KeepPlanned},
+        {"mutant killed: H4 no open-sky point keeps the planned landing", NoSkyKeepsPlanned},
     };
     for (LandingMutant const& mutant : landingMutants)
     {
@@ -1239,18 +1322,20 @@ void CheckJoinedLanding()
     leg.flightClearance = 30.0f;
     std::vector<Point> const line = InnLandingLine();
     LandingPredicate const outdoors = LinePoints(line, {1, 6});
+    auto const noNodes = []() { return std::vector<Point>{}; };
     Trip joined = StartedTrip({leg}, 0);
-    Check(TravelLegs::ChooseLanding(joined, line, outdoors, LinePoints(line, {1})) == TravelLegs::LandingCheck::Moved &&
+    Check(TravelLegs::ChooseLanding(joined, line, noNodes, outdoors, LinePoints(line, {1})) ==
+                  TravelLegs::LandingCheck::Moved &&
               joined.legs.size() == 2 && std::fabs(joined.legs[0].to.x - line[1].x) < 0.01f &&
               joined.legs[1].type == LegType::Walk && joined.legs[1].to.x == INN_LANDING.x,
           "H1 joined landing: the trip lands at the joined point and walks in");
     Trip refused = StartedTrip({leg}, 0);
     Point const planned = refused.waypoints.back().at;
-    Check(
-        TravelLegs::ChooseLanding(refused, line, outdoors, LinePoints(line, {})) == TravelLegs::LandingCheck::Refused &&
-            refused.landingChecked && refused.legs.size() == 1 && refused.legs[0].to.x == INN_LANDING.x &&
-            refused.waypoints.back().at.x == planned.x && refused.waypoints.back().at.z == planned.z,
-        "H2 none joined: the landing is refused and not moved (the glue fails the leg landing)");
+    Check(TravelLegs::ChooseLanding(refused, line, noNodes, outdoors, LinePoints(line, {})) ==
+                  TravelLegs::LandingCheck::Refused &&
+              refused.landingChecked && refused.legs.size() == 1 && refused.legs[0].to.x == INN_LANDING.x &&
+              refused.waypoints.back().at.x == planned.x && refused.waypoints.back().at.z == planned.z,
+          "H2 none joined: the landing is refused and not moved (the glue fails the leg landing)");
 
     // H3 through the follower: down at the ceiling after the takeoff fails `landing`, on the floor it is done
     Trip ceiling = StartedTrip({leg}, 0);
@@ -4286,6 +4371,7 @@ int main()
     CheckTripDeaths();
     CheckSickEnd();
     CheckJoinedLanding();
+    CheckSkyLanding();
     CheckStartRows();
     CheckFlyLeg();
     CheckFlyLegMountOwner();
