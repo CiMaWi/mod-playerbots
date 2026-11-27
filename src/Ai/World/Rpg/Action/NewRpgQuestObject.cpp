@@ -205,6 +205,7 @@ bool NewRpgDoQuestAction::EngageObject(NewRpgInfo::DoQuest& data)
     }
 
     data.actedAt = getMSTime();
+    StandWorked(data);
     if (act == ObjectAct::Loot)
     {
         // The core grants a container's items through its loot: the loot path opens it (its lock's spell) and loots

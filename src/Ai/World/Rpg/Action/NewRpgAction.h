@@ -123,6 +123,10 @@ protected:
     bool ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const;
     void ClearTarget(NewRpgInfo::DoQuest& data);
     void PassOver(NewRpgInfo::DoQuest& data, char const* reason);
+    // questing WQ33: a refused stand point or walk at a held target counts against its need, an act at one clears the
+    // count (QuestFieldExec::StandRefused): the third closes the need (an order's) or ends the status (a lone quest's)
+    void StandRefusal(NewRpgInfo::DoQuest& data);
+    void StandWorked(NewRpgInfo::DoQuest& data);
     void LeavePlace(NewRpgInfo::DoQuest& data);
     // A walk toward a held target (id its entry) or a place (id its key); when its watch gives it up the target is
     // passed over or the place tried (dest by value: travel may end the status, and data with it). The walk is

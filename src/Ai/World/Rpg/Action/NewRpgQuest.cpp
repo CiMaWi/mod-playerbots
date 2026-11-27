@@ -168,11 +168,14 @@ bool Takeable(Player* bot, Planner::QuestLog::Record const& record, uint32 quest
 // them: every source of an objective's need (hand-ins and takes are steps WQ19b's and WQ31's)
 void CountOrder(Player* bot, Planner::QuestOrderRun& run, std::vector<Planner::QuestFields::Need> const& needs)
 {
+    std::vector<Planner::QuestOrderOpen> const before = std::move(run.open);
     run.open = Planner::QuestFieldExec::Open(needs);
     // The takes the order expects (questing WQ18b), after the log's needs: the seeks index those
     std::shared_ptr<Planner::QuestLog::Record const> const record = NewRpgHelpers::OrderRecord(bot, run);
     Planner::QuestFieldExec::OpenTakes(run.open, run.order,
                                        [&](uint32 questId) { return Takeable(bot, *record, questId); });
+    // questing WQ33: a need's refused stand points stay counted until it gains a credit
+    Planner::QuestFieldExec::CarryRefusals(before, run.open);
     run.seeks.clear();
     uint32 at = 0;
     for (Planner::QuestFields::Need const& need : needs)

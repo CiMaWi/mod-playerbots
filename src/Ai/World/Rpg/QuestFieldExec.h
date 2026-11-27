@@ -111,11 +111,50 @@ inline bool OnOrder(QuestOrder const& order, PickAsk const& ask, std::uint32_t m
            (ask.onWay && mapId == order.mapId && Detour(ask.x, ask.y, x, y, order.x, order.y, order.allowanceYards));
 }
 
-// Whether a candidate is one the order takes: its need open, within reach, in the field or on the way (OnOrder)
+// questing WQ33: a held target whose stand point or walk is refused (its pass-over `walk`: no stand point the mesh
+// carries, or a walk that gains nothing) counts against its need, not the target: the STAND_REFUSALS-th closes the
+// need, which no target is held for again, and that need's quest is given up with NO_STAND (one failure row). A lone
+// quest's executor (no order) counts its one need so and ends its status. A credit of the need (CarryRefusals) or an
+// act at one of its targets (StandWorked) clears the count; a closed need stays closed while its order runs
+constexpr std::uint8_t STAND_REFUSALS = 3;
+constexpr char const* NO_STAND = "no_stand";
+
+// One refusal of a need's count: true when it is the one that closes the need (once; a closed count stays closed)
+inline bool StandRefused(std::uint8_t& refusals)
+{
+    if (refusals >= STAND_REFUSALS)
+        return false;
+    return ++refusals == STAND_REFUSALS;
+}
+
+inline bool StandClosed(std::uint8_t refusals) { return refusals >= STAND_REFUSALS; }
+
+// An act at a target of the need (an attack, a use, a loot): the count starts again, unless the need is closed
+inline void StandWorked(std::uint8_t& refusals)
+{
+    if (!StandClosed(refusals))
+        refusals = 0;
+}
+
+// A refusal on an order: true when it closes the need and no other need of its quest closed before (the failure row
+// is the quest's, once per order)
+inline bool RefuseNeed(std::span<QuestOrderOpen> open, std::size_t need)
+{
+    if (need >= open.size() || !StandRefused(open[need].refusals))
+        return false;
+    for (std::size_t at = 0; at < open.size(); ++at)
+        if (at != need && open[at].quest == open[need].quest && StandClosed(open[at].refusals))
+            return false;
+    return true;
+}
+
+// Whether a candidate is one the order takes: its need open and not closed (WQ33), within reach, in the field or on
+// the way (OnOrder)
 inline bool Takes(Candidate const& candidate, std::span<QuestOrderOpen const> open, QuestOrder const& order,
                   PickAsk const& ask)
 {
     return candidate.need < open.size() && open[candidate.need].left > 0 &&
+           !StandClosed(open[candidate.need].refusals) &&
            (candidate.kind == FieldKind::Object || LevelWithinReach(candidate.level, ask.level, ask.caution)) &&
            OnOrder(order, ask, candidate.mapId, candidate.x, candidate.y);
 }
@@ -245,6 +284,16 @@ inline std::vector<QuestOrderOpen> Open(std::span<QuestFields::Need const> needs
         if (need.left)
             open.push_back({need.quest, need.objective, need.left});
     return open;
+}
+
+// WQ33: a recount of the needs keeps each need's refusals from the count before while it gained no credit (its credits
+// left the same); a credit clears them
+inline void CarryRefusals(std::span<QuestOrderOpen const> before, std::span<QuestOrderOpen> after)
+{
+    for (QuestOrderOpen& need : after)
+        for (QuestOrderOpen const& was : before)
+            if (was.quest == need.quest && was.objective == need.objective)
+                need.refusals = was.left == need.left ? was.refusals : 0;
 }
 
 // Whether one of a need's sources (a creature, an object; a hand-in's enders) has a row in the given cells

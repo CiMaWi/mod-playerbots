@@ -121,6 +121,7 @@ struct QuestOrderOpen
     std::uint32_t quest{0};
     std::uint32_t objective{ORDER_HAND_IN};
     std::uint32_t left{0};
+    std::uint8_t refusals{0};  // WQ33: refused stand points or walks at its targets (QuestFieldExec::RefuseNeed)
 };
 
 // WQ19a: one entry the executor's look seeks for an open need; one look per kind (creatures, objects) covers the

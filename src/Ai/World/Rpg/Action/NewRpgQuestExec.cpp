@@ -621,6 +621,8 @@ bool NewRpgDoQuestAction::EngageTarget(NewRpgInfo::DoQuest& data)
         return WalkOn(data, data.targetPos, yards, true, creature->GetEntry(), INTERACTION_DISTANCE);
     ResetWalk(data);
     bool const attacked = botAI->DoSpecificAction("new rpg attack quest target", Event(), true);
+    if (attacked)
+        StandWorked(data);
     if (!attacked && !(data.traced & TRACED_ATTACK))
     {
         data.traced |= TRACED_ATTACK;
@@ -740,6 +742,64 @@ void NewRpgDoQuestAction::PassOver(NewRpgInfo::DoQuest& data, char const* reason
           {{"entry", static_cast<float>(data.targetGuid.GetEntry())}});
     Planner::QuestExec::Remember(data.passed, data.passedNext, data.targetGuid);
     ClearTarget(data);
+    // questing WQ33: the walk's pass-over is a refused stand point or a stalled walk; a lone quest's third ends its
+    // status, and data with it (the callers return at once)
+    if (std::string_view(reason) == "walk")
+        StandRefusal(data);
+}
+
+namespace
+{
+// The order's open need the executor works (PickNeed's quest and objective); open.size() when none is
+std::size_t WorkedNeed(NewRpgInfo::DoQuest const& data)
+{
+    std::vector<Planner::QuestOrderOpen> const& open = data.order->open;
+    uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
+    for (std::size_t at = 0; at < open.size(); ++at)
+        if (open[at].quest == data.questId && open[at].objective == objective)
+            return at;
+    return open.size();
+}
+}  // namespace
+
+void NewRpgDoQuestAction::StandRefusal(NewRpgInfo::DoQuest& data)
+{
+    namespace Field = Planner::QuestFieldExec;
+    uint32 const questId = data.questId;
+    if (!data.order)
+    {
+        // A lone quest has one need: its third refusal gives the quest up (the status door writes the failure row)
+        if (!Field::StandRefused(data.standRefusals))
+            return;
+        Trace(bot, "need_closed", Field::NO_STAND, static_cast<float>(data.standRefusals), questId);
+        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = Field::NO_STAND});
+        return;
+    }
+    // On an order the need closes and the order goes on with its other needs (QuestFieldExec::Takes leaves the closed
+    // one); its quest's failure row is written once (an order's end writes none for it)
+    std::vector<Planner::QuestOrderOpen>& open = data.order->open;
+    std::size_t const need = WorkedNeed(data);
+    if (need >= open.size() || Field::StandClosed(open[need].refusals))
+        return;
+    bool const report = Field::RefuseNeed(open, need);
+    if (!Field::StandClosed(open[need].refusals))
+        return;
+    Trace(bot, "need_closed", Field::NO_STAND, static_cast<float>(open[need].refusals), questId,
+          {{"objective", static_cast<float>(open[need].objective)}, {"left", static_cast<float>(open[need].left)}});
+    if (report)
+        QuestGiveUp::Noted(botAI, data, Field::NO_STAND);
+}
+
+void NewRpgDoQuestAction::StandWorked(NewRpgInfo::DoQuest& data)
+{
+    if (!data.order)
+    {
+        Planner::QuestFieldExec::StandWorked(data.standRefusals);
+        return;
+    }
+    std::size_t const need = WorkedNeed(data);
+    if (need < data.order->open.size())
+        Planner::QuestFieldExec::StandWorked(data.order->open[need].refusals);
 }
 
 void NewRpgDoQuestAction::LeavePlace(NewRpgInfo::DoQuest& data)

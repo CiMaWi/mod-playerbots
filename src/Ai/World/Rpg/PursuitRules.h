@@ -32,9 +32,10 @@ constexpr char const* TIMEOUT = "timeout";    // the limit passed without progre
 constexpr char const* NO_ENDER = "no_ender";  // no ender the bot can use, or the limit passed at the ender
 
 // Every word a quest status may be given up with (config/wlog-checks/questing.sql's quest_giveup_without_fail lists
-// the same): the clock's, the executor's end words, a walk's deadline (GoToRules.h's timeout) and the refusals
+// the same): the clock's, the executor's end words, a walk's deadline (GoToRules.h's timeout), the refusals and an
+// objective whose targets give the bot no stand point (questing WQ33, QuestFieldExec.h's NO_STAND)
 constexpr std::string_view GIVE_UP_WORDS[] = {"abandon", "abandoned", "no_place", "no_target", "locked",
-                                              TIMEOUT,   NO_ENDER,    "no_item",  "no_spell"};
+                                              TIMEOUT,   NO_ENDER,    "no_item",  "no_spell",  "no_stand"};
 constexpr std::string_view GIVE_UP_PREFIXES[] = {"unsupported:", "refused:"};
 
 inline bool IsGiveUpWord(char const* word)
