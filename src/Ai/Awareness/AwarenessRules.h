@@ -1380,6 +1380,19 @@ constexpr std::uint32_t ROW_HEALER_AT = 3;
 // counts as one that cannot start (walkStalled; tuning: a ghost runs about 630 yd in a minute)
 constexpr std::uint32_t WALK_PROGRESS_SECONDS = 60;
 constexpr float WALK_PROGRESS_YARDS = 30.0f;
+// AW38a: the death in a row at a corpse in deadly ground that takes the healer where its grave's ground is not deadly;
+// the health the core's reclaim gives (ResurrectPlayer(0.5f)), at which a bot holds a point on a closed healer's way
+constexpr std::uint32_t ROW_DEADLY_AT = 2;
+constexpr float RISE_HEALTH_PCT = 50.0f;
+
+// Known danger's judgement of a place for a bot (INTERFACE.md §4.2; DangerRules::JudgeGround), ordered: a larger value
+// is more dangerous. Here so the rule of the dead reads it game-free; DangerRules::Ground names this type
+enum class Ground : std::uint8_t
+{
+    Quiet,
+    Passable,
+    Deadly
+};
 
 // World PvP's answer for a corpse an enemy player stands at (a fact here, AW.12)
 enum class PlayerHold : std::uint8_t
@@ -1416,6 +1429,10 @@ struct DeadFacts
     bool graveWithoutHealer = false;  // this death's ghost stood at its grave and a search there found no healer
     bool graveWalkFailed = false;
     bool teleportSeen = false;  // a real player would see a teleport to the grave
+    // AW38a: the corpse's ground for the bot healthy (Quiet without a corpse here) and the ground of the grave the
+    // facts describe for the bot as that revive leaves it (sick, or at half health where the resurrection is granted)
+    Ground corpseGround = Ground::Quiet;
+    Ground graveGround = Ground::Quiet;
 };
 
 // The steps: none; the corpse's way; the healer's way; the bound's
@@ -1452,6 +1469,9 @@ enum class DeadReason : std::uint8_t
     NoHealer,
     Seen,
     WaitEnded,
+    DeadlyGround,  // AW38a: a second death in a row at a corpse in deadly ground takes the healer
+    GraveDanger,   // AW38a: the wait of a healer's way closed by the grave's deadly ground
+    ReachedHolds,  // AW38a: the rise on a closed healer's way where the bot holds what reaches the point
     Count
 };
 
@@ -1528,9 +1548,23 @@ constexpr char const* Word(DeadReason reason)
             return "seen";
         case DeadReason::WaitEnded:
             return "wait_ended";
+        case DeadReason::DeadlyGround:
+            return "deadly_ground";
+        case DeadReason::GraveDanger:
+            return "grave_danger";
+        case DeadReason::ReachedHolds:
+            return "reached_holds";
         default:
             return "?";
     }
+}
+
+// AW38a: in view, at least one unit reaches the point and their weight does not outweigh the bot as it rises (half
+// health, RISE_HEALTH_PCT): one creature up to three levels above it or two two levels below; never an elite of its
+// level. The closed healer's way's rise after the wait (INTERFACE.md §3.4, line 8)
+inline bool HoldsAtRise(PointAnswer const& answer)
+{
+    return answer.inView && answer.reaching > 0 && answer.weight <= Strength(STRENGTH.player, 0, RISE_HEALTH_PCT);
 }
 
 // A step of the corpse's way; of the healer's way (a step of the bound has the reason wait_ended); a revive
@@ -1599,15 +1633,20 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
     // 2. The bound
     if (facts.ghostSeconds >= GHOST_BOUND_SECONDS)
         return BoundStep(facts);
-    // 3. The healer's way, kept once chosen. Closed for this death when its grave had no healer and the corpse lies
-    // here (AW30b): an enemy player's hold that asks for the healer waits as line 4 does, a walk that cannot start
-    // waits at the grave, and the corpse's way follows
-    if (facts.graveWithoutHealer && facts.corpseHere)
+    // 3. The healer's way, kept once chosen. Closed for this death while the corpse lies here and its grave had no
+    // healer (AW30b) or (AW38a) lies in ground deadly for the bot as that revive leaves it. On either closure an enemy
+    // player's hold that asks for the healer waits as line 4 does; a walk that cannot start waits at the grave
+    // without a healer, on the danger closure alone where the ghost stands (tried again next tick); the corpse's way
+    // follows. AW38a: a second death in a row at a corpse in deadly ground takes an open way (a player would)
+    bool const healerClosed = facts.graveWithoutHealer && facts.corpseHere;
+    bool const dangerClosed = facts.graveGround == Ground::Deadly && facts.corpseHere;
+    if (healerClosed || dangerClosed)
     {
         if (facts.playerHold == PlayerHold::Healer)
             return {DeadAct::Wait, DeadReason::Player};
         if (facts.corpseWalkFailed)
-            return {DeadAct::WaitGrave, DeadReason::NoHealer};
+            return healerClosed ? DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer}
+                                : DeadStep{DeadAct::Wait, DeadReason::NoPath};
     }
     else
     {
@@ -1616,6 +1655,8 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
             healer = DeadReason::CorpseAway;
         else if (facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer)
             healer = DeadReason::CorpseRunsExhausted;
+        else if (facts.deathsInRow >= ROW_DEADLY_AT && facts.corpseGround == Ground::Deadly && !facts.ownedByPlayer)
+            healer = DeadReason::DeadlyGround;
         else if (facts.playerHold == PlayerHold::Healer)
             healer = DeadReason::CorpseCamped;
         else if (facts.corpseWalkFailed)
@@ -1640,23 +1681,30 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
                            (facts.own.clearance >= COMFORT_YARDS || facts.atBest);
         return rises ? RiseUnlessLeaderDown(facts, DeadReason::Clear) : DeadStep{DeadAct::WalkPoint, DeadReason::Clear};
     }
-    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer (a
-    // closed healer's way: wait there and look again; the corpse lies here past line 3)
+    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer. On a
+    // closed healer's way (the corpse lies here past line 3; not a player's bot) there is no healer to prefer: the
+    // rise where the bot holds what reaches the point at the health it rises with (AW38a), else the wait there,
+    // looking again
     if (facts.best.unseen > 0 && facts.corpseYards > ARRIVE_YARDS)
         return {DeadAct::WalkCorpse, DeadReason::NoClearPoint};
     if (facts.unclearSeconds < UNCLEAR_WAIT_SECONDS)
         return facts.best.found && !facts.atBest ? DeadStep{DeadAct::WalkPoint, DeadReason::NoClearPoint}
                                                  : DeadStep{DeadAct::Wait, DeadReason::NoClearPoint};
-    if (facts.best.found && Takeable(facts.best.answer))
+    bool const closedRise = (healerClosed || dangerClosed) && !facts.ownedByPlayer;
+    bool (*const holds)(PointAnswer const&) = closedRise ? HoldsAtRise : Takeable;
+    if (facts.best.found && holds(facts.best.answer))
     {
-        bool const ownTaken = (facts.own.clear && facts.own.inView) || Takeable(facts.own);
-        return facts.atBest && facts.reclaimHere && ownTaken ? RiseUnlessLeaderDown(facts, DeadReason::ReachedOne)
-                                                             : DeadStep{DeadAct::WalkPoint, DeadReason::ReachedOne};
+        DeadReason const why = closedRise ? DeadReason::ReachedHolds : DeadReason::ReachedOne;
+        bool const ownHeld = (facts.own.clear && facts.own.inView) || holds(facts.own);
+        return facts.atBest && facts.reclaimHere && ownHeld ? RiseUnlessLeaderDown(facts, why)
+                                                            : DeadStep{DeadAct::WalkPoint, why};
     }
     if (facts.ownedByPlayer)
         return {DeadAct::Wait, DeadReason::NoClearPoint};
-    if (facts.graveWithoutHealer)
+    if (healerClosed)
         return {DeadAct::Wait, DeadReason::NoHealer};
+    if (dangerClosed)
+        return {DeadAct::Wait, DeadReason::GraveDanger};
     return HealerWayStep(facts, DeadReason::NoClearPoint);
 }
 
@@ -1696,11 +1744,14 @@ struct WalkWatch
 
 // The watch after a tick of a walk, `yards` the ghost's planar distance to the target now. A new window begins with
 // another kind of walk, a target more than WALK_PROGRESS_YARDS from the window's, the ghost that much nearer than at
-// the window's start, or the ghost at the target (within ARRIVE_YARDS: a point closer than the progress asks)
+// the window's start, or the ghost at the target (within ARRIVE_YARDS: a point closer than the progress asks). AW38a:
+// that much nearer the window's own target too (the target's shift added: a point beside the corpse that the walk
+// turns to is no progress of a ghost that stands)
 inline WalkWatch WatchWalk(WalkWatch watch, WalkKind kind, float x, float y, float yards, std::uint32_t nowMs)
 {
-    bool const fresh = watch.kind != kind || PlanarDistance(watch.x, watch.y, x, y) > WALK_PROGRESS_YARDS;
-    if (fresh || yards <= ARRIVE_YARDS || yards + WALK_PROGRESS_YARDS <= watch.yards)
+    float const shift = PlanarDistance(watch.x, watch.y, x, y);
+    bool const fresh = watch.kind != kind || shift > WALK_PROGRESS_YARDS;
+    if (fresh || yards <= ARRIVE_YARDS || yards + shift + WALK_PROGRESS_YARDS <= watch.yards)
         return {kind, x, y, yards, nowMs};
     return watch;
 }

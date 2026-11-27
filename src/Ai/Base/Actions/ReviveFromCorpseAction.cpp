@@ -409,13 +409,15 @@ Creature* FindSpiritHealer(Player* bot, float range)
 
 // The spirit healer's revive at the grave: free when granted, else what a player pays
 // (WorldSession::SendSpiritResurrect), with the death row of a persistent bot (its value the deaths in a row). The
-// healer's revive and the bound's (reason wait_ended) share it.
+// healer's revive and the bound's (reason wait_ended) share it. AW38a: the row's grave_ground is the ground of the
+// grave as the revive leaves the bot (Awareness::GraveGround: 0 quiet, 1 passable, 2 deadly; -1 without a grave)
 bool ReviveAtGrave(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, char const* reason, uint32 deathsInRow,
-                   int64 deadTime)
+                   int64 deadTime, GraveyardStruct const* grave)
 {
     LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer ({})", bot->GetGUID().ToString().c_str(),
               bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName(), reason);
     PlayerbotChatHandler ch(bot);
+    float const graveGround = grave ? static_cast<float>(Awareness::GraveGround(botAI, grave)) : -1.0f;
     bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
     bot->ResurrectPlayer(0.5f, !granted);
     if (granted)
@@ -432,7 +434,7 @@ bool ReviveAtGrave(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, ch
     {
         WorldLogFormat::Alternatives weighed;
         if (WorldLog::Active())
-            weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
+            weighed = {{"dead_seconds", static_cast<float>(deadTime)}, {"grave_ground", graveGround}};
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
                            static_cast<float>(deathsInRow), weighed);
     }
@@ -481,12 +483,14 @@ bool SpiritHealerAction::Execute(Event event)
     if (!dead || !dead->lastMs)
         return false;
 
-    // A persistent ghost's grave is the game's: the one nearest to where it stands, where the release sent it (WU34);
-    // a bot that does not keep its possessions keeps upstream's choice by its travel target or a starting zone
+    // A persistent ghost's grave is the rule's (Awareness::GraveOf, AW38a): the game's, the one nearest to where it
+    // stands, where the release sent it (WU34), and past the bound one whose ground it survives; a bot that does not
+    // keep its possessions keeps upstream's choice by its travel target or a starting zone
     bool const keeps = botAI->KeepsPossessions();
     int64 const deadTime = corpse ? DeadSeconds(botAI, corpse) : 0;
-    GraveyardStruct const* grave = GetGrave(!keeps && (AI_VALUE(uint32, "death count") > 10 || deadTime > 15 * MINUTE ||
-                                                       AI_VALUE(uint8, "durability") < 10));
+    GraveyardStruct const* grave = keeps ? Awareness::GraveOf(botAI)
+                                         : GetGrave(AI_VALUE(uint32, "death count") > 10 || deadTime > 15 * MINUTE ||
+                                                    AI_VALUE(uint8, "durability") < 10);
     Awareness::GraveFacts facts;
     facts.known = grave != nullptr;
     WorldPosition const gravePos = grave ? WorldPosition(grave->Map, grave->x, grave->y, grave->z) : WorldPosition();
@@ -559,13 +563,14 @@ bool SpiritHealerAction::Execute(Event event)
         case DeadAct::HealerRevive:
             return ReviveAtGrave(botAI, bot, context,
                                  AwarenessRules::Word(AwarenessRules::HealerCause(dead->last, dead->healerReason)), row,
-                                 deadTime);
+                                 deadTime, grave);
         case DeadAct::ReviveGrave:
         case DeadAct::ReviveHere:
             // The bound's revive at the grave without a healer in range, or where the ghost stands without a grave
             EventLog::Honesty(bot, EventLog::HonestyKind::Resurrect, "wait_ended",
                               dead->last.act == DeadAct::ReviveGrave && grave ? grave->ID : 0);
-            return ReviveAtGrave(botAI, bot, context, "wait_ended", row, deadTime);
+            return ReviveAtGrave(botAI, bot, context, "wait_ended", row, deadTime,
+                                 dead->last.act == DeadAct::ReviveGrave ? grave : nullptr);
         case DeadAct::TeleportGrave:
         {
             if (!grave)

@@ -24,6 +24,7 @@ class Corpse;
 class Player;
 class PlayerbotAI;
 class Unit;
+struct GraveyardStruct;
 struct Position;
 
 // The bot's picture of the units around it, filled from one grid visit (AwarenessRules.h holds the types and rules).
@@ -51,8 +52,9 @@ struct WalkCache
 
 // AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (AwarenessRules::DeathKey), when
 // it began, the unclear clock, the healer's way once chosen and why, whether its grave had no healer (AW30b), the
-// rule's last step with the facts the Rise row reads, the progress test of its walks and its healer searches (AW33b).
-// Cleared at the rise and at a new death; not a memory of a place (AW.1)
+// rule's last step with the facts the Rise row reads, the progress test of its walks and its healer searches (AW33b),
+// the ground of its grave and the grave of its bound (AW38a). Cleared at the rise and at a new death; not a memory of
+// a place (AW.1)
 struct DeadMemo
 {
     std::uint32_t death = 0;
@@ -68,6 +70,10 @@ struct DeadMemo
     AwarenessRules::WalkWatch walk;  // AW33b: the walk under way and its window (WalkStalled)
     bool healerSearched = false;     // a search ran within GRAVE_SEARCH_YARDS of the grave's point
     std::int8_t healerFound = -1;    // what the last search at the grave found: -1 none yet, 0 no healer, 1 a healer
+    std::uint32_t groundGrave = 0;   // AW38a: the grave whose ground graveGround holds (0: none judged yet)
+    AwarenessRules::Ground graveGround = AwarenessRules::Ground::Quiet;
+    bool boundGraveChosen = false;  // AW38a: the bound's grave was chosen (boundGrave; 0: the game's)
+    std::uint32_t boundGrave = 0;
 };
 
 // The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
@@ -176,6 +182,18 @@ struct GraveFacts
 DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave);
 // The return's memo of this bot, null before its first ask
 DeadMemo const* LastOfDead(PlayerbotAI* botAI);
+// AW38a: the grave of a persistent ghost's healer's way and of its bound. Before the bound the game's, the grave its
+// zone links nearest to where the ghost stands (where the release sent it, WU34); past the bound, chosen once for the
+// death, the nearest grave of the ghost's map its side may use (LoadGraveSides) whose ground is not deadly as the
+// revive leaves the bot (GraveGround), else the game's. Null without one. Map thread, after this death's NextOfDead
+GraveyardStruct const* GraveOf(PlayerbotAI* botAI);
+// AW38a: the grave's ground for the bot as the spirit healer's revive leaves it (DangerRules::JudgeGround at 50 %
+// health, sick where the bot pays for the revive at a level the sickness reaches), kept for the death per grave;
+// quiet without a grave
+AwarenessRules::Ground GraveGround(PlayerbotAI* botAI, GraveyardStruct const* grave);
+// AW38a: which side may use each grave (graveyard_zone: faction 0 both, else the faction's side), one query before the
+// world runs; read lock-free afterwards
+void LoadGraveSides();
 // A real player's order (the chat command `revive`): this death takes the healer's way
 void ChooseHealer(PlayerbotAI* botAI);
 // The deaths in a row of the bot's last death (INTERFACE.md §3.5), 1 at least

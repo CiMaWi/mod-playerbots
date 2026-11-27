@@ -41,13 +41,8 @@ constexpr std::array<std::uint32_t, 4> MAPS{0, 1, 530, 571};
 // The core's TeamId: 0 Alliance, 1 Horde
 constexpr std::uint8_t SIDE_COUNT = 2;
 
-// Ordered: a larger value is more dangerous
-enum class Ground : std::uint8_t
-{
-    Quiet,
-    Passable,
-    Deadly
-};
+// Ordered: a larger value is more dangerous (AwarenessRules::Ground, which the rule of the dead reads)
+using AwarenessRules::Ground;
 
 struct Condition
 {

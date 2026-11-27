@@ -14,6 +14,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "BotTravel.h"
@@ -24,9 +25,11 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "DangerFold.h"
+#include "DatabaseEnv.h"
 #include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventWanted.h"
+#include "GameGraveyard.h"
 #include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -56,6 +59,7 @@
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "TravelPlaces.h"
+#include "Upkeep.h"
 #include "UpkeepRules.h"
 #include "Util.h"
 #include "WaypointMgr.h"
@@ -1938,6 +1942,12 @@ DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
     if (!corpse)
         return AskAndKeep(memo);
 
+    // AW38a: the corpse's ground for the bot healthy; the grave's as its revive leaves the bot, for a persistent bot
+    // (the others keep upstream's choice of grave, GetGrave, and a quiet one)
+    facts.corpseGround = GroundAt(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(),
+                                  corpse->GetPositionZ(), bot->GetLevel(), bot->GetTeamId());
+    if (botAI->KeepsPossessions())
+        facts.graveGround = GraveGround(botAI, GraveOf(botAI));
     facts.corpseYards = bot->GetExactDist2d(corpse);
     facts.reclaimHere = corpse->IsWithinDistInMap(bot, CORPSE_RECLAIM_RADIUS, true);
     // AW33b: world PvP's hold of the ghost is a fact only on a PvP realm (where its fight rules ask it, AW44); on a
@@ -2011,6 +2021,106 @@ DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
 }
 
 DeadMemo const* LastOfDead(PlayerbotAI* botAI) { return botAI->awareness ? &botAI->awareness->dead : nullptr; }
+
+namespace
+{
+// AW38a: the sides each grave serves (bit 0 the Alliance, bit 1 the Horde), written once by LoadGraveSides before the
+// world runs and only read afterwards
+std::unordered_map<std::uint32_t, std::uint8_t> graveSides;
+
+bool SideMayUse(std::uint32_t graveId, TeamId side)
+{
+    auto const it = graveSides.find(graveId);
+    return side < TEAM_NEUTRAL && it != graveSides.end() && ((it->second >> side) & 1u) != 0;
+}
+
+// As the spirit healer's revive leaves the bot (ReviveAtGrave): half its health, sick where it pays for the revive at a
+// level the sickness reaches (Player::ResurrectPlayer)
+DangerRules::Condition ReviveCondition(Player* bot)
+{
+    bool const pays = !Upkeep::Granted(bot, UpkeepKind::Resurrect);
+    std::int32_t const sickFrom = sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL);
+    return {static_cast<std::uint8_t>(AwarenessRules::RISE_HEALTH_PCT),
+            pays && static_cast<std::int32_t>(bot->GetLevel()) >= sickFrom};
+}
+
+// The nearest grave of the ghost's map its side may use whose ground is not deadly as the revive leaves it; 0 for none
+std::uint32_t SurvivableGrave(Player* bot)
+{
+    DangerRules::Condition const condition = ReviveCondition(bot);
+    std::uint32_t best = 0;
+    float bestYards = 0.0f;
+    for (auto const& [id, grave] : sGraveyard->GetGraveyardData())
+    {
+        if (grave.Map != bot->GetMapId() || !SideMayUse(id, bot->GetTeamId()))
+            continue;
+        float const yards = bot->GetExactDist2d(grave.x, grave.y);
+        if ((best && yards >= bestYards) || GroundAt(grave.Map, grave.x, grave.y, grave.z, bot->GetLevel(),
+                                                     bot->GetTeamId(), condition) == AwarenessRules::Ground::Deadly)
+            continue;
+        best = id;
+        bestYards = yards;
+    }
+    return best;
+}
+}  // namespace
+
+GraveyardStruct const* GraveOf(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    GraveyardStruct const* game = sGraveyard->GetClosestGraveyard(bot, bot->GetTeamId());
+    DeadMemo& memo = OwnStore(botAI).dead;
+    if (memo.facts.ghostSeconds < AwarenessRules::GHOST_BOUND_SECONDS)
+        return game;
+    if (!memo.boundGraveChosen)
+    {
+        memo.boundGraveChosen = true;
+        memo.boundGrave = SurvivableGrave(bot);
+    }
+    GraveyardStruct const* bound = memo.boundGrave ? sGraveyard->GetGraveyard(memo.boundGrave) : nullptr;
+    return bound ? bound : game;
+}
+
+AwarenessRules::Ground GraveGround(PlayerbotAI* botAI, GraveyardStruct const* grave)
+{
+    if (!grave)
+        return AwarenessRules::Ground::Quiet;
+    DeadMemo& memo = OwnStore(botAI).dead;
+    if (memo.groundGrave != grave->ID)
+    {
+        Player* bot = botAI->GetBot();
+        memo.groundGrave = grave->ID;
+        memo.graveGround =
+            GroundAt(grave->Map, grave->x, grave->y, grave->z, bot->GetLevel(), bot->GetTeamId(), ReviveCondition(bot));
+    }
+    return memo.graveGround;
+}
+
+void LoadGraveSides()
+{
+    std::uint32_t const started = getMSTime();
+    graveSides.clear();
+    std::size_t links = 0;
+    if (QueryResult result = WorldDatabase.Query("SELECT ID, Faction FROM graveyard_zone"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            std::uint32_t const faction = fields[1].Get<uint16>();
+            // The core's links (Graveyard::LoadGraveyardZones): 0 serves both sides, a player faction its own
+            std::uint8_t const sides = faction == 0          ? 3
+                                       : faction == ALLIANCE ? 1u << TEAM_ALLIANCE
+                                       : faction == HORDE    ? 1u << TEAM_HORDE
+                                                             : 0;
+            if (!sides)
+                continue;
+            graveSides[fields[0].Get<uint32>()] |= sides;
+            ++links;
+        } while (result->NextRow());
+    }
+    LOG_INFO("server.loading", ">> Loaded the sides of {} graves from {} graveyard links (awareness) in {} ms",
+             graveSides.size(), links, GetMSTimeDiffToNow(started));
+}
 
 AwarenessRules::SelfRiseAct SelfRise(PlayerbotAI* botAI, std::uint32_t* bodySeconds)
 {
