@@ -1263,6 +1263,13 @@ void CheckSkyLanding()
               trip.legs[1].from.x == mouth.x && trip.legs[1].to.x == cave.x,
           "H4 cave landing: not at the joined open node (not the nearer unjoined one), its descent and the walk in");
 
+    Trip rearmed = StartedTrip({leg}, 0);
+    rearmed.next = static_cast<std::uint32_t>(rearmed.waypoints.size() - 2);
+    rearmed.heightChecked = rearmed.next;
+    Check(TravelLegs::ChooseLanding(rearmed, line, nodes, open, PointsAt({mouth})) == TravelLegs::LandingCheck::Node &&
+              TravelLegs::NeedsHeightCheck(rearmed),
+          "H4 cave landing at a node: the moved descent point not height-checked again");
+
     Trip refused = StartedTrip({leg}, 0);
     Check(TravelLegs::ChooseLanding(refused, line, nodes, open, none) == TravelLegs::LandingCheck::Refused &&
               refused.landingChecked && refused.legs.size() == 1 && refused.waypoints.back().at.x == cave.x &&

@@ -2683,7 +2683,8 @@ inline std::vector<Point> LandingLine(Trip const& trip)
 // the highest surface found searching down from the descent's height; terrain or a roof more than LANDING_SKY_YARDS
 // above the floor covers it (a cave under a hill, ice, a hall). The terrain status alone is no such test: a cave's
 // floor under its rock can read `outdoors`, and a descent onto it loses the mount in the volume over it and falls
-// onto the rock. Arches and canopies with collision cover; a terrain hole reads the terrain's height across it
+// onto the rock. Arches and canopies with collision cover; a terrain hole has no terrain height (the core's grid reads
+// INVALID_HEIGHT there), so only the cover decides
 inline bool OpenSky(float floorZ, float terrainZ, float coverZ)
 {
     return floorZ > FLY_NO_GROUND && terrainZ <= floorZ + LANDING_SKY_YARDS && coverZ <= floorZ + LANDING_SKY_YARDS;
@@ -2709,7 +2710,8 @@ std::optional<std::size_t> LandingIndex(std::vector<Point> const& line, Open con
 }
 
 // Marks the check done. A landing more than SAME_POINT_YARDS from the planned one ends the fly leg there, with the
-// descent point moved before it, and a walk leg from there to the planned end follows (the walk in). True when moved
+// descent point moved before it (its real-height check due again: a node can lie off the planned line), and a walk leg
+// from there to the planned end follows (the walk in). True when moved
 inline bool MoveLanding(Trip& trip, Point const& landing)
 {
     trip.landingChecked = true;
@@ -2728,6 +2730,8 @@ inline bool MoveLanding(Trip& trip, Point const& landing)
         float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
         trip.waypoints[count - 2].at = {landing.mapId, landing.x + (before.x - landing.x) * share,
                                         landing.y + (before.y - landing.y) * share, before.z};
+        if (trip.heightChecked == count - 2)
+            trip.heightChecked = 0;
     }
     trip.waypoints[count - 1].at = landing;
     fly.to = landing;
