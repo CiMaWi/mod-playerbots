@@ -1742,6 +1742,444 @@ inline void CheckStockSearch(Checker& checker, uint32_t seed)
     checker.Check(rule.list == again.list, "6. the same input gives the same list");
     checker.Check(noisy.list != noisyAgain.list, "6. control: a rule reading a random number gives two lists (caught)");
 }
+
+// ---- needs and errands NR12a: sale stock split by the item usage's count and judged per lot ----
+constexpr uint32_t KIT = 20815;
+constexpr uint32_t KIT_PAYOUT = 50;
+constexpr uint32_t KIT_WORTH = 90;
+constexpr uint32_t KIT_COUNT_KEEP = 2;  // the usage's 2 stacks of a tool of 1
+constexpr uint32_t LINEN_PAYOUT = 10;
+constexpr uint32_t LINEN_WORTH = 15;
+constexpr uint32_t SMALL_LOT = 3;  // the case's lot below which listing is not worth it (fees and the floor)
+constexpr uint32_t SPLIT_SEARCH_SEED = 20261127;
+constexpr uint32_t SPLIT_SEARCH_RUNS = 300;
+constexpr uint32_t SPLIT_VISIT_MOVES = 12;
+constexpr uint8_t USAGE_AH = 10;
+constexpr uint8_t USAGE_KEEP = 11;
+
+// A stack the reader may count as auction stock, payoutEach a unit from a vendor; JudgeStock fills the rest
+inline KeepItemIn SaleLot(uint32_t guid, uint32_t entry, uint32_t count, uint32_t stackMax, uint32_t payoutEach)
+{
+    KeepItemIn item;
+    item.itemGuid = guid;
+    item.entry = entry;
+    item.count = count;
+    item.stackMax = stackMax;
+    item.sellNow = payoutEach * count;
+    item.stockCandidate = true;
+    item.vendorPayout = payoutEach * count;
+    return item;
+}
+
+// The reader's market in the harness: a lot is worth worthEach a unit, nothing below minUnits units; the item usage
+// sells the entry while the units it counts are above countKeep (its needed-by-count branch; 0: none), the bags' and
+// the bank's (BANK_COUNT_QUALIFIER); a failed auction lowers the worth by stepDrop a unit. bagsOnly: the reader before
+// NR12a, the bags' units alone and no units kept by count
+struct CaseMarket
+{
+    BankIn const* in = nullptr;
+    uint32_t worthEach = 0;
+    uint32_t minUnits = 1;
+    uint32_t countKeep = 0;
+    bool bagsOnly = false;
+
+    uint32_t expiredSteps = 0;  // the seller's failed auctions of the entry
+    uint32_t stepDrop = 0;      // what a failed auction takes off a unit's worth
+
+    uint32_t Worth(KeepItemIn const& /*first*/, uint32_t units, uint32_t /*payout*/, uint32_t steps) const
+    {
+        uint32_t const drop = (expiredSteps + steps) * stepDrop;
+        return units >= minUnits && worthEach > drop ? units * (worthEach - drop) : 0;
+    }
+
+    StockUsage Usage(KeepItemIn const& first) const
+    {
+        uint32_t units = 0;
+        for (BankItemIn const& item : in->bags)
+            if (item.item.entry == first.entry)
+                units += item.item.count;
+        if (!bagsOnly)
+            for (BankItemIn const& item : in->bank)
+                if (item.item.entry == first.entry)
+                    units += item.item.count;
+        StockUsage answer;
+        answer.auctionable = !countKeep || units > countKeep;
+        answer.usage = answer.auctionable ? USAGE_AH : USAGE_KEEP;
+        answer.countKeep = bagsOnly ? 0 : countKeep;
+        return answer;
+    }
+};
+
+// The reader's pass over the bags and the bank as they lie now: the judged fields from nothing, then JudgeStock
+inline BankIn ReadLots(BankIn in, CaseMarket market)
+{
+    for (std::vector<BankItemIn>* side : {&in.bags, &in.bank})
+        for (BankItemIn& item : *side)
+        {
+            item.item.auctionable = false;
+            item.item.auctionWorth = 0;
+            item.item.countUsed = 0;
+            item.item.stockUsage = 0;
+        }
+    market.in = &in;
+    JudgeStock(in.bags, in.bank, market);
+    return in;
+}
+
+// The control: every stack judged on its own units, as the reader before NR12a judged them
+inline BankIn ReadLotsPerStack(BankIn in, CaseMarket const& market)
+{
+    for (std::vector<BankItemIn>* side : {&in.bags, &in.bank})
+        for (BankItemIn& item : *side)
+        {
+            BankIn alone;
+            alone.bags = {item};
+            item = ReadLots(alone, market).bags[0];
+        }
+    return in;
+}
+
+// A visit's first plan, its move, and the plan before the next move
+struct TwoPlans
+{
+    BankPlan first;
+    BankPlan second;
+    BankIn after;
+};
+
+inline TwoPlans PlanTwice(BankIn in, CaseMarket const& market)
+{
+    TwoPlans plans;
+    plans.first = PlanBankVisit(ReadLots(in, market));
+    std::vector<uint32_t> moved;
+    if (!plans.first.steps.empty())
+    {
+        Apply(in, plans.first.steps.front());
+        moved.push_back(plans.first.steps.front().itemGuid);
+    }
+    plans.second = PlanNextMove(ReadLots(in, market), moved, {});
+    plans.after = in;
+    return plans;
+}
+
+inline bool WithdrawsReleased(BankPlan const& plan)
+{
+    for (BankVerdict const& verdict : plan.verdicts)
+        if (verdict.choice == BankChoice::Withdraw && verdict.reason == BankReason::Released)
+            return true;
+    return false;
+}
+
+// NR11 A: a jewelcrafter's kits, which the item usage keeps carried at 1-2 and sells at 3 or more. 3 in the bags and
+// 1 in the bank: the first plan deposits the third; the plan after that move releases nothing, nor does the next
+// visit. The control reads the usage by the bags' count alone (the reader before NR12a): its second plan releases the
+// bank's kit
+inline void CheckCountSplit(Checker& checker)
+{
+    BankIn const start = MakeIn(
+        20, {SaleLot(1, KIT, 1, 1, KIT_PAYOUT), SaleLot(2, KIT, 1, 1, KIT_PAYOUT), SaleLot(3, KIT, 1, 1, KIT_PAYOUT)},
+        {SaleLot(4, KIT, 1, 1, KIT_PAYOUT)}, 10, 10);
+    CaseMarket market;
+    market.worthEach = KIT_WORTH;
+    market.countKeep = KIT_COUNT_KEEP;
+    CaseMarket old = market;
+    old.bagsOnly = true;
+
+    TwoPlans const plans = PlanTwice(start, market);
+    TwoPlans const control = PlanTwice(start, old);
+    BankPlan const nextVisit = PlanBankVisit(ReadLots(plans.after, market));
+    checker.Show("NR12a A: 3 kits in the bags, 1 in the bank, first plan", plans.first);
+    checker.Show("  the plan after its move", plans.second);
+    checker.Show("  control (the bags' count alone), the plan after its move", control.second);
+    BankVerdict const* bankKit = VerdictOfGuid(plans.second, 4);
+    checker.Check(Moves(plans.first, {{BankChoice::Deposit, KIT}}) && plans.first.steps[0].itemGuid == 3,
+                  "NR12a A: the first plan deposits the kit beyond the 2 the usage keeps carried");
+    checker.Check(plans.second.steps.empty() && bankKit && bankKit->choice == BankChoice::Leave &&
+                      bankKit->reason == BankReason::KeptStock && nextVisit.steps.empty(),
+                  "NR12a A: after the deposit no plan of the visit or the next releases a kit");
+    checker.Check(WithdrawsReleased(control.second),
+                  "NR12a A: control: the usage by the bags' count releases the bank's kit (caught)");
+}
+
+// A seeded search over one entry's stacks in the bags and the bank (a tool of 1 or a stackable of 20; the usage keeps
+// 2 stacks' units by count): every read of a visit keeps the same units by count, min(units, 2 stacks) once the usage
+// sells the entry, and the next visit takes out no stack this one deposited. bagsOnly: the control's reader
+inline uint32_t SplitViolations(uint32_t seed, bool bagsOnly, uint32_t& deposits)
+{
+    uint32_t state = seed;
+    auto const next = [&state](uint32_t bound)
+    {
+        state = state * 1664525u + 1013904223u;
+        return (state >> 8) % bound;
+    };
+    uint32_t violations = 0;
+    for (uint32_t run = 0; run < SPLIT_SEARCH_RUNS; ++run)
+    {
+        uint32_t const stackMax = next(2) ? STACK_20 : 1;
+        uint32_t const keep = KIT_COUNT_KEEP * stackMax;
+        std::vector<KeepItemIn> bags;
+        std::vector<KeepItemIn> bank;
+        uint32_t guid = 1;
+        uint32_t total = 0;
+        for (std::vector<KeepItemIn>* side : {&bags, &bank})
+            for (uint32_t n = next(5); n; --n)
+            {
+                uint32_t const count = 1 + next(stackMax);
+                side->push_back(SaleLot(guid++, KIT, count, stackMax, KIT_PAYOUT));
+                total += count;
+            }
+        BankIn in = MakeIn(20, bags, bank, 16, 16);
+        CaseMarket market;
+        market.worthEach = KIT_WORTH;
+        market.countKeep = keep;
+        market.bagsOnly = bagsOnly;
+        uint32_t const kept = total > keep ? keep : 0;
+
+        std::vector<uint32_t> moved;
+        std::vector<uint32_t> deposited;
+        for (uint32_t move = 0; move < SPLIT_VISIT_MOVES; ++move)
+        {
+            BankIn const read = ReadLots(in, market);
+            uint32_t used = 0;
+            for (std::vector<BankItemIn> const* side : {&read.bags, &read.bank})
+                for (BankItemIn const& item : *side)
+                    used += item.item.countUsed;
+            if (!bagsOnly && used != kept)
+                ++violations;
+            BankPlan const plan = PlanNextMove(read, moved, {});
+            if (plan.steps.empty())
+                break;
+            BankStep const step = plan.steps.front();
+            Apply(in, step);
+            moved.push_back(step.itemGuid);
+            if (step.kind == BankChoice::Deposit)
+            {
+                deposited.push_back(step.itemGuid);
+                ++deposits;
+            }
+        }
+        for (BankStep const& step : PlanBankVisit(ReadLots(in, market)).steps)
+            if (step.kind == BankChoice::Withdraw &&
+                std::find(deposited.begin(), deposited.end(), step.itemGuid) != deposited.end())
+                ++violations;
+    }
+    return violations;
+}
+
+inline void CheckSplitSearch(Checker& checker, uint32_t seed)
+{
+    uint32_t deposits = 0;
+    uint32_t controlDeposits = 0;
+    uint32_t const violations = SplitViolations(seed, false, deposits);
+    uint32_t const control = SplitViolations(seed, true, controlDeposits);
+    checker.Note("NR12a search, seed " + std::to_string(seed) + ": " + std::to_string(SPLIT_SEARCH_RUNS) + " visits, " +
+                 std::to_string(deposits) + " deposits, " + std::to_string(violations) +
+                 " violations; control (the bags' count) " + std::to_string(control) + " in " +
+                 std::to_string(controlDeposits) + " deposits");
+    checker.Check(violations == 0 && deposits > 0,
+                  "NR12a search: no move of a visit changes the units kept by count, no deposit comes out again");
+    checker.Check(control > 0, "NR12a search: control: the usage by the bags' count takes deposits out again (caught)");
+}
+
+// NR11 F1: a merge left 1 linen beside two banked stacks of 20; fees and the floor make a lot below 3 units not worth
+// listing. Judged with its entry the remainder stays kept in the bank, each stack's share paying more than its vendor;
+// the control judges each stack alone and releases the remainder
+inline void CheckLotRemainder(Checker& checker)
+{
+    BankIn const in =
+        MakeIn(20, {},
+               {SaleLot(1, LINEN, 20, STACK_20, LINEN_PAYOUT), SaleLot(2, LINEN, 20, STACK_20, LINEN_PAYOUT),
+                SaleLot(3, LINEN, 1, STACK_20, LINEN_PAYOUT)},
+               10, 10);
+    CaseMarket market;
+    market.worthEach = LINEN_WORTH;
+    market.minUnits = SMALL_LOT;
+    BankIn const read = ReadLots(in, market);
+    BankPlan const lot = PlanBankVisit(read);
+    BankPlan const alone = PlanBankVisit(ReadLotsPerStack(in, market));
+    checker.Show("NR12a F1: 20 + 20 + 1 linen in the bank, judged as one lot", lot);
+    checker.Show("  control, each stack judged alone", alone);
+    bool shares = true;
+    uint64_t sum = 0;
+    for (BankItemIn const& item : read.bank)
+    {
+        shares = shares && item.item.auctionWorth > item.item.vendorPayout;
+        sum += item.item.auctionWorth;
+    }
+    BankVerdict const* remainder = VerdictOfGuid(lot, 3);
+    BankVerdict const* released = VerdictOfGuid(alone, 3);
+    checker.Check(lot.steps.empty() && remainder && remainder->choice == BankChoice::Leave &&
+                      remainder->reason == BankReason::KeptStock && shares && sum >= 41 * LINEN_WORTH,
+                  "NR12a F1: the remainder stays kept with its entry; every share pays, the shares cover the lot");
+    checker.Check(released && released->choice == BankChoice::Withdraw && released->reason == BankReason::Released,
+                  "NR12a F1: control: the remainder judged alone is released (caught)");
+}
+
+// The exit's path material (NR11 6 found no flip; the invariant is written anyway): a banked stack of a material the
+// skill path uses, its step not reached, and units beyond the path's use that listing pays for. A deposit of another
+// lot between two plans leaves its use unchanged, and its keep with it
+inline void CheckMaterialKeepAcrossRecompute(Checker& checker)
+{
+    constexpr uint32_t ORE = 2771;
+    constexpr uint32_t ORE_GUID = 10;
+    KeepItemIn ore = UsedMaterial(ORE, STACK_20, 5, SMITH_SKILL + 50);
+    ore.itemGuid = ORE_GUID;
+    ore.stockCandidate = true;
+    ore.vendorPayout = LINEN_PAYOUT * (STACK_20 - 5);
+    BankIn const start = SmithIn(SMITH_SKILL, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, {ore});
+    CaseMarket market;
+    market.worthEach = LINEN_WORTH;
+    TwoPlans const plans = PlanTwice(start, market);
+    auto const keepOf = [&market](BankIn const& in)
+    {
+        BankIn const read = ReadLots(in, market);
+        for (BankItemIn const& item : read.bank)
+            if (item.item.itemGuid == ORE_GUID)
+                return DecideKeep(item.item, read.bot);
+        return KeepAnswer{};
+    };
+    KeepAnswer const before = keepOf(start);
+    KeepAnswer const after = keepOf(plans.after);
+    checker.Show("NR12a material: banked ore beyond the path's use, a linen lot in the bags, first plan", plans.first);
+    checker.Show("  the plan after the linen's deposit", plans.second);
+    BankVerdict const* first = VerdictOfGuid(plans.first, ORE_GUID);
+    BankVerdict const* second = VerdictOfGuid(plans.second, ORE_GUID);
+    checker.Check(Moves(plans.first, {{BankChoice::Deposit, LINEN}}) && before.keeps && after.keeps &&
+                      before.laterWorth == after.laterWorth && before.dueSkill == after.dueSkill &&
+                      std::string_view(before.provider) == after.provider && first && second &&
+                      first->choice == BankChoice::Leave && second->choice == BankChoice::Leave &&
+                      first->reason == second->reason,
+                  "NR12a material: the path's material keeps its keep across the recompute");
+    checker.Note(
+        "NR12a B (NR11): the usage's low-bag-space input (bag space above 50 %) still changes with the "
+        "visit's moves; not covered here (1 pair in NR11)");
+}
+
+// NR.8's margin: linen whose listing pays by 3 copper a unit, and a failed auction takes 4 off. With the margin the
+// stack stays in the bags (one more hold would end its pay), so a hold releases nothing from the bank; the control
+// deposits it and the hold releases it. A lot with room for one hold is deposited and survives the hold, and a
+// banked stack stays kept while it pays now, though it has no room for the next
+inline void CheckMargin(Checker& checker)
+{
+    BankIn const start = MakeIn(20, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, {}, 10, 10);
+    CaseMarket thin;
+    thin.worthEach = LINEN_PAYOUT + 3;
+    thin.stepDrop = 4;
+    CaseMarket room = thin;
+    room.worthEach = LINEN_PAYOUT + 5;
+
+    auto const visit = [](BankIn in, CaseMarket market, bool margin, bool& released)
+    {
+        BankIn read = ReadLots(in, market);
+        if (!margin)
+            for (BankItemIn& item : read.bags)
+                item.item.thinMargin = false;
+        BankPlan const plan = PlanBankVisit(read);
+        for (BankStep const& step : plan.steps)
+            Apply(in, step);
+        ++market.expiredSteps;  // the bot's auction visit holds the entry once
+        released = WithdrawsReleased(PlanBankVisit(ReadLots(in, market)));
+        return plan;
+    };
+    bool thinReleased = true;
+    bool controlReleased = false;
+    bool roomReleased = true;
+    BankPlan const kept = visit(start, thin, true, thinReleased);
+    BankPlan const control = visit(start, thin, false, controlReleased);
+    BankPlan const deposited = visit(start, room, true, roomReleased);
+    checker.Show("NR12a margin: 20 linen paying 3 a unit over the vendor, a hold takes 4", kept);
+    checker.Show("  control without the margin", control);
+    checker.Show("  paying 5 a unit, room for one hold", deposited);
+    BankIn banked = MakeIn(20, {}, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, 10, 10);
+    BankPlan const stays = PlanBankVisit(ReadLots(banked, thin));
+    checker.Check(kept.steps.empty() && GuidIs(kept, 1, BankChoice::Keep, BankReason::ThinMargin) && !thinReleased,
+                  "NR12a margin: a lot one hold from the vendor stays in the bags, and the hold releases nothing");
+    CarriedKeeps const carried = KeptInBags(ReadLots(start, thin));
+    checker.Check(
+        carried.items.size() == 1 && carried.items[0].blocked && ListsStack(carried, 1),
+        "NR12a margin: that stack stays carried as stock: the auction visit lists it, no errand counts it as a "
+        "deposit");
+    checker.Check(Moves(deposited, {{BankChoice::Deposit, LINEN}}) && !roomReleased,
+                  "NR12a margin: a price change inside the margin (one hold) keeps the deposit");
+    checker.Check(stays.steps.empty() && GuidIs(stays, 1, BankChoice::Leave, BankReason::KeptStock),
+                  "NR12a margin: a banked lot that pays now stays kept without room for the next hold");
+    checker.Check(Moves(control, {{BankChoice::Deposit, LINEN}}) && controlReleased,
+                  "NR12a margin: control: without it the deposit comes out at the next hold (caught)");
+}
+
+// Needs and errands NR12b: sale stock whose listing pays is due at a bank visit an auction stop of the same trip
+// follows (KeepBotIn::auctionNext): the bank's is withdrawn for_auction, the bags' is not deposited; without one it
+// waits in the bank. The withdrawn stack stays carried as stock, and repeated holds end its round trips
+inline void CheckForAuction(Checker& checker)
+{
+    CaseMarket market;
+    market.worthEach = LINEN_PAYOUT + 9;
+    market.stepDrop = 4;
+    BankIn const banked = MakeIn(20, {}, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, 10, 10);
+    BankIn next = banked;
+    next.bot.auctionNext = true;
+    BankPlan const fetched = PlanBankVisit(ReadLots(next, market));
+    BankPlan const waits = PlanBankVisit(ReadLots(banked, market));
+    checker.Show("NR12b: 20 banked linen paying 9 a unit over the vendor, an auction stop after the bank stop",
+                 fetched);
+    checker.Check(Moves(fetched, {{BankChoice::Withdraw, LINEN}}) && fetched.withdrawDue == 1 &&
+                      GuidIs(fetched, 1, BankChoice::Withdraw, BankReason::ForAuction),
+                  "NR12b: sale stock whose listing pays is due at a bank stop with an auction stop after it");
+    checker.Check(waits.steps.empty() && GuidIs(waits, 1, BankChoice::Leave, BankReason::KeptStock),
+                  "NR12b: without an auction stop after it the stock waits in the bank");
+    checker.Check(std::string(ReasonWord(BankReason::ForAuction)) == "for_auction",
+                  "NR12b: the withdrawal's word is its own (for_auction)");
+
+    CaseMarket flat = market;
+    flat.worthEach = LINEN_PAYOUT;
+    uint32_t const gain = BankedStockGain(ReadLots(banked, market));
+    checker.Check(gain == STACK_20 * 9 && BankedStockGain(ReadLots(banked, flat)) == 0 &&
+                      BankedStockGain(ReadLots(MakeIn(20, {}, {}, 10, 10), market)) == 0,
+                  "NR12b: the banked stock's gain is its listing's worth above the payout (180 c); none that does not "
+                  "pay, none without stock: " +
+                      std::to_string(gain));
+
+    BankIn const carried = MakeIn(20, {SaleLot(1, LINEN, STACK_20, STACK_20, LINEN_PAYOUT)}, {}, 10, 10);
+    BankIn carriedNext = carried;
+    carriedNext.bot.auctionNext = true;
+    BankPlan const kept = PlanBankVisit(ReadLots(carriedNext, market));
+    BankPlan const deposited = PlanBankVisit(ReadLots(carried, market));
+    checker.Check(kept.steps.empty() && GuidIs(kept, 1, BankChoice::Keep, BankReason::ForAuction) &&
+                      Moves(deposited, {{BankChoice::Deposit, LINEN}}),
+                  "NR12b: the bags' sale stock is not deposited before an auction stop, and is without one");
+
+    BankIn after = banked;
+    for (BankStep const& step : fetched.steps)
+        Apply(after, step);
+    CarriedKeeps const keeps = KeptInBags(ReadLots(after, market));
+    checker.Check(ListsStack(keeps, 1) && KeptWorthEach(keeps, LINEN, 20) > 0,
+                  "NR12b: the withdrawn stack stays carried as stock: the auction visit lists it, and the item usage's "
+                  "bank keep (ITEM_USAGE_BANK) stops a vendor on the way from selling it");
+
+    // Fetched for each auction stop, held there, deposited again at a later bank visit with no auction after it
+    BankIn trip = banked;
+    CaseMarket held = market;
+    uint32_t rounds = 0;
+    for (uint32_t round = 1; round <= 10 && !rounds; ++round)
+    {
+        BankIn fetch = trip;
+        fetch.bot.auctionNext = true;
+        for (BankStep const& step : PlanBankVisit(ReadLots(fetch, held)).steps)
+            Apply(trip, step);
+        ++held.expiredSteps;
+        BankPlan const back = PlanBankVisit(ReadLots(trip, held));
+        for (BankStep const& step : back.steps)
+            Apply(trip, step);
+        if (!back.deposits)
+            rounds = round;
+    }
+    ++held.expiredSteps;
+    bool const ends = KeptWorthEach(KeptInBags(ReadLots(trip, held)), LINEN, 20) == 0;
+    checker.Check(rounds && rounds <= 9 / 4 && ends,
+                  "NR12b: repeated holds end the round trips: " + std::to_string(rounds) +
+                      " fetches (at most the gain over the drop a hold takes, 9 / 4), then the lot stays carried and "
+                      "the next hold ends its keep");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -1778,6 +2216,12 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckBankSpace(checker);
     CheckAuctionStock(checker);
     CheckStockSearch(checker, STOCK_SEARCH_SEED);
+    CheckCountSplit(checker);
+    CheckSplitSearch(checker, SPLIT_SEARCH_SEED);
+    CheckLotRemainder(checker);
+    CheckMaterialKeepAcrossRecompute(checker);
+    CheckMargin(checker);
+    CheckForAuction(checker);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;
