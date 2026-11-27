@@ -60,53 +60,9 @@ bool IsPlainBag(Bag const* bag)
            bag->GetTemplate()->SubClass == ITEM_SUBCLASS_CONTAINER;
 }
 
-// Bots learn dual wield (warriors, hunters) at 20 and plate or mail at 40 (PlayerbotFactory::InitSkills), as players
-// learn them from their trainers
+// Bots learn dual wield (warriors, hunters) at 20 (PlayerbotFactory::InitSkills), as players learn it from their
+// trainers
 constexpr uint32 DUAL_WIELD_LEVEL = 20;
-constexpr uint32 HEAVY_ARMOR_LEVEL = 40;
-
-// The relic kind a class wears in its ranged slot, as Player::CanUseItem checks it (warlocks: the misc kind);
-// MAX_ITEM_SUBCLASS_ARMOR (none) for the others
-uint32 RelicSubClassFor(uint8 playerClass)
-{
-    switch (playerClass)
-    {
-        case CLASS_PALADIN:
-            return ITEM_SUBCLASS_ARMOR_LIBRAM;
-        case CLASS_DRUID:
-            return ITEM_SUBCLASS_ARMOR_IDOL;
-        case CLASS_SHAMAN:
-            return ITEM_SUBCLASS_ARMOR_TOTEM;
-        case CLASS_DEATH_KNIGHT:
-            return ITEM_SUBCLASS_ARMOR_SIGIL;
-        case CLASS_WARLOCK:
-            return ITEM_SUBCLASS_ARMOR_MISC;
-        default:
-            return MAX_ITEM_SUBCLASS_ARMOR;
-    }
-}
-
-// The heaviest armor kind a class wears at a level; it wears every lighter kind too
-uint32 HeaviestArmorFor(uint8 playerClass, uint32 level)
-{
-    bool const heavy = level >= HEAVY_ARMOR_LEVEL;
-    switch (playerClass)
-    {
-        case CLASS_DEATH_KNIGHT:
-            return ITEM_SUBCLASS_ARMOR_PLATE;
-        case CLASS_WARRIOR:
-        case CLASS_PALADIN:
-            return heavy ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL;
-        case CLASS_HUNTER:
-        case CLASS_SHAMAN:
-            return heavy ? ITEM_SUBCLASS_ARMOR_MAIL : ITEM_SUBCLASS_ARMOR_LEATHER;
-        case CLASS_ROGUE:
-        case CLASS_DRUID:
-            return ITEM_SUBCLASS_ARMOR_LEATHER;
-        default:
-            return ITEM_SUBCLASS_ARMOR_CLOTH;
-    }
-}
 
 bool DualWieldsAt(Player const* bot, uint32 level)
 {
@@ -116,9 +72,8 @@ bool DualWieldsAt(Player const* bot, uint32 level)
 }
 
 // Whether the equip logic would wear the item at `level` (its required level, or the bot's when higher), by the gates
-// that stop an equip there: the core's masks and skills (Player::CanUseItem) as bots hold them at that level and the
-// class's weapon kinds. No stat or exact armor kind gate: the item usage only labels with CanEquipArmor, the score
-// decides, as it does here
+// that stop an equip there: the core's masks and skills (Player::CanUseItem) as bots hold them at that level, the
+// class's weapon kinds and the upgrade rule's armor kind. No stat gate: the score decides
 bool IsWearable(Player const* bot, ItemTemplate const* proto, uint32 level)
 {
     if (!(proto->AllowableClass & bot->getClassMask()) || !(proto->AllowableRace & bot->getRaceMask()))
@@ -131,26 +86,7 @@ bool IsWearable(Player const* bot, ItemTemplate const* proto, uint32 level)
 
     if (proto->Class == ITEM_CLASS_WEAPON)
         return proto->SubClass != ITEM_SUBCLASS_WEAPON_MISC && sRandomItemMgr.CanEquipWeapon(proto, bot->getClass());
-    if (proto->Class != ITEM_CLASS_ARMOR)
-        return false;
-    if (proto->InventoryType == INVTYPE_RELIC)
-        return proto->SubClass == RelicSubClassFor(bot->getClass());
-
-    uint8 const playerClass = bot->getClass();
-    switch (proto->SubClass)
-    {
-        // Cloaks are cloth
-        case ITEM_SUBCLASS_ARMOR_CLOTH:
-        case ITEM_SUBCLASS_ARMOR_LEATHER:
-        case ITEM_SUBCLASS_ARMOR_MAIL:
-        case ITEM_SUBCLASS_ARMOR_PLATE:
-            return proto->SubClass <= HeaviestArmorFor(playerClass, level);
-        case ITEM_SUBCLASS_ARMOR_SHIELD:
-            return playerClass == CLASS_WARRIOR || playerClass == CLASS_PALADIN || playerClass == CLASS_SHAMAN;
-        // Necks, rings, trinkets, held off-hands, shirts and tabards: no armor skill, any class the masks allow
-        default:
-            return true;
-    }
+    return sRandomItemMgr.CanEquipArmorKind(proto, bot->getClass(), level);
 }
 
 struct WornSlots
