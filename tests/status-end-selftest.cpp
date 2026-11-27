@@ -134,7 +134,8 @@ int main()
             StatusModel status{4000, 7};
             int planner = 3;
             int memos = 2;
-            std::uint32_t constraints = 0x21;
+            std::uint64_t const testSet = 0x21 | (std::uint64_t{1} << 40);  // a test's set, a bit past 31 in it
+            std::uint64_t constraints = testSet;
             StatusEnd::ApplyReset(list.status, status);
             StatusEnd::ApplyReset(list.planner, planner);
             StatusEnd::ApplyReset(list.rpgMemos, memos);
@@ -144,9 +145,9 @@ int main()
                           isTravel, kept ? "kept" : "fresh", static_cast<unsigned>(status.startT));
             counts.Check(kept ? status.startT == 4000 && status.data == 7 : status.startT == 0 && status.data == 0,
                          "reset list", detail);
-            std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: planner %d, memos %d, constraints %u",
-                          farTeleport, isTravel, planner, memos, static_cast<unsigned>(constraints));
-            counts.Check(planner == 0 && memos == 0 && constraints == 0x21, "reset list", detail);
+            std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: planner %d, memos %d, constraints %llx",
+                          farTeleport, isTravel, planner, memos, static_cast<unsigned long long>(constraints));
+            counts.Check(planner == 0 && memos == 0 && constraints == testSet, "reset list", detail);
             // The held trip follows its holder's status (WT64f): kept with it, else ended as Interrupted
             StatusEnd::TripHold<int> hold;
             if (isTravel != 0)

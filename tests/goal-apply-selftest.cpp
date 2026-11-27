@@ -19,6 +19,7 @@
 
 #include "ClassQuestRules.h"
 #include "GoalInterface.h"
+#include "GoalModelLog.h"
 #include "PlannerPoolTypes.h"
 #include "QuestFailBook.h"
 #include "TestConstraints.h"
@@ -1006,10 +1007,10 @@ int main()
     // released bot's first goal is chosen after the release; a constraint change that releases nothing keeps the goal
     {
         using namespace TestConstraints;
-        auto const apply = [](BotGoals& goals, std::uint32_t before, std::uint32_t after)
+        auto const apply = [](BotGoals& goals, Set before, Set after)
         { return Releases(before, after) && Release(goals); };
         // The control: WR20c-3's old rule (a quest goal under noquest only) leaves every other kind standing
-        auto const questOnly = [](BotGoals& goals, std::uint32_t, std::uint32_t after)
+        auto const questOnly = [](BotGoals& goals, Set, Set after)
         {
             if (QuestChoicesAllowed(after) || !goals.slot.Holds(Goals::GoalKind::Quest))
                 return false;
@@ -1050,7 +1051,7 @@ int main()
         Check(apply(goals, HOLD, PLANNER | STATUS) && goals.planUsed,
               "the plan taken before the release starts no goal after it");
         goals.slot.Set(GoalOf(Goals::GoalKind::Gather, 10, Source::Planner));
-        std::uint32_t const released = NOQUEST;
+        Set const released = NOQUEST;
         Check(!apply(goals, released, Next(released, NOFIGHT, 0)) &&
                   goals.slot.Query().kind == Goals::GoalKind::Gather && !apply(goals, released, released) &&
                   goals.slot.Query().target == 10,
@@ -1061,6 +1062,19 @@ int main()
               "a bot never held keeps its goal (a state row turning off is no release)");
         goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 12, Source::Bridge));
         Check(!apply(goals, HOLD, 0) && goals.slot.HasExternal(), "the bridge's quest order stays at a release");
+
+        // A start refused before the hold left only its block: nothing in the slot, so Release ends no goal
+        BotGoals refused;
+        BlockKey(refused, 13, 5, 0, BLOCK);
+        bool const blocked = !MayStart(refused, 13, 5);
+        Check(blocked && !Release(refused) && MayStart(refused, 13, 5),
+              "a release with an empty slot drops the stall list, so the refused start may start");
+
+        Goals::Ranked empty;
+        empty.ok = true;
+        std::vector<GoalLog::Row> const rows = GoalLog::Rows(empty);
+        Check(rows.size() == 1 && rows[0].choice == "none:0" && rows[0].reason == "no_options",
+              "an empty plan gives one goal row, none with no_options");
     }
 
     // The gain rule (professions WR20c): a gather or money goal that took items or copper made progress without XP;

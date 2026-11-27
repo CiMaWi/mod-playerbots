@@ -79,10 +79,10 @@ bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest);
 
 // Player::CanInteractWithQuestGiver without the distance check.
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
-// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test. A bot on an order asks
-// OrderTake (take: the search's, else one of its own), without the game's take check: a planned take the game refuses
-// stays open, and its order's end at the giver gives it up (QuestFail cannot_take, WQ18c)
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0, OrderTake* take = nullptr);
+// constraints: the bot's test constraints (a TestConstraints::Set, GiverSought); 0 outside a test. A bot on an order
+// asks OrderTake (take: the search's, else one of its own), without the game's take check: a planned take the game
+// refuses stays open, and its order's end at the giver gives it up (QuestFail cannot_take, WQ18c)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint64 constraints = 0, OrderTake* take = nullptr);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 // Questing WT36a: a bot the planner owns takes no quest the executor refuses for its side (the quest index's capability

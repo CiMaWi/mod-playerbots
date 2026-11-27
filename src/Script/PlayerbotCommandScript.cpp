@@ -705,7 +705,7 @@ public:
 
     // A test's constraint change (TestConstraints, functional tests): posted like a travel order, so the bot's map
     // thread applies it ahead of the AI's delays and writes a Constraint row
-    static void PostConstraints(PlayerbotAI* botAI, uint32 on, uint32 off)
+    static void PostConstraints(PlayerbotAI* botAI, TestConstraints::Set on, TestConstraints::Set off)
     {
         TravelOrder order;
         order.on = on;
@@ -842,7 +842,7 @@ public:
         if (!botAI)
             return false;
         TestConstraints::Parsed const parsed = TestConstraints::Parse(std::string_view(choices));
-        uint32 const states = parsed.set & TestConstraints::STATES;
+        TestConstraints::Set const states = parsed.set & TestConstraints::STATES;
         if (!parsed.bad.empty() || states)
         {
             handler->SendErrorMessage("ROUTE release: unknown choice '{}' ({})",
@@ -850,7 +850,7 @@ public:
                                       TestConstraints::Format(TestConstraints::CHOICES));
             return false;
         }
-        PostConstraints(botAI, parsed.set, static_cast<uint32>(TestConstraints::HOLD & ~parsed.set));
+        PostConstraints(botAI, parsed.set, TestConstraints::HOLD & ~parsed.set);
         handler->PSendSysMessage("ROUTE release: {} ordered (kept off: {})", target.GetName(),
                                  TestConstraints::Format(parsed.set));
         return true;
