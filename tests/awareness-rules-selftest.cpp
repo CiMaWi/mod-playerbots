@@ -2398,13 +2398,42 @@ void TestDeadFixed()
     facts.ghostSeconds = GHOST_BOUND_SECONDS - 1;
     Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 2: a second before the bound the rule goes on");
     facts.ghostSeconds = GHOST_BOUND_SECONDS + 5;
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     facts.healerInRange = true;
     Check(Is(facts, DeadAct::HealerRevive, DeadReason::WaitEnded), "dead 2: at the grave with a healer: its revive");
     facts.healerInRange = false;
     Check(Is(facts, DeadAct::ReviveGrave, DeadReason::WaitEnded), "dead 2: at the grave without one: revive there");
     facts.graveKnown = false;
     Check(Is(facts, DeadAct::ReviveHere, DeadReason::WaitEnded), "dead 2: no grave known: revive here");
+
+    // AW33b: the delay of a step of the dead never sleeps past the bound
+    Check(DeadDelayMs(3600 * 1000, 0) == GHOST_BOUND_SECONDS * 1000 && DeadDelayMs(1000, 0) == 1000,
+          "dead delay: an hour's hold at the death is cut to the bound, a second stays");
+    Check(DeadDelayMs(5000, GHOST_BOUND_SECONDS - 1) == 1000 && DeadDelayMs(1000, GHOST_BOUND_SECONDS) == 1 &&
+              DeadDelayMs(1000, GHOST_BOUND_SECONDS + 300) == 1 && DeadDelayMs(0, 10) == 1,
+          "dead delay: the time left to the bound, 1 ms at least");
+    // AW33b: the walk's progress test
+    {
+        WalkWatch watch = WatchWalk({}, WalkKind::Corpse, 0.0f, 0.0f, 100.0f, 1000);
+        Check(!WalkStalled(watch, 1000 + 59999) && WalkStalled(watch, 1000 + 60000),
+              "walk watch: a ghost 100 yd off that comes no nearer stalls after 60 s");
+        WalkWatch nearer = WatchWalk(watch, WalkKind::Corpse, 0.0f, 0.0f, 70.0f, 50000);
+        Check(nearer.startMs == 50000 && !WalkStalled(nearer, 1000 + 60000),
+              "walk watch: 30 yd nearer starts a new window");
+        WalkWatch creeps = WatchWalk(watch, WalkKind::Corpse, 0.0f, 0.0f, 71.0f, 50000);
+        Check(creeps.startMs == 1000 && WalkStalled(creeps, 1000 + 60000),
+              "walk watch: 29 yd nearer in a minute stalls");
+        Check(WatchWalk(watch, WalkKind::Corpse, 31.0f, 0.0f, 100.0f, 50000).startMs == 50000 &&
+                  WatchWalk(watch, WalkKind::Corpse, 29.0f, 0.0f, 100.0f, 50000).startMs == 1000,
+              "walk watch: a target moved more than 30 yd is a new walk, a nearer one is not");
+        Check(WatchWalk(watch, WalkKind::Grave, 0.0f, 0.0f, 100.0f, 50000).startMs == 50000,
+              "walk watch: the walk to the grave is another walk");
+        Check(WatchWalk(watch, WalkKind::Corpse, 0.0f, 0.0f, ARRIVE_YARDS, 61000).startMs == 61000,
+              "walk watch: at the target the window starts anew");
+        Check(WatchPause(watch, 30000).kind == WalkKind::None && WatchPause(watch, 61000).kind == WalkKind::Corpse,
+              "walk watch: a step that does not walk ends the window, not a stalled one");
+        Check(!WalkStalled(WalkWatch{}, 1000000), "walk watch: no walk, no stall");
+    }
 
     // Line 3: the healer's way
     facts = QuietGhost();
@@ -2427,11 +2456,13 @@ void TestDeadFixed()
     facts = QuietGhost();
     facts.healerChosen = true;
     Check(Is(facts, DeadAct::WalkGrave, DeadReason::None), "dead 3: the healer once chosen is kept");
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: at the grave without a healer: wait");
     facts.healerInRange = true;
     Check(Is(facts, DeadAct::HealerRevive, DeadReason::None), "dead 3: at the grave with a healer: its revive");
-    facts.atGrave = false;
+    // AW33b: a healer seen from off the grave's point (in sight of the grave) is walked to: the revive is at the point
+    facts.atGravePoint = false;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::None), "dead 3: a healer seen off the grave's point: walk on");
     facts.graveWalkFailed = true;
     Check(Is(facts, DeadAct::TeleportGrave, DeadReason::None), "dead 3: no walk to the grave: teleport unseen");
     facts.teleportSeen = true;
@@ -2601,7 +2632,7 @@ void TestDeadFixed()
     facts.graveWithoutHealer = true;
     Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3 closed: the third death in a row rises at its corpse");
     facts.corpseYards = GHOST_LOOK_YARDS + 1.0f;
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     Check(Is(facts, DeadAct::WalkCorpse, DeadReason::None), "dead 3 closed: from the grave back to the corpse");
     facts = QuietGhost();
     facts.healerChosen = true;
@@ -2629,34 +2660,34 @@ void TestDeadFixed()
     facts.corpseWalkFailed = true;
     Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 3 closed: the hold before the failed walk");
     facts.playerHold = PlayerHold::None;
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3 closed: a walk that cannot start waits");
-    facts.atGrave = false;
+    facts.atGravePoint = false;
     facts.graveWalkFailed = true;
     facts.teleportSeen = true;
     Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3 closed: a failed walk never teleports");
     facts = QuietGhost();
     facts.graveWithoutHealer = true;
     facts.corpseHere = false;
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: no corpse here: the grave's wait as before");
-    facts.atGrave = false;
+    facts.atGravePoint = false;
     Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway), "dead 3: no corpse here: the healer's way as before");
     facts.healerChosen = true;
     facts.playerHold = PlayerHold::Healer;
     facts.corpseWalkFailed = true;
     Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway),
           "dead 3: no corpse here: the healer once chosen, a hold and a failed walk close nothing");
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer),
           "dead 3: no corpse here: the healer once chosen still waits at the grave");
     facts = QuietGhost();
     facts.graveWithoutHealer = true;
     facts.healerChosen = true;
     facts.ghostSeconds = GHOST_BOUND_SECONDS;
-    facts.atGrave = true;
+    facts.atGravePoint = true;
     Check(Is(facts, DeadAct::ReviveGrave, DeadReason::WaitEnded), "dead 2 closed: the bound comes first");
-    facts.atGrave = false;
+    facts.atGravePoint = false;
     Check(Is(facts, DeadAct::TeleportGrave, DeadReason::WaitEnded), "dead 2 closed: the bound's teleport");
     facts = QuietGhost();
     facts.graveWithoutHealer = true;
@@ -2684,6 +2715,29 @@ void TestDeadFixed()
               !std::strcmp(RiseWord(DeadStep{DeadAct::Wait, DeadReason::Player}, true, false), "other") &&
               !std::strcmp(RiseWord(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}, true, true), "other"),
           "rise row: the word by the rule's last step and the place");
+    Check(!std::strcmp(RiseWord(DeadStep{}, false, false, true), "self") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, true, true, true), "self") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, true, true, false), "clear"),
+          "rise row: a self-resurrection the self-rise rule ordered: self");
+
+    // AW33b: the self-rise rule, a body that holds a self-resurrection
+    SelfRiseFacts body;
+    body.own.clear = true;
+    body.own.inView = true;
+    Check(SelfRiseStep(body) == SelfRiseAct::Rise, "self rise: a clear place in view: rise at once");
+    body.own.inView = false;
+    Check(SelfRiseStep(body) == SelfRiseAct::Wait, "self rise: a clear place out of view waits");
+    body.own = OneTakeable();
+    body.bodySeconds = SELF_RISE_WAIT_SECONDS - 1;
+    Check(SelfRiseStep(body) == SelfRiseAct::Wait, "self rise: a reached place waits for it to clear");
+    body.bodySeconds = SELF_RISE_WAIT_SECONDS;
+    Check(SelfRiseStep(body) == SelfRiseAct::Release, "self rise: the wait over: release");
+    body.inBattleground = true;
+    Check(SelfRiseStep(body) == SelfRiseAct::Rise, "self rise: a battleground body rises at once");
+    body.inBattleground = false;
+    body.ownedByPlayer = true;
+    body.bodySeconds = 0;
+    Check(SelfRiseStep(body) == SelfRiseAct::Rise, "self rise: a player's bot rises at once");
 }
 
 // A generated point answer as JudgePoint gives them: clear exactly when none reaches, a clearance above the margin
@@ -2747,7 +2801,7 @@ DeadFacts RandomDeadFacts(Generator& generator)
     facts.corpseWalkFailed = generator.Next() % 8 == 0;
     facts.healerChosen = generator.Next() % 4 == 0;
     facts.graveKnown = generator.Next() % 8 != 0;
-    facts.atGrave = generator.Next() % 3 == 0;
+    facts.atGravePoint = generator.Next() % 3 == 0;
     facts.healerInRange = generator.Next() % 2;
     facts.graveWalkFailed = generator.Next() % 4 == 0;
     facts.teleportSeen = generator.Next() % 2;
@@ -2816,32 +2870,38 @@ void TestDeadGenerated()
         DeadStep const step = NextOfDead(facts);
         bool const bound = step.act == DeadAct::HealerRevive || step.act == DeadAct::ReviveGrave ||
                            step.act == DeadAct::ReviveHere || step.act == DeadAct::TeleportGrave;
-        counterexamples += !bound || (facts.atGrave && step.act == DeadAct::TeleportGrave);
+        counterexamples += !bound || (facts.atGravePoint && step.act == DeadAct::TeleportGrave);
     }
     ReportDead("P1 bound-total", INVARIANT_CASES, counterexamples, SEED);
 
-    // P2 Every run ends: the facts drawn anew each step, the seconds growing by 1, the memo carried as the caller
-    // carries it (the healer once chosen, the unclear clock), a teleport puts the ghost at its grave; a Rise the core
-    // accepts or a revive ends the run, by GHOST_BOUND_SECONDS + 2 steps at the latest (a run that starts past the
-    // bound: 2 steps)
+    // P2 Every run ends: the facts drawn anew each step, the memo carried as the caller carries it (the healer once
+    // chosen, the unclear clock), a teleport puts the ghost at its grave; a Rise the core accepts or a revive ends the
+    // run, within 2 steps asked at or past the bound. AW33b: each step draws its delay (most a second, some a hold of
+    // up to an hour, world PvP's), cut by DeadDelayMs as the caller cuts it, so the first step at or past the bound is
+    // asked at the bound itself
     counterexamples = 0;
     std::uint64_t steps = 0;
     int bounded = 0;
+    int held = 0;
     for (int i = 0; i < INVARIANT_CASES; ++i)
     {
         // A hard run: the core refuses every Rise and no healer is in range, so only the bound ends it
         bool const hard = generator.Next() % 2 == 0;
         std::uint32_t const accept = hard || generator.Next() % 3 == 0 ? 0 : 1 + generator.Next() % 4;  // 0: refuses
         std::uint32_t const start = generator.Next() % (GHOST_BOUND_SECONDS + 50);
-        std::uint32_t const last = std::max(start, GHOST_BOUND_SECONDS) + 1;
         bool chosen = false;
         bool withoutHealer = generator.Next() % 8 == 0;
         bool teleported = false;
         std::int64_t unclearStart = -1;
         bool ended = false;
+        std::uint64_t ms = std::uint64_t{start} * 1000;
         std::uint32_t seconds = start;
-        for (; seconds <= last && !ended; ++seconds)
+        int pastBound = 0;  // the steps asked at or past the bound
+        while (!ended && pastBound < 2)
         {
+            seconds = static_cast<std::uint32_t>(ms / 1000);
+            if (seconds >= GHOST_BOUND_SECONDS && !pastBound++)
+                counterexamples += start < GHOST_BOUND_SECONDS && seconds > GHOST_BOUND_SECONDS;
             ++steps;
             DeadFacts facts = RandomDeadFacts(generator);
             PastLineOne(facts);
@@ -2855,27 +2915,33 @@ void TestDeadGenerated()
             if (hard)
             {
                 facts.healerInRange = false;
-                facts.atGrave = false;
+                facts.atGravePoint = false;
             }
             if (teleported)
             {
                 facts.graveKnown = true;
-                facts.atGrave = true;
+                facts.atGravePoint = true;
             }
             // AW30b: the caller's search at the grave that finds no healer closes the healer's way for the run
-            bool const searched = !withoutHealer && facts.atGrave && !facts.healerInRange && generator.Next() % 4 == 0;
-            withoutHealer = GraveWithoutHealer(withoutHealer, facts.atGrave, searched, facts.healerInRange);
+            bool const searched =
+                !withoutHealer && facts.atGravePoint && !facts.healerInRange && generator.Next() % 4 == 0;
+            withoutHealer = GraveWithoutHealer(withoutHealer, facts.atGravePoint, searched, facts.healerInRange);
             facts.graveWithoutHealer = withoutHealer;
             DeadStep const step = NextOfDead(facts);
             chosen = chosen || ChoosesHealer(step);
             teleported = teleported || step.act == DeadAct::TeleportGrave;
             ended = Revives(step.act) || (step.act == DeadAct::Rise && accept && generator.Next() % accept == 0);
+            bool const hold = generator.Next() % 4 == 0;
+            std::uint32_t const delayMs = hold ? 1000 + generator.Next() % (3600 * 1000) : 1000;
+            held += hold && delayMs > (GHOST_BOUND_SECONDS - std::min(seconds, GHOST_BOUND_SECONDS)) * 1000;
+            ms += DeadDelayMs(delayMs, seconds);
         }
         counterexamples += !ended;
-        bounded += ended && start < GHOST_BOUND_SECONDS && seconds > GHOST_BOUND_SECONDS;
+        bounded += ended && start < GHOST_BOUND_SECONDS && seconds >= GHOST_BOUND_SECONDS;
     }
-    std::printf("AW8 reading: P2 ran %llu steps, %d runs reached the bound\n", static_cast<unsigned long long>(steps),
-                bounded);
+    std::printf("AW8 reading: P2 ran %llu steps, %d runs reached the bound, %d delays cut at it\n",
+                static_cast<unsigned long long>(steps), bounded, held);
+    Check(held > INVARIANT_CASES / 10, "P2: holds longer than the time left to the bound");
     Check(bounded > INVARIANT_CASES / 10, "P2: runs that only the bound ends");
     ReportDead("P2 every-run-ends", INVARIANT_CASES, counterexamples, SEED);
 
@@ -3018,6 +3084,174 @@ void TestDeadGenerated()
     std::printf("AW30b reading: P10 waited (no_healer) in %d cases\n", closedWaits);
     Check(closedWaits > INVARIANT_CASES / 100, "P10: the generated facts give waits of a closed way to judge");
     ReportDead("P10 healer-closed", INVARIANT_CASES, counterexamples, SEED);
+
+    // P11 A stalled walk ends (AW33b): runs of one-second steps over facts drawn once per run and anew now and then (a
+    // new target), the memo carried as the caller carries it, the walk's watch kept as Awareness::NextOfDead and
+    // WalkStalled keep it (a walk updates it, a stall is reported as the walk's failure and the rule asked again, a
+    // step that does not walk pauses it). A ghost that stands (within 2 yd) holds no walk of one kind on one draw for
+    // more than WALK_PROGRESS_SECONDS plus one step; a ghost that walks at 1.5 yd/s or faster is never stalled
+    counterexamples = 0;
+    int stalls = 0;
+    int walking = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        bool const walks = generator.Next() % 2 == 0;
+        float const speed = generator.Range(1.5f, 10.0f);
+        float const from = generator.Range(0.0f, 6.2832f);
+        float const far = generator.Range(70.0f, 600.0f);
+        float gx = far * std::cos(from);  // the ghost; the corpse at 0, 0
+        float gy = far * std::sin(from);
+        float const graveX = generator.Range(-600.0f, 600.0f);
+        float const graveY = generator.Range(-600.0f, 600.0f);
+        float const leaderX = generator.Range(-30.0f, 30.0f);
+        float const leaderY = generator.Range(-30.0f, 30.0f);
+        DeadFacts drawn = RandomDeadFacts(generator);
+        PastLineOne(drawn);
+        std::uint32_t seconds = generator.Next() % (GHOST_BOUND_SECONDS - 200);
+        bool chosen = false;
+        WalkWatch watch;
+        WalkKind heldKind = WalkKind::None;
+        std::uint32_t heldSteps = 0;
+        bool ended = false;
+        for (int t = 0; t < 200 && !ended; ++t, ++seconds)
+        {
+            std::uint32_t const nowMs = 1 + seconds * 1000;
+            if (generator.Next() % 40 == 0)
+            {
+                drawn = RandomDeadFacts(generator);
+                PastLineOne(drawn);
+                heldKind = WalkKind::None;
+            }
+            DeadFacts facts = drawn;
+            facts.ghostSeconds = seconds;
+            facts.healerChosen = chosen;
+            facts.corpseWalkFailed = false;
+            facts.graveWalkFailed = false;
+            DeadStep step = NextOfDead(facts);
+            float tx = 0.0f;
+            float ty = 0.0f;
+            WalkKind kind = WalkKind::None;
+            for (int ask = 0; ask < 3 && WalkOfDead(step.act); ++ask)
+            {
+                kind = step.act == DeadAct::WalkGrave ? WalkKind::Grave : WalkKind::Corpse;
+                tx = step.act == DeadAct::WalkGrave                                        ? graveX
+                     : step.act == DeadAct::WalkCorpse                                     ? 0.0f
+                     : step.act == DeadAct::WalkPoint && step.reason == DeadReason::Leader ? leaderX
+                                                                                           : facts.best.x;
+                ty = step.act == DeadAct::WalkGrave                                        ? graveY
+                     : step.act == DeadAct::WalkCorpse                                     ? 0.0f
+                     : step.act == DeadAct::WalkPoint && step.reason == DeadReason::Leader ? leaderY
+                                                                                           : facts.best.y;
+                watch = WatchWalk(watch, kind, tx, ty, PlanarDistance(gx, gy, tx, ty), nowMs);
+                if (!WalkStalled(watch, nowMs))
+                    break;
+                ++stalls;
+                counterexamples += walks;  // a ghost that comes nearer is never stalled
+                (kind == WalkKind::Grave ? facts.graveWalkFailed : facts.corpseWalkFailed) = true;
+                step = NextOfDead(facts);
+            }
+            chosen = chosen || ChoosesHealer(step);
+            if (!WalkOfDead(step.act))
+            {
+                watch = WatchPause(watch, nowMs);
+                ended = Revives(step.act) || step.act == DeadAct::Rise || step.act == DeadAct::TeleportGrave;
+                continue;
+            }
+            // The walk carried out: a standing ghost on one draw holds it at most WALK_PROGRESS_SECONDS + 1 steps
+            heldSteps = kind == heldKind ? heldSteps + 1 : 1;
+            heldKind = kind;
+            counterexamples += !walks && heldSteps > WALK_PROGRESS_SECONDS + 1;
+            float const yards = PlanarDistance(gx, gy, tx, ty);
+            if (walks)
+            {
+                ++walking;
+                float const stepYards = std::min(speed, std::max(0.0f, yards - 1.0f));
+                if (yards > 0.0f)
+                {
+                    gx += (tx - gx) / yards * stepYards;
+                    gy += (ty - gy) / yards * stepYards;
+                }
+            }
+            else
+            {
+                gx += generator.Range(-1.0f, 1.0f);
+                gy += generator.Range(-1.0f, 1.0f);
+                gx = std::clamp(gx, far * std::cos(from) - 2.0f, far * std::cos(from) + 2.0f);
+                gy = std::clamp(gy, far * std::sin(from) - 2.0f, far * std::sin(from) + 2.0f);
+            }
+        }
+    }
+    std::printf("AW33b reading: P11 reported %d stalls, %d steps walked\n", stalls, walking);
+    Check(stalls > INVARIANT_CASES / 10, "P11: the standing ghosts' walks stall");
+    Check(walking > INVARIANT_CASES * 10, "P11: the walking ghosts walk");
+    ReportDead("P11 stalled-walk-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // P12 The revive at the grave is at its point (AW33b): over any facts HealerRevive and ReviveGrave imply
+    // atGravePoint; the same facts off the point (a ghost in sight of the grave or farther) never revive at the grave
+    counterexamples = 0;
+    int graveRevives = 0;
+    int offPoint = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        if (generator.Next() % 2)
+            PastLineOne(facts);
+        DeadStep const step = NextOfDead(facts);
+        bool const atGraveRevive = step.act == DeadAct::HealerRevive || step.act == DeadAct::ReviveGrave;
+        graveRevives += atGraveRevive;
+        counterexamples += atGraveRevive && !facts.atGravePoint;
+        DeadFacts off = facts;
+        off.atGravePoint = false;
+        DeadStep const offStep = NextOfDead(off);
+        offPoint += HealerWay(offStep.act) || offStep.act == DeadAct::TeleportGrave;
+        counterexamples += offStep.act == DeadAct::HealerRevive || offStep.act == DeadAct::ReviveGrave;
+    }
+    std::printf("AW33b reading: P12 judged %d revives at the grave, %d steps off its point\n", graveRevives, offPoint);
+    Check(graveRevives > INVARIANT_CASES / 20, "P12: the generated facts give revives at the grave to judge");
+    Check(offPoint > INVARIANT_CASES / 20, "P12: the generated facts give steps off the grave's point");
+    ReportDead("P12 revive-at-point", INVARIANT_CASES, counterexamples, SEED);
+
+    // SR1 Every self-rise run ends (AW33b): a body's steps at drawn delays (most a tick, some up to 5 s), its place
+    // drawn once and anew now and then: the run ends by Rise or Release, and the first step asked at or past
+    // SELF_RISE_WAIT_SECONDS ends it (within the wait and one step). SR2 A Rise has its cause: a clear place in view,
+    // a battleground or a player's bot; Wait only before the wait is over
+    counterexamples = 0;
+    int selfRises = 0;
+    int selfReleases = 0;
+    int allowedFails = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t ms = generator.Next() % 2000;
+        bool const rare = generator.Next() % 8 == 0;
+        PointAnswer place = RandomAnswer(generator);  // the place, drawn anew now and then (a creature comes or goes)
+        bool ended = false;
+        while (!ended)
+        {
+            if (generator.Next() % 40 == 0)
+                place = RandomAnswer(generator);
+            SelfRiseFacts facts;
+            facts.inBattleground = rare && generator.Next() % 8 == 0;
+            facts.ownedByPlayer = rare && generator.Next() % 8 == 0;
+            facts.bodySeconds = ms / 1000;
+            facts.own = place;
+            SelfRiseAct const act = SelfRiseStep(facts);
+            bool const cause = (facts.own.clear && facts.own.inView) || facts.inBattleground || facts.ownedByPlayer;
+            allowedFails += (act == SelfRiseAct::Rise && !cause) ||
+                            (act == SelfRiseAct::Wait && facts.bodySeconds >= SELF_RISE_WAIT_SECONDS);
+            ended = act != SelfRiseAct::Wait;
+            counterexamples += !ended && facts.bodySeconds >= SELF_RISE_WAIT_SECONDS;
+            selfRises += act == SelfRiseAct::Rise;
+            selfReleases += act == SelfRiseAct::Release;
+            if (!ended && facts.bodySeconds >= SELF_RISE_WAIT_SECONDS)
+                break;  // counted: a wait past the bound of the self-rise
+            ms += generator.Next() % 8 == 0 ? 1 + generator.Next() % 5000 : 1 + generator.Next() % 400;
+        }
+    }
+    std::printf("AW33b reading: SR1 %d self-rises, %d releases\n", selfRises, selfReleases);
+    Check(selfRises > INVARIANT_CASES / 4 && selfReleases > INVARIANT_CASES / 20,
+          "SR1: the generated bodies both rise and release");
+    ReportDead("SR1 self-rise-ends", INVARIANT_CASES, counterexamples, SEED);
+    ReportDead("SR2 self-rise-allowed", INVARIANT_CASES, allowedFails, SEED);
 }
 
 // AW9: the row of deaths (§3.5, P7), the recovery (§3.6, P8), the return's memo and the `death` rows. Each generated
@@ -3155,9 +3389,9 @@ void TestAw9Fixed()
           "death row: corpse_walk/moving");
     Check(RowIs("wait", "no_clear_point", DeadAct::Wait, DeadReason::NoClearPoint, DeadReason::None) &&
               RowIs("wait", "no_healer", DeadAct::Wait, DeadReason::NoHealer, DeadReason::CorpseRunsExhausted) &&
-              RowIs("none", "none", DeadAct::Wait, DeadReason::Player, DeadReason::None) &&
+              RowIs("wait", "player", DeadAct::Wait, DeadReason::Player, DeadReason::None) &&
               RowIs("none", "none", DeadAct::Wait, DeadReason::LeaderDown, DeadReason::None),
-          "death row: wait/no_clear_point and wait/no_healer, no row for the other waits");
+          "death row: wait/no_clear_point, wait/no_healer and wait/player, no row for the other waits");
     Check(RowIs("healer_walk", "corpse_runs_exhausted", DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted,
                 DeadReason::CorpseRunsExhausted) &&
               RowIs("healer_walk", "corpse_camped", DeadAct::WalkGrave, DeadReason::None, DeadReason::CorpseCamped) &&
@@ -3408,6 +3642,8 @@ void TestAw9Generated()
                     way = "wait", reason = "no_clear_point";
                 else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoHealer)
                     way = "wait", reason = "no_healer";
+                else if (step.act == DeadAct::Wait && step.reason == DeadReason::Player)
+                    way = "wait", reason = "player";
                 else if (step.act == DeadAct::WalkGrave)
                     way = "healer_walk", reason = causeWord;
                 else if (step.act == DeadAct::TeleportGrave)
@@ -6141,8 +6377,7 @@ void TestWayTerm()
 
     constexpr int CASES = 300;
     constexpr int PAIRS = 4;
-    std::printf("AW37a ways: %d generated graphs, %d ways each, seed %u%s\n", CASES, PAIRS, seed,
-                "");
+    std::printf("AW37a ways: %d generated graphs, %d ways each, seed %u%s\n", CASES, PAIRS, seed, "");
     int graphs = 0, fold = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0, r7 = 0, r8 = 0, r9 = 0, walks = 0;
     int deadlyAnswers = 0, refused = 0, outOf = 0, clear = 0, deadlyGoals = 0, risen = 0, ways = 0;
     for (int i = 0; i < CASES; ++i)

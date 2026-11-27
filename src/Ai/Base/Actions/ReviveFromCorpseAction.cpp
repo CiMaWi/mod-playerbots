@@ -71,7 +71,9 @@ bool GhostWithoutCorpse(PlayerbotAI* botAI, Player* bot)
 // WU33a: the ghost's way back on record. One `death` row when the step or its reason differs from the last row's of
 // this death, and a repeat row every GHOST_ROW_REPEAT_MS; never a row per tick. Only persistent bots. The row's words
 // come from the rule's step (AwarenessRules::DeathRowOf, AW9). `corpse` is null when it lies on another map (value -1
-// then).
+// then). The alternatives: corpse_yards, grave_yards and login_seconds; for the wait at a grave without a healer
+// (healer_wait/no_healer, AW33b) grave_yards, searched (a search ran near the grave's point) and found (the last
+// search's healer: -1 none yet, 0 none, 1 one).
 void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, Awareness::DeadMemo const& dead,
                  GraveyardStruct const* grave)
 {
@@ -95,11 +97,20 @@ void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, Awarenes
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
     {
-        weighed.Add(
-            {"corpse_yards", corpse && corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
+        bool const healerWait =
+            now.Way == WorldTravel::GhostWay::HealerWait && now.Reason == WorldTravel::GhostReason::NoHealer;
+        if (!healerWait)
+            weighed.Add(
+                {"corpse_yards", corpse && corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
         weighed.Add(
             {"grave_yards", grave && grave->Map == bot->GetMapId() ? bot->GetDistance2d(grave->x, grave->y) : -1.0f});
-        weighed.Add({"login_seconds", static_cast<float>(GetMSTimeDiffToNow(memo.loginMs) / 1000)});
+        if (healerWait)
+        {
+            weighed.Add({"searched", dead.healerSearched ? 1.0f : 0.0f});
+            weighed.Add({"found", static_cast<float>(dead.healerFound)});
+        }
+        else
+            weighed.Add({"login_seconds", static_cast<float>(GetMSTimeDiffToNow(memo.loginMs) / 1000)});
     }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, WorldTravel::GhostWayWord(now.Way),
                        WorldTravel::GhostReasonWord(now.Reason), deadSeconds, weighed, grave ? grave->ID : 0);
@@ -197,18 +208,23 @@ bool FindCorpseAction::Execute(Event /*event*/)
         float const pointMoved =
             toBest ? AwarenessRules::PlanarDistance(beforeBest.x, beforeBest.y, dead->facts.best.x, dead->facts.best.y)
                    : 0.0f;
-        bool moved = AwarenessRules::WalkGoesOn(bot->isMoving(), before, dead->last, pointMoved);
-        if (!moved)
+        Player* leader = botAI->GetGroupLeader();
+        WorldObject const* to = nullptr;
+        if (act == DeadAct::WalkCorpse)
+            to = corpse;
+        else if (dead->last.reason == AwarenessRules::DeadReason::Leader)
+            to = leader && leader != bot ? leader : nullptr;
+        float const x = to ? to->GetPositionX() : dead->facts.best.x;
+        float const y = to ? to->GetPositionY() : dead->facts.best.y;
+        float const z = to ? to->GetPositionZ() : dead->facts.best.z;
+        // AW33b: a walk that came less than WALK_PROGRESS_YARDS nearer its target over the last minute is one that
+        // cannot start (walkStalled), also while it goes on
+        // A test's ghoststall stands the ghost and takes the walk as under way
+        bool moved = !Awareness::WalkStalled(botAI, AwarenessRules::WalkKind::Corpse, x, y);
+        if (moved && TestConstraints::GhostWalksStand(botAI->testConstraints))
+            StopGhost(bot);
+        else if (moved && !AwarenessRules::WalkGoesOn(bot->isMoving(), before, dead->last, pointMoved))
         {
-            Player* leader = botAI->GetGroupLeader();
-            WorldObject const* to = nullptr;
-            if (act == DeadAct::WalkCorpse)
-                to = corpse;
-            else if (dead->last.reason == AwarenessRules::DeadReason::Leader)
-                to = leader && leader != bot ? leader : nullptr;
-            float const x = to ? to->GetPositionX() : dead->facts.best.x;
-            float const y = to ? to->GetPositionY() : dead->facts.best.y;
-            float const z = to ? to->GetPositionZ() : dead->facts.best.z;
             // A move refused only because the last order's delay still runs (at most MaxWaitForMove) or repeats it is
             // a walk under way, not a failed one: a teleported or stopped ghost walks once the delay has passed
             if (act == DeadAct::WalkPoint && dead->last.reason == AwarenessRules::DeadReason::Leader && !to)
@@ -223,7 +239,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
             LogGhostWay(botAI, bot, corpse, *dead, nullptr);
             return true;
         }
-        // The walk could not start: the rule once more, which takes the healer's way (no_path)
+        // The walk could not start or stalled: the rule once more, which takes the healer's way (no_path)
         dead = &Awareness::NextOfDeadWalkFailed(botAI);
     }
 
@@ -237,9 +253,11 @@ bool FindCorpseAction::Execute(Event /*event*/)
         case DeadAct::Wait:
             StopGhost(bot);
             LogGhostWay(botAI, bot, corpse, *dead, nullptr);
-            botAI->SetNextCheckDelay(dead->last.reason == AwarenessRules::DeadReason::Player && dead->holdRecheckMs
-                                         ? dead->holdRecheckMs
-                                         : DEAD_WAIT_RECHECK_MS);
+            // AW33b: never past the bound (AwarenessRules::DeadDelayMs)
+            botAI->SetNextCheckDelay(AwarenessRules::DeadDelayMs(
+                dead->last.reason == AwarenessRules::DeadReason::Player && dead->holdRecheckMs ? dead->holdRecheckMs
+                                                                                               : DEAD_WAIT_RECHECK_MS,
+                dead->facts.ghostSeconds));
             return true;
         case DeadAct::Rise:
             // `revive from corpse` sends the reclaim: `corpse near` (the core's own 39 yd test, as reclaimHere) queues
@@ -476,11 +494,17 @@ bool SpiritHealerAction::Execute(Event event)
     {
         facts.atGrave =
             grave->Map == bot->GetMapId() && bot->GetDistance2d(grave->x, grave->y) < sPlayerbotAIConfig.SightDistance;
+        // AW33b: the revive happens at the grave's point; the first tick there searches again, so a healer seen from
+        // afar is found on arrival
+        facts.atGravePoint =
+            facts.atGrave && AwarenessRules::GraveSearchCounts(bot->GetExactDist2d(grave->x, grave->y));
         RpgMemos& memo = botAI->rpgMemos;
-        if (facts.atGrave && WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
-                                                   WorldTravel::GHOST_HEALER_RETRY_MS))
+        if (facts.atGrave && ((facts.atGravePoint && !dead->healerSearched) ||
+                              WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
+                                                    WorldTravel::GHOST_HEALER_RETRY_MS)))
         {
             memo.ghostHealerTs = getMSTime();
+            facts.looked = true;
             facts.healerInRange = FindSpiritHealer(bot, sPlayerbotAIConfig.SightDistance) != nullptr;
             // AW30b: a search that finds none counts for the grave only near its point (the healer stands there)
             facts.searched = AwarenessRules::GraveSearchCounts(bot->GetExactDist2d(grave->x, grave->y));
@@ -494,9 +518,14 @@ bool SpiritHealerAction::Execute(Event event)
 
     using AwarenessRules::DeadAct;
     // The walk to the grave's point. A move refused only because the last order's delay still runs or repeats it is a
-    // walk under way
+    // walk under way; so is one under a test's ghoststall, which stands the ghost
     auto const walkToGrave = [&]
     {
+        if (TestConstraints::GhostWalksStand(botAI->testConstraints))
+        {
+            StopGhost(bot);
+            return true;
+        }
         if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || IsDuplicateMove(grave->x, grave->y, grave->z))
             return true;
         if (bot->IsWithinLOS(grave->x, grave->y, grave->z))
@@ -505,12 +534,14 @@ bool SpiritHealerAction::Execute(Event event)
     };
     if (dead->last.act == DeadAct::WalkGrave && grave)
     {
-        if (walkToGrave())
+        // AW33b: a walk that came less than WALK_PROGRESS_YARDS nearer the grave over the last minute is one that
+        // cannot start (walkStalled)
+        if (!Awareness::WalkStalled(botAI, AwarenessRules::WalkKind::Grave, grave->x, grave->y) && walkToGrave())
         {
             LogGhostWay(botAI, bot, corpse, *dead, grave);
             return true;
         }
-        // The walk could not start: the rule once more, which names the teleport or, seen, the wait
+        // The walk could not start or stalled: the rule once more, which names the teleport or, seen, the wait
         facts.walkFailed = true;
         facts.seen = sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos);
         dead = &Awareness::NextOfDeadAtGrave(botAI, facts);
@@ -521,13 +552,8 @@ bool SpiritHealerAction::Execute(Event event)
     switch (dead->last.act)
     {
         case DeadAct::WaitGrave:
-            // The wait for a healer is at the grave's own point. `atGrave` begins where the grave comes into sight,
-            // and the healer is searched around the ghost: a ghost that stopped there stood out of the healer's range
-            // until the bound (AWL2's review, lab10 scn-261124174623: 12 of 73 ghosts that walked to a grave with a
-            // healer). So it walks the rest of the way, as before AW9, and the next search is made from there
-            if (dead->last.reason == AwarenessRules::DeadReason::NoHealer && grave &&
-                bot->GetExactDist2d(grave->x, grave->y) > AwarenessRules::ARRIVE_YARDS && walkToGrave())
-                return true;
+            // The wait for a healer is at the grave's own point (AW33b: the rule's atGravePoint walks a ghost in
+            // sight of the grave on to the point, which replaced the walk of the rest of the way here)
             StopGhost(bot);
             return true;
         case DeadAct::HealerRevive:

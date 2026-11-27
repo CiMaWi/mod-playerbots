@@ -1889,6 +1889,9 @@ DeadMemo const& AskAndKeep(DeadMemo& memo)
         memo.healerReason = memo.last.reason;
     }
     memo.lastMs = std::max<std::uint32_t>(getMSTime(), 1);
+    // AW33b: a step that does not walk ends the walk's window, unless the walk stalled
+    if (!AwarenessRules::WalkOfDead(memo.last.act))
+        memo.walk = AwarenessRules::WatchPause(memo.walk, memo.lastMs);
     return memo;
 }
 }  // namespace
@@ -1937,7 +1940,9 @@ DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
 
     facts.corpseYards = bot->GetExactDist2d(corpse);
     facts.reclaimHere = corpse->IsWithinDistInMap(bot, CORPSE_RECLAIM_RADIUS, true);
-    if (!facts.ownedByPlayer)
+    // AW33b: world PvP's hold of the ghost is a fact only on a PvP realm (where its fight rules ask it, AW44); on a
+    // normal realm no enemy player's wait holds a ghost, and no hold's recheck sleeps past the bound
+    if (!facts.ownedByPlayer && sWorld->IsPvPRealm())
     {
         WorldPvp::GhostPlan const plan = WorldPvp::PlanGhostFor(botAI, corpse);
         facts.playerHold = plan.step == WorldPvp::GhostStep::Corpse         ? AwarenessRules::PlayerHold::None
@@ -1975,11 +1980,24 @@ DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI)
     return AskAndKeep(memo);
 }
 
+bool WalkStalled(PlayerbotAI* botAI, AwarenessRules::WalkKind kind, float x, float y)
+{
+    DeadMemo& memo = OwnStore(botAI).dead;
+    Player const* bot = botAI->GetBot();
+    std::uint32_t const nowMs = std::max<std::uint32_t>(getMSTime(), 1);
+    memo.walk = AwarenessRules::WatchWalk(memo.walk, kind, x, y, bot->GetExactDist2d(x, y), nowMs);
+    return AwarenessRules::WalkStalled(memo.walk, nowMs);
+}
+
 DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
 {
     DeadMemo& memo = OwnStore(botAI).dead;
+    // AW33b: the searches at the grave, for the healer_wait row
+    if (grave.looked)
+        memo.healerFound = grave.healerInRange ? 1 : 0;
+    memo.healerSearched = memo.healerSearched || grave.searched;
     memo.facts.graveKnown = grave.known;
-    memo.facts.atGrave = grave.atGrave;
+    memo.facts.atGravePoint = grave.atGravePoint;
     memo.facts.healerInRange = grave.healerInRange;
     memo.facts.graveWalkFailed = grave.walkFailed;
     memo.facts.teleportSeen = grave.seen;
@@ -1993,6 +2011,33 @@ DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
 }
 
 DeadMemo const* LastOfDead(PlayerbotAI* botAI) { return botAI->awareness ? &botAI->awareness->dead : nullptr; }
+
+AwarenessRules::SelfRiseAct SelfRise(PlayerbotAI* botAI, std::uint32_t* bodySeconds)
+{
+    Store& store = OwnStore(botAI);
+    Player* bot = botAI->GetBot();
+    std::uint32_t const nowMs = std::max<std::uint32_t>(getMSTime(), 1);
+    if (store.selfRiseAskMs != nowMs)
+    {
+        // The seconds since the death edge; a death without its stamp counts from the body's first ask
+        if (!store.died && !store.selfRiseStartMs)
+            store.selfRiseStartMs = nowMs;
+        std::uint32_t const wall = static_cast<std::uint32_t>(time(nullptr));
+        AwarenessRules::SelfRiseFacts& facts = store.selfRiseFacts;
+        facts.inBattleground = bot->InBattleground() || bot->InArena();
+        facts.ownedByPlayer = botAI->HasGameClientMaster();
+        facts.bodySeconds =
+            store.died ? wall - std::min(wall, store.died) : getMSTimeDiff(store.selfRiseStartMs, nowMs) / 1000;
+        facts.own = JudgePoint(botAI, *bot);
+        store.selfRiseAct = AwarenessRules::SelfRiseStep(facts);
+        store.selfRiseAskMs = nowMs;
+    }
+    if (bodySeconds)
+        *bodySeconds = store.selfRiseFacts.bodySeconds;
+    return store.selfRiseAct;
+}
+
+void OrderSelfRise(PlayerbotAI* botAI) { OwnStore(botAI).selfRiseOrderedMs = std::max<std::uint32_t>(getMSTime(), 1); }
 
 void ChooseHealer(PlayerbotAI* botAI) { OwnStore(botAI).dead.healerChosen = true; }
 
@@ -2029,6 +2074,8 @@ void OnRise(Player* bot, std::string_view how)
         if (EventLog::Wanted(EventLog::EventType::Rise))
         {
             bool const ordered = memo.lastMs && GetMSTimeDiffToNow(memo.lastMs) <= RISE_ORDER_MS;
+            // AW33b: a self-resurrection the self-rise rule ordered
+            bool const self = store.selfRiseOrderedMs && GetMSTimeDiffToNow(store.selfRiseOrderedMs) <= RISE_ORDER_MS;
             AwarenessRules::RiseRow row;
             row.ghostSeconds = memo.lastMs ? memo.facts.ghostSeconds : 0;
             row.corpseYards = memo.lastMs && memo.facts.corpseHere
@@ -2037,11 +2084,14 @@ void OnRise(Player* bot, std::string_view how)
             row.deathsInRow = std::max<std::uint32_t>(1, store.row);
             row.reaching = JudgePoint(botAI, *bot).reaching;
             EventLog::Emit(bot, EventLog::EventType::Rise,
-                           AwarenessRules::RiseWord(memo.last, ordered, how == EventLog::RESURRECT_CORPSE), 0,
+                           AwarenessRules::RiseWord(memo.last, ordered, how == EventLog::RESURRECT_CORPSE, self), 0,
                            static_cast<int64>(AwarenessRules::RiseAmount(row)));
         }
         memo = DeadMemo{};
     }
+    store.selfRiseAskMs = 0;
+    store.selfRiseStartMs = 0;
+    store.selfRiseOrderedMs = 0;
     store.row = AwarenessRules::RowAtRise(store.row);
     store.died = 0;
     store.rose = true;
@@ -2071,6 +2121,9 @@ void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
         store.row = AwarenessRules::RowAfterDeath(store.row, death);
     }
     store.died = std::max<std::uint32_t>(static_cast<std::uint32_t>(time(nullptr)), 1);
+    store.selfRiseAskMs = 0;
+    store.selfRiseStartMs = 0;
+    store.selfRiseOrderedMs = 0;
     if (!EventLog::Wanted(EventLog::EventType::DeathScene))
         return;
     Picture const& picture = Look(botAI);

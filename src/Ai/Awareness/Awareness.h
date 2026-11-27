@@ -50,9 +50,9 @@ struct WalkCache
 };
 
 // AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (AwarenessRules::DeathKey), when
-// it began, the unclear clock, the healer's way once chosen and why, whether its grave had no healer (AW30b), and the
-// rule's last step with the facts the Rise row reads. Cleared at the rise and at a new death; not a memory of a place
-// (AW.1)
+// it began, the unclear clock, the healer's way once chosen and why, whether its grave had no healer (AW30b), the
+// rule's last step with the facts the Rise row reads, the progress test of its walks and its healer searches (AW33b).
+// Cleared at the rise and at a new death; not a memory of a place (AW.1)
 struct DeadMemo
 {
     std::uint32_t death = 0;
@@ -65,6 +65,9 @@ struct DeadMemo
     std::uint32_t lastMs = 0;         // 0: no step yet
     std::uint32_t holdRecheckMs = 0;  // world PvP's recheck while it holds the ghost (playerHold Wait)
     AwarenessRules::DeadFacts facts;
+    AwarenessRules::WalkWatch walk;  // AW33b: the walk under way and its window (WalkStalled)
+    bool healerSearched = false;     // a search ran within GRAVE_SEARCH_YARDS of the grave's point
+    std::int8_t healerFound = -1;    // what the last search at the grave found: -1 none yet, 0 no healer, 1 a healer
 };
 
 // The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
@@ -101,6 +104,13 @@ struct Store
     DeadMemo dead;
     // AW37b: the last route the trigger `way danger` judged (DangerRules::WayDue)
     DangerRules::JudgedPair judged;
+    // AW33b: the self-rise rule's last ask (one per tick), the first ask of a body whose death has no edge's stamp,
+    // and the self-resurrection it ordered (the Rise row's `self`); all ended by the rise and by the next death
+    std::uint32_t selfRiseAskMs = 0;
+    std::uint32_t selfRiseStartMs = 0;
+    std::uint32_t selfRiseOrderedMs = 0;
+    AwarenessRules::SelfRiseFacts selfRiseFacts;
+    AwarenessRules::SelfRiseAct selfRiseAct = AwarenessRules::SelfRiseAct::Wait;
 };
 
 // What is around the bot now, both sides; rebuilt first when it is older than its age (AwarenessRules::IsFresh)
@@ -139,12 +149,24 @@ AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& cent
 DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse);
 // The walk the last step named could not start: the same facts with corpseWalkFailed, asked once more
 DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI);
+// AW33b: a tick of the walk the last step named, to the target at x, y (the walk to the corpse, a point or the leader,
+// or to the grave): true when the ghost came less than WALK_PROGRESS_YARDS nearer over the last WALK_PROGRESS_SECONDS
+// (AwarenessRules::WatchWalk, WalkStalled), which the caller reports as the walk's failure
+bool WalkStalled(PlayerbotAI* botAI, AwarenessRules::WalkKind kind, float x, float y);
+// AW33b: the self-rise rule (AwarenessRules::SelfRiseStep) for a body that holds a self-resurrection: its place on its
+// own picture, the battleground, a player's bot and the seconds since the death; asked once per tick (`self resurrect`
+// and `auto release` both read it), the body's seconds into bodySeconds when given. Map thread
+AwarenessRules::SelfRiseAct SelfRise(PlayerbotAI* botAI, std::uint32_t* bodySeconds = nullptr);
+// AW33b: the bot sends the self-resurrection the rule ordered (its Rise row's word is `self`)
+void OrderSelfRise(PlayerbotAI* botAI);
 // AW9: the grave's facts the spirit healer action finds for a step of the healer's way or of the bound
 struct GraveFacts
 {
     bool known = false;          // the game's grave for where the ghost stands
     bool atGrave = false;        // on its map within reach of it
+    bool atGravePoint = false;   // AW33b: within GRAVE_SEARCH_YARDS of its point (planar), where the revive happens
     bool healerInRange = false;  // a living spirit healer found near it (searched at most every GHOST_HEALER_RETRY_MS)
+    bool looked = false;         // a search for the healer ran this tick (AW33b: the healer_wait row's `found`)
     bool searched = false;       // that search ran this tick within GRAVE_SEARCH_YARDS of the grave's point (AW30b)
     bool walkFailed = false;     // the walk to it could not start
     bool seen = false;           // a real player would see the teleport to it

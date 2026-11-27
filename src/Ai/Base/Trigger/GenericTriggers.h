@@ -976,7 +976,11 @@ class SelfResurrectTrigger : public Trigger
 public:
     SelfResurrectTrigger(PlayerbotAI* botAI) : Trigger(botAI, "can self resurrect") {}
 
-    bool IsActive() override { return !bot->IsAlive() && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL); }
+    // AW33b: a body only; a ghost keeps the field after it gave its self-resurrection up
+    bool IsActive() override
+    {
+        return !bot->IsAlive() && !bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL);
+    }
 };
 
 class NewPetTrigger : public Trigger

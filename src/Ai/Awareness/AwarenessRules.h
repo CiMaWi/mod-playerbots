@@ -1376,6 +1376,10 @@ constexpr float GRAVE_SEARCH_YARDS = 20.0f;
 constexpr std::uint32_t UNCLEAR_WAIT_SECONDS = 30;
 constexpr std::uint32_t GHOST_BOUND_SECONDS = 600;
 constexpr std::uint32_t ROW_HEALER_AT = 3;
+// AW33b: a walk of the dead that comes less than WALK_PROGRESS_YARDS nearer its target within WALK_PROGRESS_SECONDS
+// counts as one that cannot start (walkStalled; tuning: a ghost runs about 630 yd in a minute)
+constexpr std::uint32_t WALK_PROGRESS_SECONDS = 60;
+constexpr float WALK_PROGRESS_YARDS = 30.0f;
 
 // World PvP's answer for a corpse an enemy player stands at (a fact here, AW.12)
 enum class PlayerHold : std::uint8_t
@@ -1407,7 +1411,7 @@ struct DeadFacts
     bool corpseWalkFailed = false;     // the walk to the corpse or the point could not start this tick
     bool healerChosen = false;         // this death already took the healer's way
     bool graveKnown = true;
-    bool atGrave = false;
+    bool atGravePoint = false;  // AW33b: within GRAVE_SEARCH_YARDS of the grave's point (planar), where it revives
     bool healerInRange = false;
     bool graveWithoutHealer = false;  // this death's ghost stood at its grave and a search there found no healer
     bool graveWalkFailed = false;
@@ -1552,13 +1556,14 @@ constexpr bool ChoosesHealer(DeadStep const& step)
     return HealerWay(step.act) && step.reason != DeadReason::WaitEnded;
 }
 
-// The healer's way (rule line 3): wait without a grave; at the grave the healer's revive or a wait for one; else the
-// walk there, the teleport when the walk cannot start, a wait while a player would see the teleport
+// The healer's way (rule line 3): wait without a grave; at the grave's point the healer's revive or a wait for one;
+// else (AW33b: also in sight of the grave) the walk to the point, the teleport when the walk cannot start, a wait
+// while a player would see the teleport
 inline DeadStep HealerWayStep(DeadFacts const& facts, DeadReason why)
 {
     if (!facts.graveKnown)
         return {DeadAct::WaitGrave, DeadReason::NoGrave};
-    if (facts.atGrave)
+    if (facts.atGravePoint)
         return facts.healerInRange ? DeadStep{DeadAct::HealerRevive, why}
                                    : DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer};
     if (!facts.graveWalkFailed)
@@ -1568,13 +1573,13 @@ inline DeadStep HealerWayStep(DeadFacts const& facts, DeadReason why)
     return {DeadAct::WaitGrave, DeadReason::Seen};
 }
 
-// The bound (rule line 2): a revive here without a grave, at the grave the healer's or the grave's, else the teleport
-// there, seen or not
+// The bound (rule line 2): a revive here without a grave, at the grave's point the healer's or the grave's, else the
+// teleport there, seen or not
 inline DeadStep BoundStep(DeadFacts const& facts)
 {
     if (!facts.graveKnown)
         return {DeadAct::ReviveHere, DeadReason::WaitEnded};
-    if (facts.atGrave)
+    if (facts.atGravePoint)
         return {facts.healerInRange ? DeadAct::HealerRevive : DeadAct::ReviveGrave, DeadReason::WaitEnded};
     return {DeadAct::TeleportGrave, DeadReason::WaitEnded};
 }
@@ -1655,6 +1660,96 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
     return HealerWayStep(facts, DeadReason::NoClearPoint);
 }
 
+// AW33b: the delay a step of the dead hands the AI: the step's own (world PvP's hold asks up to an hour), never longer
+// than the time left to the bound, 1 ms at least (the AI's next update), so the bound's step is asked when it falls due
+constexpr std::uint32_t DeadDelayMs(std::uint32_t stepDelayMs, std::uint32_t ghostSeconds)
+{
+    std::uint32_t const leftMs = ghostSeconds < GHOST_BOUND_SECONDS ? (GHOST_BOUND_SECONDS - ghostSeconds) * 1000 : 0;
+    return std::max<std::uint32_t>(1, std::min(stepDelayMs, leftMs));
+}
+
+// AW33b: the steps that walk, each with a progress test (walkStalled)
+constexpr bool WalkOfDead(DeadAct act)
+{
+    return act == DeadAct::WalkCorpse || act == DeadAct::WalkPoint || act == DeadAct::WalkGrave;
+}
+
+// The walk a progress test watches: to the corpse, a point or the leader (reported as corpseWalkFailed), or to the
+// grave (graveWalkFailed)
+enum class WalkKind : std::uint8_t
+{
+    None,
+    Corpse,
+    Grave
+};
+
+// AW33b, the progress test of a walk of the dead (INTERFACE.md §3.4, walkStalled), kept in the return's memo: the
+// window's walk, its target and the ghost's distance to it when the window began
+struct WalkWatch
+{
+    WalkKind kind = WalkKind::None;
+    float x = 0.0f;
+    float y = 0.0f;
+    float yards = 0.0f;
+    std::uint32_t startMs = 0;
+};
+
+// The watch after a tick of a walk, `yards` the ghost's planar distance to the target now. A new window begins with
+// another kind of walk, a target more than WALK_PROGRESS_YARDS from the window's, the ghost that much nearer than at
+// the window's start, or the ghost at the target (within ARRIVE_YARDS: a point closer than the progress asks)
+inline WalkWatch WatchWalk(WalkWatch watch, WalkKind kind, float x, float y, float yards, std::uint32_t nowMs)
+{
+    bool const fresh = watch.kind != kind || PlanarDistance(watch.x, watch.y, x, y) > WALK_PROGRESS_YARDS;
+    if (fresh || yards <= ARRIVE_YARDS || yards + WALK_PROGRESS_YARDS <= watch.yards)
+        return {kind, x, y, yards, nowMs};
+    return watch;
+}
+
+// walkStalled: the window is WALK_PROGRESS_SECONDS old (it began anew at every progress)
+constexpr bool WalkStalled(WalkWatch const& watch, std::uint32_t nowMs)
+{
+    return watch.kind != WalkKind::None && nowMs - watch.startMs >= WALK_PROGRESS_SECONDS * 1000;
+}
+
+// A step that does not walk ends the window, except a stalled one: the walk's failure stands while the rule waits
+// (a wait while a player would see the teleport, the wait of a closed healer's way)
+constexpr WalkWatch WatchPause(WalkWatch const& watch, std::uint32_t nowMs)
+{
+    return WalkStalled(watch, nowMs) ? watch : WalkWatch{};
+}
+
+// AW33b: a body that holds a self-resurrection (a soulstone, Reincarnation) before its release. It rises by itself
+// where its place is clear and in view on its own picture, at once in a battleground or as a player's bot; on a place
+// that is not it waits SELF_RISE_WAIT_SECONDS from the death for the place to clear, then releases (the ghost's rule
+// takes over and the self-resurrection is given up)
+constexpr std::uint32_t SELF_RISE_WAIT_SECONDS = 30;
+
+enum class SelfRiseAct : std::uint8_t
+{
+    Rise,
+    Wait,
+    Release
+};
+
+struct SelfRiseFacts
+{
+    bool ownedByPlayer = false;     // the bot's master is a real player
+    bool inBattleground = false;    // a battleground or an arena
+    std::uint32_t bodySeconds = 0;  // since the death edge
+    PointAnswer own;                // the body's place on its own picture
+};
+
+constexpr SelfRiseAct SelfRiseStep(SelfRiseFacts const& facts)
+{
+    if (facts.inBattleground || facts.ownedByPlayer)
+        return SelfRiseAct::Rise;
+    if (facts.own.clear && facts.own.inView)
+        return SelfRiseAct::Rise;
+    if (facts.bodySeconds < SELF_RISE_WAIT_SECONDS)
+        return SelfRiseAct::Wait;
+    return SelfRiseAct::Release;
+}
+
 // A rise on record: the seconds as a ghost, how many reach the place, the yards from the corpse, the death's number
 // in a row
 struct RiseRow
@@ -1674,9 +1769,12 @@ constexpr std::uint64_t RiseAmount(RiseRow const& row)
 
 // The Rise row's word: for a rise at the corpse the reason of the rule's Rise (clear, reached_one, leader), for one by
 // the spirit healer `healer` or `bound` (a step of the bound); `other` for a rise the rule did not order (a spell, a
-// step older than the caller's limit, a rise at the corpse after a healer's step)
-constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse)
+// step older than the caller's limit, a rise at the corpse after a healer's step). AW33b: `self` for a body's
+// self-resurrection the self-rise rule ordered (SelfRiseStep's Rise, within the caller's limit)
+constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse, bool selfOrdered = false)
 {
+    if (selfOrdered)
+        return "self";
     if (!ordered)
         return "other";
     if (last.act == DeadAct::Rise)

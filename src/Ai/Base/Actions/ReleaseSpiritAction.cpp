@@ -141,6 +141,12 @@ void ReleaseSpiritAction::LogRelease(std::string const& releaseMsg) const
 // AutoReleaseSpiritAction implementation
 bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
+    // AW33b: a body that gives up its self-resurrection (the self-rise rule's Release: its place did not clear)
+    std::uint32_t bodySeconds = 0;
+    if (bot->GetUInt32Value(PLAYER_SELF_RES_SPELL) && !bot->InBattleground() &&
+        Awareness::SelfRise(botAI, &bodySeconds) == AwarenessRules::SelfRiseAct::Release)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "self_release", "no_clear_point",
+                           static_cast<float>(bodySeconds), {{"body_seconds", static_cast<float>(bodySeconds)}});
     IncrementDeathCount();
     LogCorpseRun(botAI, bot);
     if (Upkeep::Granted(bot, UpkeepKind::Repair))
@@ -175,6 +181,10 @@ bool AutoReleaseSpiritAction::isUseful()
         return ShouldDelayBattlegroundRelease();
 
     if (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+        return false;
+
+    // AW33b: a body that holds a self-resurrection waits while the self-rise rule says so (for its place to clear)
+    if (bot->GetUInt32Value(PLAYER_SELF_RES_SPELL) && Awareness::SelfRise(botAI) == AwarenessRules::SelfRiseAct::Wait)
         return false;
 
     return ShouldAutoRelease();
@@ -320,11 +330,13 @@ void RepopAction::PerformGraveyardTeleport(GraveyardStruct const* graveyard) con
     RESET_AI_VALUE(WorldPosition, "current position");
 }
 
-// SelfResurrectAction implementation for Warlock's Soulstone Resurrection/Shaman's Reincarnation
+// SelfResurrectAction implementation for Warlock's Soulstone Resurrection/Shaman's Reincarnation. AW33b: when the
+// self-rise rule says Rise (Awareness::SelfRise); a ghost keeps the field but gave its self-resurrection up
 bool SelfResurrectAction::Execute(Event /*event*/)
 {
-    if (!bot->IsAlive() && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL))
+    if (isUseful() && Awareness::SelfRise(botAI) == AwarenessRules::SelfRiseAct::Rise)
     {
+        Awareness::OrderSelfRise(botAI);
         WorldPacket packet(CMSG_SELF_RES);
         bot->GetSession()->HandleSelfResOpcode(packet);
         return true;
@@ -333,5 +345,5 @@ bool SelfResurrectAction::Execute(Event /*event*/)
 }
 bool SelfResurrectAction::isUseful()
 {
-    return !bot->IsAlive() && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL);
+    return !bot->IsAlive() && !bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL);
 }
