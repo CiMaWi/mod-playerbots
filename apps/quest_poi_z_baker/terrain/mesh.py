@@ -56,6 +56,7 @@ def collect_mesh(nav: Any, bounds: Bounds,
     ty_lo, ty_hi = sorted((pa[1], pb[1]))
 
     polys: List[Tuple[List[Tuple[float, float, float]], float]] = []
+    flags: List[int] = []  # each polygon's Detour flags, beside polys (fork change, pathing PA59c)
     offmesh: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
     zmin: Optional[float] = None
     zmax: Optional[float] = None
@@ -86,6 +87,7 @@ def collect_mesh(nav: Any, bounds: Bounds,
                 if z is not None and abs(avgz - z) > z_band:
                     continue
                 polys.append((wpts, avgz))
+                flags.append(poly.flags)
                 zmin = avgz if zmin is None else min(zmin, avgz)
                 zmax = avgz if zmax is None else max(zmax, avgz)
             for con in tile.data.off_mesh_cons:
@@ -110,6 +112,7 @@ def collect_mesh(nav: Any, bounds: Bounds,
         )
     return {
         "polys": polys,
+        "flags": flags,
         "offmesh": offmesh,
         "zmin": zmin if zmin is not None else 0.0,
         "zmax": zmax if zmax is not None else 0.0,
