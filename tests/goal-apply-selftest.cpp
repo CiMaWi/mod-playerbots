@@ -1025,10 +1025,155 @@ void GrindRules()
           "does (upstream's kinds keep their pick)");
 }
 
+// Questing WQ42 (3.11 part 5): route orders that end one after another where the first of them began, without a
+// credit, an accept or a hand-in, end the route's goal as failed at the third such end, and its key is blocked as a
+// goal's without progress is (WQ6b's block); any progress or a move counts anew
+void RouteInPlace()
+{
+    constexpr std::uint32_t BLOCK_MS = 10 * 60 * 1000;
+    constexpr std::uint64_t LOG0 = 11;
+    constexpr std::uint64_t LOG1 = 12;
+    constexpr std::uint64_t HUB_KEY = 40;
+    using Word = QuestOrderWord;
+    Active const routeGoal = Typed(Goals::GoalKind::Quest, Goals::TargetType::Route, Goals::ROUTE_REASON, 0);
+    std::uint64_t const routeKey = GoalKey(routeGoal, Executor::Route, HUB_KEY);
+    auto const anyOpen = [](QuestOrderNeed const&) { return true; };
+    std::vector<std::uint64_t> const none;
+    BotSpot const spot{0, 100.0f, 100.0f};
+    BotSpot const near{0, 107.0f, 100.0f};  // 7 yd from spot
+    BotSpot const away{0, 115.0f, 100.0f};  // 15 yd from spot
+    BotSpot const otherMap{1, 100.0f, 100.0f};
+    std::vector<QuestOrder> orders;
+    for (std::int32_t cell = 0; cell < 8; ++cell)
+        orders.push_back(OrderAt(cell * 3, 0, Word::Field, {{static_cast<std::uint32_t>(cell + 1), 0, 3}}));
+    // A bot on its route's goal as the service walks it: each order starts where the bot stands (StartRoute) and ends
+    // by its own end (replaced) or a failed walk (no_walk); the cell's row is written before the route's
+    struct Bot
+    {
+        BotGoals goals;
+        std::uint64_t log{LOG0};
+        std::uint32_t nowMs{2000};
+        std::vector<StallRow> rows;
+    };
+    auto const begin = [&]()
+    {
+        Bot bot;
+        TakePlan(bot.goals, RouteOf(orders), 1000);
+        BeginRun(bot.goals, routeKey, LOG0);
+        return bot;
+    };
+    auto const order = [&](Bot& bot, BotSpot const& start, BotSpot const& end, bool fails, std::uint64_t endLog)
+    {
+        RouteNext const next = NextOrder(bot.goals, anyOpen, none);
+        if (next.step != RouteStep::Order)
+            return;
+        QuestOrder const ended = *next.order;
+        NoteRouteStart(bot.goals, start, bot.log);
+        bot.nowMs += 10000;
+        bool const route = IsRouteOrder(bot.goals, ended);
+        bool const cell = fails ? FailRouteOrder(bot.goals, ended, StatusEnd::Outcome::Abandoned, "no_walk", endLog,
+                                                 bot.nowMs, BLOCK_MS)
+                                : EndRouteOrder(bot.goals, ended, QuestOrderEnd::Replaced, endLog, bot.nowMs, BLOCK_MS);
+        if (cell)
+            bot.rows.push_back(*std::exchange(bot.goals.stallRow, std::nullopt));
+        if (route && EndInPlace(bot.goals, end, endLog, bot.nowMs, BLOCK_MS))
+            bot.rows.push_back(*std::exchange(bot.goals.stallRow, std::nullopt));
+        bot.log = endLog;
+    };
+    auto const going = [&](Bot const& bot)
+    { return bot.goals.run.running && MayStart(bot.goals, routeKey, bot.log, bot.nowMs, BLOCK_MS); };
+
+    {
+        Bot bot = begin();
+        order(bot, spot, spot, true, LOG0);
+        order(bot, spot, near, false, LOG0);
+        bool const afterTwo = going(bot) && bot.rows.size() == 1;
+        order(bot, spot, spot, true, LOG0);
+        StallRow const last = bot.rows.empty() ? StallRow{} : bot.rows.back();
+        Check(afterTwo && !bot.goals.run.running && !MayStart(bot.goals, routeKey, LOG0, bot.nowMs, BLOCK_MS) &&
+                  bot.rows.size() == 3 && std::string(bot.rows[1].note) == "no_walk" &&
+                  last.kind == Goals::GoalKind::Quest && last.judged && last.outcome == StatusEnd::Outcome::Abandoned &&
+                  std::string(last.note) == IN_PLACE_WORD,
+              "route in place: the third order in a row that ends within 10 yd of where the first began, without "
+              "progress and by any end (a failed walk, replaced), ends the route's run and blocks its key, with the "
+              "row abandoned/in_place after the closed cell's own (mutant: no bound, EndInPlace ends nothing)");
+        TakePlan(bot.goals, RouteOf(orders), 60000);
+        StartFacts facts;
+        facts.key = routeKey;
+        facts.log = LOG0;
+        facts.nowMs = bot.nowMs + 1000;
+        facts.blockMs = BLOCK_MS;
+        int starts = 0;
+        StartResult const again = StartActive(bot.goals, Goals::GoalKind::Quest, Executor::Route, facts,
+                                              [&]()
+                                              {
+                                                  ++starts;
+                                                  return true;
+                                              });
+        Check(!bot.goals.run.running && again == StartResult::Stalled && starts == 0 &&
+                  MayStart(bot.goals, HUB_KEY, LOG0, facts.nowMs, BLOCK_MS) &&
+                  MayStart(bot.goals, routeKey, LOG0, bot.nowMs + BLOCK_MS + 1, BLOCK_MS) &&
+                  MayStart(bot.goals, routeKey, LOG1, facts.nowMs, BLOCK_MS),
+              "route in place: a fresh plan then starts no route order (the run no longer goes on, a new route goal "
+              "stalls) while the bot's other goals may start; the block ends with the block time or a changed log "
+              "(mutant: no bound)");
+    }
+    {
+        Bot moved = begin();
+        order(moved, spot, spot, true, LOG0);
+        order(moved, spot, spot, true, LOG0);
+        order(moved, spot, away, true, LOG0);
+        bool const reset = going(moved);
+        order(moved, away, away, true, LOG0);
+        order(moved, away, away, false, LOG0);
+        bool const counting = going(moved);
+        order(moved, away, away, true, LOG0);
+        Check(reset && counting && !going(moved),
+              "route in place: an end 15 yd from where the first began counts anew, and three ends at the new spot "
+              "fail the route (mutant: the distance is not checked, or the anchor stays at the first spot)");
+    }
+    {
+        Bot progress = begin();
+        order(progress, spot, spot, true, LOG0);
+        order(progress, spot, spot, true, LOG0);
+        order(progress, spot, spot, true, LOG1);
+        bool const credit = going(progress) && progress.rows.size() == 3;
+        order(progress, spot, spot, true, LOG1);
+        order(progress, spot, spot, true, LOG1);
+        order(progress, spot, otherMap, true, LOG1);
+        bool const map = going(progress);
+        Bot released = begin();
+        order(released, spot, spot, true, LOG0);
+        order(released, spot, spot, true, LOG0);
+        Release(released.goals);
+        BeginRun(released.goals, routeKey, LOG0);
+        order(released, spot, spot, true, LOG0);
+        Check(credit && map && going(released) && released.goals.inPlace.count == 1,
+              "route in place: an end at another log (a credit, an accept, a hand-in) or on another map counts anew, "
+              "and a test's release clears the count (mutant: the log or the map is not checked)");
+    }
+    {
+        BotGoals goals;
+        TakePlan(goals, RouteOf(orders), 1000);
+        BeginRun(goals, routeKey, LOG0);
+        std::uint32_t nowMs = 2000;
+        for (int end = 0; end < 4; ++end)
+        {
+            NextOrder(goals, anyOpen, none);
+            QuestOrder const ended = *goals.route.running;
+            FailRouteOrder(goals, ended, StatusEnd::Outcome::Abandoned, "no_walk", LOG0, nowMs += 1000, BLOCK_MS);
+        }
+        Check(goals.run.running && MayStart(goals, routeKey, LOG0, nowMs, BLOCK_MS) && goals.inPlace.count == 0,
+              "route in place: an order's end without the bot's spot (a test's order, EndRouteOrder alone) counts "
+              "nothing");
+    }
+}
+
 int main()
 {
     RouteRules();
     RouteSwitch();
+    RouteInPlace();
     GrindRules();
     // The pinned table of who the planner leads (questing WQ6e, WQ.39): every bot that keeps its possessions and
     // whose planner no test holds, whatever its guid. A bot that keeps none or whose planner a test holds keeps

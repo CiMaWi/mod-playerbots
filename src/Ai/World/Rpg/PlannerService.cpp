@@ -480,6 +480,8 @@ uint64 LogNow(Player* bot)
     return GoalApply::LogSignature(quests, bot->GetLevel(), items);
 }
 
+GoalApply::BotSpot SpotOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY()}; }
+
 // The level and XP as one number that grows with every XP gained (GoalApply::EndRun's grind and gather progress)
 uint64 XpNow(Player* bot) { return (static_cast<uint64>(bot->GetLevel()) << 32) | bot->GetUInt32Value(PLAYER_XP); }
 
@@ -556,14 +558,18 @@ bool StartRoute(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     if (held)
         botAI->planner.snapshotDue = true;
     std::function<bool(QuestOrderNeed const&)> const open = NewRpgInternal::OrderNeedOpen(botAI, bot);
-    std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, LogNow(bot), getMSTime(), BlockMs());
+    uint64 const log = LogNow(bot);
+    std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, log, getMSTime(), BlockMs());
     GoalApply::RouteNext next = GoalApply::NextOrder(goals, open, closed, held);
     while (next.step == GoalApply::RouteStep::Order && next.order->mapId != bot->GetMapId())
         next = GoalApply::AdvanceRoute(goals, open, closed);  // ends: each order is given at most once
     if (next.step == GoalApply::RouteStep::Done)
         return false;
     if (NewRpgInternal::StartRouteOrder(botAI, bot, *next.order, word))
+    {
+        GoalApply::NoteRouteStart(goals, SpotOf(bot), log);
         return true;
+    }
     GoalApply::OrderNotStarted(goals);
     return false;
 }
@@ -1690,8 +1696,14 @@ void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, 
     Player* const bot = botAI->GetBot();
     if (!state.goals || !bot)
         return;
-    if (GoalApply::EndRouteOrder(*state.goals, order, end, LogNow(bot), getMSTime(), BlockMs(), reached))
-        NoteStalled(bot, *state.goals);  // the closed cell's row
+    GoalApply::BotGoals& goals = *state.goals;
+    bool const route = GoalApply::IsRouteOrder(goals, order);
+    uint64 const log = LogNow(bot);
+    uint32 const now = getMSTime();
+    if (GoalApply::EndRouteOrder(goals, order, end, log, now, BlockMs(), reached))
+        NoteStalled(bot, goals);  // the closed cell's row
+    if (route && GoalApply::EndInPlace(goals, SpotOf(bot), log, now, BlockMs()))
+        NoteStalled(bot, goals);  // the route goal's row
 }
 
 void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note)
@@ -1700,8 +1712,14 @@ void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outco
     Player* const bot = botAI->GetBot();
     if (!state.goals || !bot || !GoalApply::FailsOrder(outcome))
         return;
-    if (GoalApply::FailRouteOrder(*state.goals, order, outcome, note, LogNow(bot), getMSTime(), BlockMs()))
-        NoteStalled(bot, *state.goals);  // the closed cell's row
+    GoalApply::BotGoals& goals = *state.goals;
+    bool const route = GoalApply::IsRouteOrder(goals, order);
+    uint64 const log = LogNow(bot);
+    uint32 const now = getMSTime();
+    if (GoalApply::FailRouteOrder(goals, order, outcome, note, log, now, BlockMs()))
+        NoteStalled(bot, goals);  // the closed cell's row
+    if (route && GoalApply::EndInPlace(goals, SpotOf(bot), log, now, BlockMs()))
+        NoteStalled(bot, goals);  // the route goal's row
 }
 
 bool Owns(PlayerbotAI* botAI)
