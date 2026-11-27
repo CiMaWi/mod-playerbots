@@ -76,6 +76,19 @@ enum class Busy : std::uint8_t
     Count
 };
 
+// A unit's kind of movement: a creature's from the engine's current movement generator, so a wanderer or a patroller
+// that pauses keeps its kind; a player or a pet stands or is Other while it moves (AW32b; for the record only)
+enum class Motion : std::uint8_t
+{
+    Standing,
+    Wandering,
+    Path,     // a waypoint path, an escort or a formation
+    Home,     // running home after a fight
+    Chasing,  // a fight's chase
+    Other,
+    Count
+};
+
 // How the bot knows of a unit; this plan fills only Seen (AW.4)
 enum class Known : std::uint8_t
 {
@@ -195,6 +208,27 @@ constexpr char const* Word(Busy busy)
     }
 }
 
+constexpr char const* Word(Motion motion)
+{
+    switch (motion)
+    {
+        case Motion::Standing:
+            return "standing";
+        case Motion::Wandering:
+            return "wandering";
+        case Motion::Path:
+            return "path";
+        case Motion::Home:
+            return "home";
+        case Motion::Chasing:
+            return "chasing";
+        case Motion::Other:
+            return "other";
+        default:
+            return "?";
+    }
+}
+
 constexpr char const* Word(Known known)
 {
     switch (known)
@@ -289,6 +323,7 @@ struct Seen
     // and for every unit not on a path (AW7)
     float moveX = 0.0f;
     float moveY = 0.0f;
+    Motion motion = Motion::Standing;  // its kind of movement at the fill (AW32b)
 };
 
 // The bot itself; it is not in the array, so a link to it is THE_BOT
@@ -647,6 +682,8 @@ struct SceneRow
     std::uint32_t guards = 0;
     std::uint32_t allies = 0;  // other allies that fight the bot's enemies
     std::uint32_t nearby = 0;  // enemies beside the target whose reach covers the bot or the target
+    bool moving = false;       // the bot moved as the fight opened (AW32b)
+    bool onLeg = false;        // a leg of its trip was under way
 };
 
 // FightScene id: level | health % << 7 | power % << 14 | item level << 21 (7, 7, 7, 9 bits)
@@ -656,12 +693,13 @@ constexpr std::uint32_t SceneId(SceneRow const& row)
                                       Capped(row.powerPct, PERCENT_MAX) << 14 | Capped(row.itemLevel, 511) << 21);
 }
 
-// FightScene amount: seconds since the bot rose | group << 15 | guards << 22 | allies << 29 | near << 36 (15, then 7)
+// FightScene amount: seconds since the bot rose | group << 15 | guards << 22 | allies << 29 | near << 36 |
+// moving << 43 | on a leg << 44 (15, then 7, then 1 bit each)
 constexpr std::uint64_t SceneAmount(SceneRow const& row)
 {
     return Capped(row.roseSeconds, ROSE_NONE) | Capped(row.group, COUNT_MAX) << 15 |
            Capped(row.guards, COUNT_MAX) << 22 | Capped(row.allies, COUNT_MAX) << 29 |
-           Capped(row.nearby, COUNT_MAX) << 36;
+           Capped(row.nearby, COUNT_MAX) << 36 | std::uint64_t{row.moving} << 43 | std::uint64_t{row.onLeg} << 44;
 }
 
 // One enemy as it entered the fight
@@ -674,16 +712,26 @@ struct EnemyRow
     std::uint32_t creatureType = 0;
     std::uint32_t healthPct = 0;
     UnitType type = UnitType::Creature;
+    Motion motion = Motion::Standing;  // its kind of movement as it joined
 };
 
+// The kind of movement an enemy joins a fight with: the engine's live kind, unless that is already the chase; then the
+// kind in the last picture before it joined, when that holds the unit and is no older than a picture outside a fight
+constexpr Motion MotionAtJoin(Motion live, Seen const* pictured, std::uint32_t pictureAgeMs)
+{
+    return live == Motion::Chasing && pictured && pictureAgeMs <= FRESH_OUTSIDE_MS ? pictured->motion : live;
+}
+
 // FightEnemy amount: tenths | level diff + 64 << 15 | rank << 22 | casts << 25 | creature type << 26 | health % << 31 |
-// unit type << 38 (15, 7, 3, 1, 5, 7, 2 bits)
+// unit type << 38 | motion + 1 << 40 (15, 7, 3, 1, 5, 7, 2, 3 bits; a motion of 0 is a row of an older build)
 constexpr std::uint64_t EnemyAmount(EnemyRow const& row)
 {
+    constexpr std::uint64_t lastMotion = static_cast<std::uint64_t>(Motion::Count) - 1;
     return Capped(row.tenths, 32767) | LevelField(row.levelDiff) << 15 |
            Capped(static_cast<std::uint64_t>(row.rank), 7) << 22 | std::uint64_t{row.casts} << 25 |
            Capped(row.creatureType, 31) << 26 | Capped(row.healthPct, PERCENT_MAX) << 31 |
-           Capped(static_cast<std::uint64_t>(row.type), 3) << 38;
+           Capped(static_cast<std::uint64_t>(row.type), 3) << 38 |
+           (Capped(static_cast<std::uint64_t>(row.motion), lastMotion) + 1) << 40;
 }
 
 // A death: the killer, the fight and the nearest helper

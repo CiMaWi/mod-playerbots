@@ -113,6 +113,7 @@ void TestValues()
     Check(AllWordsDistinct<UnitType>() && AllStored<UnitType>(&Seen::type), "values: every unit type stored");
     Check(AllWordsDistinct<Busy>() && AllStored<Busy>(&Seen::busy), "values: every busy state stored, its word");
     Check(AllWordsDistinct<Known>() && AllStored<Known>(&Seen::known), "values: every way of knowing stored");
+    Check(AllWordsDistinct<Motion>() && AllStored<Motion>(&Seen::motion), "values: every kind of movement stored");
     Check(AllWordsDistinct<Role>(), "values: every role has its own word");
     Check(AllWordsDistinct<Reason>(), "values: every reason has its own word");
 
@@ -1293,7 +1294,16 @@ void TestRows()
     amount = SceneAmount(scene);
     Check(((id >> 14) & 127) == 100 && ((id >> 21) & 511) == 511 && ((amount >> 22) & 127) == 127 &&
               ((amount >> 29) & 127) == 127 && ((amount >> 36) & 127) == 127 && (amount >> 43) == 0,
-          "rows: FightScene power, guards, allies and near capped, nothing above bit 42");
+          "rows: FightScene power, guards, allies and near capped; not moving, no leg: nothing above bit 42");
+    scene.moving = true;
+    amount = SceneAmount(scene);
+    Check(((amount >> 36) & 127) == 127 && ((amount >> 43) & 1) == 1 && (amount >> 44) == 0,
+          "rows: FightScene moving is bit 43, beside a full near field");
+    scene.moving = false;
+    scene.onLeg = true;
+    amount = SceneAmount(scene);
+    Check(((amount >> 43) & 1) == 0 && ((amount >> 44) & 1) == 1 && (amount >> 45) == 0,
+          "rows: FightScene a trip leg under way is bit 44, nothing above it");
 
     EnemyRow enemy;
     enemy.tenths = 21;
@@ -1320,8 +1330,39 @@ void TestRows()
     plain.healthPct = 150;
     amount = EnemyAmount(plain);
     Check(((amount >> 25) & 1) == 0 && ((amount >> 26) & 31) == 31 && ((amount >> 31) & 127) == 100 &&
-              ((amount >> 38) & 3) == 0 && (amount >> 40) == 0,
-          "rows: FightEnemy without casts has no casts bit; creature type and health capped, nothing above bit 39");
+              ((amount >> 38) & 3) == 0 && ((amount >> 40) & 7) == 1 && (amount >> 43) == 0,
+          "rows: FightEnemy without casts has no casts bit; creature type and health capped, a standing unit's "
+          "motion 1, nothing above bit 42");
+    // The motion is stored plus 1, so 0 stays a row of an older build
+    bool motions = true;
+    for (int i = 0; i < static_cast<int>(Motion::Count); ++i)
+    {
+        plain.motion = static_cast<Motion>(i);
+        amount = EnemyAmount(plain);
+        motions = motions && ((amount >> 40) & 7) == static_cast<std::uint64_t>(i) + 1 && (amount >> 43) == 0 &&
+                  ((amount >> 38) & 3) == 0;
+    }
+    Check(motions, "rows: FightEnemy motion + 1 << 40 for every kind, apart from the unit type");
+    plain.motion = Motion::Count;
+    Check(((EnemyAmount(plain) >> 40) & 7) == static_cast<std::uint64_t>(Motion::Other) + 1,
+          "rows: FightEnemy a motion out of range is capped, never 0 or spilling");
+
+    // AW32b: the kind an enemy joins with: live, unless the chase; then the last picture's, when it is fresh
+    Seen wandered;
+    wandered.motion = Motion::Wandering;
+    Check(MotionAtJoin(Motion::Path, &wandered, 0) == Motion::Path &&
+              MotionAtJoin(Motion::Standing, &wandered, 0) == Motion::Standing,
+          "join: a live kind other than the chase is recorded as it is");
+    Check(MotionAtJoin(Motion::Chasing, &wandered, 0) == Motion::Wandering &&
+              MotionAtJoin(Motion::Chasing, &wandered, FRESH_OUTSIDE_MS) == Motion::Wandering,
+          "join: a chaser the fresh picture held keeps the picture's kind (the limit is still fresh)");
+    Check(MotionAtJoin(Motion::Chasing, &wandered, FRESH_OUTSIDE_MS + 1) == Motion::Chasing,
+          "join: a stale picture does not say how it moved");
+    Check(MotionAtJoin(Motion::Chasing, nullptr, 0) == Motion::Chasing,
+          "join: a chaser the picture did not hold is chasing");
+    wandered.motion = Motion::Chasing;
+    Check(MotionAtJoin(Motion::Chasing, &wandered, 0) == Motion::Chasing,
+          "join: a unit chasing in the picture already is chasing");
 
     DeathRow death;
     death.killerLevelDiff = 2;

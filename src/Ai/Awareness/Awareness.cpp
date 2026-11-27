@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "BotTravel.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatHelper.h"
@@ -26,6 +27,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "HeldTrip.h"
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -48,6 +50,7 @@ namespace Awareness
 {
 using AwarenessRules::Busy;
 using AwarenessRules::Kind;
+using AwarenessRules::Motion;
 using AwarenessRules::Picture;
 using AwarenessRules::Rank;
 using AwarenessRules::Role;
@@ -107,6 +110,31 @@ Role RoleOf(Player* bot)
     if (PlayerbotAI::IsHeal(bot))
         return Role::Healer;
     return PlayerbotAI::IsRanged(bot) ? Role::Ranged : Role::Melee;
+}
+
+// A creature's kind of movement is its current generator (a pause keeps it); `generator` is unused for the others
+Motion MotionOf(Unit const* unit, bool byGenerator, MovementGeneratorType generator)
+{
+    if (!byGenerator)
+        return unit->isMoving() ? Motion::Other : Motion::Standing;
+    switch (generator)
+    {
+        case IDLE_MOTION_TYPE:
+            return Motion::Standing;
+        case RANDOM_MOTION_TYPE:
+        case ANIMAL_RANDOM_MOTION_TYPE:
+            return Motion::Wandering;
+        case WAYPOINT_MOTION_TYPE:
+        case ESCORT_MOTION_TYPE:
+        case FORMATION_MOTION_TYPE:
+            return Motion::Path;
+        case HOME_MOTION_TYPE:
+            return Motion::Home;
+        case CHASE_MOTION_TYPE:
+            return Motion::Chasing;
+        default:
+            return Motion::Other;
+    }
 }
 
 // The one grid visit: creatures, pets and players in one pass, both sides
@@ -223,11 +251,14 @@ struct Worker
             !creature->IsCivilian() && !creature->IsImmuneToPC())
             seen.reachYards = creature->GetAggroRange(bot) + creature->m_CombatDistance;
 
+        MovementGeneratorType const generator =
+            creature ? creature->GetMotionMaster()->GetCurrentMovementGeneratorType() : NULL_MOTION_TYPE;
+        seen.motion = MotionOf(unit, creature && !pet, generator);
         if (creature && creature->IsInEvadeMode())
             seen.busy = Busy::Evading;
         else if (unit->IsInCombat())
             seen.busy = Busy::Fighting;
-        else if (creature && creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
+        else if (creature && generator == WAYPOINT_MOTION_TYPE)
         {
             seen.busy = Busy::OnPath;
             // Its velocity: toward the spline's next point at the spline's speed; 0 and 0 while it waits at a node
@@ -1449,6 +1480,10 @@ bool Enter(Player* bot, Store& store, Unit* unit, bool chosen, bool struckFirst,
         return false;
     Seen const now = DescribeOne(bot, store, unit);
     AwarenessRules::Reason const reason = ReasonOf(bot, store, now, chosen, struckFirst);
+    // The picture before it joined (not rebuilt): its kind before the chase the fight began
+    std::int16_t const slot =
+        store.built ? AwarenessRules::SlotOf(store.picture, now.guid) : AwarenessRules::NOT_IN_PICTURE;
+    Seen const* pictured = slot >= 0 ? &store.picture.units[slot] : nullptr;
     store.fightEnemies[store.fightEnemyCount++] = now.guid;
     AwarenessRules::EnemyRow row;
     row.tenths = getMSTimeDiff(store.fightStartMs, nowMs) / 100;
@@ -1458,6 +1493,7 @@ bool Enter(Player* bot, Store& store, Unit* unit, bool chosen, bool struckFirst,
     row.creatureType = now.creatureType;
     row.healthPct = Rounded(now.healthPct);
     row.type = now.type;
+    row.motion = AwarenessRules::MotionAtJoin(now.motion, pictured, getMSTimeDiff(store.picture.builtMs, nowMs));
     line = EnemyLine{now.entry, AwarenessRules::Word(reason), AwarenessRules::EnemyAmount(row)};
     return true;
 }
@@ -1528,6 +1564,10 @@ void OnFightOpen(PlayerbotAI* botAI)
     row.guards = counts.guards;
     row.allies = counts.allies;
     row.nearby = counts.nearby;
+    row.moving = bot->isMoving();
+    // A held trip with no legs waits for a route: no leg under way
+    HeldTrip const* trip = botAI->GetTravel().Trip();
+    row.onLeg = trip && trip->CurrentLeg();
     EventLog::Emit(bot, EventLog::EventType::FightScene, AwarenessRules::Word(beginning), AwarenessRules::SceneId(row),
                    static_cast<int64>(AwarenessRules::SceneAmount(row)));
     for (std::size_t i = 0; i < count; ++i)
