@@ -1048,6 +1048,21 @@ inline void AuctionScenarios(std::vector<Check>& checks)
             auctionAt < oneQuestPlan.Stops.size(),
         Describe(cappedPlan) + "; " + Describe(oneQuestPlan));
 
+    // A bank beside an auction house beyond the walk limit is no pair's banker for a plain auctioneer short of it: the
+    // auction would join the bank's stop and leave the auctioneer's stop empty (the review's fuzz case)
+    ErrandSnapshot bankHouse = banked;
+    bankHouse.BankStockWorth = 20000;
+    WithServices(bankHouse, {},
+                 {{AUCTIONEER_ID, At(3800.0f, 0.0f), SERVICE_AUCTIONEER},
+                  {BANKER_ID, At(4300.0f, 0.0f), SERVICE_BANKER},
+                  {AUCTIONEER_ID, At(4320.0f, 0.0f), SERVICE_AUCTIONEER}});
+    TripPlan const bankHousePlan = Plan(bankHouse, Request(bankHouse), TripProviders());
+    Add(checks, "NR12b: a bank and auction house beyond the walk limit pairs with no auctioneer short of it: no trip",
+        bankHouse.Stops.size() == 2 && bankHousePlan.Stops.empty() && bankHousePlan.Refused.size() == 1 &&
+            bankHousePlan.Refused[0].Offer.Kind == ErrandKind::Auction &&
+            std::string(bankHousePlan.Refused[0].Reason) == "too_far",
+        Describe(bankHousePlan));
+
     // The running trip's flags: the bank visit finds the stock due for an auction ahead, not for one that ran
     struct FlagStop
     {

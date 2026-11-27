@@ -1064,20 +1064,24 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         return at;
     };
     // The banker in front of stop `before` of `stops`: of the candidates [first, last) with one, the place and index
-    // that add the fewest minutes; false when none takes the withdrawal. The walk limit is the caller's
+    // that add the fewest minutes; false when none takes the withdrawal. The walk limit is the caller's. A banker that
+    // takes the pending auction too is no second stop: the auction would join it and leave its own stop empty; it is
+    // weighed as a stop of its own
     struct StockInsert
     {
         std::size_t Candidate = 0;
         std::size_t Index = 0;
         float Minutes = 0.0f;
     };
-    auto const inFront = [&candidates, &offers, &request, stock](std::vector<TripStop> const& stops, std::size_t before,
-                                                                 std::size_t first, std::size_t last, StockInsert& best)
+    auto const inFront = [&candidates, &offers, &done, &request, stock, auction](std::vector<TripStop> const& stops,
+                                                                                 std::size_t before, std::size_t first,
+                                                                                 std::size_t last, StockInsert& best)
     {
         bool found = false;
         for (std::size_t c = first; c < last; ++c)
         {
-            if (!StopTakes(candidates[c], offers[stock]))
+            if (!StopTakes(candidates[c], offers[stock]) ||
+                (auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction])))
                 continue;
 
             ErrandPlace const& place = candidates[c].Place;
