@@ -64,6 +64,15 @@ bool BotKind::KeepsPossessions(Player* bot)
     return botAI && botAI->KeepsPossessions();
 }
 
+bool BotKind::NoClientPlays(Player const* player)
+{
+    WorldSession const* session = player ? player->GetSession() : nullptr;
+    if (!session)
+        return false;
+    bool const randomBotAccount = sPlayerbotAIConfig.IsInRandomAccountList(session->GetAccountId());
+    return BotKindRules::NoClientPlays(LivingWorld(), randomBotAccount, session->IsHeadless());
+}
+
 // B changes within a session only when the bot's master becomes the bot itself (IsRandomBot's selfbot term), and the
 // manager's set gains a bot before its login and loses it with its logout: refreshed after the AI is attached
 // (PlayerbotsMgr::AddPlayerbotData) and in SetMaster

@@ -21,22 +21,21 @@
 #include "QuestTakeRules.h"
 
 // What a bot on an order does with its quest log (questing WQ31, decision WQ.40): it accepts every quest the one take
-// test allows while a slot is free, abandons only a quest it outlevelled, gave up or cannot do (a ready one only when
-// its hand-in failed at its ender), never for room, and its plan is due once the givers in reach offer nothing more or
-// PLAN_DUE_MS after the round's first accept. Pure; tests/quest-log-selftest.cpp checks it
+// test allows (its log has no limit: WQ40, WQ.46 item 1), abandons only a quest it outlevelled, gave up or cannot do
+// (a ready one only when its hand-in failed at its ender), and its plan is due once the givers in reach offer nothing
+// more or PLAN_DUE_MS after the round's first accept. Pure; tests/quest-log-selftest.cpp checks it
 namespace Planner
 {
 namespace QuestLog
 {
-constexpr std::size_t LOG_SLOTS = 25;             // MAX_QUEST_LOG_SIZE (WQ.28)
 constexpr std::uint32_t PLAN_DUE_MS = 30 * 1000;  // from the round's first accept
 // The failure row of a planned take that ended without the accept (WQ18c, WQ.44 item 2): one give-up, as any cause
 constexpr std::string_view CANNOT_TAKE = "cannot_take";
 
-// A quest a giver offers is accepted when the take test allows it and a slot is free
-inline bool MayAccept(QuestRecord const& quest, Take::Facts const& bot, QuestIndex const& quests, std::size_t freeSlots)
+// A quest a giver offers is accepted when the take test allows it: no rule for room (WQ40)
+inline bool MayAccept(QuestRecord const& quest, Take::Facts const& bot, QuestIndex const& quests)
 {
-    return freeSlots > 0 && !Take::May(quest, bot, quests).has_value();
+    return !Take::May(quest, bot, quests).has_value();
 }
 
 // The bot's failure record as the accept and the log upkeep read it

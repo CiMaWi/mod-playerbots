@@ -12,6 +12,7 @@
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotKind.h"
 #include "BotLinkCensus.h"
 #include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
@@ -200,6 +201,7 @@ class PlayerbotsPlayerScript : public PlayerScript
 public:
     PlayerbotsPlayerScript() : PlayerScript("PlayerbotsPlayerScript", {
         PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_LOAD_FROM_DB,
         PLAYERHOOK_ON_BEFORE_LOGOUT,
         PLAYERHOOK_ON_AFTER_UPDATE,
         PLAYERHOOK_ON_CREATURE_KILL_CREDIT,
@@ -257,6 +259,10 @@ public:
                  player->GetGUID().GetCounter(), player->GetName(), amount, player->GetMoney(),
                  player->InBattleground(), player->GetMapId(), player->isDead(), player->IsInCombat());
     }
+
+    // Player::LoadFromDB calls this before the quests load: a bot no client ever plays holds quests without a limit
+    // (questing WQ40), every other character keeps the client's 25 slots
+    void OnPlayerLoadFromDB(Player* player) override { player->SetUnlimitedQuestLog(BotKind::NoClientPlays(player)); }
 
     void OnPlayerLogin(Player* player) override
     {

@@ -1018,9 +1018,14 @@ private:
             Reason("skip " + std::to_string(skip.quest) + ": " + SkipName(skip.reason));
     }
 
-    // The log's free slots after its abandons and `more` abandons still to come, keeping LOG_RESERVE free
+    // The log's free slots after its abandons and `more` abandons still to come, keeping LOG_RESERVE free. A log
+    // without a limit (questing WQ40: every bot the planner leads) always has room, so for it no quest is left for
+    // log space, none is pushed out and no move waits for a slot: the rules below are a client's log's
+    static constexpr std::size_t ALWAYS_ROOM = std::numeric_limits<std::size_t>::max() / 2;
     std::size_t FreeSlots(std::size_t more = 0) const
     {
+        if (_bot.noLogLimit)
+            return ALWAYS_ROOM;
         std::size_t const used = _logIds.size() - std::min(_logIds.size(), _abandoned.size() + more);
         return QUEST_LOG_SLOTS > used + LOG_RESERVE ? QUEST_LOG_SLOTS - used - LOG_RESERVE : 0;
     }

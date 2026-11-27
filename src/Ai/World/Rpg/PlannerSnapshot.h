@@ -22,6 +22,7 @@
 // snapshot contract: a step that gives the planner a new fact adds its field here.
 namespace Planner
 {
+// A client's quest log. Only the circuit's room rules count with it, for a snapshot without noLogLimit (WQ40)
 constexpr std::size_t QUEST_LOG_SLOTS = 25;
 constexpr std::size_t QUEST_COUNTERS = 4;
 constexpr std::size_t TAXI_WORDS = 14;  // PlayerTaxi's mask
@@ -124,6 +125,7 @@ struct Snapshot
     std::uint32_t repairCheapest{0};            // copper for the cheapest worn item (RepairErrandDue's money test)
     std::vector<Skill> skills;                  // riding and the professions the bot has
     std::vector<QuestSlot> quests;
+    bool noLogLimit{false};  // the log has no limit (questing WQ40, Player::HasUnlimitedQuestLog): no rule for room
     std::vector<std::uint32_t> rewardedQuests;  // sorted
     bool hasHearthstone{false};
     Place hearth;

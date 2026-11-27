@@ -413,7 +413,7 @@ bool QuestItemPushResultAction::Execute(Event event)
     if (!proto)
         return false;
 
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)

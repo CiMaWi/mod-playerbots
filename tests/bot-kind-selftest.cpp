@@ -166,6 +166,14 @@ int main()
               std::string(instance.name) + ": FollowsTargets");
     }
 
+    // The quest log without a limit (questing WQ40): only a random-bot account's character without a client in a
+    // living world
+    Check(BotKindRules::NoClientPlays(true, true, true), "a random bot of a living world has no quest log limit");
+    Check(!BotKindRules::NoClientPlays(true, true, false), "a client on a random-bot account keeps 25 slots");
+    Check(!BotKindRules::NoClientPlays(true, false, true), "an alt or addclass bot keeps 25 slots");
+    Check(!BotKindRules::NoClientPlays(false, true, true), "an arena instance's bot keeps 25 slots");
+    Check(!BotKindRules::NoClientPlays(true, false, false), "a player's character keeps 25 slots");
+
     Check(!BotKindRules::MasterCounts(MasterKind::None), "no master does not count");
     Check(!BotKindRules::MasterCounts(MasterKind::Bot), "a bot master does not count");
     Check(BotKindRules::MasterCounts(MasterKind::RealPlayer), "a real player counts");

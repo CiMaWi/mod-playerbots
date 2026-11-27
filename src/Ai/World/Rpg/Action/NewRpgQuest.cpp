@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <list>
 #include <memory>
 #include <string_view>
@@ -126,7 +127,7 @@ char const* TickPursuit(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& da
 std::vector<Planner::QuestFields::Need> LogNeeds(Player* bot, Planner::QuestIndex const& index)
 {
     std::vector<Planner::QuestSlot> slots;
-    slots.reserve(MAX_QUEST_LOG_SIZE);
+    slots.reserve(bot->GetQuestLogSize());
     Planner::FillSlots(bot, slots);
     Planner::QuestFields::Pricing const pricing{};
     Group const* group = bot->GetGroup();
@@ -249,7 +250,7 @@ void AimOrder(Player* bot, NewRpgInfo::DoQuest& data)
 uint32 NoteLog(Player* bot, std::vector<Planner::QuestOrderMark>& marks, bool& added)
 {
     uint32 rise = 0;
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
         if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
         {
             std::size_t const before = marks.size();
@@ -332,7 +333,7 @@ void TickStall(PlayerbotAI* botAI, Player* bot, Planner::QuestOrderRun const& ru
     if (worked.empty() && sums.quests.empty())
         return;
     Planner::QuestFailRows::KeepLogged(
-        sums, [bot](uint32 questId) { return bot->FindQuestSlot(questId) < MAX_QUEST_LOG_SIZE; });
+        sums, [bot](uint32 questId) { return bot->FindQuestSlot(questId) < bot->GetQuestLogSize(); });
     std::sort(worked.begin(), worked.end());
     worked.erase(std::unique(worked.begin(), worked.end()), worked.end());
     uint32 const now = getMSTime();
@@ -470,6 +471,12 @@ QuestDropReason DropReasonOf(Planner::QuestLog::Drop drop, QuestStatus status)
 // The log's drop of a quest slot through the abandon packet, as a player would; its QuestAbandon row names the reason
 void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
 {
+    // The packet names its slot in 8 bits: a quest in a later slot of a log without a limit changes places first
+    if (slot > std::numeric_limits<uint8>::max())
+    {
+        bot->SwapQuestSlot(slot, 0);
+        slot = 0;
+    }
     WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
     packet << static_cast<uint8>(slot);
     WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
@@ -490,7 +497,7 @@ bool OrganizeOrderQuestLog(PlayerbotAI* botAI, Player* bot)
     uint32 const greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF);
     uint8 const side = static_cast<uint8>(bot->GetTeamId());
     bool dropped = false;
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 const questId = bot->GetQuestSlotQuestId(i);
         Planner::QuestRecord const* held = questId ? quests->Find(questId) : nullptr;
@@ -735,9 +742,14 @@ bool NewRpgBaseAction::OrganizeQuestLog()
     if (NewRpgHelpers::OnOrder(botAI))
         return OrganizeOrderQuestLog(botAI, bot);
 
+    // A log without a limit drops nothing for room (questing WQ40, WQ.46 item 1): upstream's upkeep below is that of
+    // a character with a client's 25 slots
+    if (bot->HasUnlimitedQuestLog())
+        return false;
+
     int32 freeSlotNum = 0;
 
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)
@@ -750,7 +762,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
 
     int32 dropped = 0;
     // remove quests that not worth doing or not capable of doing
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)
@@ -782,7 +794,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
         return true;
 
     // remove festival/class quests and quests in different zone
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)
@@ -816,7 +828,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
         return true;
 
     // clear quests log (but a planner bot's planned quests)
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId || Planner::KeepsQuest(botAI, questId))

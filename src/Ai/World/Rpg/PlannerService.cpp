@@ -100,7 +100,6 @@ static_assert(SNAPSHOT_SKILLS ==
               "PlannerPool.h's snapshot skills are the core's SkillType ids");
 
 static_assert(TAXI_WORDS == TaxiMaskSize, "the snapshot's taxi mask has PlayerTaxi's layout");
-static_assert(QUEST_LOG_SLOTS == MAX_QUEST_LOG_SIZE, "the snapshot holds the whole quest log");
 static_assert(QUEST_COUNTERS == QUEST_OBJECTIVES_COUNT, "one counter per quest objective");
 
 std::atomic<uint64> snapshotsBuilt{0};
@@ -219,7 +218,7 @@ void FillBags(Player* bot, Snapshot& snapshot)
 
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
 {
-    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 const quest = bot->GetQuestSlotQuestId(slot);
         if (!quest)
@@ -238,6 +237,7 @@ namespace
 void FillQuests(Player* bot, Snapshot& snapshot)
 {
     FillSlots(bot, snapshot.quests);
+    snapshot.noLogLimit = bot->HasUnlimitedQuestLog();
     RewardedQuestSet const& rewarded = bot->getRewardedQuests();
     snapshot.rewardedQuests.assign(rewarded.begin(), rewarded.end());
     std::sort(snapshot.rewardedQuests.begin(), snapshot.rewardedQuests.end());
@@ -461,7 +461,7 @@ QuestTests TestsOf(Player* bot, std::function<bool(uint32)> const& workable)
 uint64 LogNow(Player* bot)
 {
     std::vector<QuestSlot> quests;
-    quests.reserve(MAX_QUEST_LOG_SIZE);
+    quests.reserve(bot->GetQuestLogSize());
     FillSlots(bot, quests);
     std::vector<uint16> items;
     items.reserve(quests.size() * QUEST_ITEM_OBJECTIVES_COUNT);

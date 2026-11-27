@@ -918,7 +918,7 @@ bool CompleteOne(Player* bot, ClassQuests::Rows const& rows, ClassQuests::BotFac
     for (uint32 const step : steps)
     {
         uint16 const slot = bot->FindQuestSlot(step);
-        if (slot < MAX_QUEST_LOG_SIZE)
+        if (slot < bot->GetQuestLogSize())
         {
             bot->SetQuestSlot(slot, 0);
             bot->TakeQuestSourceItem(step, false);
@@ -1112,6 +1112,7 @@ bool RunCircuitHarness(ChatHandler* handler)
         if (fixture)
         {
             CircuitHarness::Scenario full{scenario.name + "-full-log", scenario.bot, context, {}};
+            full.bot.noLogLimit = false;  // a client's log: the room rules a bot's own log no longer meets (WQ40)
             std::erase(full.bot.rewardedQuests, grey.front());
             for (uint32 const id : fillers)
                 full.bot.quests.push_back(LogSlot(id, 0));
@@ -1144,6 +1145,7 @@ bool RunCircuitHarness(ChatHandler* handler)
             // chain or camp, so the bot moves on only to deliver (reviews 4 and 5); with every ender on another map no
             // delivery is in reach, so it finds nowhere. The generic checks hold it to that and follow its moves
             CircuitHarness::Scenario done{scenario.name + "-full-log-done", scenario.bot, context, {}};
+            done.bot.noLogLimit = false;
             for (std::size_t i = 0; i + Circuit::LOG_RESERVE < QUEST_LOG_SLOTS; ++i)
                 done.bot.quests.push_back(LogSlot(fillers[i], Circuit::SLOT_COMPLETE));
             done.expect.exactTake = true;
@@ -1171,6 +1173,7 @@ bool RunCircuitHarness(ChatHandler* handler)
         if (fixture)
         {
             CircuitHarness::Scenario dryFull{scenario.name + "-dry-full-log", dry.bot, context, {}};
+            dryFull.bot.noLogLimit = false;
             for (uint32 const id : fillers)
             {
                 std::erase(dryFull.bot.rewardedQuests, id);

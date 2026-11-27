@@ -134,15 +134,13 @@ Take::Facts FactsOf(State const& state, std::vector<std::int32_t> const& groups)
     return facts;
 }
 
-std::size_t FreeSlots(State const& state)
-{
-    return QuestLog::LOG_SLOTS - std::min(QuestLog::LOG_SLOTS, state.inLog.size());
-}
+// A client's log: the generated logs reach past it, and the rules know no room (questing WQ40)
+constexpr std::size_t CLIENT_SLOTS = 25;
 
-bool MayAcceptNow(QuestRecord const& quest, State const& state, QuestIndex const& index, std::size_t freeSlots)
+bool MayAcceptNow(QuestRecord const& quest, State const& state, QuestIndex const& index)
 {
     std::vector<std::int32_t> const groups = GroupsOf(state, index);
-    return QuestLog::MayAccept(quest, FactsOf(state, groups), index, freeSlots);
+    return QuestLog::MayAccept(quest, FactsOf(state, groups), index);
 }
 
 Drop AbandonNow(QuestRecord const& quest, State const& state, bool ready)
@@ -189,7 +187,7 @@ Outcome Apply(State& state, Ids const& offers, QuestIndex const& index)
         for (std::uint32_t const id : offers)
         {
             QuestRecord const* quest = index.Find(id);
-            if (!quest || !MayAcceptNow(*quest, state, index, FreeSlots(state)))
+            if (!quest || !MayAcceptNow(*quest, state, index))
                 continue;
             outcome.accepted.push_back(id);
             Insert(state.inLog, id);
@@ -235,24 +233,30 @@ void Table()
 
     State bot;
     bot.record = record;
-    auto const may = [&](std::uint32_t id, std::size_t freeSlots)
-    { return MayAcceptNow(*index.Find(id), bot, index, freeSlots); };
-    Check(may(PLAIN, 3), "accept: a plain quest with free slots");
-    Check(may(PLAIN, 1), "accept: a plain quest with one free slot");
-    Check(!may(PLAIN, 0), "accept: a full log accepts nothing");
-    Check(!may(GREY, 3), "accept: grey");
-    Check(may(EDGE, 3), "accept: four levels below is not grey");
-    Check(!may(REFUSED, 3), "accept: the executor cannot do it");
-    Check(!may(ELITE, 3), "accept: elite");
-    Check(may(TAKE_REFUSED, 3), "accept: a take refused once is taken again, as any cause given up once");
-    Check(!may(TAKE_TWICE, 3) &&
+    auto const may = [&](std::uint32_t id) { return MayAcceptNow(*index.Find(id), bot, index); };
+    Check(may(PLAIN), "accept: a plain quest");
+    // No rule for room (questing WQ40, WQ.46 item 1): a log of 25, 30 or 60 quests accepts as an empty one
+    for (std::uint32_t const held : {25u, 30u, 60u})
+    {
+        State crowded = bot;
+        for (std::uint32_t id = 0; id < held; ++id)
+            crowded.inLog.push_back(5000 + id);
+        Check(MayAcceptNow(*index.Find(PLAIN), crowded, index),
+              "accept: a plain quest into a log of " + std::to_string(held) + " quests");
+    }
+    Check(!may(GREY), "accept: grey");
+    Check(may(EDGE), "accept: four levels below is not grey");
+    Check(!may(REFUSED), "accept: the executor cannot do it");
+    Check(!may(ELITE), "accept: elite");
+    Check(may(TAKE_REFUSED), "accept: a take refused once is taken again, as any cause given up once");
+    Check(!may(TAKE_TWICE) &&
               Take::May(*index.Find(TAKE_TWICE), FactsOf(bot, GroupsOf(bot, index)), index) == Take::Reason::GivenUp,
           "accept: a take refused twice is given up (the take test answers GivenUp)");
-    Check(may(ONCE, 3), "accept: given up once by a timeout");
-    Check(!may(TWICE, 3), "accept: given up twice");
-    Check(!may(NO_ENDER, 3), "accept: its hand-in failed");
+    Check(may(ONCE), "accept: given up once by a timeout");
+    Check(!may(TWICE), "accept: given up twice");
+    Check(!may(NO_ENDER), "accept: its hand-in failed");
     bot.inLog = {PLAIN};
-    Check(!may(PLAIN, 3), "accept: in the log");
+    Check(!may(PLAIN), "accept: in the log");
     bot.inLog.clear();
 
     auto const drop = [](QuestLog::Held held, std::uint32_t greyDiff = Take::GREY_DIFF)
@@ -355,7 +359,7 @@ State GeneratedState(std::mt19937& rng)
         state.greyDiff = 2 + rng() % 6;
     state.rewarded = SomeQuests(rng, 10);
     std::uint32_t const shape = rng() % 10;
-    std::size_t const size = shape < 3 ? QuestLog::LOG_SLOTS : shape == 3 ? 23 + rng() % 2 : rng() % 12;
+    std::size_t const size = shape < 3 ? CLIENT_SLOTS + rng() % 36 : shape == 3 ? 23 + rng() % 2 : rng() % 12;
     Ids open;
     for (std::uint32_t id = 1; id <= QUESTS; ++id)
         if (!Has(state.rewarded, id))
@@ -428,7 +432,6 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
     State again = before;
     Check(Apply(again, offers, index) == outcome, who + ": the same input, another outcome");
     Check(!outcome.endless, who + ": accepts without end");
-    Check(after.inLog.size() <= QuestLog::LOG_SLOTS, who + ": more quests than slots");
 
     Ids accepted = outcome.accepted;
     std::sort(accepted.begin(), accepted.end());
@@ -467,14 +470,17 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
             ++counts.drops[static_cast<std::size_t>(Drop::Keep)];
     }
 
-    // A full log accepts nothing (a drop may free a slot) and drops nothing for room
+    // No rule for room (questing WQ40): the accept is the take test alone, whatever the log holds; `full` counts the
+    // logs of a client's 25 quests or more, which accept as any other
+    std::vector<std::int32_t> const groupsBefore = GroupsOf(before, index);
     for (std::uint32_t const id : offers)
         if (QuestRecord const* quest = index.Find(id))
-            Check(!MayAcceptNow(*quest, before, index, 0), who + ": quest " + std::to_string(id) + " with no slot");
-    if (before.inLog.size() == QuestLog::LOG_SLOTS)
+            Check(MayAcceptNow(*quest, before, index) ==
+                      !Take::May(*quest, FactsOf(before, groupsBefore), index).has_value(),
+                  who + ": quest " + std::to_string(id) + " accepted or refused by more than the take test");
+    if (before.inLog.size() >= CLIENT_SLOTS)
     {
         ++counts.full;
-        Check(outcome.accepted.size() <= outcome.dropped.size(), who + ": a full log accepted more than it freed");
         if (!outcome.accepted.empty())
             ++counts.fullAccepts;
     }

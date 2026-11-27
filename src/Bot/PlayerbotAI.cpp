@@ -6550,7 +6550,7 @@ std::vector<std::pair<Quest const*, uint32>> PlayerbotAI::GetCurrentQuestsRequir
         return result;
     }
 
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)
@@ -7147,7 +7147,7 @@ std::vector<Quest const*> PlayerbotAI::GetAllCurrentQuests()
 {
     std::vector<Quest const*> result;
 
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)
@@ -7165,7 +7165,7 @@ std::vector<Quest const*> PlayerbotAI::GetCurrentIncompleteQuests()
 {
     std::vector<Quest const*> result;
 
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)
@@ -7187,7 +7187,7 @@ std::set<uint32> PlayerbotAI::GetAllCurrentQuestIds()
 {
     std::set<uint32> result;
 
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)
@@ -7205,7 +7205,7 @@ std::set<uint32> PlayerbotAI::GetCurrentIncompleteQuestIds()
 {
     std::set<uint32> result;
 
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)

@@ -48,7 +48,7 @@ std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(Player* bot, Planne
 std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(PlayerbotAI* botAI, Player* bot);
 
 // Questing WQ31 (WQ.40): whether a bot on an order takes a quest a giver offers, QuestLogRules' MayAccept (the one
-// take test and a free slot). The facts (the log, the rewarded quests, the failure record) are gathered at the first
+// take test). The facts (the log, the rewarded quests, the failure record) are gathered at the first
 // quest that asks and kept for one search; an accept changes the log, so it calls Reset
 class OrderTake
 {
@@ -70,7 +70,6 @@ private:
     std::vector<std::uint32_t> _rewarded;
     std::vector<std::uint32_t> _givenUp;
     std::vector<std::int32_t> _takenGroups;
-    std::size_t _freeSlots{0};
 };
 
 // Whether a bot not on an order takes a quest a giver offers: upstream's filter (the game's checks, worth and capable

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <list>
@@ -266,6 +267,9 @@ public:
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"questlog", HandleRouteQuestLogCommand, SEC_GAMEMASTER, Console::Yes},
+            {"clientlog", HandleRouteClientLogCommand, SEC_GAMEMASTER, Console::Yes},
+            {"creditcost", HandleRouteCreditCostCommand, SEC_GAMEMASTER, Console::Yes},
             {"field", HandleRouteFieldCommand, SEC_GAMEMASTER, Console::Yes},
             {"way", HandleRouteWayCommand, SEC_GAMEMASTER, Console::Yes},
             {"start", HandleRouteStartCommand, SEC_GAMEMASTER, Console::Yes},
@@ -812,6 +816,132 @@ public:
         sRandomPlayerbotMgr.LogoutPlayerBot(guid);
         sRandomPlayerbotMgr.AddPlayerBot(guid, 0);
         handler->PSendSysMessage("ROUTE relog: {} logged out, login queued", name);
+        return true;
+    }
+
+    // `playerbots route questlog <bot> [<count> [<quest> [<credit> [<slot>]]]]` (tests, questing WQ40): the quest log
+    // as the bot's slots hold it, beside the quests its status map holds. The core credits a quest only through its
+    // slot, so a held quest without one never completes, and `scnfix has <bot> quest` (the status) does not show it.
+    // An error when the two counts differ; with <count>, when the slots hold another number; with <quest>, when it
+    // sits in no slot or in one before <slot>, or its slot's counters sum to less than <credit> or differ from the
+    // status map's
+    static bool HandleRouteQuestLogCommand(ChatHandler* handler, PlayerIdentifier target, Optional<uint32> count,
+                                           Optional<uint32> questId, Optional<uint32> credit, Optional<uint32> minSlot)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        uint32 inSlots = 0;
+        Optional<uint16> questSlot;
+        for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
+        {
+            uint32 const held = bot->GetQuestSlotQuestId(slot);
+            if (!held)
+                continue;
+            ++inSlots;
+            if (questId && held == *questId && !questSlot)
+                questSlot = slot;
+        }
+        uint32 inStatus = 0;
+        uint32 statusCredit = 0;
+        for (auto const& [id, data] : bot->getQuestStatusMap())
+        {
+            if (data.Status == QUEST_STATUS_NONE)
+                continue;
+            ++inStatus;
+            if (questId && id == *questId)
+                for (uint16 const objective : data.CreatureOrGOCount)
+                    statusCredit += objective;
+        }
+
+        std::string text = Acore::StringFormat("{} quests in slots, {} held", inSlots, inStatus);
+        std::string faults;
+        if (inSlots != inStatus)
+            faults += ", a held quest has no slot";
+        if (count && *count != inSlots)
+            faults += Acore::StringFormat(", expected {} in slots", *count);
+        if (questId && !questSlot)
+            faults += Acore::StringFormat(", quest {} in no slot", *questId);
+        else if (questId)
+        {
+            uint32 slotCredit = 0;
+            for (uint8 objective = 0; objective < QUEST_OBJECTIVES_COUNT; ++objective)
+                slotCredit += bot->GetQuestSlotCounter(*questSlot, objective);
+            text += Acore::StringFormat(", quest {} slot {} credit {} (held {})", *questId, *questSlot, slotCredit,
+                                        statusCredit);
+            if (minSlot && *questSlot < *minSlot)
+                faults += Acore::StringFormat(", expected slot {} or later", *minSlot);
+            if (credit && slotCredit < *credit)
+                faults += Acore::StringFormat(", expected credit {} or more", *credit);
+            if (slotCredit != statusCredit)
+                faults += ", the slot's credit is not the held one";
+        }
+        if (!faults.empty())
+        {
+            handler->SendErrorMessage("ROUTE questlog {}: error, {}{}", target.GetName(), text, faults);
+            return false;
+        }
+        handler->PSendSysMessage("ROUTE questlog {}: ok, {}", target.GetName(), text);
+        return true;
+    }
+
+    // `playerbots route creditcost <bot> <creature> [<calls>]` (a reading, questing WQ40): the mean time of the core's
+    // kill credit (Player::KilledMonsterCredit: its walk over the quest log) for a creature none of the bot's quests
+    // asks for, so the calls credit nothing. Read with a short and a long log it tells what a longer log costs a kill
+    static bool HandleRouteCreditCostCommand(ChatHandler* handler, PlayerIdentifier target, uint32 creature,
+                                             Optional<uint32> calls)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        uint32 held = 0;
+        for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
+        {
+            uint32 const questId = bot->GetQuestSlotQuestId(slot);
+            Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+            if (!quest)
+                continue;
+            ++held;
+            for (uint8 objective = 0; objective < QUEST_OBJECTIVES_COUNT; ++objective)
+                if (quest->RequiredNpcOrGo[objective] == static_cast<int32>(creature))
+                {
+                    handler->SendErrorMessage("ROUTE creditcost {}: error, quest {} asks for creature {}",
+                                              target.GetName(), questId, creature);
+                    return false;
+                }
+        }
+        uint32 const count = std::clamp<uint32>(calls.value_or(10000), 1, 1000000);
+        auto const started = std::chrono::steady_clock::now();
+        for (uint32 call = 0; call < count; ++call)
+            bot->KilledMonsterCredit(creature);
+        auto const spent = std::chrono::steady_clock::now() - started;
+        int64 const ns = std::chrono::duration_cast<std::chrono::nanoseconds>(spent).count();
+        handler->PSendSysMessage("ROUTE creditcost {}: ok, {} quests in {} slots, {} calls, {} ns a call",
+                                 target.GetName(), held, bot->GetQuestLogSize(), count, ns / count);
+        return true;
+    }
+
+    // `playerbots route clientlog <bot>` (tests, questing WQ40): from here on the bot's quest log keeps a client's 25
+    // slots, as that of a character a client plays (Player::SetUnlimitedQuestLog off); its next login sets the mark
+    // again. A command and no constraint row: the table's 32 bits are taken. An error for a log beyond 25 slots
+    static bool HandleRouteClientLogCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        if (bot->GetQuestLogSize() > MAX_QUEST_LOG_SIZE)
+        {
+            handler->SendErrorMessage("ROUTE clientlog {}: error, the log holds {} slots", target.GetName(),
+                                      bot->GetQuestLogSize());
+            return false;
+        }
+        bool const marked = bot->HasUnlimitedQuestLog();
+        bot->SetUnlimitedQuestLog(false);
+        handler->PSendSysMessage("ROUTE clientlog {}: ok, {} slots from here on ({} before)", target.GetName(),
+                                 bot->GetQuestLogSize(), marked ? "no limit" : "the same");
         return true;
     }
 

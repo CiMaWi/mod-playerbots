@@ -749,6 +749,18 @@ int main()
     CircuitHarness::ExactAbandon(cheapDelivery.expect, {350, 351, 352, 353, 354});
     Run(cheapDelivery, false);
 
+    // The same hub with 30 far quests in a log without a limit (questing WQ40, WQ.46 item 1): the hub's quests and
+    // the delivery are all taken and nothing is pushed out
+    CircuitHarness::Scenario noLimit = cheapDelivery;
+    noLimit.name = "goldshire-12-log-30-no-limit";
+    for (std::uint32_t id = 330; id < 340; ++id)
+        noLimit.bot.quests.push_back(Slot(id));
+    noLimit.bot.noLogLimit = true;
+    noLimit.expect.take = {101, 102, 103, 104, 105, 110, 114, 117, 124};
+    noLimit.expect.notTake = {};
+    CircuitHarness::ExactAbandon(noLimit.expect, {});
+    Run(noLimit, false);
+
     // The same full log (23 far quests) with 117 worth 1100: the hub's quests push out 330-337, then 117 pushes out
     // 338 (worth 1000) but no 350 quest (worth 1200)
     World const deliveryWorld = DeliveryVariant();

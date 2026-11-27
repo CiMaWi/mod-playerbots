@@ -348,7 +348,7 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
     std::size_t const left =
         static_cast<std::size_t>(std::count_if(plan.skipped.begin(), plan.skipped.end(), [](CircuitSkip const& skip)
                                                { return skip.reason == SkipReason::LogFull; }));
-    Add(report, name, taken.empty() || after <= limit,
+    Add(report, name, taken.empty() || after <= limit || scenario.bot.noLogLimit,
         "log " + std::to_string(before) + " -> " + std::to_string(after) + " quests (" +
             std::to_string(abandoned.size()) + " abandoned, " + std::to_string(taken.size()) + " taken), limit " +
             std::to_string(limit));
@@ -456,7 +456,7 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
         std::string("the plan acts here or moves on (move ") + MoveName(plan.moveOn.reason) + ")");
     // A move leads where the bot acts on arrival; a log still full after this trip moves on only to deliver or to
     // where a slot frees (review 4, finding 1; review 5, findings 1 and 2)
-    bool const fullAfter = after >= limit + plan.turnIns.size();
+    bool const fullAfter = !scenario.bot.noLogLimit && after >= limit + plan.turnIns.size();
     report.checks.push_back(Arrival(scenario, plan, fullAfter));
     report.checks.push_back(FollowMoves(scenario, plan));
 

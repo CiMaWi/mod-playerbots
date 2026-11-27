@@ -60,8 +60,8 @@ inline Route::Walk WalkOf(TravelCost const& travel, std::uint32_t mapId, float z
     };
 }
 
-// The route of the bot on its map. The needs are the log's open objectives and ready quests and, while the log has a
-// free slot, the takes of the quests given on the map that the take rules allow the bot (no elite or group quest,
+// The route of the bot on its map. The needs are the log's open objectives and ready quests and the takes
+// of the quests given on the map that the take rules allow the bot (no elite or group quest,
 // none it gave up): within the route's near radius, or within its far reach when the job prices far stops. The closed
 // cells are the situation's. The walk function's calls are the first of the job's searches after the class quests'.
 // WQ18b part 3: of the takes beyond the near radius only those QuestFields::FarTakeCandidates lists
@@ -100,33 +100,29 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
     ask.runSpeed = model.runSpeed;
     ask.caution = model.cautionWeight;
     ask.groupSize = bot.groupSize;
-    ask.freeSlots = QUEST_LOG_SLOTS - std::min(inLog.size(), QUEST_LOG_SLOTS);
     ask.closed = closed;
     ask.pricing = pricing;
     ask.walk = WalkOf(context.travel, ask.mapId, bot.position.z, cappedWalks);
 
-    if (ask.freeSlots)
+    std::vector<std::int32_t> const groups = QuestFields::TakenGroups(index, inLog, bot.rewardedQuests);
+    Take::Facts const facts{.race = bot.race,
+                            .cls = bot.cls,
+                            .level = bot.level,
+                            .greyDiff = context.greyDiff,
+                            .eliteGroup = false,
+                            .rewarded = bot.rewardedQuests,
+                            .inLog = inLog,
+                            .givenUp = situation.givenUpQuests,
+                            .takenGroups = groups};
+    std::vector<std::uint32_t> candidates = QuestFields::TakeCandidates(index, ask.mapId, ask.x, ask.y, ask.radius);
+    if (ask.walk)
     {
-        std::vector<std::int32_t> const groups = QuestFields::TakenGroups(index, inLog, bot.rewardedQuests);
-        Take::Facts const facts{.race = bot.race,
-                                .cls = bot.cls,
-                                .level = bot.level,
-                                .greyDiff = context.greyDiff,
-                                .eliteGroup = false,
-                                .rewarded = bot.rewardedQuests,
-                                .inLog = inLog,
-                                .givenUp = situation.givenUpQuests,
-                                .takenGroups = groups};
-        std::vector<std::uint32_t> candidates = QuestFields::TakeCandidates(index, ask.mapId, ask.x, ask.y, ask.radius);
-        if (ask.walk)
-        {
-            std::vector<std::uint32_t> const beyond =
-                QuestFields::FarTakeCandidates(index, facts, ask.mapId, ask.x, ask.y, ask.radius, candidates, pricing);
-            candidates.insert(candidates.end(), beyond.begin(), beyond.end());
-        }
-        for (QuestFields::Need& take : QuestFields::TakeNeeds(index, facts, ask.mapId, candidates, pricing))
-            needs.push_back(std::move(take));
+        std::vector<std::uint32_t> const beyond =
+            QuestFields::FarTakeCandidates(index, facts, ask.mapId, ask.x, ask.y, ask.radius, candidates, pricing);
+        candidates.insert(candidates.end(), beyond.begin(), beyond.end());
     }
+    for (QuestFields::Need& take : QuestFields::TakeNeeds(index, facts, ask.mapId, candidates, pricing))
+        needs.push_back(std::move(take));
     Clock::time_point const listed = timer ? Clock::now() : Clock::time_point{};
 
     Route::Plan const built = Route::Build(map, index, needs, ask);

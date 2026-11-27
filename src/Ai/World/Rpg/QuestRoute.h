@@ -80,19 +80,17 @@ struct Ask
     float horizonMinutes{HORIZON_MINUTES};
     std::size_t maxStops{MAX_STOPS};
     float allowanceYards{ALLOWANCE_YARDS};
-    std::size_t freeSlots{QUEST_LOG_SLOTS};  // the log's free slots: a route takes no more quests than fit
-    std::span<std::uint64_t const> closed;   // cells closed to the bot, sorted (FieldMap.h's keys)
+    std::span<std::uint64_t const> closed;  // cells closed to the bot, sorted (FieldMap.h's keys)
     QuestFields::Pricing pricing{};
     Walk walk{};                            // prices far stops; none: near stops only
     std::uint32_t walkBudget{WALK_BUDGET};  // walk calls over the whole route
     StopRule stopRule{StopRule::RateHolds};
 };
 
-// The log as the plan expects it to be: the needs (those a stop opens are appended) and the free slots
+// The log as the plan expects it to be: the needs (those a stop opens are appended). It has no limit (WQ40)
 struct Log
 {
     std::vector<QuestFields::Need> needs;
-    std::size_t freeSlots{0};
 };
 
 struct Stop
@@ -189,18 +187,13 @@ inline std::uint32_t Taken(QuestFields::Need const& need, QuestFields::NeedOffer
     return std::min(need.left, static_cast<std::uint32_t>(std::lround(one.credits)));
 }
 
-// A ranked field as a stop: its expected needs are those with credits there, a take only while the log has a free
-// slot (the stop's hand-ins free theirs first). A stop of hand-ins and takes alone lasts their seconds, not the
-// field's stay
+// A ranked field as a stop: its expected needs are those with credits there. A stop of hand-ins and takes alone lasts
+// their seconds, not the field's stay
 inline Candidate CandidateOf(QuestFields::Ranked const& field, Log const& log, Ask const& ask)
 {
     using QuestFields::NeedKind;
     Candidate candidate;
     QuestOrder& order = candidate.order;
-    std::size_t free = log.freeSlots;
-    for (QuestFields::NeedOffer const& one : field.offer.needs)
-        if (log.needs[one.need].kind == NeedKind::HandIn && Taken(log.needs[one.need], one))
-            ++free;
     std::vector<QuestOrderNeed> rest;
     float worth = 0.0f;
     float seconds = 0.0f;
@@ -211,12 +204,6 @@ inline Candidate CandidateOf(QuestFields::Ranked const& field, Log const& log, A
         if (!(one.credits > 0.0f))
             continue;
         std::uint32_t const taken = Taken(need, one);
-        if (need.kind == NeedKind::Take)
-        {
-            if (!free)
-                continue;
-            free -= taken ? 1 : 0;
-        }
         atNpc = atNpc && (need.kind == NeedKind::HandIn || need.kind == NeedKind::Take);
         worth += one.credits * need.worthPerCredit;
         seconds += one.credits * need.seconds;
@@ -425,9 +412,9 @@ inline std::vector<Candidate> Thinned(std::vector<Candidate> const& priced)
     return kept;
 }
 
-// The log after an order as the plan expects it: the expected credits off their needs; a handed-in quest frees its
-// slot; a taken quest fills one and gets its objective needs (its hand-in at once when it has none); a quest whose
-// credits are then all expected gets its hand-in need
+// The log after an order as the plan expects it: the expected credits off their needs; a taken quest gets its
+// objective needs (its hand-in at once when it has none); a quest whose credits are then all expected gets its
+// hand-in need
 inline void Advance(QuestIndex const& index, Ask const& ask, Log& log, QuestOrder const& order)
 {
     std::vector<std::uint32_t> worked;
@@ -443,10 +430,9 @@ inline void Advance(QuestIndex const& index, Ask const& ask, Log& log, QuestOrde
             continue;
         it->left -= taken;
         if (expected.objective == ORDER_HAND_IN)
-            ++log.freeSlots;
-        else if (expected.objective == ORDER_TAKE)
+            continue;
+        if (expected.objective == ORDER_TAKE)
         {
-            log.freeSlots -= log.freeSlots ? 1 : 0;
             std::vector<QuestFields::Need> opened = Detail::NeedsOf(index, ask, expected.quest, false);
             if (opened.empty())
                 opened = Detail::NeedsOf(index, ask, expected.quest, true);
@@ -483,7 +469,7 @@ inline Plan Build(FieldMap const& map, QuestIndex const& index, std::span<QuestF
                   Ask const& ask)
 {
     Plan plan;
-    Log log{std::vector<QuestFields::Need>(needs.begin(), needs.end()), ask.freeSlots};
+    Log log{std::vector<QuestFields::Need>(needs.begin(), needs.end())};
     Detail::Walks walks;
     walks.walk = &ask.walk;
     walks.budget = ask.walkBudget;

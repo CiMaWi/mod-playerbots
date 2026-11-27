@@ -61,11 +61,10 @@ void OrderTake::Build()
     _built = true;
     _quests = Planner::Quests();
     _log.clear();
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < _bot->GetQuestLogSize(); ++slot)
         if (uint32 const questId = _bot->GetQuestSlotQuestId(slot))
             _log.push_back(questId);
     std::sort(_log.begin(), _log.end());
-    _freeSlots = Planner::QuestLog::LOG_SLOTS - std::min(_log.size(), Planner::QuestLog::LOG_SLOTS);
     RewardedQuestSet const& rewarded = _bot->getRewardedQuests();
     _rewarded.assign(rewarded.begin(), rewarded.end());
     std::sort(_rewarded.begin(), _rewarded.end());
@@ -92,7 +91,7 @@ bool OrderTake::MayAccept(Quest const* quest)
                                      .inLog = _log,
                                      .givenUp = _givenUp,
                                      .takenGroups = _takenGroups};
-    return Planner::QuestLog::MayAccept(*record, facts, *_quests, _freeSlots);
+    return Planner::QuestLog::MayAccept(*record, facts, *_quests);
 }
 
 bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest)
