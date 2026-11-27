@@ -260,6 +260,7 @@ struct CraftAt
     uint32_t Focus = 0;  // the spell focus of its station; 0 = none (done at any stop)
     float WorthCopper = 0.0f;
     bool Carried = false;  // the bot lights the station itself (a cook's campfire, WR15): done at any stop too
+    uint32_t Slots = 0;    // bag slots its first cast takes beyond what its reagents free
 };
 
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
@@ -487,7 +488,8 @@ inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<Errand
 // station the bot lights itself (WR15) needs no station stop: any stop takes the craft, and its worth may open a trip
 inline void ProvideCraft(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Craft.Spell)
+    // A product that finds no room even after the trip's sale is not planned
+    if (!snapshot.Craft.Spell || snapshot.Craft.Slots > snapshot.FreeSlots + snapshot.SellableSlots)
         return;
 
     ErrandOffer offer;
@@ -949,6 +951,59 @@ inline void RankBeforeMount(std::vector<TripStop>& stops)
                     stops.begin() + static_cast<std::ptrdiff_t>(trainer) + 1);
 }
 
+// The first errand of a kind at a stop, or its errands' end
+inline std::vector<ErrandOffer>::iterator FindErrand(TripStop& stop, ErrandKind kind)
+{
+    return std::find_if(stop.Errands.begin(), stop.Errands.end(),
+                        [kind](ErrandOffer const& errand) { return errand.Kind == kind; });
+}
+
+// A stop the trip has vendor business at: the bot sells there, whatever else it came for
+inline bool SellsAt(TripStop const& stop)
+{
+    return (stop.Services & SERVICE_VENDOR) &&
+           std::any_of(stop.Errands.begin(), stop.Errands.end(), [](ErrandOffer const& errand)
+                       { return (errand.Service & (SERVICE_VENDOR | SERVICE_REPAIR)) != 0; });
+}
+
+// Full bags sell before they craft (NR22): a bank stop that withdraws comes before the trip's last vendor stop, and the
+// craft after it, its station's stop moved or, without a station, the errand alone
+inline void SellBeforeCraft(std::vector<TripStop>& stops)
+{
+    std::size_t sale = stops.size();
+    for (std::size_t i = 0; i < stops.size(); ++i)
+        if (SellsAt(stops[i]))
+            sale = i;
+    if (sale == stops.size())
+        return;
+
+    auto const at = [&stops](std::size_t i) { return stops.begin() + static_cast<std::ptrdiff_t>(i); };
+    for (std::size_t i = sale + 1; i < stops.size(); ++i)
+        if (FindErrand(stops[i], ErrandKind::BankWithdraw) != stops[i].Errands.end())
+        {
+            std::rotate(at(sale), at(i), at(i + 1));
+            ++sale;
+        }
+    // A trip holds one craft
+    for (std::size_t i = 0; i < sale; ++i)
+    {
+        auto const craft = FindErrand(stops[i], ErrandKind::Craft);
+        if (craft == stops[i].Errands.end())
+            continue;
+
+        if (craft->Service)
+            std::rotate(at(i), at(i + 1), at(sale + 1));
+        else
+        {
+            stops[sale].Errands.push_back(*craft);
+            stops[i].Errands.erase(craft);
+            if (stops[i].Errands.empty() && !stops[i].OnRoute)
+                stops.erase(at(i));
+        }
+        return;
+    }
+}
+
 // The detour rule: an errand joins a stop already on the trip when one can take it; a new stop opens only when the
 // pending errands it takes are worth more than its detour, the best gain first, until no detour pays or the trip has
 // MAX_DETOUR_STOPS detours. Deterministic: candidates in the order given, strict comparisons.
@@ -1311,6 +1366,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         plan.Refused.push_back(refusal);
     }
     RankBeforeMount(plan.Stops);
+    SellBeforeCraft(plan.Stops);
     return plan;
 }
 

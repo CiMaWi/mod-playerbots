@@ -1858,6 +1858,55 @@ inline void CraftTrips(std::vector<Check>& checks)
         Describe(both));
 }
 
+// NR22: with full bags the sale comes first: the craft's stop (or the errand alone) after the vendor stop, a
+// withdrawal for the sale before it, and no craft whose product finds no room even after the sale
+inline void CraftAfterSale(std::vector<Check>& checks)
+{
+    auto const at = [](TripPlan const& plan, ErrandKind kind)
+    {
+        for (std::size_t i = 0; i < plan.Stops.size(); ++i)
+            if (HasErrand(plan.Stops[i], kind))
+                return i;
+        return plan.Stops.size();
+    };
+
+    ErrandSnapshot full = Bot(0, 6);
+    full.Craft = {CRAFT_SPELL, CRAFT_FOCUS, 50000.0f, false, 1};
+    full.Stops = {{STATION, At(300.0f, 0.0f), SERVICE_STATION}, {PLAIN_VENDOR, At(600.0f, 0.0f), SERVICE_VENDOR}};
+    TripPlan const sold = Plan(full, Request(full), TripProviders());
+    Add(checks, "craft: 0 free and 6 sellable: the station's stop after the vendor's",
+        sold.Stops.size() == 2 && at(sold, ErrandKind::Sell) == 0 && at(sold, ErrandKind::Craft) == 1, Describe(sold));
+
+    ErrandSnapshot none = full;
+    none.SellableSlots = 0;
+    TripPlan const left = Plan(none, Request(none), TripProviders());
+    none.Craft.Slots = 0;
+    TripPlan const fits = Plan(none, Request(none), TripProviders());
+    Add(checks, "craft: 0 free and 0 sellable: no offer, unless the product finds room",
+        left.Stops.empty() && left.Refused.empty() && at(fits, ErrandKind::Craft) == 0,
+        Describe(left) + "; " + Describe(fits));
+
+    ErrandSnapshot own = full;
+    own.Craft = {CRAFT_SPELL, 0, 50000.0f, false, 1};
+    TripStop route;
+    route.Place = At(100.0f, 0.0f);
+    TripPlan const moved = Plan(own, Request(own, {route}), TripProviders());
+    Add(checks, "craft: one without a station leaves an earlier stop for the vendor's",
+        moved.Stops.size() == 2 && at(moved, ErrandKind::Sell) == 1 && at(moved, ErrandKind::Craft) == 1,
+        Describe(moved));
+
+    ErrandSnapshot due = GovernedBot(0, 6);
+    due.BankDueCount = 1;
+    due.BankDueWorth = 50000;
+    WithServices(due, {{PLAIN_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR}},
+                 {{BANKER_ID, At(600.0f, 0.0f), SERVICE_BANKER}});
+    TripPlan const withdrawn = Plan(due, Request(due), TripProviders());
+    Add(checks, "bank: a withdrawal comes before the vendor stop",
+        withdrawn.Stops.size() == 2 && at(withdrawn, ErrandKind::BankWithdraw) == 0 &&
+            at(withdrawn, ErrandKind::Sell) == 1,
+        Describe(withdrawn));
+}
+
 // ---- The record of failed attempts at the trip start (NR9; NR8: stops planned where a trip had just died) ----
 
 constexpr uint32_t RECORD_NOW_MS = 1000000;
@@ -1993,6 +2042,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     WeaponAtVendor(checks);
     ProfessionTrips(checks);
     CraftTrips(checks);
+    CraftAfterSale(checks);
     TameTrip(checks);
     StableTrip(checks);
     TameOrder(checks);

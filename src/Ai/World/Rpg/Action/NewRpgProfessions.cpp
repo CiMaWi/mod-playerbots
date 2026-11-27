@@ -18,6 +18,7 @@
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"
 #include "PlannerIndexes.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -25,6 +26,7 @@
 #include "Playerbots.h"
 #include "ProfessionConfig.h"
 #include "ProfessionVisit.h"
+#include "RecipeIndex.h"
 #include "Trainer.h"
 #include "UpkeepIndex.h"
 #include "UpkeepNeedRules.h"
@@ -162,6 +164,36 @@ bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& 
     return true;
 }
 
+// The bag slots the order's first cast takes beyond what its reagents free; a part stack of the product is room
+uint32 CraftSlots(Player* bot, BankMail::CraftOrder const& order)
+{
+    // The visit asks one free slot of a processing cast, whose yield is random
+    if (order.source)
+        return 1;
+
+    std::shared_ptr<Recipes::RecipeIndex const> const index = Planner::CurrentRecipeIndex();
+    Recipes::Recipe const* recipe = index ? index->RecipeOf(order.spell) : nullptr;
+    if (!recipe || !recipe->product)
+        return 0;
+
+    CraftRules::BagState bags;
+    auto const note = [&bags, bot](uint32 item)
+    {
+        bags.items[item] = bot->GetItemCount(item, false);
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item))
+            bags.maxStack[item] = proto->GetMaxStackSize();
+    };
+    for (Recipes::ItemCount const& reagent : recipe->reagents)
+        note(reagent.item);
+    note(recipe->product);
+    uint32 const before = bags.SlotsUsed();
+    for (Recipes::ItemCount const& reagent : recipe->reagents)
+        bags.items[reagent.item] -= std::min<uint32>(reagent.count, bags.items[reagent.item]);
+    bags.items[recipe->product] += recipe->productCount;
+    uint32 const after = bags.SlotsUsed();
+    return after > before ? after - before : 0;
+}
+
 // The skill path's first queued craft the bags allow (WR14; the first at a station before one without, WR14b), and the
 // nearest stations of its focus within the walk limit as the trip's stops; a vendor or other stop within
 // STOP_JOIN_YARDS of a station takes the station too. A station the bot lights itself (a cook's campfire, WR15) is
@@ -184,7 +216,8 @@ void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& in
         return;
 
     uint32 const ownStation = CraftRules::OwnStationSpell(order->focus);
-    snapshot.Craft = {order->spell, order->focus, worth, BankMail::CanLightOwnStation(bot, ownStation)};
+    snapshot.Craft = {order->spell, order->focus, worth, BankMail::CanLightOwnStation(bot, ownStation),
+                      CraftSlots(bot, *order)};
     if (!order->focus)
         return;
 
