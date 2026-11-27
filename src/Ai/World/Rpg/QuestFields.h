@@ -432,23 +432,9 @@ inline std::vector<std::uint32_t> TakeCandidates(QuestIndex const& index, std::u
     return ids;
 }
 
-// WQ17b: the exclusive groups of the log's and the rewarded quests, ascending (Take::Facts::takenGroups; the circuit
-// builds its own the same way)
-inline std::vector<std::int32_t> TakenGroups(QuestIndex const& index, std::span<std::uint32_t const> inLog,
-                                             std::span<std::uint32_t const> rewarded)
-{
-    std::vector<std::int32_t> groups;
-    for (std::span<std::uint32_t const> const ids : {inLog, rewarded})
-        for (std::uint32_t const id : ids)
-            if (QuestRecord const* record = index.Find(id))
-                if (record->exclusiveGroup > 0)
-                    groups.push_back(record->exclusiveGroup);
-    std::sort(groups.begin(), groups.end());
-    return groups;
-}
-
-// WQ17b: every candidate quest the take rules allow the bot (Take::May, no elite or group quest: WQ.43 point 3) as a
-// need at its givers on the map. A separate list from the log's Needs; a caller ranking both concatenates them
+// WQ17b: every candidate quest the take rules allow the bot (Take::May with the game's answer, WQ41; no elite or group
+// quest: WQ.43 point 3) as a need at its givers on the map. A separate list from the log's Needs; a caller ranking both
+// concatenates them
 inline std::vector<Need> TakeNeeds(QuestIndex const& index, Take::Facts const& facts, std::uint32_t mapId,
                                    std::span<std::uint32_t const> candidates, Pricing const& pricing)
 {
@@ -462,7 +448,7 @@ inline std::vector<Need> TakeNeeds(QuestIndex const& index, Take::Facts const& f
     for (std::uint32_t const id : ids)
     {
         QuestRecord const* quest = index.Find(id);
-        if (!quest || Take::May(*quest, bot, index))
+        if (!quest || Take::May(*quest, bot))
             continue;
         if (std::optional<Need> need = TakeNeed(index, *quest, team, pricing, mapId))
             needs.push_back(std::move(*need));
@@ -504,7 +490,7 @@ inline std::vector<std::uint32_t> FarTakeCandidates(QuestIndex const& index, Tak
                 std::find(ids.begin(), ids.end(), id) != ids.end())
                 continue;
             QuestRecord const* quest = index.Find(id);
-            if (!quest || Take::May(*quest, bot, index) || !TakeNeed(index, *quest, team, pricing, mapId))
+            if (!quest || Take::May(*quest, bot) || !TakeNeed(index, *quest, team, pricing, mapId))
                 continue;
             ids.push_back(id);
         }

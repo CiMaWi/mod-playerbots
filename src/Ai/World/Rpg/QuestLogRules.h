@@ -32,11 +32,9 @@ constexpr std::uint32_t PLAN_DUE_MS = 30 * 1000;  // from the round's first acce
 // The failure row of a planned take that ended without the accept (WQ18c, WQ.44 item 2): one give-up, as any cause
 constexpr std::string_view CANNOT_TAKE = "cannot_take";
 
-// A quest a giver offers is accepted when the take test allows it: no rule for room (WQ40)
-inline bool MayAccept(QuestRecord const& quest, Take::Facts const& bot, QuestIndex const& quests)
-{
-    return !Take::May(quest, bot, quests).has_value();
-}
+// A quest a giver offers is accepted when the take test allows it: no rule for room (WQ40); the caller's facts hold
+// the game's answer for it (WQ41)
+inline bool MayAccept(QuestRecord const& quest, Take::Facts const& bot) { return !Take::May(quest, bot).has_value(); }
 
 // The bot's failure record as the accept and the log upkeep read it
 struct Record

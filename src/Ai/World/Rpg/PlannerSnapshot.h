@@ -127,6 +127,9 @@ struct Snapshot
     std::vector<QuestSlot> quests;
     bool noLogLimit{false};  // the log has no limit (questing WQ40, Player::HasUnlimitedQuestLog): no rule for room
     std::vector<std::uint32_t> rewardedQuests;  // sorted
+    // The game's answer (questing WQ41a, decision WQ.47): the quests of the index the core's CanTakeQuest lets the
+    // bot take now, sorted; filled by FillTakeable on the bot's map thread, empty in a snapshot built without it
+    std::vector<std::uint32_t> takeable;
     bool hasHearthstone{false};
     Place hearth;
     std::uint32_t hearthCooldownMs{0};
@@ -221,8 +224,8 @@ struct Snapshot
     std::size_t ApproxBytes() const
     {
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
-               rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
-               ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
+               (rewardedQuests.capacity() + takeable.capacity()) * sizeof(std::uint32_t) +
+               stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownRecipes.capacity() + toolsHeld.capacity() + gatherUp.capacity() + gatherDown.capacity()) *
                    sizeof(std::uint32_t) +
                gatherRefused.capacity() * sizeof(WorldTravel::SightPoint) +

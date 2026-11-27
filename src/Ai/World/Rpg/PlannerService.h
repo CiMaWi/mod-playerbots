@@ -70,6 +70,13 @@ void StartPlanner();
 void StopPlanner();
 // Map thread only: the bot as the planner sees it (WT.11)
 Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion);
+// Map thread only: the game's answer about takes into snapshot.takeable (questing WQ41a): the core's CanTakeQuest for
+// each quest of the index for the bot's side whose minimum level it has and that is not grey for it
+// (Acore::XP::GetGrayLevel); PerfMonitor row `planner take set`. The goals job's snapshot carries it
+void FillTakeable(Player* bot, Snapshot& snapshot);
+// Map thread (the bot's): the next goals snapshot asks the game again about takes (questing WQ41b): an order ended at a
+// giver with a planned take still open, so the answer it was planned from may be old
+void AskTakesAgain(PlayerbotAI* botAI);
 
 // The wear of the bot's equipped items, as the snapshot and the repair errand read it (items that never wear skipped)
 struct GearWear

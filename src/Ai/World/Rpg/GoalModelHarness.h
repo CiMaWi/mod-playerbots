@@ -23,6 +23,7 @@
 #include "GoalModel.h"
 #include "GoalModelLog.h"
 #include "InterludeInputs.h"
+#include "QuestTakeFixture.h"
 #include "UpkeepRules.h"
 
 // The goal model's scenarios (travel plan WT14): synthetic bots and places, one check per decision. Proof is
@@ -208,9 +209,9 @@ struct PlanBothWays
 {
     GoalPlan operator()(Snapshot const& bot, CircuitContext const& context, Situation const& situation) const
     {
-        GoalPlan plain = Goals::PlanGoals(bot, context, situation);
+        GoalPlan plain = Goals::PlanGoals(TakeFixture::Answered(bot, context), context, situation);
         NoteRouteWays(bot, situation, plain.ranked, [&bot, &context](Situation const& other)
-                      { return Goals::PlanGoals(bot, context, other).ranked; });
+                      { return Goals::PlanGoals(TakeFixture::Answered(bot, context), context, other).ranked; });
         return plain;
     }
 };
@@ -600,7 +601,7 @@ inline void Careful(std::vector<Check>& checks)
         Snapshot bot = Bot(10, FLUSH);
         if (caution)
             bot.traits = Traits({{TraitRules::Trait::Caution, caution}});
-        GoalPlan const plan = PlanGoals(bot, context, Base());
+        GoalPlan const plan = PlanGoals(TakeFixture::Answered(bot, context), context, Base());
         std::string const text = "take " + std::to_string(plan.circuit.take.size()) + ", " + Summary(plan.ranked);
         if (caution > 0)
             Add(checks, "careful: a careful bot's circuit skips the elite quest as risky",
@@ -863,8 +864,9 @@ inline NextZoneWorld NextZones()
 }
 
 // The hubs the live fill offers, by camp name
-inline std::vector<std::uint32_t> Filled(Snapshot const& bot, CircuitContext const& context, Situation& situation)
+inline std::vector<std::uint32_t> Filled(Snapshot const& input, CircuitContext const& context, Situation& situation)
 {
+    Snapshot const bot = TakeFixture::Answered(input, context);  // the fixtures' bots are no players (WQ41b)
     FillFromIndexes(bot, context, Prepare(bot, situation), situation);
     std::vector<std::uint32_t> hubs;
     for (HubOption const& hub : situation.hubs)
@@ -901,7 +903,7 @@ inline void Outlevelled(std::vector<Check>& checks)
 
     // Grey quests at home leave a dry circuit (the circuit skips grey quests), so the estimate of an unknown hub wins
     Snapshot const outlevelled = Bot(16, FLUSH);
-    GoalPlan const moved = PlanGoals(outlevelled, context, Reserved(live, 16));
+    GoalPlan const moved = PlanGoals(TakeFixture::Answered(outlevelled, context), context, Reserved(live, 16));
     Add(checks, "outlevelled: grey quests at home leave a dry circuit and the nearest next zone's hub wins",
         moved.circuit.take.empty() && moved.hub == world.hubs[HOME_CAMP] &&
             TopIs(moved.ranked, GoalKind::MoveZone, world.hubs[W1_CAMP], "outlevelled") && moves(moved.ranked) >= 2,
@@ -910,7 +912,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     Snapshot const inBracket = Bot(10, FLUSH);
     Situation kept = live;
     std::vector<std::uint32_t> const none = Filled(inBracket, context, kept);
-    GoalPlan const stays = PlanGoals(inBracket, context, Reserved(live, 10));
+    GoalPlan const stays = PlanGoals(TakeFixture::Answered(inBracket, context), context, Reserved(live, 10));
     Add(checks, "outlevelled: a bot within its bracket keeps questing here and gets no next zones",
         none.empty() && kept.here.zoneLow == 1 && kept.here.zoneHigh == 10 &&
             TopIs(stays.ranked, GoalKind::Quest, world.hubs[HOME_CAMP], "circuit") && !moves(stays.ranked),
@@ -929,7 +931,7 @@ inline void Outlevelled(std::vector<Check>& checks)
 
     Situation beyond = live;
     std::vector<std::uint32_t> const past = Filled(Bot(40, FLUSH), context, beyond);
-    GoalPlan const nowhere = PlanGoals(Bot(40, FLUSH), context, Reserved(live, 40));
+    GoalPlan const nowhere = PlanGoals(TakeFixture::Answered(Bot(40, FLUSH), context), context, Reserved(live, 40));
     CircuitContext bare = context;
     bare.indexes = nullptr;
     Situation unset = live;

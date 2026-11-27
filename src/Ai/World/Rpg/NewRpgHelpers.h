@@ -48,8 +48,9 @@ std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(Player* bot, Planne
 std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(PlayerbotAI* botAI, Player* bot);
 
 // Questing WQ31 (WQ.40): whether a bot on an order takes a quest a giver offers, QuestLogRules' MayAccept (the one
-// take test). The facts (the log, the rewarded quests, the failure record) are gathered at the first
-// quest that asks and kept for one search; an accept changes the log, so it calls Reset
+// take test) with the game's answer for that quest (CanTakeQuest, WQ41). The facts (the log, the rewarded quests, the
+// failure record) are gathered at the first quest that asks and kept for one search; an accept changes the log, so it
+// calls Reset
 class OrderTake
 {
 public:
@@ -69,7 +70,6 @@ private:
     std::vector<std::uint32_t> _log;
     std::vector<std::uint32_t> _rewarded;
     std::vector<std::uint32_t> _givenUp;
-    std::vector<std::int32_t> _takenGroups;
 };
 
 // Whether a bot not on an order takes a quest a giver offers: upstream's filter (the game's checks, worth and capable
@@ -79,8 +79,9 @@ bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest);
 // Player::CanInteractWithQuestGiver without the distance check.
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
 // constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test. A bot on an order asks
-// OrderTake (take: the search's, else one of its own), without the game's take check: a planned take the game refuses
-// stays open, and its order's end at the giver gives it up (QuestFail cannot_take, WQ18c)
+// OrderTake (take: the search's, else one of its own), which holds the game's take check (WQ41): a giver offering only
+// takes the game refuses is none to seek, and a planned take left open there is no give-up (QuestFail cannot_take is a
+// giver that does not offer it, WQ18c)
 bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0, OrderTake* take = nullptr);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);

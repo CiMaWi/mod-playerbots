@@ -830,6 +830,12 @@ struct BotGoals
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
     QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
+    // The game's answer about takes as last asked (questing WQ41a, Snapshot::takeable), the key of what it depends
+    // on (PlannerService.cpp TakeKey) and when it was asked: the goals job's snapshot asks the game again when the key
+    // changed or the answer is TAKE_ANSWER_MS old (WQ41b); key 0 asks at the next snapshot (AskTakesAgain)
+    std::uint64_t takeKey{0};
+    std::uint32_t takeMs{0};
+    std::vector<std::uint32_t> takeable;
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
     std::uint32_t pathMs{0};  // its snapshot's time

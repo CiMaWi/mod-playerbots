@@ -1135,13 +1135,14 @@ void Wiring()
     nearContext.quests = &near;
 
     // A warrior at 10 with 1498 takeable: the lone trip over the ordinary circuit
-    G::GoalPlan const lone = G::PlanGoals(bot, farContext, GovernedAt());
+    G::GoalPlan const lone = G::PlanGoals(Planner::TakeFixture::Answered(bot, farContext), farContext, GovernedAt());
     std::printf("info: warrior 10, giver 1600 yd off: %s\n", Ranked(lone).c_str());
     Check(TopClassTrip(lone.ranked) && GH::Find(lone.ranked, G::GoalKind::Quest, GH::HOME_HUB),
           "wiring: a governed warrior 10 picks the lone trip to 1498 over its ordinary circuit");
 
     // The giver at the hub: the circuit takes 1498 with the quests near it, no lone trip
-    G::GoalPlan const circuit = G::PlanGoals(bot, nearContext, GovernedAt());
+    G::GoalPlan const circuit =
+        G::PlanGoals(Planner::TakeFixture::Answered(bot, nearContext), nearContext, GovernedAt());
     std::printf("info: warrior 10, giver at the hub: %s\n", Ranked(circuit).c_str());
     Check(TopCircuitTaking(circuit, CLASS_QUEST) && !HasClassOption(circuit.ranked) &&
               Planner::CircuitLog::Rows(circuit.circuit).size() > 0,
@@ -1154,7 +1155,7 @@ void Wiring()
     // Mid-circuit: the circuit goes on (the stay test without the bonus keeps it), the trip comes when the circuit ends
     Planner::Snapshot running = bot;
     running.currentGoal = {static_cast<std::uint32_t>(G::GoalKind::Quest), GH::HOME_HUB, 1};
-    G::GoalPlan const mid = G::PlanGoals(running, farContext, GovernedAt());
+    G::GoalPlan const mid = G::PlanGoals(Planner::TakeFixture::Answered(running, farContext), farContext, GovernedAt());
     G::CurrentGoal current{G::GoalKind::Quest, GH::HOME_HUB, 0.0f, false, false, G::TargetType::Default};
     G::Replan const stays = G::ReplanDecision(Interval(current, mid));
     G::Replan const bare = G::DecideReplan(Interval(current, mid));
@@ -1168,7 +1169,7 @@ void Wiring()
           "wiring: when the circuit ends the next decision takes the class trip (" + Verdict(after) + ")");
 
     // A bridge goal outranks the class quest; a sick bot rests first
-    G::GoalPlan const bridge = G::PlanGoals(bot, farContext, GovernedAt());
+    G::GoalPlan const bridge = G::PlanGoals(Planner::TakeFixture::Answered(bot, farContext), farContext, GovernedAt());
     Planner::GoalApply::Slot bridgeSlot;
     Planner::GoalApply::Active bridgeGoal;
     bridgeGoal.kind = G::GoalKind::TravelElsewhere;
@@ -1181,20 +1182,22 @@ void Wiring()
           "wiring: a bridge goal outranks the class quest");
     Planner::Snapshot sick = bot;
     sick.sickMs = 60000;
-    G::GoalPlan const resting = G::PlanGoals(sick, farContext, GovernedAt());
+    G::GoalPlan const resting =
+        G::PlanGoals(Planner::TakeFixture::Answered(sick, farContext), farContext, GovernedAt());
     std::printf("info: sick: %s\n", Ranked(resting).c_str());
     Check(GH::Top(resting.ranked) && GH::Top(resting.ranked)->kind == G::GoalKind::Rest &&
               !HasClassOption(resting.ranked),
           "wiring: a sick bot rests first");
 
     // No bonus: not governed, the spell known, given up
-    G::GoalPlan const ungoverned = G::PlanGoals(bot, nearContext, GH::Base());
+    G::GoalPlan const ungoverned =
+        G::PlanGoals(Planner::TakeFixture::Answered(bot, nearContext), nearContext, GH::Base());
     G::Situation known = GovernedAt();
     known.knownClassQuestSpells = {71};
-    G::GoalPlan const knows = G::PlanGoals(bot, farContext, known);
+    G::GoalPlan const knows = G::PlanGoals(Planner::TakeFixture::Answered(bot, farContext), farContext, known);
     G::Situation givenUp = GovernedAt();
     givenUp.givenUpQuests = {CLASS_QUEST};
-    G::GoalPlan const gaveUp = G::PlanGoals(bot, farContext, givenUp);
+    G::GoalPlan const gaveUp = G::PlanGoals(Planner::TakeFixture::Answered(bot, farContext), farContext, givenUp);
     std::printf("info: ungoverned at the hub: %s\n", Ranked(ungoverned).c_str());
     Check(ungoverned.classBonus.empty() && !TakesClass(ungoverned, CLASS_QUEST) && knows.classBonus.empty() &&
               !HasClassOption(knows.ranked) && gaveUp.classBonus.empty() && !HasClassOption(gaveUp.ranked),
@@ -1224,7 +1227,7 @@ void Wiring()
                   giverless == Route::No && gaps.capped[at] == 1 && gaps.noRoute[at] == 1,
               "wiring: the route test answers yes, unknown for a search cut short (-2) or another map without a "
               "graph, no for -1 and for a quest without a giver");
-        G::GoalPlan const cappedPlan = G::PlanGoals(bot, capped, GovernedAt());
+        G::GoalPlan const cappedPlan = G::PlanGoals(Planner::TakeFixture::Answered(bot, capped), capped, GovernedAt());
         Check(cappedPlan.classBonus.empty() && !HasClassOption(cappedPlan.ranked),
               "wiring: a search cut short gives no bonus and no trip (unknown: nothing is failed either)");
     }
@@ -1234,11 +1237,11 @@ void Wiring()
     record.Note(RECORD_BOT, CLASS_QUEST, "timeout", 10, 1);
     G::Situation fedOnce = GovernedAt();
     fedOnce.givenUpQuests = QuestFail::GivenUp(record.RowsOf(RECORD_BOT), GIVE_UP_LIMIT);
-    G::GoalPlan const once = G::PlanGoals(bot, farContext, fedOnce);
+    G::GoalPlan const once = G::PlanGoals(Planner::TakeFixture::Answered(bot, farContext), farContext, fedOnce);
     record.Note(RECORD_BOT, CLASS_QUEST, "no_target", 3, 2);
     G::Situation fedTwice = GovernedAt();
     fedTwice.givenUpQuests = QuestFail::GivenUp(record.RowsOf(RECORD_BOT), GIVE_UP_LIMIT);
-    G::GoalPlan const twice = G::PlanGoals(bot, farContext, fedTwice);
+    G::GoalPlan const twice = G::PlanGoals(Planner::TakeFixture::Answered(bot, farContext), farContext, fedTwice);
     Check(fedOnce.givenUpQuests.empty() && !once.classBonus.empty() && HasClassOption(once.ranked),
           "wiring: a class quest given up once by the record keeps its bonus and trip");
     Check(fedTwice.givenUpQuests == std::vector<std::uint32_t>{CLASS_QUEST} && twice.classBonus.empty() &&
@@ -1249,8 +1252,9 @@ void Wiring()
     Planner::Snapshot opened = bot;
     opened.rewardedQuests = {CLASS_PREV, GATE};
     std::sort(opened.rewardedQuests.begin(), opened.rewardedQuests.end());
-    G::GoalPlan const before = G::PlanGoals(bot, nearContext, GH::Base());
-    G::GoalPlan const afterGate = G::PlanGoals(opened, nearContext, GH::Base());
+    G::GoalPlan const before = G::PlanGoals(Planner::TakeFixture::Answered(bot, nearContext), nearContext, GH::Base());
+    G::GoalPlan const afterGate =
+        G::PlanGoals(Planner::TakeFixture::Answered(opened, nearContext), nearContext, GH::Base());
     std::vector<std::uint32_t> const& unlocks = near.Unlocks(GATE);
     Check(!GH::Takes(before.circuit, GATED) && GH::Takes(before.circuit, GATE) && GH::Takes(afterGate.circuit, GATED) &&
               std::find(unlocks.begin(), unlocks.end(), GATED) != unlocks.end(),
@@ -1328,7 +1332,7 @@ void Decisions(std::uint32_t seed)
         current.valuePerMinute = static_cast<float>(rng() % 600);
         if (goal)
             bot.currentGoal = {static_cast<std::uint32_t>(current.kind), current.target, 1};
-        G::GoalPlan const plan = G::PlanGoals(bot, context, situation);
+        G::GoalPlan const plan = G::PlanGoals(Planner::TakeFixture::Answered(bot, context), context, situation);
         std::string const state = "state " + std::to_string(n) + " (class " + std::to_string(bot.cls) + ", race " +
                                   std::to_string(bot.race) + ", level " + std::to_string(bot.level) +
                                   (atHub ? ", giver at the hub" : ", giver far") + ", goal " + std::to_string(goal) +
@@ -1339,7 +1343,8 @@ void Decisions(std::uint32_t seed)
             // J1: what the plan without the bonus keeps, the bot keeps
             G::Situation plainSituation = situation;
             plainSituation.governed = false;
-            G::GoalPlan const without = G::PlanGoals(bot, context, plainSituation);
+            G::GoalPlan const without =
+                G::PlanGoals(Planner::TakeFixture::Answered(bot, context), context, plainSituation);
             G::ReplanInput in = Interval(current, plan);
             if (rng() % 3 == 0)
                 in.lastPlanMs = in.nowMs - 1000;  // no interval trigger

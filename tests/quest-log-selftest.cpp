@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "QuestLogRules.h"
+#include "QuestTakeFixture.h"
 
 using namespace Planner;
 using QuestLog::Drop;
@@ -108,29 +109,23 @@ struct State
     QuestLog::Record record;
 };
 
-std::vector<std::int32_t> GroupsOf(State const& state, QuestIndex const& index)
+// The game's answer for the state (WQ41: a fact of the take test), as the fixtures model it
+Ids AnswerOf(State const& state, QuestIndex const& index)
 {
-    std::vector<std::int32_t> groups;
-    for (Ids const* ids : {&state.inLog, &state.rewarded})
-        for (std::uint32_t const id : *ids)
-            if (QuestRecord const* quest = index.Find(id); quest && quest->exclusiveGroup > 0)
-                groups.push_back(quest->exclusiveGroup);
-    std::sort(groups.begin(), groups.end());
-    return groups;
+    return TakeFixture::Answer(index, state.race, state.cls, state.level, state.rewarded, state.inLog);
 }
 
-Take::Facts FactsOf(State const& state, std::vector<std::int32_t> const& groups)
+Take::Facts FactsOf(State const& state, Ids const& answer)
 {
     Take::Facts facts;
     facts.race = state.race;
-    facts.cls = state.cls;
     facts.level = state.level;
     facts.greyDiff = state.greyDiff;
     facts.eliteGroup = false;  // WQ.43: as the accept at a giver
     facts.rewarded = state.rewarded;
     facts.inLog = state.inLog;
     facts.givenUp = state.record.givenUp;
-    facts.takenGroups = groups;
+    facts.takeable = answer;
     return facts;
 }
 
@@ -139,8 +134,8 @@ constexpr std::size_t CLIENT_SLOTS = 25;
 
 bool MayAcceptNow(QuestRecord const& quest, State const& state, QuestIndex const& index)
 {
-    std::vector<std::int32_t> const groups = GroupsOf(state, index);
-    return QuestLog::MayAccept(quest, FactsOf(state, groups), index);
+    Ids const answer = AnswerOf(state, index);
+    return QuestLog::MayAccept(quest, FactsOf(state, answer));
 }
 
 Drop AbandonNow(QuestRecord const& quest, State const& state, bool ready)
@@ -250,7 +245,7 @@ void Table()
     Check(!may(ELITE), "accept: elite");
     Check(may(TAKE_REFUSED), "accept: a take refused once is taken again, as any cause given up once");
     Check(!may(TAKE_TWICE) &&
-              Take::May(*index.Find(TAKE_TWICE), FactsOf(bot, GroupsOf(bot, index)), index) == Take::Reason::GivenUp,
+              Take::May(*index.Find(TAKE_TWICE), FactsOf(bot, AnswerOf(bot, index))) == Take::Reason::GivenUp,
           "accept: a take refused twice is given up (the take test answers GivenUp)");
     Check(may(ONCE), "accept: given up once by a timeout");
     Check(!may(TWICE), "accept: given up twice");
@@ -472,11 +467,10 @@ void OneLog(std::mt19937& rng, QuestIndex const& index, std::string const& who, 
 
     // No rule for room (questing WQ40): the accept is the take test alone, whatever the log holds; `full` counts the
     // logs of a client's 25 quests or more, which accept as any other
-    std::vector<std::int32_t> const groupsBefore = GroupsOf(before, index);
+    Ids const answerBefore = AnswerOf(before, index);
     for (std::uint32_t const id : offers)
         if (QuestRecord const* quest = index.Find(id))
-            Check(MayAcceptNow(*quest, before, index) ==
-                      !Take::May(*quest, FactsOf(before, groupsBefore), index).has_value(),
+            Check(MayAcceptNow(*quest, before, index) == !Take::May(*quest, FactsOf(before, answerBefore)).has_value(),
                   who + ": quest " + std::to_string(id) + " accepted or refused by more than the take test");
     if (before.inLog.size() >= CLIENT_SLOTS)
     {

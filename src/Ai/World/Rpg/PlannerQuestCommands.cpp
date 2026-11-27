@@ -30,11 +30,13 @@
 #include "ClassQuestJoin.h"
 #include "Config.h"
 #include "DBCStores.h"
+#include "DisableMgr.h"
 #include "GameObjectData.h"
 #include "GoalInterface.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "GoalModelLog.h"
+#include "GossipDef.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -64,7 +66,8 @@ namespace Planner
 {
 namespace
 {
-constexpr std::size_t QUERY_PLACES = 4;  // givers and enders listed by `planner quest`
+constexpr std::size_t QUERY_PLACES = 4;      // givers and enders listed by `planner quest`
+constexpr float ANSWER_GIVER_YARDS = 30.0f;  // `planner quest <id> <bot>`: a giver this near shows its quest menu
 
 std::string AreaName(ChatHandler* handler, uint32 id)
 {
@@ -794,6 +797,75 @@ bool HandleQuestUseCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
+namespace
+{
+// WQ41c: the game's answer about the take for one bot, as the snapshot's gather asks it (Player::CanTakeQuest, world
+// thread between map updates), the core's checks it fails (its own SatisfyQuest* calls, no copy of a rule), whether
+// the planner's answer holds the quest (FillTakeable: the gather's level, grey and side range) and, with a giver of
+// the quest within ANSWER_GIVER_YARDS, whether that giver's quest menu lists it (Player::PrepareQuestMenu, the
+// menu the bot's talk then shows; cleared again)
+void SendTakeAnswer(ChatHandler* handler, QuestIndex const& quests, QuestRecord const& record, Quest const* proto,
+                    Player* bot)
+{
+    if (!proto)
+    {
+        handler->PSendSysMessage("  answer for {}: no quest template", bot->GetName());
+        return;
+    }
+    std::string failing;
+    auto const check = [&failing](bool met, char const* word)
+    {
+        if (!met)
+            failing += (failing.empty() ? "" : ", ") + std::string(word);
+    };
+    check(!sDisableMgr->IsDisabledFor(DISABLE_TYPE_QUEST, proto->GetQuestId(), bot), "disabled");
+    check(bot->SatisfyQuestStatus(proto, false), "status");
+    check(bot->SatisfyQuestExclusiveGroup(proto, false), "exclusive_group");
+    check(bot->SatisfyQuestClass(proto, false), "class");
+    check(bot->SatisfyQuestRace(proto, false), "race");
+    check(bot->SatisfyQuestLevel(proto, false), "level");
+    check(bot->SatisfyQuestSkill(proto, false), "skill");
+    check(bot->SatisfyQuestReputation(proto, false), "reputation");
+    check(bot->SatisfyQuestPreviousQuest(proto, false), "previous_quest");
+    check(bot->SatisfyQuestTimed(proto, false), "timed");
+    check(bot->SatisfyQuestNextChain(proto, false), "next_chain");
+    check(bot->SatisfyQuestPrevChain(proto, false), "prev_chain");
+    check(bot->SatisfyQuestBreadcrumb(proto, false), "breadcrumb");
+    check(bot->SatisfyQuestDay(proto, false), "day");
+    check(bot->SatisfyQuestWeek(proto, false), "week");
+    check(bot->SatisfyQuestMonth(proto, false), "month");
+    check(bot->SatisfyQuestSeasonal(proto, false), "seasonal");
+    check(bot->SatisfyQuestConditions(proto, false), "conditions");
+    bool const game = bot->CanTakeQuest(proto, false);
+    Snapshot snapshot;
+    FillTakeable(bot, snapshot);
+    bool const planned = std::binary_search(snapshot.takeable.begin(), snapshot.takeable.end(), record.id);
+    std::string shown = Acore::StringFormat("none within {:.0f} yd", ANSWER_GIVER_YARDS);
+    for (uint32 const index : record.givers)
+    {
+        QuestPlace const& place = quests.places[index];
+        if (place.mapId != bot->GetMapId())
+            continue;
+        WorldObject* giver =
+            place.isObject ? static_cast<WorldObject*>(bot->FindNearestGameObject(place.entry, ANSWER_GIVER_YARDS))
+                           : bot->FindNearestCreature(place.entry, ANSWER_GIVER_YARDS);
+        if (!giver)
+            continue;
+        bot->PrepareQuestMenu(giver->GetGUID());
+        bool const listed = bot->PlayerTalkClass->GetQuestMenu().HasItem(record.id);
+        bot->PlayerTalkClass->ClearMenus();
+        shown = Acore::StringFormat("{} at {:.0f} yd {}", place.entry, bot->GetDistance(giver),
+                                    listed ? "lists it" : "does not list it");
+        break;
+    }
+    // One short line led by the command's word and the bot's name (the scenario runner logs 140 characters of it)
+    handler->PSendSysMessage("PLANNER answer {} quest {} level {}: game {}{}, planner {} ({}), giver {}",
+                             bot->GetName(), record.id, bot->GetLevel(), game ? "yes" : "no",
+                             failing.empty() ? "" : Acore::StringFormat(" ({})", failing),
+                             planned ? "holds it" : "lacks it", snapshot.takeable.size(), shown);
+}
+}  // namespace
+
 bool HandleQuestCommand(ChatHandler* handler, char const* args)
 {
     std::istringstream in(args ? args : "");
@@ -815,8 +887,21 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
     uint32 id = 0;
     if (!(std::istringstream(word) >> id) || !id)
     {
-        handler->SendErrorMessage("Usage: playerbots planner quest <id> | stats | flush");
+        handler->SendErrorMessage("Usage: playerbots planner quest <id> [bot] | stats | flush");
         return false;
+    }
+    std::string asked;
+    in >> asked;
+    std::string name = asked;
+    Player* bot = nullptr;
+    if (!asked.empty())
+    {
+        bot = normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+        if (!bot || !bot->IsInWorld())
+        {
+            handler->SendErrorMessage("PLANNER: no player {} online", asked);
+            return false;
+        }
     }
     std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
     if (!quests)
@@ -860,6 +945,8 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
                                  areas.empty() ? "" : ": ", areas);
     }
     SendQuestStats(handler, id);
+    if (bot)
+        SendTakeAnswer(handler, *quests, *quest, proto, bot);
     return true;
 }
 
@@ -1234,7 +1321,8 @@ bool HandleCircuitCommand(ChatHandler* handler, char const* args)
     }
     // Read only, on the world thread between map updates; the log quests' elapsed minutes come with WT16
     CircuitData const data = CircuitDataNow();
-    Snapshot const snapshot = FillSnapshot(player, 0);
+    Snapshot snapshot = FillSnapshot(player, 0);
+    FillTakeable(player, snapshot);  // the game's answer, as the goals job's snapshot carries it (WQ41)
     CircuitPlan const plan = PlanCircuit(snapshot, data.Context());
     // The world log's decision rows of this plan (kind circuit); WT16 emits the same rows where it applies plans
     if (WorldLog::Active())
@@ -1333,6 +1421,7 @@ bool RunGoalsHarness(ChatHandler* handler)
             }
             Snapshot bot = CircuitBot(place, start);
             bot.rewardedQuests = GreyHistory(*data.quests, place.level, data.greyDiff);
+            TakeFixture::Answer(bot, *data.quests);
             bot.money = GOALS_FLUSH;
             Goals::GoalPlan const flush = Goals::PlanGoals(bot, context, GoalsSituation(bot, start));
             Goals::GoalPlan const again = Goals::PlanGoals(bot, context, GoalsSituation(bot, start));
@@ -1367,6 +1456,7 @@ bool RunGoalsHarness(ChatHandler* handler)
             std::set_union(dry.rewardedQuests.begin(), dry.rewardedQuests.end(), hub.begin(), hub.end(),
                            std::back_inserter(done));
             dry.rewardedQuests = std::move(done);
+            TakeFixture::Answer(dry, *data.quests);
             dry.money = GOALS_FLUSH;
             Goals::GoalPlan const dryPlan = Goals::PlanGoals(dry, context, GoalsSituation(dry, start));
             lines.push_back(name + " dry hub");
@@ -1426,7 +1516,8 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     // job's (vendor, repairer, bag offers: LiveSituation), a player's only health and mana. A caller offers a hearth
     // option only when WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
     CircuitData const data = CircuitDataNow();
-    Snapshot const snapshot = FillSnapshot(player, 0);
+    Snapshot snapshot = FillSnapshot(player, 0);
+    FillTakeable(player, snapshot);  // the game's answer, as the goals job's snapshot carries it (WQ41)
     Goals::Situation situation;
     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
         situation = LiveSituation(ai, player);

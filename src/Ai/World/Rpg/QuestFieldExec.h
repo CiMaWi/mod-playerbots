@@ -523,8 +523,8 @@ inline bool AtGiver(std::span<NpcSpot const> spots, std::uint32_t quest, float x
 // WQ18c (WQ.44 item 2): the planned takes an order's end gives up, one cannot_take give-up each, written in one place
 // (QuestGiveUp::OrderEnded): the expected takes still open when an end that gives them up (GivesUpTakes) comes after
 // the arrival, while the bot stands at the quest's giver (atGiver) and the take test still allows the quest
-// (mayTake: a full log, a grey quest or one given up is no refusal of the giver). A giver that does not offer the
-// quest and a game that refuses its accept end alike: the take stays open and the order ends there. Once per quest
+// (mayTake: a full log, a grey quest, one given up or one the game refuses, WQ41, is no refusal of the giver). A giver
+// that does not offer the quest leaves the take open and the order ends there. Once per quest
 template <typename AtGiverOf, typename MayTake>
 std::vector<std::uint32_t> RefusedTakes(QuestOrderRun const& run, QuestOrderEnd end, AtGiverOf const& atGiver,
                                         MayTake const& mayTake)

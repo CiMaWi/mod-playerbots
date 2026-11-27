@@ -1651,26 +1651,29 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
     return deliveries;
 }
 
-// A camp gives at least the bracket move's few quests the bot could take (the circuit's Takeable without its log and
-// chain state). A quest's race mask also keeps the bot out of the enemy's towns in a contested zone
+// A camp gives at least the bracket move's few quests the bot may take now: the take test with the game's answer
+// (Take::May, WQ41), as the circuit asks it. The game's answer also keeps the bot out of the enemy's towns in a
+// contested zone (their quests' race masks)
 inline bool OffersQuests(Snapshot const& bot, QuestIndex const& quests, QuestCamp const& camp, std::uint32_t greyDiff)
 {
-    std::int32_t const level = bot.level;
-    auto const rewarded = [&bot](std::uint32_t questId)
-    { return std::binary_search(bot.rewardedQuests.begin(), bot.rewardedQuests.end(), questId); };
+    std::vector<std::uint32_t> inLog;
+    for (QuestSlot const& slot : bot.quests)
+        if (slot.quest)
+            inLog.push_back(slot.quest);
+    std::sort(inLog.begin(), inLog.end());
+    Take::Facts const facts{.race = bot.race,
+                            .level = bot.level,
+                            .greyDiff = greyDiff,
+                            .eliteGroup = bot.groupSize > 1,
+                            .rewarded = bot.rewardedQuests,
+                            .inLog = inLog,
+                            .givenUp = {},
+                            .takeable = bot.takeable};
     std::uint32_t offered = 0;
     for (std::uint32_t const id : camp.quests)
     {
         QuestRecord const* quest = quests.Find(id);
-        if (!quest || (quest->flags & (Circuit::REPEAT_FLAGS | Circuit::INSTANCE_FLAGS)) ||
-            ((quest->flags & Circuit::GROUP_FLAGS) && bot.groupSize <= 1) || quest->prev < 0 ||
-            !Eligible(*quest, bot.race, bot.cls, bot.level))
-            continue;
-        std::int32_t const questLevel = Circuit::QuestLevel(*quest, bot.level);
-        if (questLevel > level + Circuit::MAX_LEVELS_ABOVE || level > questLevel + static_cast<std::int32_t>(greyDiff))
-            continue;
-        if (rewarded(id) || (quest->prev > 0 && !rewarded(static_cast<std::uint32_t>(quest->prev))) ||
-            std::any_of(bot.quests.begin(), bot.quests.end(), [id](QuestSlot const& slot) { return slot.quest == id; }))
+        if (!quest || Take::May(*quest, facts))
             continue;
         if (++offered >= Circuit::MOVE_MIN_QUESTS)
             return true;

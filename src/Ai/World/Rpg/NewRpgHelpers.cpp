@@ -69,9 +69,6 @@ void OrderTake::Build()
     _rewarded.assign(rewarded.begin(), rewarded.end());
     std::sort(_rewarded.begin(), _rewarded.end());
     _givenUp = OrderRecord(GET_PLAYERBOT_AI(_bot), _bot)->givenUp;
-    _takenGroups.clear();
-    if (_quests)
-        _takenGroups = Planner::QuestFields::TakenGroups(*_quests, _log, _rewarded);
 }
 
 bool OrderTake::MayAccept(Quest const* quest)
@@ -81,17 +78,20 @@ bool OrderTake::MayAccept(Quest const* quest)
     Planner::QuestRecord const* record = _quests ? _quests->Find(quest->GetQuestId()) : nullptr;
     if (!record)
         return false;
-    // Elite and group quests are refused (WQ.43): the take test's eliteGroup off
+    // Elite and group quests are refused (WQ.43): the take test's eliteGroup off. The game's answer for this one
+    // quest (WQ41): the core's CanTakeQuest, on the bot's own thread
+    std::uint32_t const id = record->id;
+    std::span<std::uint32_t const> const takeable =
+        _bot->CanTakeQuest(quest, false) ? std::span<std::uint32_t const>(&id, 1) : std::span<std::uint32_t const>();
     Planner::Take::Facts const facts{.race = _bot->getRace(true),
-                                     .cls = _bot->getClass(),
                                      .level = static_cast<std::uint8_t>(_bot->GetLevel()),
                                      .greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF),
                                      .eliteGroup = false,
                                      .rewarded = _rewarded,
                                      .inLog = _log,
                                      .givenUp = _givenUp,
-                                     .takenGroups = _takenGroups};
-    return Planner::QuestLog::MayAccept(*record, facts, *_quests);
+                                     .takeable = takeable};
+    return Planner::QuestLog::MayAccept(*record, facts);
 }
 
 bool FreeBotTakes(PlayerbotAI* botAI, Player* bot, Quest const* quest)

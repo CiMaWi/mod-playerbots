@@ -24,6 +24,7 @@
 #include "GoalInterface.h"
 #include "GoalRoute.h"
 #include "QuestRoute.h"
+#include "QuestTakeFixture.h"
 
 using namespace Planner;
 using namespace Planner::QuestFields;
@@ -420,14 +421,14 @@ World Generate(Gen& gen)
         if (!std::binary_search(inLog.begin(), inLog.end(), quest.id) && gen.Chance(0.2f))
             rewarded.push_back(quest.id);
     }
-    std::vector<std::int32_t> const groups = TakenGroups(w.index, inLog, rewarded);
+    std::vector<std::uint32_t> const answer =
+        TakeFixture::Answer(w.index, team ? ORC : HUMAN, 1, level, rewarded, inLog);
     Take::Facts facts;
     facts.race = team ? ORC : HUMAN;
-    facts.cls = 1;
     facts.level = level;
     facts.rewarded = rewarded;
     facts.inLog = inLog;
-    facts.takenGroups = groups;
+    facts.takeable = answer;
     for (Need& take : TakeNeeds(w.index, facts, ask.mapId, candidates, pricing))
         w.needs.push_back(std::move(take));
 
@@ -1194,7 +1195,8 @@ void GoalRoutes(std::uint32_t seed)
                        to.z == bot.position.z;
                 return seconds(from.x, from.y, to.x, to.y);
             };
-        Goals::RoutePlan const route = GoalRoute::Build(w.map, bot, context, model, situation);
+        Goals::RoutePlan const route =
+            GoalRoute::Build(w.map, TakeFixture::Answered(bot, context), context, model, situation);
         std::uint32_t const askedByRoute = asked;
         situation.route = &route;
         Goals::Ranked const ranked = Goals::Rank(bot, situation);
@@ -1250,7 +1252,8 @@ void GoalRoutes(std::uint32_t seed)
             farRoutes += route.walkCalls ? 1 : 0;
         }
 
-        Goals::RoutePlan const again = GoalRoute::Build(w.map, bot, context, model, situation);
+        Goals::RoutePlan const again =
+            GoalRoute::Build(w.map, TakeFixture::Answered(bot, context), context, model, situation);
         Goals::Situation second = situation;
         second.route = &again;
         twice.Note(GoalText(again, Goals::Rank(bot, second)) == GoalText(route, ranked), logIndex, where);
@@ -1326,7 +1329,7 @@ void GoalRouteTakes()
             count += Expects(order, 91, TAKE) ? 1 : 0;
         return count;
     };
-    Goals::GoalPlan const plan = Goals::PlanGoals(bot, context, situation, build);
+    Goals::GoalPlan const plan = Goals::PlanGoals(TakeFixture::Answered(bot, context), context, situation, build);
     std::vector<QuestOrder> const& orders = plan.route.orders;
     Check(orders.size() >= 2 && orders[0].word == QuestOrderWord::Field && Expects(orders[0], 90, 0) &&
               orders[1].word == QuestOrderWord::HandIn && Expects(orders[1], 90, HAND_IN) && takes(plan) == 1 &&
@@ -1336,7 +1339,7 @@ void GoalRouteTakes()
     // The first stop's risk, for a bot half a level below the wolves' middle: a field without risk would prove nothing
     Snapshot low = bot;
     low.level = 9;
-    Goals::GoalPlan const lowPlan = Goals::PlanGoals(low, context, situation, build);
+    Goals::GoalPlan const lowPlan = Goals::PlanGoals(TakeFixture::Answered(low, context), context, situation, build);
     bool const wolvesFirst = !lowPlan.route.orders.empty() && Expects(lowPlan.route.orders[0], 90, 0);
     FieldAsk fieldAsk;
     fieldAsk.mapId = MAP_A;
@@ -1359,23 +1362,25 @@ void GoalRouteTakes()
     gaveUp.givenUpQuests = {91};
     Snapshot rewarded = bot;
     rewarded.rewardedQuests = {91};
-    Check(takes(Goals::PlanGoals(bot, context, gaveUp, build)) == 0 &&
-              takes(Goals::PlanGoals(rewarded, context, situation, build)) == 0,
+    Check(takes(Goals::PlanGoals(TakeFixture::Answered(bot, context), context, gaveUp, build)) == 0 &&
+              takes(Goals::PlanGoals(TakeFixture::Answered(rewarded, context), context, situation, build)) == 0,
           "goal route: no take of a quest the bot gave up or was rewarded for");
     // No rule for room (questing WQ40, WQ.46 item 1): a log of 25 or of 60 quests takes as the bot's own
-    std::size_t const own = takes(Goals::PlanGoals(bot, context, situation, build));
+    std::size_t const own = takes(Goals::PlanGoals(TakeFixture::Answered(bot, context), context, situation, build));
     for (std::size_t const held : {std::size_t{25}, std::size_t{60}})
     {
         Snapshot crowded = bot;
         crowded.noLogLimit = true;
         for (std::uint32_t id = 200; crowded.quests.size() < held; ++id)
             crowded.quests.push_back({id, 0, {}});
-        Check(own > 0 && takes(Goals::PlanGoals(crowded, context, situation, build)) == own,
+        Check(own > 0 &&
+                  takes(Goals::PlanGoals(TakeFixture::Answered(crowded, context), context, situation, build)) == own,
               "goal route: a log of " + std::to_string(held) + " quests takes as the bot's own (" +
                   std::to_string(own) + ")");
     }
     Check(!GoalRoute::Builder(nullptr) &&
-              Goals::PlanGoals(bot, context, situation, GoalRoute::Builder(nullptr)).route.orders.empty(),
+              Goals::PlanGoals(TakeFixture::Answered(bot, context), context, situation, GoalRoute::Builder(nullptr))
+                  .route.orders.empty(),
           "goal route: no field map, no build and no route");
 }
 

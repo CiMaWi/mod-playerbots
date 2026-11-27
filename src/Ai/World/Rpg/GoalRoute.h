@@ -104,16 +104,14 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
     ask.pricing = pricing;
     ask.walk = WalkOf(context.travel, ask.mapId, bot.position.z, cappedWalks);
 
-    std::vector<std::int32_t> const groups = QuestFields::TakenGroups(index, inLog, bot.rewardedQuests);
     Take::Facts const facts{.race = bot.race,
-                            .cls = bot.cls,
                             .level = bot.level,
                             .greyDiff = context.greyDiff,
                             .eliteGroup = false,
                             .rewarded = bot.rewardedQuests,
                             .inLog = inLog,
                             .givenUp = situation.givenUpQuests,
-                            .takenGroups = groups};
+                            .takeable = bot.takeable};
     std::vector<std::uint32_t> candidates = QuestFields::TakeCandidates(index, ask.mapId, ask.x, ask.y, ask.radius);
     if (ask.walk)
     {

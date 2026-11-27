@@ -62,6 +62,7 @@
 #include "ProfessionConfig.h"
 #include "QuestCircuitLog.h"
 #include "QuestFailRecord.h"
+#include "ReputationMgr.h"
 #include "RouteService.h"
 #include "SkillPathLive.h"
 #include "SpellAuras.h"
@@ -261,11 +262,15 @@ void FillBankMail(Player* bot, Snapshot& snapshot)
     snapshot.bankFreeSlots = known.bank.freeSlots;
 }
 
-// FillSnapshot with its PerfMonitor row (map-thread microseconds per snapshot)
-Snapshot TimedSnapshot(Player* bot, uint32 stateVersion)
+void AnswerTakes(Player* bot, Snapshot& snapshot, GoalApply::BotGoals& goals);
+
+// FillSnapshot and the game's answer about takes with its PerfMonitor row (map-thread microseconds per snapshot; rows
+// `planner take key` and `planner take set` are the answer's share)
+Snapshot TimedSnapshot(Player* bot, uint32 stateVersion, GoalApply::BotGoals& goals)
 {
     auto const started = std::chrono::steady_clock::now();
     Snapshot snapshot = FillSnapshot(bot, stateVersion);
+    AnswerTakes(bot, snapshot, goals);
     auto const us =
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
     if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner snapshot"))
@@ -1263,7 +1268,7 @@ void WriteSickArea(PlayerbotAI* botAI)
 void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint32 now)
 {
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
-    Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
+    Snapshot snapshot = TimedSnapshot(bot, state.stateVersion, goals);
     // NR3c: the job plans from the snapshot's hand-over (the sick gate), so the edge is the snapshot's as much as the
     // errand trigger's (NoteSickOpen): an edge seen here writes its row only, the job is the plan; a hand-over this
     // snapshot found closed is the trigger's edge again (run 1: a plan that rested on a closed snapshot after the
@@ -1471,6 +1476,96 @@ void StartPlanner()
 }
 
 void StopPlanner() { Pool().Stop(); }
+
+// The game's answer (questing WQ41a, decision WQ.47): the planner reads it at any distance, on every map. The filter
+// before the ask only saves work: the core refuses a quest of the other side or below its minimum level itself, and
+// GetGrayLevel is below Take::IsGrey's line (a superset until WQ34). A quest whose availability reads the world's
+// events or states is not asked (QuestRecord::worldState, CONTRACT C3); the index walks in id order, so the answer is
+// sorted
+void FillTakeable(Player* bot, Snapshot& snapshot)
+{
+    if (PlannerPool::IsWorkerThread())
+        LOG_ERROR("playerbots", "Thread check: planner take set built on a worker");
+    RowTimer const timer("planner take set");
+    snapshot.takeable.clear();
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+        return;
+    std::uint8_t const level = bot->GetLevel();
+    std::int32_t const grey = Acore::XP::GetGrayLevel(level);
+    std::uint8_t const side = SideOfRace(bot->getRace(true));
+    std::uint32_t const sideMask = side < SIDES ? SIDE_RACE_MASKS[side] : 0;
+    for (QuestRecord const& record : quests->quests)
+    {
+        if (record.minLevel > level || record.worldState ||
+            (sideMask && record.raceMask && !(record.raceMask & sideMask)))
+            continue;
+        if (record.level > 0 && record.level <= grey)
+            continue;
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(record.id); quest && bot->CanTakeQuest(quest, false))
+            snapshot.takeable.push_back(record.id);
+    }
+}
+
+namespace
+{
+// What the game's answer depends on, as the plan text names it (WQ41a): the level, the log (its quests and their
+// states), the rewarded quests, the skills (every skill a quest asks for is a snapshot skill) and the standings, and
+// the index it walks. The full pass costs more than the snapshot's other gathers together (lab13, run
+// scenario-1795758758745: 628 of 839 us per snapshot), so it runs only when this key changed. What else the game
+// reads (items, auras, the bot's zone or area, spells, achievements, the daily and weekly resets) waits for the next
+// change, at most TAKE_ANSWER_MS (WQ41b: every answer has an exit), or an order's end at a giver (AskTakesAgain); the
+// accept at the giver stays the authority
+constexpr uint32 TAKE_ANSWER_MS = 5 * MINUTE * IN_MILLISECONDS;
+
+std::uint64_t TakeKey(Player* bot, Snapshot const& snapshot, QuestIndex const* quests)
+{
+    std::uint64_t key = 14695981039346656037ull;  // FNV-1a over 64-bit words
+    auto const mix = [&key](std::uint64_t value)
+    {
+        key ^= value;
+        key *= 1099511628211ull;
+    };
+    mix(reinterpret_cast<std::uintptr_t>(quests));
+    mix(snapshot.level);
+    for (QuestSlot const& slot : snapshot.quests)
+        mix((static_cast<std::uint64_t>(slot.quest) << 32) | slot.state);
+    mix(snapshot.rewardedQuests.size());
+    for (std::uint32_t const quest : snapshot.rewardedQuests)
+        mix(quest);
+    for (Skill const& skill : snapshot.skills)
+        mix((static_cast<std::uint64_t>(skill.id) << 16) | skill.value);
+    for (auto const& [listId, faction] : bot->GetReputationMgr().GetStateList())
+        mix((static_cast<std::uint64_t>(faction.ID) << 32) | static_cast<std::uint32_t>(faction.Standing));
+    return key;
+}
+
+void AnswerTakes(Player* bot, Snapshot& snapshot, GoalApply::BotGoals& goals)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    std::uint64_t key = 0;
+    {
+        RowTimer const timer("planner take key");
+        key = TakeKey(bot, snapshot, quests.get());
+    }
+    uint32 const nowMs = getMSTime();
+    if (key == goals.takeKey && getMSTimeDiff(goals.takeMs, nowMs) < TAKE_ANSWER_MS)
+    {
+        snapshot.takeable = goals.takeable;
+        return;
+    }
+    FillTakeable(bot, snapshot);
+    goals.takeKey = key;
+    goals.takeMs = nowMs;
+    goals.takeable = snapshot.takeable;
+}
+}  // namespace
+
+void AskTakesAgain(PlayerbotAI* botAI)
+{
+    if (botAI && botAI->planner.goals)
+        botAI->planner.goals->takeKey = 0;
+}
 
 Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
 {

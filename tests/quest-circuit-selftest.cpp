@@ -795,7 +795,8 @@ int main()
     unindexed.expect.keep = {122, 123, 997};
     Run(unindexed, false);
     {
-        CircuitPlan const plan = PlanCircuit(unindexed.bot, unindexed.context);
+        CircuitPlan const plan =
+            PlanCircuit(TakeFixture::Answered(unindexed.bot, unindexed.context), unindexed.context);
         std::size_t named = 0;
         for (CircuitAbandon const& abandon : plan.abandon)
             named += (abandon.quest == 998 || abandon.quest == 999) && abandon.reason == AbandonReason::Unindexed;

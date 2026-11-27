@@ -259,6 +259,12 @@ QuestRecord RecordOf(Quest const* quest)
     // WT35a: an event the gather names (an escort) or BuildObjectives clears (an area trigger's)
     if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
         record.event = QuestEvent::Script;
+    // WQ41a: availability that reads the world's events or states, which other threads write (map scripts start
+    // events, battlefields set states): the map thread's take set leaves the quest out (QuestRecord::worldState)
+    for (Condition const* condition :
+         sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_QUEST_AVAILABLE, record.id))
+        if (condition->ConditionType == CONDITION_ACTIVE_EVENT || condition->ConditionType == CONDITION_WORLD_STATE)
+            record.worldState = true;
     for (int32 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
     {
         int32 const npcOrGo = quest->RequiredNpcOrGo[i];

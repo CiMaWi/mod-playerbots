@@ -18,6 +18,7 @@
 
 #include "QuestCircuit.h"
 #include "QuestCircuitLog.h"
+#include "QuestTakeFixture.h"
 
 // The circuit planner's scenario runner (travel plan WT13b): one line per check. Shared by the offline selftest
 // (tests/quest-circuit-selftest.cpp, synthetic worlds with exact expectations) and `playerbots planner circuit
@@ -232,7 +233,16 @@ inline Snapshot AfterMove(Snapshot bot, CircuitPlan const& plan, QuestIndex cons
     for (CircuitTake const& take : plan.take)
         if (std::find(gone.begin(), gone.end(), take.quest) == gone.end())
             bot.quests.push_back({take.quest, take.carried ? Circuit::SLOT_COMPLETE : 0u, {}});
+    TakeFixture::Answer(bot, quests);
     return bot;
+}
+
+// The scenario with the game's answer its bot would get (TakeFixture, WQ41b): the fixtures' bots are no players
+inline Scenario Answered(Scenario scenario)
+{
+    if (scenario.context.quests)
+        TakeFixture::Answer(scenario.bot, *scenario.context.quests);
+    return scenario;
 }
 
 // No walking in circles (review 4) and no wandering (review 5): follow the plan's moves from camp to camp, planning
@@ -291,8 +301,9 @@ inline Check Arrival(Scenario const& scenario, CircuitPlan const& plan, bool ful
                                IdList(AbandonedIds(there))};
 }
 
-inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
+inline Report RunScenario(Scenario const& input, std::uint32_t timingRuns)
 {
+    Scenario const scenario = Answered(input);
     Report report;
     std::string const& name = scenario.name;
     Expect const& expect = scenario.expect;
@@ -487,8 +498,9 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
 }
 
 // Bad positions are rejected at once; a missing run speed takes the default; the log's order does not matter
-inline std::vector<Check> GuardChecks(Scenario const& base)
+inline std::vector<Check> GuardChecks(Scenario const& input)
 {
+    Scenario const base = Answered(input);
     std::vector<Check> checks;
     for (float const bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
     {

@@ -295,6 +295,10 @@ struct QuestRecord
     // WQ38: the cause word of its row in playerbots_quest_impossible (read at startup); empty: not listed. A listed
     // quest gives no need and no take, and the readings leave it out
     std::string impossible;
+    // WQ41a: whether its availability conditions read the world's events or states (CONDITION_ACTIVE_EVENT,
+    // CONDITION_WORLD_STATE), which other threads write; set on the world thread at the gather. The map thread's take
+    // set does not ask the game for it, so it is never in the answer (its givers are event spawns the index leaves out)
+    bool worldState{false};
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };

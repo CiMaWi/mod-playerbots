@@ -559,8 +559,8 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
         {
             if (!onOrder)
                 accept = NewRpgHelpers::FreeBotTakes(botAI, bot, quest);
-            else if (take.MayAccept(quest))
-                accept = bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false);
+            else  // the take test asks the core's CanTakeQuest (WQ41); CanAddQuest has the last word
+                accept = take.MayAccept(quest) && bot->CanAddQuest(quest, false);
         }
         if (accept)
         {
@@ -1133,11 +1133,14 @@ std::optional<Planner::QuestOrderEnd> QuestGiveUp::OrderEnded(PlayerbotAI* botAI
     std::optional<Planner::QuestOrderEnd> const own = Planner::QuestFieldExec::OwnEnd(word, outcome);
     Planner::QuestOrderEnd const end = own.value_or(Planner::QuestOrderEnd::Replaced);
     // WQ18c (WQ.44 item 2): the one writer of a refused take. A planned take the order's own end leaves open at its
-    // giver is one give-up of the quest (cannot_take), whether the giver did not offer it or the game refused the
-    // accept; the second puts it out for the bot as any cause does. A bot the test keeps from choosing quests refused
-    // nothing
+    // giver is one give-up of the quest (cannot_take) when the take test, the game's answer with it (CanTakeQuest,
+    // WQ41), still allows it: the giver did not offer it. The second puts it out for the bot as any cause does. A take
+    // the game refuses is none: the plan read an answer that is old now, so the next snapshot asks the game again. A
+    // bot the test keeps from choosing quests refused nothing
     bool const givesUp = own && Planner::QuestFieldExec::GivesUpTakes(*own) &&
                          TestConstraints::QuestChoicesAllowed(botAI->testConstraints);
+    if (givesUp)
+        Planner::AskTakesAgain(botAI);
     if (std::shared_ptr<Planner::QuestIndex const> const index = givesUp ? Planner::Quests() : nullptr)
     {
         std::vector<Planner::QuestFieldExec::NpcSpot> const spots = OrderSpots(bot, run.order, *index);

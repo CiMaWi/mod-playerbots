@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "QuestFields.h"
+#include "QuestTakeFixture.h"
 
 using namespace Planner;
 using namespace Planner::QuestFields;
@@ -1102,14 +1103,13 @@ void PlacesAndTakes()
     QuestIndex const built = QuestIndex::Build(gather);
     std::vector<std::uint32_t> const candidates = TakeCandidates(built, MAP_A, Mid(0), Mid(0), 200.0f);
     std::array<std::uint32_t, 1> const inLog = {112};
-    std::vector<std::int32_t> const groups = TakenGroups(built, inLog, {});
+    std::vector<std::uint32_t> const answer = TakeFixture::Answer(built, HUMAN, 1, 10, {}, inLog);
     Take::Facts facts;
     facts.race = HUMAN;
-    facts.cls = 1;
     facts.level = 10;
     facts.eliteGroup = true;
     facts.inLog = inLog;
-    facts.takenGroups = groups;
+    facts.takeable = answer;
     std::vector<Need> const takes = TakeNeeds(built, facts, MAP_A, candidates, Pricing{});
     Check(candidates == std::vector<std::uint32_t>{110, 111, 112, 115} && takes.size() == 1 && takes[0].quest == 110 &&
               takes[0].kind == NeedKind::Take && takes[0].sources.size() == 1 && takes[0].sources[0].entry == 750 &&
@@ -1134,9 +1134,10 @@ void PlacesAndTakes()
         wide.relations.push_back({200 + i, 800 + i, false, false});
     }
     QuestIndex const row = QuestIndex::Build(wide);
+    std::vector<std::uint32_t> const rowAnswer = TakeFixture::Answer(row, HUMAN, 1, 10, {}, {});
     Take::Facts roamer = facts;
     roamer.inLog = {};
-    roamer.takenGroups = {};
+    roamer.takeable = rowAnswer;
     std::vector<std::uint32_t> const close = TakeCandidates(row, MAP_A, Mid(0), Mid(0), 150.0f);
     std::vector<std::uint32_t> const far =
         FarTakeCandidates(row, roamer, MAP_A, Mid(0), Mid(0), 150.0f, close, Pricing{});
@@ -1160,8 +1161,11 @@ void PlacesAndTakes()
     hub.entry = 900;
     crowded.places.push_back(hub);
     QuestIndex const busy = QuestIndex::Build(crowded);
+    std::vector<std::uint32_t> const busyAnswer = TakeFixture::Answer(busy, HUMAN, 1, 10, {}, {});
+    Take::Facts busyRoamer = roamer;
+    busyRoamer.takeable = busyAnswer;
     std::vector<std::uint32_t> const capped =
-        FarTakeCandidates(busy, roamer, MAP_A, Mid(0), Mid(0), 150.0f, {}, Pricing{});
+        FarTakeCandidates(busy, busyRoamer, MAP_A, Mid(0), Mid(0), 150.0f, {}, Pricing{});
     Check(capped.size() == FAR_TAKES,
           "far takes: a far place that gives more quests than FAR_TAKES gives at most FAR_TAKES (mutant: the cap "
           "inside a place removed)");
@@ -1283,16 +1287,16 @@ void GeneratedSteps(std::uint32_t seed)
                 givenUp.push_back(quest.id);
         }
         candidates.push_back(UNKNOWN_QUEST);
-        std::vector<std::int32_t> const groups = TakenGroups(w.index, inLog, rewarded);
+        std::vector<std::uint32_t> const answer =
+            TakeFixture::Answer(w.index, w.team ? ORC : HUMAN, 1, w.ask.level, rewarded, inLog);
         Take::Facts facts;
         facts.race = w.team ? ORC : HUMAN;
-        facts.cls = 1;
         facts.level = w.ask.level;
         facts.eliteGroup = gen.Chance(0.5f);
         facts.rewarded = rewarded;
         facts.inLog = inLog;
         facts.givenUp = givenUp;
-        facts.takenGroups = groups;
+        facts.takeable = answer;
         Take::Facts strict = facts;
         strict.eliteGroup = false;
         std::vector<Need> const takes = TakeNeeds(w.index, facts, w.ask.mapId, candidates, pricing);
@@ -1310,7 +1314,7 @@ void GeneratedSteps(std::uint32_t seed)
                 giver =
                     giver || (place.mapId == w.ask.mapId && !place.otherPhase && !(place.hostileTo & (1u << w.team)));
             }
-            std::optional<Take::Reason> const why = Take::May(quest, strict, w.index);
+            std::optional<Take::Reason> const why = Take::May(quest, strict);
             refusedCount += why ? 1 : 0;
             takeRule.Note(why ? mine == 0 : mine == (giver ? 1u : 0u), logIndex, "quest " + std::to_string(quest.id));
             if (std::binary_search(inLog.begin(), inLog.end(), quest.id))
