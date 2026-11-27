@@ -69,7 +69,7 @@ bool HandleMailStatusCommand(ChatHandler* handler, char const* args)
         BotKind::KeepsPossessions(bot) ? "yes" : "no");
 
     BagSpace const space = BuildBagSpace(bot);
-    VisitPlan const plan = PlanMailVisit(BuildMailIn(botAI), space, BuildMailOptions());
+    VisitPlan const plan = PlanMailVisit(BuildMailIn(botAI), space, BuildMailOptions(known.uniqueMails));
     handler->PSendSysMessage("  bags: {} free slots, {} partial stacks; at a mailbox now: {}", space.freeSlots,
                              space.stackRoom.size(), DescribePlan(plan));
     for (size_t i = 0; i < plan.verdicts.size() && i < MAILS_SHOWN; ++i)

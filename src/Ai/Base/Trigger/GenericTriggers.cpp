@@ -28,6 +28,7 @@
 #include "SharedDefines.h"
 #include "TargetValue.h"
 #include "TemporarySummon.h"
+#include "TestConstraints.h"
 #include "ThreatManager.h"
 #include "Timer.h"
 #include "Upkeep.h"
@@ -313,6 +314,11 @@ bool RandomTrigger::IsActive()
         k = 1;
 
     return (rand() % k) == 0;
+}
+
+bool OftenTrigger::IsActive()
+{
+    return TestConstraints::OftenFires(botAI->testConstraints) || RandomTrigger::IsActive();
 }
 
 bool AndTrigger::IsActive() { return ls && rs && ls->IsActive() && rs->IsActive(); }

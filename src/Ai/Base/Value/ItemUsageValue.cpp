@@ -85,8 +85,6 @@ ItemUsage ItemUsageValue::Calculate()
     }
     else
     {
-        bool needItem = false;
-
         // A persistent bot with a skill path takes the usage of a material from the path (professions WR12): a
         // material the path uses is looked for until the bot holds its units and kept after, banked while the bot's
         // skill is short of the step that uses it (the bank rule's carried keeps, below)
@@ -95,30 +93,15 @@ ItemUsage ItemUsageValue::Calculate()
         if (material && bot->GetSkillValue(material->skill) >= material->dueSkill)
             return bot->GetItemCount(itemId, false) < material->used ? ITEM_USAGE_SKILL : ITEM_USAGE_KEEP;
 
-        if (IsItemNeededForSkill(proto))
-            needItem = true;
-        else
+        if (KeepsByCount(proto, path))
         {
-            bool lowBagSpace = AI_VALUE(uint8, "bag space") > 50;
-
-            if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_MISC ||
-                proto->Class == ITEM_CLASS_REAGENT)
-                needItem = path ? IsItemNeededForClassSpell(proto) : IsItemNeededForUsefullSpell(proto, lowBagSpace);
-            else if (proto->Class == ITEM_CLASS_RECIPE)
-            {
-                if (bot->HasSpell(proto->Spells[2].SpellId))
-                    needItem = false;
-                else
-                    needItem = bot->CanUseItem(proto) == EQUIP_ERR_OK;
-            }
-        }
-
-        if (needItem)
-        {
-            float stacks = CurrentStacks(proto);
+            // The bank asks with its own units counted too, so its moves never change the answer (",bank", NR12a)
+            float stacks = parsed.countBank ? static_cast<float>(bot->GetItemCount(itemId, true)) /
+                                                  static_cast<float>(proto->GetMaxStackSize())
+                                            : CurrentStacks(proto);
             if (stacks < 1)
                 return ITEM_USAGE_SKILL;  // Buy more.
-            if (stacks <= 2)
+            if (stacks <= KEPT_STACKS)
                 return ITEM_USAGE_KEEP;
         }
     }
@@ -550,9 +533,24 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
     return ITEM_USAGE_NONE;
 }
 
+bool ItemUsageValue::KeepsByCount(ItemTemplate const* proto, SkillPath::Path const* path)
+{
+    if (IsItemNeededForSkill(proto))
+        return true;
+    if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_MISC || proto->Class == ITEM_CLASS_REAGENT)
+    {
+        bool const lowBagSpace = AI_VALUE(uint8, "bag space") > 50;
+        return path ? IsItemNeededForClassSpell(proto) : IsItemNeededForUsefullSpell(proto, lowBagSpace);
+    }
+    if (proto->Class == ITEM_CLASS_RECIPE)
+        return !bot->HasSpell(proto->Spells[2].SpellId) && bot->CanUseItem(proto) == EQUIP_ERR_OK;
+    return false;
+}
+
 ParsedItemUsage ItemUsageValue::GetItemIdFromQualifier()
 {
     ParsedItemUsage parsed;
+    parsed.countBank = qualifier.ends_with(BANK_COUNT_QUALIFIER);
 
     size_t const pos = qualifier.find(",");
     if (pos != std::string::npos)

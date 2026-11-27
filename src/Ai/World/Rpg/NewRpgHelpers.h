@@ -45,7 +45,10 @@ bool OnOrder(PlayerbotAI* botAI);
 // accept and drop (WQ.39). O(1)
 bool KeepsLogRule(PlayerbotAI* botAI);
 // A holiday's quest (the game's seasonal relation of a game event) whose event is not running. The active events
-// change on the world thread between map updates (World::Update), so a map thread reads them safely. O(1)
+// change mostly on the world thread (World::Update), but SmartScript actions and Sun's Reach's states start and stop
+// some from map threads, so this read can meet such a change, as every map-thread caller of IsActiveEvent can (the
+// game's own quest checks among them); a holiday ends or starts days apart, so a stale answer costs one early or late
+// drop at most. O(log events)
 bool HolidayEnded(Quest const* quest);
 // The quest of the bot's log as the one drop reads it (QuestLogRules' Abandon). Map thread
 Planner::QuestLog::Held LogHeld(Player* bot, Quest const* quest);
@@ -86,11 +89,11 @@ bool FreeBotTakes(Player* bot, Quest const* quest);
 
 // Player::CanInteractWithQuestGiver without the distance check.
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
-// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test. A bot KeepsLogRule covers
-// asks LogAccept (take: the search's, else one of its own), which holds the game's take check (WQ41): a giver offering
-// only takes the one accept refuses is none to seek, and a planned take left open there is no give-up (QuestFail
-// cannot_take is a giver that does not offer it, WQ18c)
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0, LogAccept* take = nullptr);
+// constraints: the bot's test constraints (a TestConstraints::Set, GiverSought); 0 outside a test. A bot KeepsLogRule
+// covers asks LogAccept (take: the search's, else one of its own), which holds the game's take check (WQ41): a giver
+// offering only takes the one accept refuses is none to seek, and a planned take left open there is no give-up
+// (QuestFail cannot_take is a giver that does not offer it, WQ18c)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint64 constraints = 0, LogAccept* take = nullptr);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 

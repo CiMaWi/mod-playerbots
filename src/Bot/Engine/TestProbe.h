@@ -22,7 +22,7 @@ namespace TestProbe
 {
 // A case bot's probe only (planning WT63e): a bot the test holds fully (every choice row: the pool beside the cases)
 // writes none. One compare
-inline bool On(uint32 constraints)
+inline bool On(TestConstraints::Set constraints)
 {
     return constraints && (constraints & TestConstraints::HOLD) != TestConstraints::HOLD;
 }

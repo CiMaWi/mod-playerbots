@@ -15,10 +15,16 @@ class Player;
 class PlayerbotAI;
 
 struct ItemTemplate;
+namespace SkillPath
+{
+struct Path;
+}
+
 struct ParsedItemUsage
 {
     uint32 itemId = 0;
     int32 randomPropertyId = 0;
+    bool countBank = false;  // the qualifier ends in BANK_COUNT_QUALIFIER
 };
 enum ItemUsage : uint32
 {
@@ -51,6 +57,15 @@ public:
     // The upgrade rule's comparison: a score replaces a worn item's when it is above that score times
     // EquipUpgradeThreshold; a worn score at or below 0 counts as an empty slot
     static bool BeatsWornScore(float score, float wornScore);
+
+    // "<entry>,<random property>,bank": the units the needed-by-count branch compares are the bags' and the bank's
+    // (the bank rule's question, needs and errands NR12a); sellers and buyers ask without it
+    static constexpr char const* BANK_COUNT_QUALIFIER = ",bank";
+    // The stacks the needed-by-count branch keeps carried (KeepsByCount)
+    static constexpr uint32 KEPT_STACKS = 2;
+    // The needed-by-count branch applies to the item (a bot without a real master; path: its kept skill path, null
+    // without one): the usage keeps up to 2 stacks of it carried
+    bool KeepsByCount(ItemTemplate const* proto, SkillPath::Path const* path);
 
 protected:
     ItemUsage QueryItemUsageForEquip(ItemTemplate const* proto, int32 randomPropertyId = 0);

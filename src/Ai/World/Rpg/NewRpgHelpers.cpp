@@ -192,7 +192,7 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
     return false;
 }
 
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints, LogAccept* take)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, TestConstraints::Set constraints, LogAccept* take)
 {
     ObjectGuid guid = object->GetGUID();
     bot->PrepareQuestMenu(guid);

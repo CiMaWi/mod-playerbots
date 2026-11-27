@@ -353,10 +353,8 @@ void LogWalkLink(Player* bot, HeldTrip const& data, TravelWalk::LinkWalk const& 
                   walk.hops, walk.strikes, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
 }
 
-constexpr float FLY_SAMPLE_YARDS = 50.0f;     // the real-height check samples the ground ahead this far apart
-constexpr float LANDING_PROBE_YARDS = 5.0f;   // the landing check searches the ground down from this above the landing
-constexpr float LANDING_PROBE_DEPTH = 40.0f;  // and this far down
-constexpr uint32 FLY_SAMPLES_MAX = 8;         // and at most this often per waypoint
+constexpr float FLY_SAMPLE_YARDS = 50.0f;  // the real-height check samples the ground ahead this far apart
+constexpr uint32 FLY_SAMPLES_MAX = 8;      // and at most this often per waypoint
 
 // A landing refused by the landing check (no outdoor point joined to it, PA56): the fly leg's failed row says so
 constexpr char const* LANDING_NONE_JOINED = "none_joined";
@@ -382,14 +380,23 @@ void LogFlyLeg(Player* bot, HeldTrip const& data, uint32 index, TravelLegs::LegR
         bot, WorldLogFormat::DecisionKind::Trip, "fly_height", climbs ? "raised" : "planned", peakZ,
         {{"max_z", plannedZ}, {"levels", static_cast<float>(leg.flightLevels)}, {"climbs", static_cast<float>(climbs)}},
         data.tripId);
-    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-        return;
     // Where it ended (PA57's open point): the bot's z, the floor below it (FloorBelow's ground) and which test ended a
-    // done leg: its landing waypoint reached (waypoint) or down near the end (landed, TravelLegs::LandedAtEnd)
+    // done leg: its landing waypoint reached (waypoint) or down near the end (landed, TravelLegs::LandedAtEnd). The
+    // fly_end row (PA73, G418): that word, the height above the end (signed), the yards across, the height above the
+    // floor (-1: no floor found)
     TravelRoute::Point const at{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     char const* const ended = !done                                                             ? "failed"
                               : TravelRoute::Distance(at, leg.to) <= TravelLegs::WAYPOINT_YARDS ? "waypoint"
                                                                                                 : "landed";
+    float const floorZ = CheckMountStateAction::FloorBelow(bot).first;
+    float const across = std::hypot(at.x - leg.to.x, at.y - leg.to.y);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "fly_end", ended, at.z - leg.to.z,
+                       {{"across", across},
+                        {"above_floor", floorZ > INVALID_HEIGHT ? at.z - floorZ : -1.0f},
+                        {"leg", static_cast<float>(index + 1)}},
+                       data.tripId);
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
     // The across and height distances to the end are TravelLegs::LandedAtEnd's two tests (LANDING_YARDS across,
     // AIRBORNE_YARDS in height), so a landing that failed one of them can be told from the other
     LOG_DEBUG("playerbots",
@@ -398,8 +405,7 @@ void LogFlyLeg(Player* bot, HeldTrip const& data, uint32 index, TravelLegs::LegR
               "{:.1f}, floor z {:.1f}, end z {:.1f}, {:.1f} yd across and {:.1f} yd in height from the end",
               bot->GetName(), index + 1, data.trip.legs.size(), how, TravelRoute::Distance(leg.from, leg.to),
               leg.flightYards, leg.flightLevels, plannedZ, peakZ, climbs, seconds, leg.seconds, combat, ended, at.z,
-              CheckMountStateAction::FloorBelow(bot).first, leg.to.z, std::hypot(at.x - leg.to.x, at.y - leg.to.y),
-              std::fabs(at.z - leg.to.z));
+              floorZ, leg.to.z, across, std::fabs(at.z - leg.to.z));
 }
 
 // The real-height check's samples (WU10): the ground between the bot and its next waypoint in the air, buildings
@@ -420,62 +426,6 @@ std::vector<float> SampleFlightGround(Player* bot, TravelRoute::Point const& tar
                                             true, 2.0f * TravelLegs::FLY_RAISE_CAP_YARDS));
     }
     return samples;
-}
-
-// The landing's open-sky check (TravelLegs::NeedsLandingCheck): each point of the landing line on the ground below it,
-// searched down from LANDING_PROBE_YARDS above the landing's height (a roof higher up is not the ground there),
-// outdoors there by the map's terrain status (WMO areas count) and joined to the planned landing (pathing PA56, G356:
-// the walk in's navmesh walk, one smooth wide path call as a probe step asks, a normal path whose end lies within
-// WAYPOINT_YARDS of the landing; asked of outdoor points only, at most 15 per fly leg). The outcome:
-// TravelLegs::ChooseLanding (kept, moved, or refused: the follower fails the leg `landing` before its descent)
-TravelLegs::LandingCheck CheckLanding(Player* bot, TravelLegs::Trip& trip)
-{
-    Map* map = bot->GetMap();
-    std::vector<TravelRoute::Point> line = TravelLegs::LandingLine(trip);
-    if (!map || line.empty())
-    {
-        TravelLegs::MoveLanding(trip, trip.waypoints.empty() ? TravelRoute::Point{} : trip.waypoints.back().at);
-        return TravelLegs::LandingCheck::Kept;
-    }
-    uint32 const phase = bot->GetPhaseMask();
-    for (TravelRoute::Point& point : line)
-        point.z = map->GetHeight(phase, point.x, point.y, point.z + LANDING_PROBE_YARDS, true, LANDING_PROBE_DEPTH);
-    float const collision = bot->GetCollisionHeight();
-    auto const outdoors = [&](TravelRoute::Point const& point)
-    {
-        if (point.z <= INVALID_HEIGHT)
-            return false;
-        PositionFullTerrainStatus status;
-        map->GetFullTerrainStatusForPosition(phase, point.x, point.y, point.z, collision, status);
-        return status.outdoors;
-    };
-    TravelRoute::Point const planned = trip.waypoints.back().at;
-    TravelWalk::ProbePoint const end{planned.x, planned.y, planned.z};
-    uint32 probes = 0;
-    auto const joined = [&](TravelRoute::Point const& point)
-    {
-        ++probes;
-        TravelWalk::ProbePoint const from{point.x, point.y, point.z};
-        TravelWalk::StepAnswer const answer = NewRpgInternal::AskTravelPath(bot, from, end, false, true);
-        TravelWalk::ProbePoint const last = answer.points.empty() ? from : answer.points.back();
-        return answer.type == TravelWalk::PATH_NORMAL && TravelWalk::Distance(last, end) <= TravelLegs::WAYPOINT_YARDS;
-    };
-    TravelLegs::LandingCheck const check = TravelLegs::ChooseLanding(trip, line, outdoors, joined);
-    if (check == TravelLegs::LandingCheck::Refused)
-        LOG_DEBUG("playerbots",
-                  "[Route] {} landing at ({:.0f}, {:.0f}, {:.0f}) is indoors: none joined of {} outdoor points back "
-                  "along the flight; the fly leg fails landing before its descent",
-                  bot->GetName(), planned.x, planned.y, planned.z, probes);
-    else if (check == TravelLegs::LandingCheck::Moved)
-    {
-        TravelRoute::Point const& landing = trip.waypoints.back().at;
-        LOG_DEBUG("playerbots",
-                  "[Route] {} landing at ({:.0f}, {:.0f}, {:.0f}) is indoors: lands {:.0f} yd back at ({:.0f}, {:.0f}, "
-                  "{:.0f}), joined ({} probes), and walks in",
-                  bot->GetName(), planned.x, planned.y, planned.z, TravelRoute::Distance(planned, landing), landing.x,
-                  landing.y, landing.z, probes);
-    }
-    return check;
 }
 
 // A fly leg's mount (WU10): off a ground mount, then the bot's fastest flying mount (CheckMountStateAction::
@@ -874,7 +824,7 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
     // A test's flyfail or flyabort row: past the leg's middle and in the air the fly leg fails as its timeout would
     // (the way down after a failure in the air, upkeep WU26b); flyabort spends the trip's replans first. One bit test
     // outside such a test
-    uint32 const constraints = botAI->testConstraints;
+    TestConstraints::Set const constraints = botAI->testConstraints;
     if (next.act == TravelLegs::Act::Fly && (constraints & TestConstraints::FLY_FAILS))
     {
         TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
@@ -897,15 +847,16 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         TravelLegs::CheckHeight(data->trip, SampleFlightGround(bot, trip.waypoints[trip.next].at));
         next.target = trip.waypoints[trip.next].at;
     }
-    // Once per fly leg near its end: an indoor landing (an inn's floor under its roof) moves to the outdoor spot
-    // nearest to it back along the flight that the mesh joins to it, and the bot walks in from there; with no such
-    // spot the leg fails `landing` before its descent (PA56) and the replan leaves that landing out
+    // Once per fly leg near its end: a landing not under the open sky (an inn's floor under its roof, a cave under
+    // rock or ice) moves to the open spot nearest to it back along the flight that the mesh joins to it, else to the
+    // nearest graph node under open sky the mesh joins to it, and the bot walks in from there; with neither the leg
+    // fails `landing` before its descent (PA56, PA73) and the replan leaves that landing out
     if (next.act == TravelLegs::Act::Fly && TravelLegs::NeedsLandingCheck(trip, seen.bot))
     {
-        TravelLegs::LandingCheck const landing = CheckLanding(bot, data->trip);
+        TravelLegs::LandingCheck const landing = CheckLanding(bot, data->trip, data->tripId);
         if (landing == TravelLegs::LandingCheck::Refused)
             return LegFailed(*data, TravelLegs::FailReason::Landing, LANDING_NONE_JOINED);
-        if (landing == TravelLegs::LandingCheck::Moved)
+        if (landing == TravelLegs::LandingCheck::Moved || landing == TravelLegs::LandingCheck::Node)
             next.target = trip.waypoints[trip.next].at;
     }
     // A transport leg's first tick wakes the bot's followers (their checks at the scan's pace from now on)

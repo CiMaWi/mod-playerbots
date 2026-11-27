@@ -7,6 +7,7 @@
 #include "TestConstraintStates.h"
 
 #include <string>
+#include <type_traits>
 
 #include "BotTravel.h"
 #include "CombatRecord.h"
@@ -53,6 +54,9 @@ void DropOwnTarget(Player& bot)
     context->GetValue<Unit*>("current target")->Set(nullptr);
     context->GetValue<GuidVector>("prioritized targets")->Reset();
     context->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
+    // a hunter's Auto Shot outlives its target, and the core's IsNonMeleeSpellCast(false) counts it: the bot would
+    // loot, use and equip nothing for the rest of the session
+    bot.InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
     bot.AttackStop();
     botAI->ChangeEngine(BOT_STATE_NON_COMBAT);
 }
@@ -84,6 +88,11 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::CASTTRACE, ApplyCombatTrace, UndoCombatTrace},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::APPLIED, "every applied row has apply and undo");
+// A set's two stores hold all 64 bits (ST27b): a 32-bit store would drop the high rows without a warning
+static_assert(std::is_same_v<decltype(PlayerbotAI::testConstraints), TestConstraints::Set> &&
+                  std::is_same_v<decltype(TravelOrder::on), TestConstraints::Set> &&
+                  std::is_same_v<decltype(TravelOrder::off), TestConstraints::Set>,
+              "a constraint set is stored as TestConstraints::Set");
 }  // namespace
 
 // A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
@@ -94,8 +103,8 @@ static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::APPLIED, "
 // run 1: up to 5 minutes)
 void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order, bool tripFollows)
 {
-    uint32 const before = botAI->testConstraints;
-    uint32 const after = TestConstraints::Next(before, order.on, order.off);
+    TestConstraints::Set const before = botAI->testConstraints;
+    TestConstraints::Set const after = TestConstraints::Next(before, order.on, order.off);
     botAI->testConstraints = after;
     botAI->SetWork(BotWork::Constraints, (after & TestConstraints::STATES) != 0);
     botAI->planner.snapshotDue = true;
@@ -124,7 +133,7 @@ void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder
     RpgStatus::End(botAI, StatusEnd::Outcome::Ordered, {.word = "hold", .source = "abort:held"});
 }
 
-void TravelOrders::KeepConstraints(Player* bot, uint32 constraints)
+void TravelOrders::KeepConstraints(Player* bot, TestConstraints::Set constraints)
 {
     TestConstraints::KeepStates(STATE_OPS, *bot, constraints);
 }

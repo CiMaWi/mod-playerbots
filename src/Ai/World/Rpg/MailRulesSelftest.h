@@ -315,6 +315,34 @@ inline void CheckUnique(Checker& checker)
     checker.Check(MailErrandWorth(0, DEFAULT_WORTH, a.seenAfter, 0, DEFAULT_ORDERLINESS_WEIGHT) == none,
                   "an untakeable mail opens no detour");
 }
+inline void CheckWaiting(Checker& checker)
+{
+    VisitPlan const left = PlanMailVisit({MakeMail(1, 0, {MakeItem(11, 5000)})}, Space(0), MailOptions{});
+    uint32_t const expected = UnseenCopper({{1, 4000}, {2, 700}}, SeenMailIds(left));
+    checker.Check(left.seenAfter == 5000 && expected == 700,
+                  "an auction item left for space is seen worth only, not expected again");
+    checker.Check(MailErrandWorth(0, DEFAULT_WORTH, left.seenAfter, expected, DEFAULT_ORDERLINESS_WEIGHT) == 5700,
+                  "the mail's worth counts it once");
+
+    std::vector<MailIn> const copy = {MakeMail(1, 0, {MakeUntakeable(11, 5000)})};
+    MailOptions options;
+    options.uniqueMails = UniqueMailIds(PlanMailVisit(copy, Space(10), options));
+    checker.Check(options.uniqueMails == std::vector<uint32_t>{1}, "a mail left for unique copies is remembered");
+
+    VisitPlan const again = PlanMailVisit(copy, Space(10), options);
+    checker.Show("a remembered copy, still held", again);
+    checker.Check(again.mailsOpened == 0 && again.steps.empty() && again.itemsLeft == 0 &&
+                      again.verdicts[0].choice == MailChoice::Skip && again.verdicts[0].reason == MailReason::Unique,
+                  "it is not planned again while the bot holds the item");
+    checker.Check(UniqueMailIds(again) == options.uniqueMails, "a skipped mail stays remembered");
+
+    VisitPlan const freed = PlanMailVisit({MakeMail(1, 0, {MakeItem(11, 5000)})}, Space(10), options);
+    checker.Check(freed.mailsOpened == 1 && freed.itemsTaken == 1 && freed.deletes == 1,
+                  "once the bot does not hold it, the mail is opened and taken");
+    VisitPlan const full =
+        PlanMailVisit({MakeMail(1, 0, {MakeUntakeable(11, 5000), MakeItem(12, 300)})}, Space(0), MailOptions{});
+    checker.Check(UniqueMailIds(full).empty(), "a mail with an item left for space is not remembered as unique");
+}
 }  // namespace MailSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -331,6 +359,7 @@ inline MailSelftestDetail::Result RunMailRulesSelftest(std::vector<std::string>&
     CheckStacksAndRefusals(checker);
     CheckErrandWorth(checker, lines);
     CheckUnique(checker);
+    CheckWaiting(checker);
     lines.push_back("MAIL selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

@@ -141,11 +141,14 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     if (known.bank.carried.level == bot->GetLevel())
         snapshot.AuctionStockWorth = known.bank.carried.auctionGain;
     snapshot.AuctionWantedWorth = WantedWorthOf(botAI, bot);
+    // NR12b: the banked sale stock's gain draws an auctioneer and the banker before it, only together (PlanTrip)
+    snapshot.BankStockWorth = known.bank.stockGain;
 
     bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
-    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
-    // The auction plan's worths (WA3b stock; WA4b wanted lines): an auctioneer joins the stops only for them
-    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth;
+    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots || snapshot.BankStockWorth;
+    // The auction plan's worths (WA3b stock; WA4b wanted lines; NR12b banked stock): an auctioneer joins the stops only
+    // for them
+    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth || snapshot.BankStockWorth;
     std::shared_ptr<Planner::PlannerIndexes const> const indexes =
         Planner::IndexesReady() ? Planner::Indexes() : nullptr;
     if (!indexes || (!mail && !bank && !auction))
@@ -534,6 +537,14 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
     std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
+    if (!TestConstraints::ProfessionErrandsOffered(botAI->testConstraints))
+        std::erase_if(offers,
+                      [](WorldTravel::ErrandOffer const& offer)
+                      {
+                          return offer.Kind == WorldTravel::ErrandKind::Profession ||
+                                 (offer.Kind == WorldTravel::ErrandKind::Shop &&
+                                  offer.Id == Planner::StockBit(Planner::UpkeepStock::Tool));
+                      });
     // A sick bot's trip (NR3, NR.4) starts no fight and keeps to the safe area it stands in: the tame and the stable's
     // swap are left out, and so is every stop its walk would leave that area for
     if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
