@@ -54,6 +54,12 @@ MAX_RANKS = 4
 MAX_WALK_POINTS = 6
 SQL_CHUNK = 200
 POLY_CAP = 200000
+# The bots' path filter (mod-playerbots, core PathGenerator): polygons flagged ground or water, not magma, slime or
+# steep ground. Only these can hold the end of a walk (pathing PA59c)
+NAV_INCLUDE = 0x01 | 0x08
+NAV_EXCLUDE = 0x02 | 0x04 | 0x10
+FLOOR_BOX = 3.0            # yd: the engine's search box for a walk's end polygon is 3 yd each way across
+BOX_FAR = 6.5              # yd: a floor within the engine's 7 yd end bound, with slack for its detail heights
 
 
 # Geometry helpers -----------------------------------------------------------
@@ -84,6 +90,91 @@ def cluster_levels(entries: list[tuple[float, dict]], gap: float) -> list[dict]:
 
 def dist2d(ax: float, ay: float, bx: float, by: float) -> float:
     return math.hypot(ax - bx, ay - by)
+
+
+def _triangle_height(x: float, y: float, a: tuple, b: tuple, c: tuple) -> float | None:
+    """The height at (x, y) of the triangle a, b, c (world x, y, z), None when the point lies outside it."""
+    det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+    if abs(det) < 1e-9:
+        return None
+    la = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / det
+    lb = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / det
+    lc = 1.0 - la - lb
+    if min(la, lb, lc) < -1e-6:
+        return None
+    return la * a[2] + lb * b[2] + lc * c[2]
+
+
+def poly_floor(x: float, y: float, item: dict) -> tuple[float, float]:
+    """(2D distance from the point to a navmesh polygon, the polygon's height at its point nearest the point).
+
+    Inside the polygon (a convex Detour polygon, walked as a fan) the distance is 0 and the height the plane's at the
+    point; outside, the nearest point of its edges. An item without vertices is its centroid."""
+    pts = item.get("wpts") or []
+    if len(pts) < 3:
+        return math.hypot(item["cx"] - x, item["cy"] - y), item["cz"]
+    for i in range(1, len(pts) - 1):
+        z = _triangle_height(x, y, pts[0], pts[i], pts[i + 1])
+        if z is not None:
+            return 0.0, z
+    best = (math.inf, item["cz"])
+    for i, a in enumerate(pts):
+        b = pts[(i + 1) % len(pts)]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 <= 0.0 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / length2))
+        d = math.hypot(a[0] + t * dx - x, a[1] + t * dy - y)
+        if d < best[0]:
+            best = (d, a[2] + t * (b[2] - a[2]))
+    return best
+
+
+def walkable(flags: int) -> bool:
+    return bool(flags & NAV_INCLUDE) and not flags & NAV_EXCLUDE
+
+
+def box_floors(x: float, y: float, polys: list) -> tuple[list, list]:
+    """The walkable polygons near the point as (2D distance, height at the nearest point, id), in two lists: those
+    the engine's end lookup finds for sure (bounds overlapping the square FLOOR_BOX each way around the point:
+    Detour's findNearestPoly box) and those beside it (bounds missing the square, but quantized tile bounds may still
+    take them). Both only within BOX_FAR, so an end at that height is in reach. polys: (cx, cy, avgz, wpts[, flags])
+    tuples; id is the tuple's."""
+    inside, beside = [], []
+    for g in polys:
+        if not walkable(g[4] if len(g) > 4 else NAV_INCLUDE):
+            continue
+        wpts = g[3]
+        if wpts:
+            bx = (min(p[0] for p in wpts), max(p[0] for p in wpts))
+            by = (min(p[1] for p in wpts), max(p[1] for p in wpts))
+        else:
+            bx, by = (g[0], g[0]), (g[1], g[1])
+        if bx[0] > x + BOX_FAR or bx[1] < x - BOX_FAR or by[0] > y + BOX_FAR or by[1] < y - BOX_FAR:
+            continue
+        d, z = poly_floor(x, y, {"cx": g[0], "cy": g[1], "cz": g[2], "wpts": wpts})
+        if d > BOX_FAR:
+            continue
+        overlaps = not (bx[0] > x + FLOOR_BOX or bx[1] < x - FLOOR_BOX or by[0] > y + FLOOR_BOX or
+                        by[1] < y - FLOOR_BOX)
+        (inside if overlaps else beside).append((d, z, id(g)))
+    return inside, beside
+
+
+def level_floor(level_z: float, own: set[int], box: list[tuple[float, float, int]]) -> float:
+    """A level's floor at the POI point (mod-playerbots pathing PA59c).
+
+    The level's height is the middle of polygon centroids up to SCAN_RADIUS away, which on a slope lies yards above
+    or below the floor at the point; the engine refuses a walk's end more than 7 yd from its polygon (no_end). So the
+    emitted z is a floor the end lookup finds there (box: box_floors' first list, or its second when the first is
+    empty): of the level's own polygons (own: their ids) the nearest in 2D, at equal distance the one nearest the
+    level's height; with none of its own, the floor nearest the level's height. A level without a floor in the box
+    keeps its height. Ranks and dedupe stay on the level's height."""
+    mine = [f for f in box if f[2] in own]
+    if mine:
+        return min(mine, key=lambda f: (round(f[0], 3), abs(f[1] - level_z)))[1]
+    if box:
+        return min(box, key=lambda f: (abs(f[1] - level_z), f[0]))[1]
+    return level_z
 
 
 def _point_key(point: dict) -> tuple[int, int, int]:
@@ -249,7 +340,7 @@ def build_truth(objectives: dict[int, dict], droppers: dict[int, set[int]],
 
 def _score_cluster(cluster: dict, nav_clusters: list[dict], spawn_clusters: list[dict],
                    truth_zs: list[float], trigger_zs: list[float],
-                   x: float, y: float) -> dict:
+                   x: float, y: float, box: list[tuple[float, float, int]] | None = None) -> dict:
     zc = cluster["zmean"]
     nav_hits = [item for c in nav_clusters for item in c["items"]
                 if abs(item["cz"] - zc) <= CLUSTER_GAP]
@@ -282,7 +373,8 @@ def _score_cluster(cluster: dict, nav_clusters: list[dict], spawn_clusters: list
         for item in sorted(nav_hits, key=lambda it: math.hypot(it["cx"] - x, it["cy"] - y))[:MAX_WALK_POINTS]
     ]
     return {
-        "z": round(zc, 2),
+        "z": round(level_floor(zc, {item["id"] for item in nav_hits}, box or []) if nav_hits else zc, 2),
+        "level": round(zc, 2),
         "nav_polys": len(nav_hits),
         "spawns": len(spawn_hits),
         "quest_spawn": bool(quest_spawn_hits),
@@ -299,23 +391,26 @@ def _dedupe_candidates(candidates: list[dict]) -> list[dict]:
     seen_z = set()
     deduped = []
     for candidate in candidates:
-        if any(abs(candidate["z"] - z) <= CLUSTER_GAP for z in seen_z):
+        if any(abs(candidate["level"] - z) <= CLUSTER_GAP for z in seen_z):
             continue
-        seen_z.add(candidate["z"])
+        seen_z.add(candidate["level"])
         deduped.append(candidate)
     return deduped[:MAX_RANKS]
 
 
 def bake_point(x: float, y: float, near_polys: list, truth_zs: list[float],
-               trigger_zs: list[float], cre_near: list, go_near: list) -> list[dict]:
+               trigger_zs: list[float], cre_near: list, go_near: list,
+               box_polys: list | None = None) -> list[dict]:
     """Ranked candidates for one point from its pre-collected evidence.
 
-    near_polys: [(cx, cy, avgz, wpts)] already within the scan radius.
+    near_polys: [(cx, cy, avgz, wpts[, flags])] already within the scan radius (no flags: walkable).
+    box_polys: the polygons that may reach the point's box (box_floors), by their bounds; None: near_polys.
     cre_near / go_near: spawns already within the scan radius.
     """
-    nav_levels = [(avgz, {"cx": cx, "cy": cy, "cz": avgz})
-                  for (cx, cy, avgz, _wpts) in near_polys]
+    nav_levels = [(g[2], {"cx": g[0], "cy": g[1], "cz": g[2], "id": id(g)}) for g in near_polys]
     nav_clusters = cluster_levels(nav_levels, CLUSTER_GAP)
+    inside, beside = box_floors(x, y, near_polys if box_polys is None else box_polys)
+    box = inside or beside
 
     spawn_pts = [(s[2], {"entry": s[3], "x": s[0], "y": s[1], "z": s[2]})
                  for s in cre_near]
@@ -329,7 +424,7 @@ def bake_point(x: float, y: float, near_polys: list, truth_zs: list[float],
     final = cluster_levels([(z, None) for z in raw], CLUSTER_GAP)
 
     candidates = [
-        _score_cluster(cluster, nav_clusters, spawn_clusters, truth_zs, trigger_zs, x, y)
+        _score_cluster(cluster, nav_clusters, spawn_clusters, truth_zs, trigger_zs, x, y, box)
         for cluster in final
     ]
     return _dedupe_candidates(candidates)
@@ -389,7 +484,7 @@ def _record_candidates(qid: int, poi_idx: int, point_idx: int, map_id: int,
             f"{1 if candidate['nav_ok'] else 0},'{walkable}')")
 
 
-def _bake_point(point: dict, map_id: int, gpolys: list, gx_arr: list,
+def _bake_point(point: dict, map_id: int, gpolys: list, gx_arr: list, half_width: float,
                 spawns: MapSpawns, truth: dict[int, dict], triggers: dict[int, list],
                 quests: dict[int, str], result: BakeResult,
                 total_points: int, t0: float) -> None:
@@ -409,8 +504,11 @@ def _bake_point(point: dict, map_id: int, gpolys: list, gx_arr: list,
     lo = bisect.bisect_left(gx_arr, px - SCAN_RADIUS)
     hi = bisect.bisect_right(gx_arr, px + SCAN_RADIUS)
     near_polys = [g for g in gpolys[lo:hi] if dist2d(g[0], g[1], px, py) <= SCAN_RADIUS]
+    # a polygon reaches the box by its bounds, whatever its centroid's distance: widen by the group's widest
+    blo = bisect.bisect_left(gx_arr, px - FLOOR_BOX - half_width)
+    bhi = bisect.bisect_right(gx_arr, px + FLOOR_BOX + half_width)
 
-    candidates = bake_point(px, py, near_polys, truth_zs, trigger_zs, cre_near, go_near)
+    candidates = bake_point(px, py, near_polys, truth_zs, trigger_zs, cre_near, go_near, gpolys[blo:bhi])
     result.done += 1
     if result.done % 250 == 0:
         elapsed = time.time() - t0
@@ -440,15 +538,16 @@ def _bake_group(nav: NavMesh, tile_key: tuple, group: list, map_id: int,
         return
 
     gpolys = []
-    for wpts, avgz in mesh["polys"]:
+    for (wpts, avgz), flags in zip(mesh["polys"], mesh["flags"]):
         cx = sum(p[0] for p in wpts) / len(wpts)
         cy = sum(p[1] for p in wpts) / len(wpts)
-        gpolys.append((cx, cy, avgz, wpts))
+        gpolys.append((cx, cy, avgz, wpts, flags))
     gpolys.sort(key=lambda g: g[0])
     gx_arr = [g[0] for g in gpolys]
+    half_width = max((max(abs(p[0] - g[0]) for p in g[3]) for g in gpolys), default=0.0)
 
     for point in group:
-        _bake_point(point, map_id, gpolys, gx_arr, spawns, truth, triggers, quests,
+        _bake_point(point, map_id, gpolys, gx_arr, half_width, spawns, truth, triggers, quests,
                     result, total_points, t0)
 
 
