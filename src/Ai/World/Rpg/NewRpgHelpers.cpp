@@ -192,6 +192,35 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
     return false;
 }
 
+bool RoomRefusesReward(Player* bot, Quest const* quest, uint32 choice)
+{
+    bool full = false;
+    auto const stores = [bot, &full](uint32 itemId, uint32 count)
+    {
+        if (!itemId)
+            return true;
+        ItemPosCountVec dest;
+        InventoryResult const result = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count);
+        full = full || result == EQUIP_ERR_INVENTORY_FULL;
+        return result == EQUIP_ERR_OK || result == EQUIP_ERR_INVENTORY_FULL;
+    };
+    if (quest->GetRewChoiceItemsCount() > 0 && choice < QUEST_REWARD_CHOICES_COUNT &&
+        !stores(quest->RewardChoiceItemId[choice], quest->RewardChoiceItemCount[choice]))
+        return false;
+    for (uint32 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+        if (!stores(quest->RewardItemId[i], quest->RewardItemIdCount[i]))
+            return false;
+    return full;
+}
+
+bool HandInRewardable(Player* bot, Quest const* quest, uint32 choice, uint64 constraints)
+{
+    if (bot->CanRewardQuest(quest, choice, false))
+        return true;
+    return KeepsLogRule(GET_PLAYERBOT_AI(bot)) && TestConstraints::DestroysForSpace(constraints) &&
+           bot->CanRewardQuest(quest, false) && RoomRefusesReward(bot, quest, choice);
+}
+
 bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, TestConstraints::Set constraints, LogAccept* take)
 {
     ObjectGuid guid = object->GetGUID();
@@ -206,8 +235,9 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, TestConstraints:
         Quest const* quest = sObjectMgr->GetQuestTemplate(item.QuestId);
         if (!quest)
             continue;
+        // A full bot's ender is sought too when the room rule makes room there (questing WQ43)
         QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
-        if (status == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, 0, false))
+        if (status == QUEST_STATUS_COMPLETE && HandInRewardable(bot, quest, 0, constraints))
         {
             return true;
         }

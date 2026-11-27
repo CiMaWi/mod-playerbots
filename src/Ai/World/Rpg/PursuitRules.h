@@ -30,6 +30,26 @@ constexpr std::uint32_t SHORT_LIMIT_MS = 2 * MINUTE_MS;  // the limit of a bot u
 // (QuestExecRules.h EndWord: unsupported:<kind>, no_place, no_target, locked) are causes too
 constexpr char const* TIMEOUT = "timeout";    // the limit passed without progress
 constexpr char const* NO_ENDER = "no_ender";  // no ender the bot can use, or the limit passed at the ender
+// A planned take that ended without the accept (questing WQ18c, WQ.44 item 2; QuestLog::CANNOT_TAKE is this word)
+constexpr char const* CANNOT_TAKE = "cannot_take";
+
+// What a give-up counts in the quest statistics (PlayerbotAI::RecordQuestAbandoned; questing WQ43, L8): a failed
+// hand-in is a quest that could not be turned in; a take the game refused (cannot_take) counts no abandon, for the
+// quest was never in the log; any other cause is one abandoned without progress
+enum class AbandonCount : std::uint8_t
+{
+    None,
+    CannotTurnIn,
+    NoProgress
+};
+
+inline AbandonCount AbandonOf(char const* cause)
+{
+    std::string_view const text = cause ? std::string_view(cause) : std::string_view();
+    if (text == CANNOT_TAKE)
+        return AbandonCount::None;
+    return text == NO_ENDER ? AbandonCount::CannotTurnIn : AbandonCount::NoProgress;
+}
 
 // Every word a quest status may be given up with (config/wlog-checks/questing.sql's quest_giveup_without_fail lists
 // the same): the clock's, the executor's end words, a walk's deadline (GoToRules.h's timeout), the refusals and an

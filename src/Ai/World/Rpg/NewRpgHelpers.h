@@ -94,6 +94,13 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
 // offering only takes the one accept refuses is none to seek, and a planned take left open there is no give-up
 // (QuestFail cannot_take is a giver that does not offer it, WQ18c)
 bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint64 constraints = 0, LogAccept* take = nullptr);
+// questing WQ43: whether the reward's items (the choice and the fixed ones) fail only for room: the bags are full for
+// one and the game takes every other (a unique or limited item is no matter of room)
+bool RoomRefusesReward(Player* bot, Quest const* quest, uint32 choice);
+// questing WQ43: whether a ready quest's reward can be had: the game takes it now, or a bot of the living world (on an
+// order or planner-owned, KeepsLogRule) may make the room for it (HandInRoomRules.h; constraints: nodestroy). No bag
+// scan: the room is made at the hand-in itself (NewRpgBaseAction::MakeRoomForHandIn)
+bool HandInRewardable(Player* bot, Quest const* quest, uint32 choice, uint64 constraints);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 

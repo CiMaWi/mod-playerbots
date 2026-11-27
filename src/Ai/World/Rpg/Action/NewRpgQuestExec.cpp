@@ -349,7 +349,8 @@ bool NewRpgDoQuestAction::SeekHeld(NewRpgInfo::DoQuest& data)
 namespace
 {
 // Whether a ready quest's hand-in fails for the bags alone (questing WQ18b): the game would reward it but for the room
-// its reward needs (the giver search's own test, CanRewardQuest with a reward)
+// its reward needs (CanRewardQuest with a reward). Since WQ43 the turn-in makes room first (MakeRoomForHandIn), so at
+// the order's end this holds only when the stacks the bot may destroy could not cover the reward
 bool BagsRefuseHandIn(Player* bot, uint32 questId)
 {
     Quest const* const quest = sObjectMgr->GetQuestTemplate(questId);
@@ -391,6 +392,8 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
         Trace(bot, "place_reached", "order", bot->GetDistance(data.pos), data.questId,
               {{"open", static_cast<float>(run.open.size())}, {"credits", static_cast<float>(run.wayCredits)}});
     }
+    // Questing WQ43 (L4): a bot still closing on its aim, between its fights, restarts the walk's bound
+    Planner::QuestFieldExec::NoteCloser(run, bot->GetDistance(data.pos), now);
     // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows, and a hand-in the
     // bags refuse is none: the end names the bags (NameEnd, questing WQ18b)
     if (std::optional<Planner::QuestOrderEnd> const found =

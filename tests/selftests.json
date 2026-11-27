@@ -510,6 +510,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "hand-in-room-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "item-worth-selftest.cpp",
             "includes": [
                 "src/Mgr/Item",

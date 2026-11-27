@@ -1087,6 +1087,7 @@ Walked WalkOrder(QuestOrderRun& run, float x, float y, std::vector<X::Candidate>
         float const left = std::hypot(run.order.x - x, run.order.y - y);
         if (!run.arrivedAt && left <= ARRIVE_YARDS)
             run.arrivedAt = X::Stamp(now);
+        X::NoteCloser(run, left, now);
         bool finding = fighting > 0;
         if (fighting && !--fighting)
         {
@@ -2276,6 +2277,127 @@ void StandBounds()
     Check(!StandCases(lasting, false), "WQ33: mutant whose act keeps the count is caught");
 }
 
+// WQ43 (L4): no `time` end while the bot still closes on its aim (it fights on the way and walks on between two
+// fights); every order ends: one that stops closing one walk bound after its last new best, one that drifts, walks
+// away or fights at random within (start yards / CLOSER_YARDS + 2) bounds plus its fights, one that arrives by its stay
+void WalkWhileClosing(std::uint32_t seed)
+{
+    QuestOrder order;
+    order.word = QuestOrderWord::HandIn;
+    order.minutes = 0.5f;
+    order.walkMinutes = 2.0f;
+    order.expected.push_back({7, HAND_IN, 1});
+    std::uint32_t const boundMs =
+        X::MinutesMs(X::WALK_SLACK * order.walkMinutes + order.minutes) + X::NpcSlackMs(order);
+    QuestOrderRun run;
+    run.order = order;
+    run.open.push_back({7, HAND_IN, 1});
+    run.startedAt = 0xFFFFFFFFu - 30000;  // wraps during the walk
+    std::uint32_t now = run.startedAt;
+    float yards = 1300.0f;
+    bool early = false;
+    for (int fight = 0; fight < 40 && !early; ++fight)  // a fight of five minutes, then 30 yd on: 200 minutes
+    {
+        X::NoteCloser(run, yards, now);
+        early = X::End(run, now, false).has_value() || X::End(run, now + 5 * X::MS_PER_MINUTE, false).has_value();
+        now += 5 * X::MS_PER_MINUTE;
+        yards -= 30.0f;
+    }
+    Check(!early && now - run.startedAt > 3 * boundMs,
+          "L4: no time end while the bot closes on its ender between fights of five minutes (bound " +
+              std::to_string(boundMs / 1000) + " s)");
+    std::uint32_t const last = run.closerAt;
+    X::NoteCloser(run, run.bestYards - X::CLOSER_YARDS + 1.0f, last + 1000);
+    X::NoteCloser(run, run.bestYards + 50.0f, last + 2000);
+    Check(run.closerAt == last && !X::End(run, last + boundMs - 1, false).has_value() &&
+              X::End(run, last + boundMs, false) == QuestOrderEnd::Time,
+          "L4: nearer by less than a step or walking away restarts nothing: time one bound after the last new best");
+    run.arrivedAt = X::Stamp(last + 3000);
+    X::NoteCloser(run, 1.0f, last + 3000);
+    Check(run.closerAt == last, "L4: after the arrival the walk's bound is not asked");
+
+    Gen gen{std::mt19937(seed ^ 0x43C105E5u)};
+    constexpr std::uint32_t MAX_FIGHT_TICKS = 200;
+    int unended = 0;
+    int closing = 0;
+    for (int one = 0; one < 400; ++one)
+    {
+        QuestOrderRun walk;
+        walk.order = order;
+        walk.open.push_back({7, HAND_IN, 1});
+        walk.startedAt = static_cast<std::uint32_t>(gen.Int(0, 0x7FFFFFFF)) * 2u;
+        float const start = gen.Real(20.0f, 2000.0f);
+        float const pull = gen.Real(-2.0f, 4.0f);  // yards a tick towards the aim on average; below 0 it walks away
+        float left = start;
+        std::uint32_t const cap = static_cast<std::uint32_t>(start / X::CLOSER_YARDS + 2.0f) * boundMs +
+                                  X::MinutesMs(order.minutes) + X::LOOK_MS + 2 * MAX_FIGHT_TICKS * TICK_MS + TICK_MS;
+        std::uint32_t elapsed = 0;
+        std::optional<QuestOrderEnd> end;
+        int fighting = 0;
+        while (!end && elapsed <= cap)
+        {
+            elapsed += TICK_MS;
+            if (fighting > 0)
+            {
+                --fighting;  // a fight holds the executor: no tick of its own
+                continue;
+            }
+            if (gen.Chance(0.02f))
+                fighting = gen.Int(10, static_cast<int>(MAX_FIGHT_TICKS));
+            left = std::max(0.0f, left - pull + gen.Real(-6.0f, 6.0f));
+            std::uint32_t const at = walk.startedAt + elapsed;
+            if (!walk.arrivedAt && left <= 10.0f)
+                walk.arrivedAt = X::Stamp(at);
+            X::NoteCloser(walk, left, at);
+            end = X::End(walk, at, false);
+            if (end == QuestOrderEnd::Time && !walk.arrivedAt && at - walk.closerAt < boundMs)
+                ++closing;
+        }
+        unended += end ? 0 : 1;
+    }
+    Check(unended == 0, "L4: every generated walk ends within its bound (" + std::to_string(unended) + " of 400 not)");
+    Check(closing == 0,
+          "L4: no generated walk ends time within a bound of its last new best (" + std::to_string(closing) + ")");
+}
+
+// WQ43 (L2): a ready quest the order would hand in leaves the log without its reward (the log upkeep or a player
+// drops it): the log is counted again, so the quest is in no NoEnderQuests; a ready quest still held, or one handed
+// in, counts nothing each tick
+void HandInLeftLog()
+{
+    std::set<std::uint32_t> log = {871, 55};
+    std::set<std::uint32_t> rewarded;
+    QuestOrderRun run;
+    run.order.expected = {{871, HAND_IN, 1}, {55, 0, 2}};
+    auto const recount = [&log, &run]
+    {
+        run.open.clear();
+        if (log.count(871))
+            run.open.push_back({871, HAND_IN, 1});
+        if (log.count(55))
+            run.open.push_back({55, 0, 2});
+    };
+    recount();
+    auto const worked = [&log](std::uint32_t quest) { return !log.count(quest); };  // complete or gone
+    auto const gone = [&log, &rewarded](std::uint32_t quest) { return !log.count(quest) && !rewarded.count(quest); };
+    Check(!X::CountAgain(run.open, worked, gone), "L2: a ready quest held and a quest worked count nothing each tick");
+    log.erase(871);
+    bool const counted = X::CountAgain(run.open, worked, gone);
+    if (counted)
+        recount();
+    std::vector<std::uint32_t> const quests = X::NoEnderQuests(run);
+    Check(counted && std::find(quests.begin(), quests.end(), 871u) == quests.end(),
+          "L2: a quest gone from the log is in no NoEnderQuests (the log is counted again)");
+    log.insert(871);
+    recount();
+    run.open[0].left = 0;  // handed in: NoteHandIns closed its need
+    log.erase(871);
+    rewarded.insert(871);
+    Check(!X::CountAgain(run.open, worked, gone), "L2: a quest handed in counts nothing again");
+    log.erase(55);
+    Check(X::CountAgain(run.open, worked, gone), "L2: a worked quest that left the log counts again, as before");
+}
+
 void ShareAndAmounts()
 {
     namespace F = Planner::QuestFailRows;
@@ -2335,6 +2457,8 @@ int main(int argc, char** argv)
     StallRows(seed);
     ShareAndAmounts();
     StandBounds();
+    WalkWhileClosing(seed);
+    HandInLeftLog();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

@@ -36,7 +36,7 @@ namespace QuestLog
 {
 constexpr std::uint32_t PLAN_DUE_MS = 30 * 1000;  // from the round's first accept
 // The failure row of a planned take that ended without the accept (WQ18c, WQ.44 item 2): one give-up, as any cause
-constexpr std::string_view CANNOT_TAKE = "cannot_take";
+constexpr std::string_view CANNOT_TAKE = Pursuit::CANNOT_TAKE;
 // The quests the accept refuses by their kind: daily, weekly, repeatable (WQ.46 item 5). A holiday's quest is not one
 constexpr std::uint16_t REPEATS = QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE;
 
