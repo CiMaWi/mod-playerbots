@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 
+#include "BridgeAuctionTopic.h"
 #include "BridgeBotTopics.h"
 #include "BridgeItemsTopic.h"
 #include "BridgeNeedsTopic.h"
@@ -877,7 +878,83 @@ int main()
         mutant.lines[0].rank = "75";
         ProfessionsItems(mutant, rows);
         Check(hasDigit(rows), "professions: mutant, a skill number in a row, is seen by the digit guard");
-        static_assert(static_cast<std::size_t>(BotStateTopic::Professions) + 1 == std::size(TopicTable));
+    }
+
+    // WA9: the auction topic words a seller, a buyer with a bid, a bot with nothing and one the rules do not govern;
+    // each part is cut at its share, the bids row kept; the only digits are the money's (the mutant with one
+    // elsewhere is caught)
+    {
+        auto const digitsOutsideMoney = [](std::vector<BotStateItem> const& rows, std::vector<std::string> const& money)
+        {
+            for (BotStateItem const& row : rows)
+            {
+                std::string text = row.text + row.name + row.word;
+                for (std::string const& each : money)
+                    for (std::size_t at = text.find(each); at != std::string::npos; at = text.find(each))
+                        text.erase(at, each.size());
+                if (HasDigit(text))
+                    return true;
+            }
+            return false;
+        };
+        AuctionInput seller;
+        seller.governed = true;
+        seller.listings.push_back({"Linen Cloth", 20, 4000, "40s 0c", true});
+        seller.listings.push_back({"Copper Bar", 1, 150, "1s 50c", false});
+        std::vector<BotStateItem> rows;
+        AuctionItems(seller, rows);
+        Check(rows.size() == 2 && Is(rows[0], AuctionRow::Listed) && rows[0].name == "Linen Cloth" &&
+                  rows[0].value == 20 && rows[0].extra == 4000 &&
+                  rows[0].text == "You have listed a stack of Linen Cloth at a buyout of 40s 0c." &&
+                  rows[1].text == "You have listed Copper Bar from a bid of 1s 50c." &&
+                  !digitsOutsideMoney(rows, {"40s 0c", "1s 50c"}),
+              "auction: a seller's listings by item, count and price, the money worded");
+
+        AuctionInput buyer;
+        buyer.governed = true;
+        buyer.wants.push_back({"Heavy Linen Bandage", 10, 90, "90c"});
+        buyer.openBids = 3;
+        buyer.bidsMax = 3;
+        AuctionItems(buyer, rows);
+        Check(rows.size() == 2 && Is(rows[0], AuctionRow::Wants) && rows[0].value == 10 && rows[0].extra == 90 &&
+                  rows[0].text == "You are looking for Heavy Linen Bandage and would pay at most 90c for each." &&
+                  Is(rows[1], AuctionRow::Bids) && rows[1].value == 3 && rows[1].extra == 3 &&
+                  rows[1].text.find("as many as you hold") != std::string::npos && !digitsOutsideMoney(rows, {"90c"}),
+              "auction: a buyer's wants with their ceilings and the open bids at the cap");
+
+        AuctionInput none;
+        none.governed = true;
+        AuctionItems(none, rows);
+        Check(rows.size() == 1 && Is(rows[0], AuctionRow::Nothing) && !rows[0].text.empty(),
+              "auction: a bot with nothing answers one defined row");
+        AuctionInput provided = seller;
+        provided.governed = false;
+        AuctionItems(provided, rows);
+        Check(rows.size() == 1 && Is(rows[0], AuctionRow::Provided), "auction: an ungoverned bot: provided");
+
+        AuctionInput many = seller;
+        for (int at = 0; at < 9; ++at)
+        {
+            many.listings.push_back({"Linen Cloth", 5, 100, "1s 0c", true});
+            many.wants.push_back({"Silk Cloth", 5, 100, "1s 0c"});
+        }
+        many.openBids = 1;
+        many.bidsMax = 3;
+        AuctionItems(many, rows);
+        Check(rows.size() == Limit(BotStateTopic::Auction) && Is(rows.back(), AuctionRow::Bids) &&
+                  rows.size() == AUCTION_LISTED_SHOWN + AUCTION_WANTS_SHOWN + AUCTION_BIDS_SHOWN,
+              "auction: more lines than the shares are cut per part, the bids row kept");
+
+        bool worded = true;
+        for (BotStateItem const& row : rows)
+            worded = worded && row.word == RowWord(static_cast<AuctionRow>(row.code));
+        Check(worded, "auction: every row carries its row word");
+
+        AuctionInput mutant = buyer;
+        mutant.wants[0].name = "Bandage 2";
+        AuctionItems(mutant, rows);
+        Check(digitsOutsideMoney(rows, {"90c"}), "auction: mutant, a digit outside the money, is seen by the guard");
+        static_assert(static_cast<std::size_t>(BotStateTopic::Auction) + 1 == std::size(TopicTable));
     }
 
     std::printf("bridge-bot-topics selftest: %d passed, %d failed\n", passed, failed);

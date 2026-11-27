@@ -6,6 +6,7 @@
 
 #include "LootAction.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "BankRulesInput.h"
@@ -33,11 +34,15 @@
 #include "PvpGearMgr.h"
 #include "ServerFacade.h"
 #include "TestConstraints.h"
+#include "TravelLegRules.h"
 #include "UseItemAction.h"
 #include "WorldTravelConfig.h"
 
 namespace
 {
+// ItemLimitCategory.dbc's "Mana Gem": the mage's six conjured mana gems (and the unused 36799), nothing else
+constexpr uint32 MANA_GEM_LIMIT_CATEGORY = 4;
+
 // Slots the stored loot newly takes; merging into a stack takes none
 float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
 {
@@ -80,7 +85,13 @@ bool DestroyForLoot(PlayerbotAI* botAI, AiObjectContext* context, uint32 lootWor
     for (Item* item : visitor.items)
     {
         WorldTravel::SpaceCandidate candidate;
-        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item);
+        // A conjured food, water, healthstone or mana gem the bot can use is kept: worth nothing at a vendor, it
+        // would be the first victim, and its caster conjures it again as soon as a slot is free (NR6); an unusable
+        // one may go. Mana gems carry no conjured flag; their limit category (ItemLimitCategory.dbc 4) holds them all
+        ItemTemplate const* proto = item->GetTemplate();
+        bool const conjured = proto->IsConjuredConsumable() || proto->ItemLimitCategory == MANA_GEM_LIMIT_CATEGORY;
+        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item) ||
+                              (conjured && bot->CanUseItem(proto) == EQUIP_ERR_OK);
         if (!candidate.Protected)
         {
             ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
@@ -300,6 +311,18 @@ struct OpenLootAction::InteractionAdapter
     void Defer() { Stack.Cancel("dry"); }
 };
 
+// In the air: falling, or flying by the flag and above the floor (the higher of ground and water). A bot on its flying
+// mount keeps the flag on the ground; it is dismounted for the loot like any mounted bot
+static bool LootInTheAir(Player* bot)
+{
+    if (bot->Unit::IsFalling())
+        return true;
+    if (!bot->IsFlying())
+        return false;
+    auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+    return TravelLegs::InTheAir(bot->GetPositionZ(), std::max(groundZ, waterZ));
+}
+
 LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
 {
     LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
@@ -307,8 +330,8 @@ LootInteraction::Attempt OpenLootAction::TryOpen(bool encounter)
         return LootInteraction::Attempt::Prepared;
 
     if (availableLoot->IsLootPending() || bot->GetLootGUID() || bot->IsNonMeleeSpellCast(false) ||
-        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->IsFlying() ||
-        bot->Unit::IsFalling() || bot->GetTransport() || bot->GetVehicle())
+        (!encounter && bot->IsInCombat()) || !bot->IsAlive() || !botAI->CanMove() || bot->GetTransport() ||
+        bot->GetVehicle() || LootInTheAir(bot))
         return LootInteraction::Attempt::Failed;
 
     InteractionAdapter adapter{*this, *bot, *availableLoot, AI_VALUE(LootObject, "loot target"), encounter};
@@ -346,7 +369,8 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
                 if (!botAI->HasSkill(SKILL_SKINNING) || !GatherPassBy::Skins(botAI, lootObject.guid) ||
                     !botAI->CastSpell(SKINNING, creature))
                     return false;
-                GatherPassBy::NoteTake(botAI, lootObject.guid, true);  // a hide that paid (WR13c)
+                NewRpgDoGatherAction::NoteHarvestCast(botAI, lootObject.guid);  // a creature stop's skin (WR20c)
+                GatherPassBy::NoteTake(botAI, lootObject.guid, true);           // a hide that paid (WR13c)
                 return true;
         }
     }
@@ -448,102 +472,6 @@ bool OpenLootAction::CanOpenLock(uint32 skillId, uint32 reqSkillValue)
     uint32 skillValue = bot->GetSkillValue(skillId);
     return skillValue >= reqSkillValue || !reqSkillValue;
 }
-
-/*
-uint32 StoreLootAction::RoundPrice(double price)
-{
-    if (price < 100)
-    {
-        return (uint32)price;
-    }
-
-    if (price < 10000)
-    {
-        return (uint32)(price / 100.0) * 100;
-    }
-
-    if (price < 100000)
-    {
-        return (uint32)(price / 1000.0) * 1000;
-    }
-
-    return (uint32)(price / 10000.0) * 10000;
-}
-
-bool StoreLootAction::AuctionItem(uint32 itemId)
-{
-    ItemTemplate const* proto = sItemStorage.LookupEntry<ItemTemplate>(itemId);
-    if (!proto)
-        return false;
-
-    if (!proto || proto->Bonding == BIND_WHEN_PICKED_UP || proto->Bonding == BIND_QUEST_ITEM)
-        return false;
-
-    Item* oldItem = bot->GetItemByEntry(itemId);
-    if (!oldItem)
-        return false;
-
-    AuctionHouseEntry const* ahEntry = AuctionHouseMgr::GetAuctionHouseEntry(unit->getFaction());
-    if (!ahEntry)
-        return false;
-
-    AuctionHouseObject* auctionHouse = sAuctionMgr->GetAuctionsMap(ahEntry);
-
-    uint32 price = oldItem->GetCount() * proto->BuyPrice * sRandomPlayerbotMgr.GetBuyMultiplier(bot);
-
-uint32 stackCount = urand(1, proto->GetMaxStackSize());
-    if (!price || !stackCount)
-        return false;
-
-    if (!stackCount)
-        stackCount = 1;
-
-    if (urand(0, 100) <= sAhBotConfig.underPriceProbability * 100)
-        price = price * 100 / urand(100, 200);
-
-    uint32 bidPrice = RoundPrice(stackCount * price);
-    uint32 buyoutPrice = RoundPrice(stackCount * urand(price, 4 * price / 3));
-
-    Item* item = Item::CreateItem(proto->ItemId, stackCount);
-    if (!item)
-        return false;
-
-    uint32 auction_time = uint32(urand(8, 24) * HOUR * sWorld->getConfig(CONFIG_FLOAT_RATE_AUCTION_TIME));
-
-    AuctionEntry* auctionEntry = new AuctionEntry;
-    auctionEntry->Id = sObjectMgr->GenerateAuctionID();
-    auctionEntry->itemGuidLow = item->GetGUID().GetCounter();
-    auctionEntry->itemTemplate = item->GetEntry();
-    auctionEntry->itemCount = item->GetCount();
-    auctionEntry->itemRandomPropertyId = item->GetItemRandomPropertyId();
-    auctionEntry->owner = bot->GetGUID().GetCounter();
-    auctionEntry->startbid = bidPrice;
-    auctionEntry->bidder = 0;
-    auctionEntry->bid = 0;
-    auctionEntry->buyout = buyoutPrice;
-    auctionEntry->expireTime = time(nullptr) + auction_time;
-    //auctionEntry->moneyDeliveryTime = 0;
-    auctionEntry->deposit = 0;
-    auctionEntry->auctionHouseEntry = ahEntry;
-
-    auctionHouse->AddAuction(auctionEntry);
-
-    sAuctionMgr.AddAItem(item);
-
-    item->SaveToDB();
-    auctionEntry->SaveToDB();
-
-    LOG_ERROR("playerbots", "AhBot {} added {} of {} to auction {} for {}..{}", bot->GetName().c_str(), stackCount,
-proto->Name1.c_str(), 1, bidPrice, buyoutPrice);
-
-    if (oldItem->GetCount() > stackCount)
-        oldItem->SetCount(oldItem->GetCount() - stackCount);
-    else
-        bot->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
-
-    return true;
-}
-*/
 
 bool StoreLootAction::Execute(Event event)
 {

@@ -176,6 +176,7 @@ struct SpawnRecord
     bool answered{false};     // LC18g: the game judged its faction against both teams (a creature with a template)
     bool hostileToAlliance{false};
     bool hostileToHorde{false};
+    std::uint32_t spawnId{0};  // NR9: its spawn in creature or gameobject data (the map's spawn id store finds it)
 };
 
 struct ZoneRecord
@@ -213,6 +214,7 @@ struct Service
     float range{0.0f};                // a station's own range in yards
     PlaceSide side{PlaceSide::None};  // LC18g: a creature's by its reactions; an object (mailbox, station) its town's,
                                       // neutral outside one
+    std::uint32_t spawnId{0};         // NR9: the spawn's id (SpawnRecord::spawnId)
 };
 
 struct Hub
@@ -654,7 +656,8 @@ private:
                                 spawn.mailbox, spawn.orientation, spawn.focus, spawn.range,
                                 spawn.mailbox || spawn.focus
                                     ? PlaceSide::Neutral
-                                    : SideOfReactions(spawn.answered, spawn.hostileToAlliance, spawn.hostileToHorde)});
+                                    : SideOfReactions(spawn.answered, spawn.hostileToAlliance, spawn.hostileToHorde),
+                                spawn.spawnId});
             std::int32_t const cx = Detail::Cell(spawn.x, SERVICE_CELL_YARDS);
             std::int32_t const cy = Detail::Cell(spawn.y, SERVICE_CELL_YARDS);
             for (ServiceKind const kind : kinds)

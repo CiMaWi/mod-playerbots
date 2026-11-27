@@ -6,6 +6,7 @@
 
 #include "ItemUsageValue.h"
 
+#include <algorithm>
 #include <array>
 #include <unordered_set>
 #include <utility>
@@ -84,8 +85,6 @@ ItemUsage ItemUsageValue::Calculate()
     }
     else
     {
-        bool needItem = false;
-
         // A persistent bot with a skill path takes the usage of a material from the path (professions WR12): a
         // material the path uses is looked for until the bot holds its units and kept after, banked while the bot's
         // skill is short of the step that uses it (the bank rule's carried keeps, below)
@@ -94,30 +93,15 @@ ItemUsage ItemUsageValue::Calculate()
         if (material && bot->GetSkillValue(material->skill) >= material->dueSkill)
             return bot->GetItemCount(itemId, false) < material->used ? ITEM_USAGE_SKILL : ITEM_USAGE_KEEP;
 
-        if (IsItemNeededForSkill(proto))
-            needItem = true;
-        else
+        if (KeepsByCount(proto, path))
         {
-            bool lowBagSpace = AI_VALUE(uint8, "bag space") > 50;
-
-            if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_MISC ||
-                proto->Class == ITEM_CLASS_REAGENT)
-                needItem = path ? IsItemNeededForClassSpell(proto) : IsItemNeededForUsefullSpell(proto, lowBagSpace);
-            else if (proto->Class == ITEM_CLASS_RECIPE)
-            {
-                if (bot->HasSpell(proto->Spells[2].SpellId))
-                    needItem = false;
-                else
-                    needItem = bot->CanUseItem(proto) == EQUIP_ERR_OK;
-            }
-        }
-
-        if (needItem)
-        {
-            float stacks = CurrentStacks(proto);
+            // The bank asks with its own units counted too, so its moves never change the answer (",bank", NR12a)
+            float stacks = parsed.countBank ? static_cast<float>(bot->GetItemCount(itemId, true)) /
+                                                  static_cast<float>(proto->GetMaxStackSize())
+                                            : CurrentStacks(proto);
             if (stacks < 1)
                 return ITEM_USAGE_SKILL;  // Buy more.
-            if (stacks <= 2)
+            if (stacks <= KEPT_STACKS)
                 return ITEM_USAGE_KEEP;
         }
     }
@@ -299,6 +283,11 @@ ItemUsage ItemUsageValue::Calculate()
     return ITEM_USAGE_NONE;
 }
 
+bool ItemUsageValue::BeatsWornScore(float score, float wornScore)
+{
+    return score > std::max(wornScore, 0.0f) * sPlayerbotAIConfig.EquipUpgradeThreshold;
+}
+
 ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, int32 randomPropertyId)
 {
     if (bot->CanUseItem(itemProto) != EQUIP_ERR_OK)
@@ -350,14 +339,15 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     calculator.SetUpForEquipCompare();
 
     float itemScore = calculator.CalculateItem(itemProto->ItemId, randomPropertyId);
+    bool const usefulStat = calculator.HasUsefulStat();
 
-    if (itemScore)
+    if (itemScore > 0)
         shouldEquip = true;
 
     if (itemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(itemProto, bot->getClass()))
         shouldEquip = false;
     if (itemProto->Class == ITEM_CLASS_ARMOR &&
-        !sRandomItemMgr.CanEquipArmor(itemProto, bot->getClass(), bot->GetLevel()))
+        !sRandomItemMgr.CanEquipArmorKind(itemProto, bot->getClass(), bot->GetLevel()))
         shouldEquip = false;
 
     uint8 possibleSlots = 1;
@@ -408,26 +398,22 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
 
     for (uint8 i = 0; i < possibleSlots; i++)
     {
-        bool shouldEquipInSlot = shouldEquip;
         Item* oldItem = bot->GetItemByPos(dest + i);
 
-        // No item equipped
+        // No item equipped: an unfit item fills the slot only for a stat that serves the spec, or when no stat
+        // carries a weight (a white chest piece on a naked bot); one of only foreign stats stays in the bag
         if (!oldItem)
         {
-            if (shouldEquipInSlot)
+            if (shouldEquip)
                 return ITEM_USAGE_EQUIP;
-            else
+            if (usefulStat)
                 return ITEM_USAGE_BAD_EQUIP;
+            return ITEM_USAGE_NONE;
         }
 
         ItemTemplate const* oldItemProto = oldItem->GetTemplate();
-        float oldScore = calculator.CalculateItem(oldItemProto->ItemId, oldItem->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID));
-        if (oldItem)
-        {
-            // uint32 oldStatWeight = sRandomItemMgr.GetLiveStatWeight(bot, oldItemProto->ItemId);
-            if (itemScore || oldScore)
-                shouldEquipInSlot = itemScore > oldScore * sPlayerbotAIConfig.EquipUpgradeThreshold;
-        }
+        int32 const oldRandomPropertyId = oldItem->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID);
+        float oldScore = calculator.CalculateItem(oldItemProto->ItemId, oldRandomPropertyId);
 
         // Bigger quiver
         if (itemProto->Class == ITEM_CLASS_QUIVER)
@@ -438,26 +424,10 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
                 return ITEM_USAGE_NONE;
         }
 
-        bool existingShouldEquip = true;
-        if (oldItemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(oldItemProto, bot->getClass()))
-            existingShouldEquip = false;
-
-        if (oldItemProto->Class == ITEM_CLASS_ARMOR &&
-            !sRandomItemMgr.CanEquipArmor(oldItemProto, bot->getClass(), bot->GetLevel()))
-            existingShouldEquip = false;
-
-        // uint32 oldItemPower = sRandomItemMgr.GetLiveStatWeight(bot, oldItemProto->ItemId);
-        // uint32 newItemPower = sRandomItemMgr.GetLiveStatWeight(bot, itemProto->ItemId);
-
-        // Compare items based on item level, quality or itemId.
-        bool isBetter = false;
-        if (itemScore > oldScore)
-            isBetter = true;
-        // else if (newItemPower == oldScore && itemProto->Quality > oldItemProto->Quality)
-        //     isBetter = true;
-        // else if (newItemPower == oldScore && itemProto->Quality == oldItemProto->Quality && itemProto->ItemId >
-        // oldItemProto->ItemId)
-        //     isBetter = true;
+        // A fitting item must beat the worn one's score times the threshold, whatever the worn item is; a worn
+        // score at or below 0 counts as an empty slot. The same item with the same suffix never replaces itself.
+        bool const sameItem = itemProto->ItemId == oldItemProto->ItemId && randomPropertyId == oldRandomPropertyId;
+        bool const shouldEquipInSlot = shouldEquip && !sameItem && BeatsWornScore(itemScore, oldScore);
 
         Item* item = CurrentItem(itemProto);
         bool itemIsBroken =
@@ -465,21 +435,20 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         bool oldItemIsBroken =
             oldItem->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && oldItem->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) > 0;
 
-        if (itemProto->ItemId != oldItemProto->ItemId && (shouldEquipInSlot || !existingShouldEquip) && isBetter)
+        if (shouldEquipInSlot)
         {
             switch (itemProto->Class)
             {
                 case ITEM_CLASS_ARMOR:
                     if (oldItemProto->SubClass <= itemProto->SubClass)
                     {
-                        // Need to add some logic to check second slot before returning, but as it happens, all three of these
-                        // return vals will result in an attempted equip action so it wouldn't have much effect currently
+                        // Need to add some logic to check second slot before returning, but as it happens, both of
+                        // these return vals will result in an attempted equip action so it wouldn't have much effect
+                        // currently
                         if (itemIsBroken && !oldItemIsBroken)
                             return ITEM_USAGE_BROKEN_EQUIP;
-                        else if (shouldEquipInSlot)
-                            return ITEM_USAGE_REPLACE;
                         else
-                            return ITEM_USAGE_BAD_EQUIP;
+                            return ITEM_USAGE_REPLACE;
                     }
                     // A lower-subclass armor piece is handled by the default case below.
                     [[fallthrough]];
@@ -487,16 +456,14 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
                 {
                     if (itemIsBroken && !oldItemIsBroken)
                         return ITEM_USAGE_BROKEN_EQUIP;
-                    else if (shouldEquipInSlot)
-                        return ITEM_USAGE_EQUIP;
                     else
-                        return ITEM_USAGE_BAD_EQUIP;
+                        return ITEM_USAGE_EQUIP;
                 }
             }
         }
 
-        // Item is not better but current item is broken and new one is not.
-        if (oldItemIsBroken && !itemIsBroken)
+        // Item is not better but current item is broken and new one is not: a broken worn item counts as none.
+        if (shouldEquip && oldItemIsBroken && !itemIsBroken)
             return ITEM_USAGE_EQUIP;
     }
     return ITEM_USAGE_NONE;
@@ -566,9 +533,24 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
     return ITEM_USAGE_NONE;
 }
 
+bool ItemUsageValue::KeepsByCount(ItemTemplate const* proto, SkillPath::Path const* path)
+{
+    if (IsItemNeededForSkill(proto))
+        return true;
+    if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_MISC || proto->Class == ITEM_CLASS_REAGENT)
+    {
+        bool const lowBagSpace = AI_VALUE(uint8, "bag space") > 50;
+        return path ? IsItemNeededForClassSpell(proto) : IsItemNeededForUsefullSpell(proto, lowBagSpace);
+    }
+    if (proto->Class == ITEM_CLASS_RECIPE)
+        return !bot->HasSpell(proto->Spells[2].SpellId) && bot->CanUseItem(proto) == EQUIP_ERR_OK;
+    return false;
+}
+
 ParsedItemUsage ItemUsageValue::GetItemIdFromQualifier()
 {
     ParsedItemUsage parsed;
+    parsed.countBank = qualifier.ends_with(BANK_COUNT_QUALIFIER);
 
     size_t const pos = qualifier.find(",");
     if (pos != std::string::npos)
@@ -608,6 +590,7 @@ ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI*
         return outlet;
 
     SkillPath::Path const* path = Planner::KeptPath(botAI);
+    Market::View const market = Planner::MarketView();
     std::vector<WorldTravel::OutletYield> yields;
     yields.reserve(process->yields.size());
     for (Recipes::Yield const& yield : process->yields)
@@ -616,9 +599,9 @@ ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI*
         uint32 const vendor = yieldProto ? yieldProto->SellPrice : 0;  // plain copper, as the item's sale (WR14d)
         SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
         outlet.usedByPath = outlet.usedByPath || material;
-        // No auction price source exists yet: the other buyer's price is 0 behind the user's switch
-        yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, vendor, 0,
-                                                                      SkillPath::BUYERS_BEYOND_VENDORS)});
+        // the other buyer is the auction: a listing's proceeds (WA7a), 0 without a typical price
+        yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, vendor,
+                                                                      Planner::MarketProceeds(market, yield.item))});
     }
     outlet.worthEach = WorldTravel::DisenchantWorth(yields);
     return outlet;
@@ -953,14 +936,28 @@ bool ItemUsageValue::IsItemNeededForUsefullSpell(ItemTemplate const* proto, bool
 
 bool ItemUsageValue::IsItemNeededForClassSpell(ItemTemplate const* proto)
 {
-    for (uint32 spellId : SpellsUsingItem(proto->ItemId, bot))
-    {
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (spellInfo && spellInfo->SpellFamilyName != SPELLFAMILY_GENERIC)
-            return true;
-    }
+    std::vector<uint32> const reagents = ClassSpellReagents(bot);
+    return std::binary_search(reagents.begin(), reagents.end(), proto->ItemId);
+}
 
-    return false;
+std::vector<uint32> ItemUsageValue::ClassSpellReagents(Player* bot)
+{
+    std::vector<uint32> items;
+    for (auto const& [spellId, spell] : bot->GetSpellMap())
+    {
+        if (spell->State == PLAYERSPELL_REMOVED || !spell->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        // A spell the server charges no reagents for (Glyph of Renewed Life) uses none
+        if (!info || info->SpellFamilyName == SPELLFAMILY_GENERIC || bot->CanNoReagentCast(info))
+            continue;
+        for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            if (info->ReagentCount[i] > 0 && info->Reagent[i] > 0)
+                items.push_back(static_cast<uint32>(info->Reagent[i]));
+    }
+    std::sort(items.begin(), items.end());
+    items.erase(std::unique(items.begin(), items.end()), items.end());
+    return items;
 }
 
 static SpellInfo const* GetTemporaryEnchantSpell(ItemTemplate const* proto)

@@ -11,11 +11,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "GatherRateRules.h"
 #include "GoalModel.h"
 #include "RecipeIndex.h"
 
@@ -24,8 +26,9 @@
 // getting. Buying costs the copper weighed by the bot's need factor; getting costs its minutes at what a minute is
 // worth to the bot, and a risky place makes each minute worth less and adds the expected cost of dying. A made
 // material costs its inputs plus its casts, a processed one its input by the expected yield, a disenchanted one the
-// sale of the bot's own gear it gives up (WR14d). No source means blocked, never free. Pure and std only: the caller
-// fills the rates (WR11) and the place risk (WR13b).
+// sale of the bot's own gear it gives up (WR14d). Buying at auction (auction house plan WA7a, PLAN 3.7) costs the
+// market's typical price, weighed by the need factor like a vendor's. No source means blocked, never free. Pure and
+// std only: the caller fills the rates (WR11), the place risk (WR13b) and the auction prices (Market::View).
 // The pure-rules shape is adapted from Solfood/mod-playerbots CraftPlanRules.h at e8c3eb42, the bounded dependency
 // expansion (depth, work and quantity bounds) from damienselarez/mod-playerbots ProfessionPlan.h at be691a93
 // (GPL v2), without their order-dependent work counter: a query evaluates every (item, depth) it reaches once.
@@ -39,8 +42,8 @@ enum class Kind : std::uint8_t
     Made,       // a recipe of the index
     Processed,  // disenchanting (the bot's own unwanted gear), prospecting or milling
     Fished,     // empty until WR16b
-    Dropped,    // kill loot and skinning: questing's loot-source index (WT32), empty until WR20
-    Auction     // empty until WR23
+    Dropped,    // kill loot and skinning: the recipe index's drop rows from questing's source index (WR20a)
+    Auction     // the market's typical price (auction house WA7a); none without a market
 };
 
 enum class Cause : std::uint8_t
@@ -57,6 +60,56 @@ constexpr std::uint32_t MAX_QUANTITY = 1000;  // units of one material along an 
 constexpr float CAST_FLOOR_MS = 1500.0f;      // [E] a cast takes at least the global cooldown
 constexpr float PROCESS_CAST_MS = 3000.0f;    // [E] one disenchant, prospect or mill cast
 constexpr double COST_EPSILON = 1e-9;         // equal costs: the lower kind and source id win
+constexpr double AUCTION_FAULT_COPPER = 1e6;  // the AuctionInverse negative control's numerator
+
+// The skinning skill a creature of a level asks for (the core's SpellEffects.cpp); the skill path and the gather rules
+// read it too
+constexpr std::uint32_t SKIN_FREE_BELOW = 10;  // creatures below level 10 ask no skill
+constexpr std::uint32_t SKIN_LOW_BELOW = 20;
+constexpr std::uint32_t SKIN_LOW_PER_LEVEL = 10;
+constexpr std::uint32_t SKIN_PER_LEVEL = 5;
+
+constexpr std::uint32_t SkinRequirement(std::uint32_t level)
+{
+    return level < SKIN_FREE_BELOW  ? 0
+           : level < SKIN_LOW_BELOW ? (level - SKIN_FREE_BELOW) * SKIN_LOW_PER_LEVEL
+                                    : level * SKIN_PER_LEVEL;
+}
+
+// The fight estimate (WR20a, PLAN 3.7): one kill of a creature of the bot's own level, alone, from the pull to the
+// corpse, the rest after it included; each level the creature lies above the bot lengthens it by a share, each level
+// below shortens it, down to a floor; an elite takes a multiple. A creature more than a few levels above the bot is
+// refused, and so is an elite near the bot's level for a bot alone. WR20b's farm rules use the same estimate
+constexpr float FIGHT_SECONDS = 30.0f;           // [E] a kill at the bot's level, rest included
+constexpr float FIGHT_PER_LEVEL = 0.15f;         // [E] the share each level of difference adds or takes off
+constexpr float FIGHT_FLOOR_SHARE = 0.3f;        // [E] a creature far below dies in this share of the time
+constexpr float FIGHT_ELITE_FACTOR = 3.0f;       // [E] an elite takes this many times as long
+constexpr std::uint32_t FIGHT_LEVELS_ABOVE = 3;  // [E] a creature more levels above the bot than this is refused
+constexpr std::uint32_t ELITE_LEVELS_BELOW = 5;  // [E] a bot alone fights an elite only this many levels below it
+constexpr float ELITE_SHARE_REFUSED = 0.5f;      // a row is elite for the refusal from this share
+constexpr float LOOT_SECONDS = 3.0f;             // [E] to step onto the corpse and loot it
+constexpr float SKIN_SECONDS = 5.0f;             // the cast and the loot of one skin
+constexpr std::uint8_t BOTH_SIDES = 3;           // a side bit per team (1 << team), as DropRow::friendlyTo
+
+// A team's side bit (0 Alliance, 1 Horde); another value is no side known
+constexpr std::uint8_t SideBit(std::uint32_t team)
+{
+    return team < 2 ? static_cast<std::uint8_t>(1u << team) : BOTH_SIDES;
+}
+
+// Test faults: the negative controls of the material-rules search break one rule each; None outside the selftest
+enum class Fault : std::uint8_t
+{
+    None,
+    DangerCheaper,     // the fight estimate falls with the creature's level and elite share
+    IgnoreSkinSkill,   // offers a skin without the skinning skill it asks
+    IgnoreSide,        // offers a creature friendly to the bot's side
+    FirstDrop,         // offers only the first drop row that is a source, not every one
+    AuctionFirst,      // takes an auction price whenever there is one, cheaper sources or not (WA7a)
+    AuctionUnpriced,   // offers an item the market has no price for at a copper
+    AuctionUnweighed,  // weighs an auction price at a copper's neutral worth, not the bot's need factor
+    AuctionInverse     // weighs an auction price by its inverse: a dearer price costs less
+};
 
 inline char const* KindWord(Kind kind)
 {
@@ -123,6 +176,15 @@ struct Bot
     PlaceRisk anyZone;  // the risk of a zone not in zones
     std::unordered_map<std::uint32_t, PlaceRisk> zones;
     std::vector<std::uint32_t> reach;  // the zones it may gather in, sorted (WR11: reach and level); empty: every zone
+    std::uint32_t level{0};            // the fight estimate's (a drop source); 0 counts as level 1
+    std::uint8_t side{BOTH_SIDES};     // its side's bit in DropRow::friendlyTo (1 << team); both: not known
+    // Per unit, what buying an item at auction costs before the need factor: the market's typical price
+    // (Market::View::BuyCopperOf, WA7a); empty, or 0 for an item: no auction offer, the vendor-only cost
+    std::function<std::uint32_t(std::uint32_t)> auctionCopper;
+    Fault fault{Fault::None};
+    // Minutes per take as bots get them per zone and way (professions WPC13b): a node's gathering and a kill take the
+    // estimate over their static minutes, the prior; empty: the static rule
+    GatherRate::View gatherRates;
 
     [[nodiscard]] bool Reaches(std::uint32_t zone) const
     {
@@ -214,6 +276,110 @@ inline double MinuteCost(PlaceRisk const& risk, Rates const& rates)
     return rates.minuteValue * (1.0 + weighted + deathsPerMinute * DEATH_MINUTES);
 }
 
+// The minutes one fight with a creature takes a bot alone (the fight estimate above); it never falls with the
+// creature's level or its elite share
+inline double FightMinutes(double creatureLevel, std::uint32_t botLevel, float eliteShare)
+{
+    double const above = creatureLevel - static_cast<double>(std::max<std::uint32_t>(botLevel, 1));
+    double const share = std::max(static_cast<double>(FIGHT_FLOOR_SHARE), 1.0 + above * FIGHT_PER_LEVEL);
+    double const elite = 1.0 + std::clamp(eliteShare, 0.0f, 1.0f) * (FIGHT_ELITE_FACTOR - 1.0f);
+    return FIGHT_SECONDS * share * elite / Planner::Goals::SECONDS_PER_MINUTE;
+}
+
+// Whether the bot refuses to fight a creature of this level range at all: too far above it, or an elite near its level
+// for a bot alone
+inline bool FightRefused(std::uint32_t maxLevel, float eliteShare, std::uint32_t botLevel, std::uint8_t groupSize)
+{
+    std::uint32_t const level = std::max<std::uint32_t>(botLevel, 1);
+    if (maxLevel > level + FIGHT_LEVELS_ABOVE)
+        return true;
+    return eliteShare >= ELITE_SHARE_REFUSED && groupSize <= 1 && maxLevel + ELITE_LEVELS_BELOW > level;
+}
+
+// One kill of a drop row's creature: the walk to the next spawn of the kind, the fight and the loot or the skin, in
+// minutes. NoSource for a creature friendly to the bot's side, TooDangerous for a refused fight; the place's risk is
+// the caller's (MinuteCost). WR20b's farm rules price their stops by it
+struct Kill
+{
+    Cause cause{Cause::None};
+    double minutes{0.0};
+};
+
+inline Kill KillOf(Recipes::DropRow const& row, Bot const& bot)
+{
+    Kill kill;
+    if ((row.friendlyTo & bot.side) && bot.fault != Fault::IgnoreSide)
+    {
+        kill.cause = Cause::NoSource;
+        return kill;
+    }
+    if (FightRefused(row.maxLevel, row.eliteShare, bot.level, bot.rates.groupSize))
+    {
+        kill.cause = Cause::TooDangerous;
+        return kill;
+    }
+    double level = (row.minLevel + std::max(row.minLevel, row.maxLevel)) / 2.0;
+    float elite = row.eliteShare;
+    if (bot.fault == Fault::DangerCheaper)
+    {
+        level = 2.0 * std::max<std::uint32_t>(bot.level, 1) - level;
+        elite = 1.0f - std::clamp(elite, 0.0f, 1.0f);
+    }
+    double const walk = row.spacing / (std::max(bot.rates.runSpeed, 1.0f) * Planner::Goals::SECONDS_PER_MINUTE);
+    double const handle =
+        (row.kind == Recipes::DropKind::Skin ? SKIN_SECONDS : LOOT_SECONDS) / Planner::Goals::SECONDS_PER_MINUTE;
+    kill.minutes = walk + FightMinutes(level, bot.level, elite) + handle;
+    return kill;
+}
+
+// What one unit from a drop row costs the bot: a kill's minutes over the units one kill gives, at what a minute costs
+// at the place. A skin only with the skill its creature asks (at the top of the row's levels), a creature friendly to
+// the bot's side never
+inline Cost DropCost(Recipes::DropRow const& row, Bot const& bot)
+{
+    if (!row.spawns || !(row.perKill > 0.0))
+        return BlockedBy(Cause::NoSource);
+    if (row.kind == Recipes::DropKind::Skin && bot.fault != Fault::IgnoreSkinSkill)
+    {
+        std::uint32_t const skill = bot.Skill(row.skill);
+        if (!skill || skill < SkinRequirement(row.maxLevel))
+            return BlockedBy(Cause::NoSource);
+    }
+    Kill const kill = KillOf(row, bot);
+    if (kill.cause != Cause::None)
+        return BlockedBy(kill.cause);
+    double const minuteCost = MinuteCost(bot.RiskOf(row.zone), bot.rates);
+    if (minuteCost < 0.0)
+        return BlockedBy(Cause::TooDangerous);
+    Cost cost;
+    cost.kind = Kind::Dropped;
+    cost.cause = Cause::None;
+    cost.minutes = bot.gatherRates.Of(row.zone, GatherRate::Way::Creatures, kill.minutes).minutes / row.perKill;
+    cost.value = cost.minutes * minuteCost;
+    cost.via = row.zone;
+    return cost;
+}
+
+// What one unit from a node row costs the bot: the walk to the next node of the kind and the gathering itself (the
+// prior of the zone's observed minutes per take, WPC13b) over a node's yield, at what a minute costs at the place
+inline Cost NodeCost(Recipes::NodeRow const& node, Bot const& bot)
+{
+    if (!node.nodes || node.perNode <= 0.0 || bot.Skill(node.skill) < node.reqSkill)
+        return BlockedBy(Cause::NoSource);
+    double const minuteCost = MinuteCost(bot.RiskOf(node.zone), bot.rates);
+    if (minuteCost < 0.0)
+        return BlockedBy(Cause::TooDangerous);
+    double const walkMinutes = node.spacing / (std::max(bot.rates.runSpeed, 1.0f) * Planner::Goals::SECONDS_PER_MINUTE);
+    double const prior = walkMinutes + Planner::Goals::GATHER_MINUTES;
+    Cost cost;
+    cost.kind = Kind::Gathered;
+    cost.cause = Cause::None;
+    cost.minutes = bot.gatherRates.Of(node.zone, GatherRate::WayOfSkill(node.skill), prior).minutes / node.perNode;
+    cost.value = cost.minutes * minuteCost;
+    cost.via = node.zone;
+    return cost;
+}
+
 class Pricer
 {
 public:
@@ -297,9 +463,23 @@ private:
     {
         Choice choice;
         choice.Offer(Bought(item));
+        Cost const auction = Auctioned(item);
+        if (_bot.fault == Fault::AuctionFirst && !auction.Blocked())
+            return auction;
+        choice.Offer(auction);
         for (std::size_t const at : _index.NodesOf(item))
             if (_bot.Reaches(_index.Nodes()[at].zone))
                 choice.Offer(Gathered(_index.Nodes()[at]));
+        for (std::size_t const at : _index.DropsOf(item))
+        {
+            Recipes::DropRow const& row = _index.Drops()[at];
+            if (!_bot.Reaches(row.zone))
+                continue;
+            Cost const cost = DropCost(row, _bot);
+            choice.Offer(cost);
+            if (_bot.fault == Fault::FirstDrop && !cost.Blocked())
+                break;
+        }
         for (std::size_t const at : _index.MadeBy(item))
             choice.Offer(depth ? Made(solver, _index.Recipes()[at], depth - 1) : BlockedBy(Cause::Bound));
         for (std::size_t const at : _index.YieldedBy(item))
@@ -322,24 +502,27 @@ private:
         return cost;
     }
 
-    // Minutes per unit: the walk to the next node of the kind and the gathering itself, over a node's yield
-    [[nodiscard]] Cost Gathered(Recipes::NodeRow const& node) const
+    // Bought at auction (WA7a, PLAN 3.7): the market's typical price, a buying cost weighed by the need factor like a
+    // vendor's price; an item without a price has no auction source. Ties go to the other sources (Auction is the last
+    // kind), so the auction is taken only when it is strictly cheaper
+    [[nodiscard]] Cost Auctioned(std::uint32_t item) const
     {
-        if (!node.nodes || node.perNode <= 0.0 || _bot.Skill(node.skill) < node.reqSkill)
+        std::uint32_t price = _bot.auctionCopper ? _bot.auctionCopper(item) : 0;
+        if (!price && _bot.fault == Fault::AuctionUnpriced)
+            price = 1;
+        if (!price)
             return BlockedBy(Cause::NoSource);
-        double const minuteCost = MinuteCost(_bot.RiskOf(node.zone), _bot.rates);
-        if (minuteCost < 0.0)
-            return BlockedBy(Cause::TooDangerous);
-        double const walkMinutes =
-            node.spacing / (std::max(_bot.rates.runSpeed, 1.0f) * Planner::Goals::SECONDS_PER_MINUTE);
         Cost cost;
-        cost.kind = Kind::Gathered;
+        cost.kind = Kind::Auction;
         cost.cause = Cause::None;
-        cost.minutes = (walkMinutes + Planner::Goals::GATHER_MINUTES) / node.perNode;
-        cost.value = cost.minutes * minuteCost;
-        cost.via = node.zone;
+        cost.copperPaid = price;
+        double const weighed = _bot.fault == Fault::AuctionInverse ? AUCTION_FAULT_COPPER / price : cost.copperPaid;
+        cost.value = weighed * (_bot.fault == Fault::AuctionUnweighed ? _bot.rates.exchange : _bot.rates.factor);
+        cost.via = item;
         return cost;
     }
+
+    [[nodiscard]] Cost Gathered(Recipes::NodeRow const& node) const { return NodeCost(node, _bot); }
 
     // Its inputs plus its cast, over the items one cast makes; the walk to a station counts as zero here
     [[nodiscard]] Cost Made(Solver& solver, Recipes::Recipe const& recipe, std::uint32_t depth) const

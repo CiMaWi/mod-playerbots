@@ -17,6 +17,7 @@
 #include "ItemVisitors.h"
 #include "PlannerService.h"
 #include "Playerbots.h"
+#include "ProfessionRules.h"
 #include "PvpGearMgr.h"
 
 class SellItemsVisitor : public IterateItemsVisitor
@@ -48,7 +49,7 @@ public:
         if (proto->Quality > maxQuality)
             return true;
 
-        if (IsProfessionTool(proto))
+        if (IsTool(proto))
             return true;
 
         if (!allClasses && proto->Quality > ITEM_QUALITY_POOR && !IsEquipment(proto))
@@ -63,15 +64,14 @@ private:
         return proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON;
     }
 
-    static bool IsProfessionTool(ItemTemplate const* proto)
+    // A profession tool (ProfessionRules, whatever its item class), or a misc weapon or pole of any kind
+    static bool IsTool(ItemTemplate const* proto)
     {
-        if (proto->Class != ITEM_CLASS_WEAPON)
-            return false;
-
-        if (proto->SubClass == ITEM_SUBCLASS_WEAPON_MISC || proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE)
+        if (ProfessionRules::IsProfessionTool(proto->ItemId, proto->TotemCategory != 0))
             return true;
 
-        return proto->TotemCategory != 0;
+        return proto->Class == ITEM_CLASS_WEAPON &&
+               (proto->SubClass == ITEM_SUBCLASS_WEAPON_MISC || proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE);
     }
 
     uint32 maxQuality;
@@ -106,11 +106,15 @@ bool SellAction::Execute(Event event)
         return true;
     }
 
-    if (text == "vendor")
+    // "vendor", or a visit's vendor guid: sell by usage (at that vendor)
+    ObjectGuid const at = text.empty() ? event.getObject() : ObjectGuid::Empty;
+    if (text == "vendor" || at)
     {
         BankMail::RefreshCarriedKeeps(botAI);  // gear kept for a later level is not sold (ITEM_USAGE_BANK)
+        sellAt = at;
         SellVendorItemsVisitor visitor(this, context);
         IterateItems(&visitor);
+        sellAt = ObjectGuid::Empty;
         botAI->ConsolidateItems();  // re-stack what the partial sells fragmented
         return true;
     }
@@ -222,7 +226,8 @@ void SellAction::Sell(Item* item, bool force)
             countToSell = excessCount;
     }
 
-    GuidVector vendors = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
+    GuidVector const vendors =
+        sellAt ? GuidVector{sellAt} : botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
 
     for (ObjectGuid const vendorguid : vendors)
     {

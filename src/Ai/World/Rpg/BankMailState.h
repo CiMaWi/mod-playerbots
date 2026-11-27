@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "AuctionLineTypes.h"
 #include "BankMailTypes.h"
 #include "Define.h"
 #include "ObjectGuid.h"
@@ -26,10 +27,17 @@ namespace BankMail
 {
 struct MailKnowledge
 {
-    uint16 waiting{0};         // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
-    uint32 seenCopper{0};      // worth the bot saw in mail it read and left in the box; in memory only
-    uint32 expectedCopper{0};  // worth of the mail it expects (sent to itself, a sale); 0 until something fills it
-    uint32 refreshedMs{0};     // when waiting was last counted; 0 = never
+    uint16 waiting{0};     // unread mails delivered to its box, counted from the mail list (CountWaitingMail)
+    uint32 seenCopper{0};  // worth the bot saw in mail it read and left in the box; in memory only
+    // Copper of delivered auction house mail not taken yet (a sale's proceeds, a bid back): the house's notice told
+    // the bot of it (auction WA3b; RefreshMailKnowledge counts it from the mail list), the seen mails left out
+    uint32 expectedCopper{0};
+    uint32 refreshedMs{0};  // when waiting was last counted; 0 = never
+    // Needs and errands NR.7, all in memory: the units waiting per item (ReadMailUnits), the mails whose leftovers
+    // seenCopper holds and the mails left only for unique copies (skipped while the bot holds them)
+    std::vector<WaitingUnits> units;
+    std::vector<uint32> seenMails;
+    std::vector<uint32> uniqueMails;
 };
 
 // An item the bot keeps in its bank for a later level
@@ -48,6 +56,7 @@ struct BankKnowledge
     CarriedKeeps carried;        // the bag items it keeps for a later level, for the item usage (RefreshCarriedKeeps)
     uint16 freeSlots{0};         // free bank slots: the 28 item slots and the plain bank bags' slots (WR17)
     uint16 slots{0};             // the bank's 28 item slots and its plain bags' slots
+    uint32 stockGain{0};         // NR12b: the banked sale stock's listing worth above a vendor's payout, copper
     bool built{false};           // set at login (BuildBankKnowledge)
 };
 
@@ -81,8 +90,9 @@ struct BankVisitData
     uint32 deposited{0};
     uint32 withdrawn{0};
     std::vector<SpaceAnswer>
-        space;              // professions WR17: the bank-space steps taken, then the decision that stopped them
-    bool spaceDone{false};  // the bank-space rule has nothing more to do on this visit
+        space;                // professions WR17: the bank-space steps taken, then the decision that stopped them
+    bool spaceDone{false};    // the bank-space rule has nothing more to do on this visit
+    bool auctionNext{false};  // NR12b: an auction errand of the trip follows (KeepBotIn::auctionNext)
 };
 
 // The craft's own data of a craft visit (CraftVisit.h, professions WR7; the lifecycle is BotBankMail::visit): one
@@ -103,6 +113,53 @@ struct CraftVisitData
     uint32 fire{0};           // the spell that lights the station where the bot stands first (WR15); 0: none or lit
 };
 
+// The auction's own data of an auctioneer visit (AuctionVisit.h, auction house WA3b; the lifecycle is
+// BotBankMail::visit). The bag stock is read anew at every step; this keeps the stacks looked at, so none is listed or
+// held twice, and the awaited listing, whose stack the next read no longer finds once the core took it. The buy step
+// after it (WA4b) keeps the lines decided, so each is decided once, and the awaited bid or buyout.
+struct AuctionVisitData
+{
+    uint32 stepTick{0};  // the world tick (game time ms) the awaited listing was queued in
+    uint32 awaiting{0};  // the awaited listing's item low guid; 0 = none
+    uint32 awaitingEntry{0};
+    uint32 ask{0};  // its buyout, copper
+    uint32 floor{0};
+    uint32 chance{0};           // its sale chance at its duration, permille (the chance row, AH6)
+    uint32 hours{0};            // its duration
+    uint32 listingsBefore{0};   // the add hook's count of the bot's listings when it was queued (AuctionMemory::Taken)
+    uint32 moneyBefore{0};      // the bot's copper when it was queued
+    bool relist{false};         // listed again after an expiry
+    std::vector<uint32> tried;  // item low guids listed, held or refused on this visit
+    uint32 posted{0};
+    uint32 held{0};
+    uint32 refused{0};   // listings the core did not take, and bids or buyouts it did not take
+    uint32 deposits{0};  // copper the listings cost
+    // The buy step (WA4b)
+    bool buying{false};
+    std::vector<uint32> only;  // the GM command's entries (a test's filter of lines and gear); empty = every one
+    uint64 kept{0};            // copper the market leaves in the purse (UpkeepNeeds::MarketKept), read once
+    uint32 openBids{0};        // the index's open bids of the bot at the first buy step, plus those placed since
+    bool bagTaken{false};      // one bag per visit
+    // Gear (WG7): the gear lines, built once after the buy list's lines (GearWorth::LinesAt); one purchase per visit
+    std::vector<AuctionRules::BuyLine> gearLines;
+    bool gearBuilt{false};
+    bool gearTaken{false};
+    std::vector<uint64> decided;  // the lines decided on this visit (AuctionRules::DecidedKey)
+    uint32 awaitAuction{0};       // the awaited bid or buyout's auction id; 0 = none (awaitingEntry: its item)
+    uint32 awaitPrice{0};         // its price, copper
+    uint32 awaitCeiling{0};       // the line's ceiling for the units the lot covers
+    uint32 awaitCost{0};          // the line cost (the price less the worth of units beyond the need)
+    uint32 awaitSpendable{0};     // the gold the market could spend at the choice
+    uint8 awaitKind{0};           // AuctionRules::BuyKind
+    uint8 awaitReason{0};         // AuctionWords::Reason of a bid: why not the buyout
+    uint32 awaitFactor{0};        // the line's need factor against the exchange, percent (the factor row, AH9)
+    bool awaitBag{false};
+    bool awaitGear{false};
+    uint32 bought{0};  // buyouts the core took
+    uint32 bids{0};    // bids the core took
+    uint32 spent{0};   // copper they cost
+};
+
 struct BotBankMail
 {
     MailKnowledge mail;
@@ -111,6 +168,7 @@ struct BotBankMail
     MailVisitData mailData;
     BankVisitData bankData;
     CraftVisitData craftData;
+    AuctionVisitData auctionData;
 };
 
 // A visit of any kind runs: the one test the AI update makes while none does

@@ -62,6 +62,10 @@ constexpr float FLY_CLIMB_YARDS = 30.0f;       // the climb after the takeoff an
 constexpr float LANDING_CHECK_YARDS = 150.0f;  // the landing spot is checked from this close (2D; NeedsLandingCheck)
 constexpr float LANDING_SEARCH_YARDS = 60.0f;  // an indoor landing moves at most this far back along the flight
 constexpr float LANDING_STEP_YARDS = 4.0f;     // the outdoor search's step
+constexpr float LANDING_SKY_YARDS = 3.0f;      // a surface this far above a landing's floor covers it (OpenSky)
+constexpr std::size_t LANDING_NODES = 4;       // open graph nodes a walk is asked from once the line has no landing
+constexpr std::size_t LANDING_NODE_SCAN = 16;  // nodes nearest the end looked at for them (a cave's own nodes first)
+constexpr float LANDING_NODE_YARDS = 450.0f;   // and only within this (2D): a cave's mouth lies up to 390 yd out
 constexpr std::uint8_t FLY_MOUNT_TRIES = 3;    // real mount tries (NoteMountTry) before the takeoff fails
 constexpr std::uint32_t FLY_MOUNT_RETRY_MS = 5 * 1000;  // a mount cast is tried again after this
 constexpr float FLY_MIN_CLEARANCE_YARDS = 15.0f;        // the real-height check: at least this above the ground ahead
@@ -444,6 +448,8 @@ inline char const* TransportSource(TransportEvent event)
             return "follow_timeout";
         case TransportEvent::Left:
             return "left";
+        case TransportEvent::StrandedHearth:
+            return "stranded_hearth";
     }
     return "?";
 }
@@ -1671,11 +1677,16 @@ inline void RowRefused(Trip& trip, Observation const& seen)
 {
     if (trip.crossMs || trip.cancelled)
         return;
+    RowRef const ref = RowNow(trip, seen);
     // The walk ahead of the docking (riding): not asked again on this ride; at the stop the row is tried as ever
     if (trip.boarding == Boarding::Ride && !trip.offFirst.sinceMs)
         trip.aheadRefused = true;
     else
         SpendRow(trip, seen);
+    // PA76: a get-off's stop whose rows were all refused so (OffFirst::boxed)
+    OffFirst& off = trip.offFirst;
+    if (off.sinceMs && ref.Get() && ++off.refused >= ref.stop->leaveCount)
+        ++off.boxed;
 }
 
 // The follower's one try for a place aboard (Act::Stand): taken (a complete deck path to the drawn deck point), or the
@@ -2189,6 +2200,9 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t gui
     off.outcome = outcome;
     off.stop = TravelCrossing::NO_STOP;
     off.spent = 0;
+    off.refused = 0;
+    off.boxed = 0;
+    off.crossed = false;
     // The scans start anew, and a crossing of the leg is tracked no more (the follower discards its move)
     trip.sight = {};
     trip.sightMs = 0;
@@ -2216,17 +2230,72 @@ struct VesselLeaveFacts
 {
     std::uint64_t aboardGuid{0};  // the vessel the bot rides (its membership), 0: none
     bool tripHeld{false};
-    bool owned{false};     // a follower at its master's vessel, a player's bot, a test placement, a battleground
-    bool underWay{false};  // the trip-less get-off has begun (OffFirst::sinceMs)
+    bool owned{false};      // a follower at its master's vessel, a player's bot, a test placement, a battleground
+    bool underWay{false};   // the trip-less get-off has begun (OffFirst::sinceMs)
+    bool car{false};        // the vessel is a lift's or the tram's car
+    bool carLeaves{false};  // that car has stop records with leaving rows
 };
 
+// A lift's or the tram's car is a ship to this rule where its stop records have leaving rows (G412: a rider with no
+// trip stood on its car for good); a car without them is not, it would give a stuck_aboard every period
 constexpr VesselLeave DecideVesselLeave(VesselLeaveFacts const& facts)
 {
     if (facts.tripHeld || facts.owned)
         return VesselLeave::None;
     if (facts.underWay)
         return VesselLeave::Step;
-    return facts.aboardGuid ? VesselLeave::Begin : VesselLeave::None;
+    return facts.aboardGuid && (!facts.car || facts.carLeaves) ? VesselLeave::Begin : VesselLeave::None;
+}
+
+// The travel's reasons to keep the bot on foot (the mount policy's onFoot; TravelKeepsOnFoot), one rule for every
+// status (G411: an errand's rider was asked only about its tame or stable stop and mounted aboard): an errand's tame
+// (Tame Beast is not cast mounted; WU21b-2) or stable visit (a mounted hunter's pet is away, WU21c), a get-off, the
+// trip-less one too (PA39b: a mount cast on every check held its deck walk and crossing, the bot rode on to
+// stuck_aboard), and a transport leg from its dock on (WT54-7: also while it waits there)
+struct OnFootFacts
+{
+    bool errandVisit{false};    // an errand arrived at its tame or stable stop
+    bool vesselOff{false};      // the trip-less get-off is under way (VesselLeave)
+    Trip const* trip{nullptr};  // the held trip, null: none
+};
+
+inline bool KeepsOnFoot(OnFootFacts const& facts)
+{
+    if (facts.errandVisit || facts.vesselOff)
+        return true;
+    if (!facts.trip)
+        return false;
+    Trip const& trip = *facts.trip;
+    if (trip.offFirst.sinceMs)
+        return true;
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport;
+}
+
+// Upkeep that holds the bot's checks starts on a transport leg only with the docking it needs at least this far ahead:
+// a drink holds them up to 27 s (UseItemAction's drink, the food cheat's 20 s), plus a margin
+constexpr std::int64_t UPKEEP_LEAD_MS = 30000;
+
+// What a transport leg lets start beside it (PA91: a mage conjured and drank after its crossing at a lift began,
+// the drink held its checks 17 s, it boarded late and rode on to stuck_aboard): upkeep that holds the bot's checks
+// (eat, drink) waits from the leg's start at its dock to its end, the trip's get-off first too, unless the bot
+// waits or rides with the docking it needs foreseen more than UPKEEP_LEAD_MS ahead (DocksInMs, docksInMs), so a
+// wait or a ride far from its docking still eats and drinks. A crossing tracked or cut, the boarding, the leave
+// and the way back hold it; a docking not foreseen (no window, the vessel not seen on the bot's map) holds it
+// too: a car's period is short, and the leg's own deadline ends every wait. Fights, death and healing are not
+// upkeep. O(1)
+inline bool HoldsUpkeep(Trip const* trip, std::int64_t docksInMs)
+{
+    if (!trip)
+        return false;
+    if (trip->offFirst.sinceMs)
+        return true;
+    if (trip->legIdx >= trip->legs.size() || trip->legs[trip->legIdx].type != TravelRoute::LegType::Transport)
+        return false;
+    if (trip->crossMs || trip->cancelled)
+        return true;
+    if (trip->boarding != Boarding::Wait && trip->boarding != Boarding::Ride)
+        return true;
+    return docksInMs == NO_DEADLINE || docksInMs <= UPKEEP_LEAD_MS;
 }
 
 // The trip-less get-off's end: ashore, `Transport left` with the seconds since its off_first
@@ -2287,6 +2356,7 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
     {
         off.stop = stop->stop;
         off.spent = 0;
+        off.refused = 0;
     }
     CrossState const crossing = SettleCrossing(trip, seen, stop, off.entry);
     if (crossing == CrossState::UnderWay)
@@ -2300,7 +2370,50 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
     if (away > DECK_REACH_YARDS)
         return OffStep::Deck;
     TravelCrossing::Move const move = TravelCrossing::MoveOf(row, TravelCrossing::Direction::Leave, away);
-    return HasTimeFor(trip, *stop, move, seen.nowMs) ? OffStep::Disembark : OffStep::Wait;
+    if (!HasTimeFor(trip, *stop, move, seen.nowMs))
+        return OffStep::Wait;
+    off.crossed = true;
+    return OffStep::Disembark;
+}
+
+// PA76 (G414): the bound of a rider that cannot get off. A get-off given up after every leaving row of a stop was
+// refused by the deck path, with no crossing issued, counts; one from where the last counted (within
+// STRANDED_MOVE_YARDS) adds to it, any other end (ashore, lost, a crossing tried, a give-up by time alone) starts anew.
+// After STRANDED_GIVE_UPS in a row the bot takes the player's way out, its hearthstone (DP.5; no hop, snap or
+// teleport, WT.53), cast at the stop right after its rows there were refused again (off.boxed grew on this tick): a
+// cooling stone waits for the next such moment, a missing one gets nothing. The glue calls it on every get-off tick
+// after StepOffFirst and the deck walk (boxedBefore: off.boxed before them); O(1)
+constexpr std::uint8_t STRANDED_GIVE_UPS = 2;
+constexpr float STRANDED_MOVE_YARDS = 2.0f;
+
+inline StrandedExit StrandedStep(Stranded& stranded, OffFirst const& off, OffStep step, std::uint8_t boxedBefore,
+                                 TravelLifecycle::Point const& offset, Stone stone)
+{
+    bool const here = stranded.guid == off.guid && OffsetYards(offset, stranded.offset) <= STRANDED_MOVE_YARDS;
+    if (step == OffStep::Off || step == OffStep::Lost || step == OffStep::GiveUp)
+    {
+        if (step != OffStep::GiveUp || !off.boxed || off.crossed)
+            stranded = {};
+        else if (!here)
+            stranded = {off.guid, {offset.X, offset.Y, offset.Z}, 1, false};
+        else if (stranded.giveUps < STRANDED_GIVE_UPS)
+            ++stranded.giveUps;
+        return StrandedExit::None;
+    }
+    if (off.boxed == boxedBefore || off.crossed || !here || stranded.giveUps < STRANDED_GIVE_UPS ||
+        stone == Stone::Cooling)
+        return StrandedExit::None;
+    return stone == Stone::Ready ? StrandedExit::Hearth : StrandedExit::Missing;
+}
+
+// The exit's row, `Transport stranded_hearth`: 1 the cast began (each one; the stone's cooldown spaces them), 0 it did
+// not (no stone, or the core refused it), once
+inline void NoteStrandedExit(Trip& trip, Stranded& stranded, bool cast)
+{
+    if (!cast && stranded.told)
+        return;
+    stranded.told = stranded.told || !cast;
+    trip.transportNotes.push_back({TransportEvent::StrandedHearth, trip.offFirst.entry, cast ? 1u : 0u});
 }
 
 // The trip's next step: finished legs are passed (at most LEGS_PER_TICK), then the current leg's step; Arrived after
@@ -2531,25 +2644,27 @@ inline bool CheckHeight(Trip& trip, std::vector<float> const& samples)
 // The landing spot's check (WU11b): a fly leg planned onto an indoor goal (an inn's floor) comes down on the roof
 // above it, more than LANDING_YARDS from the leg's end. Once per fly leg, on the descent within LANDING_CHECK_YARDS
 // (2D) of the landing, where the bot has the landing's grid loaded, the follower asks whether the landing lies under
-// the open sky (the flight map cannot tell: indoors is a WMO property)
+// the open sky (the flight map cannot tell: indoors is a WMO property). Every fly leg is checked once (pathing PA73,
+// G418), a leg of two waypoints (fewer than 3 planned points: no descent point) too
 inline bool NeedsLandingCheck(Trip const& trip, Point const& bot)
 {
     if (trip.landingChecked || trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Fly ||
-        trip.waypoints.size() < 3 || trip.next + 2 < trip.waypoints.size())
+        trip.waypoints.size() < 2 || trip.next + 2 < trip.waypoints.size())
         return false;
     Point const& landing = trip.waypoints.back().at;
     return bot.mapId == landing.mapId && std::hypot(bot.x - landing.x, bot.y - landing.y) <= LANDING_CHECK_YARDS;
 }
 
 // The points the check looks at: back from the landing towards the last flight point every LANDING_STEP_YARDS, at
-// most LANDING_SEARCH_YARDS, at the landing's height; the farthest first, the landing last
+// most LANDING_SEARCH_YARDS, at the landing's height; the farthest first, the landing last. A leg of two waypoints
+// runs back towards its takeoff
 inline std::vector<Point> LandingLine(Trip const& trip)
 {
     std::vector<Waypoint> const& points = trip.waypoints;
-    if (points.size() < 3)
+    if (points.size() < 2)
         return {};
     Point const& landing = points.back().at;
-    Point const& before = points[points.size() - 3].at;
+    Point const& before = points[points.size() >= 3 ? points.size() - 3 : 0].at;
     float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
     std::size_t const steps =
         gap > 0.0f ? static_cast<std::size_t>(std::min(gap, LANDING_SEARCH_YARDS) / LANDING_STEP_YARDS) : 0;
@@ -2565,50 +2680,60 @@ inline std::vector<Point> LandingLine(Trip const& trip)
     return line;
 }
 
-// outdoors(point) -> may a bot stand there under the open sky; joined(point) -> does the navmesh walk from there end
-// at the landing (the walk in's probe; pathing PA56, G356: a point back along the line read outdoors in a sealed
-// pocket or inside the rock under the landing). The landing (the line's last point) when it is outdoors or no point
-// is; else the outdoor point nearest to it that is joined, nearest first (joined asked of outdoor points only);
-// nullopt when outdoor points exist and none is joined: the fly leg does not come down there (ChooseLanding)
-template <class Outdoors, class Joined>
-std::optional<std::size_t> LandingIndex(std::vector<Point> const& line, Outdoors const& outdoors, Joined const& joined)
+// Open sky over a landing (pathing PA73, G418): its floor (the ground found below it), the terrain's height there and
+// the highest surface found searching down from the descent's height; terrain or a roof more than LANDING_SKY_YARDS
+// above the floor covers it (a cave under a hill, ice, a hall). The terrain status alone is no such test: a cave's
+// floor under its rock can read `outdoors`, and a descent onto it loses the mount in the volume over it and falls
+// onto the rock. Arches and canopies with collision cover; a terrain hole has no terrain height (the core's grid reads
+// INVALID_HEIGHT there), so only the cover decides
+inline bool OpenSky(float floorZ, float terrainZ, float coverZ)
+{
+    return floorZ > FLY_NO_GROUND && terrainZ <= floorZ + LANDING_SKY_YARDS && coverZ <= floorZ + LANDING_SKY_YARDS;
+}
+
+// open(point) -> may a bot stand there outdoors under the open sky (OpenSky); joined(point) -> does the navmesh walk
+// from there end at the landing (the walk in's probe; pathing PA56, G356: a point back along the line read outdoors in
+// a sealed pocket or inside the rock under the landing). The landing (the line's last point) when it is open; else the
+// open point nearest to it that is joined, nearest first (joined asked of open points only); nullopt when none is:
+// no landing on the line (PA73: before, a line without any open point kept the planned landing under its roof)
+template <class Open, class Joined>
+std::optional<std::size_t> LandingIndex(std::vector<Point> const& line, Open const& open, Joined const& joined)
 {
     if (line.empty())
         return std::size_t{0};
     std::size_t const landing = line.size() - 1;
-    if (outdoors(line[landing]))
+    if (open(line[landing]))
         return landing;
-    bool outdoorSeen = false;
     for (std::size_t k = landing; k-- > 0;)
-    {
-        if (!outdoors(line[k]))
-            continue;
-        outdoorSeen = true;
-        if (joined(line[k]))
+        if (open(line[k]) && joined(line[k]))
             return k;
-    }
-    if (outdoorSeen)
-        return std::nullopt;
-    return landing;
+    return std::nullopt;
 }
 
 // Marks the check done. A landing more than SAME_POINT_YARDS from the planned one ends the fly leg there, with the
-// descent point moved before it, and a walk leg from there to the planned end follows (the walk in). True when moved
+// descent point moved before it (its real-height check due again: a node can lie off the planned line), and a walk leg
+// from there to the planned end follows (the walk in). True when moved
 inline bool MoveLanding(Trip& trip, Point const& landing)
 {
     trip.landingChecked = true;
-    if (trip.legIdx >= trip.legs.size() || trip.waypoints.size() < 3)
+    if (trip.legIdx >= trip.legs.size() || trip.waypoints.size() < 2)
         return false;
     Leg& fly = trip.legs[trip.legIdx];
     Point const planned = fly.to;
     if (fly.type != LegType::Fly || landing.mapId != planned.mapId || Distance(landing, planned) <= SAME_POINT_YARDS)
         return false;
     std::size_t const count = trip.waypoints.size();
-    Point const before = trip.waypoints[count - 3].at;
-    float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
-    float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
-    trip.waypoints[count - 2].at = {landing.mapId, landing.x + (before.x - landing.x) * share,
-                                    landing.y + (before.y - landing.y) * share, before.z};
+    // A leg of two waypoints has no descent point: it flies to its landing directly
+    if (count >= 3)
+    {
+        Point const before = trip.waypoints[count - 3].at;
+        float const gap = std::hypot(before.x - landing.x, before.y - landing.y);
+        float const share = gap > 0.0f ? std::min(FLY_CLIMB_YARDS, gap / 2.0f) / gap : 0.0f;
+        trip.waypoints[count - 2].at = {landing.mapId, landing.x + (before.x - landing.x) * share,
+                                        landing.y + (before.y - landing.y) * share, before.z};
+        if (trip.heightChecked == count - 2)
+            trip.heightChecked = 0;
+    }
     trip.waypoints[count - 1].at = landing;
     fly.to = landing;
     if (!fly.flightPoints.empty())
@@ -2622,28 +2747,45 @@ inline bool MoveLanding(Trip& trip, Point const& landing)
     return true;
 }
 
-// The landing check's outcome (CheckLanding, NewRpgRoute.cpp): the planned landing kept, moved back along the line,
-// or refused: no outdoor point joined to it, the leg fails `landing` before its descent (the glue's LegFailed; the
-// record keys the leg) and the replan leaves that landing out
+// The landing check's outcome (CheckLanding, NewRpgFlyLanding.cpp): the planned landing kept (open sky), moved back
+// along the line, moved to a graph node (Node), or refused: the leg fails `landing` before its descent (the glue's
+// LegFailed; the record keys the leg) and the replan leaves that landing out
 enum class LandingCheck : std::uint8_t
 {
     Kept,
     Moved,
+    Node,
     Refused
 };
 
-template <class Outdoors, class Joined>
-LandingCheck ChooseLanding(Trip& trip, std::vector<Point> const& line, Outdoors const& outdoors, Joined const& joined)
+// The landing rule (pathing PA73, G418): a fly leg lands under the open sky on floor a walk joins to its end. The
+// planned landing when it is open; else the line's joined open point (LandingIndex); else the first of nodes() (the
+// graph nodes nearest the end that a walk leaves, nearest first: the glue's pick, asked only here) that is open and
+// joined, the walk asked of the first LANDING_NODES open ones only (PA99: a cave's own nodes under its rock, nearest
+// the end, are not open and cost no walk; before, they filled the four nodes asked and the mouth was never reached);
+// else refused. The refusal and the moves happen before the descent, so the bot never comes down under a roof
+template <class Nodes, class Open, class Joined>
+LandingCheck ChooseLanding(Trip& trip, std::vector<Point> const& line, Nodes const& nodes, Open const& open,
+                           Joined const& joined)
 {
-    std::optional<std::size_t> const index = LandingIndex(line, outdoors, joined);
-    if (!index)
-    {
-        trip.landingChecked = true;
-        return LandingCheck::Refused;
-    }
     Point const planned = trip.waypoints.empty() ? Point{} : trip.waypoints.back().at;
-    Point const landing = line.empty() || *index + 1 == line.size() ? planned : line[*index];
-    return MoveLanding(trip, landing) ? LandingCheck::Moved : LandingCheck::Kept;
+    if (std::optional<std::size_t> const index = LandingIndex(line, open, joined))
+    {
+        Point const landing = line.empty() || *index + 1 == line.size() ? planned : line[*index];
+        return MoveLanding(trip, landing) ? LandingCheck::Moved : LandingCheck::Kept;
+    }
+    std::size_t walks = 0;
+    for (Point const& node : nodes())
+    {
+        if (!open(node))
+            continue;
+        if (joined(node))
+            return MoveLanding(trip, node) ? LandingCheck::Node : LandingCheck::Kept;
+        if (++walks >= LANDING_NODES)
+            break;
+    }
+    trip.landingChecked = true;
+    return LandingCheck::Refused;
 }
 
 // A flight leg's first hop (its first two graph nodes), the edge a failed taxi start is reported on;

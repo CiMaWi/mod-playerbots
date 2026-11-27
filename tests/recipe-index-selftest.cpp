@@ -11,10 +11,14 @@
 // by `playerbots professions index dump` on a lab): every profession has its old-world ladder to 300, every reagent is
 // a known item, no recipe is its own input, and WR2's table of crafts by class holds (Usable: gear the class
 // wears, item use's demand answer for the class), with every craft for every class as a negative control that
-// must fail.
+// must fail. WR20a adds the trainer rows' abilities (WR.27: a recipe behind an ability the learner lacks is not
+// taught, with a rule that ignores them as the negative control) and the drop rows: built from hand-made sources and
+// creatures (the floor, quest-only, both-sides and instance sources left out, a control without the floor), dump v6
+// round trip, and a v5 dump still read.
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
@@ -31,6 +35,7 @@
 #include "ItemUseFacts.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
+#include "economy-cases.h"
 
 using namespace Recipes;
 
@@ -119,6 +124,24 @@ Gather HandGather()
     g.spells.back().focus = 3;
     g.spells.back().toolCategories = {14};
     g.trainers.push_back({102, 2000, 2000, 10, BLACKSMITHING, 1, 1});
+    // WR.27: 7000 taught only to a learner with the specialisation 7100 (a profession spell, no rank); 7200 listed by
+    // a cheap trainer that asks for 7100 and a dearer one that asks for nothing; 7300 behind a rank spell (3101, the
+    // ladder's: not listed)
+    g.abilities.push_back(Ability(ALCHEMY, 7100, 1, 1, 1, 0));
+    g.spells.push_back(Spell(7100, "Elixir Specialist", Effect::Other));
+    g.abilities.push_back(Ability(ALCHEMY, 7000, 100, 120, 140, 0));
+    g.spells.push_back(Spell(7000, "Specialist Elixir", Effect::Make, 9005));
+    g.spells.back().reagents = {{2447, 1}};
+    g.trainers.push_back({104, 7000, 7000, 300, ALCHEMY, 100, 10, {7100, 0, 0}});
+    g.abilities.push_back(Ability(ALCHEMY, 7200, 100, 120, 140, 0));
+    g.spells.push_back(Spell(7200, "Either Elixir", Effect::Make, 9006));
+    g.spells.back().reagents = {{2447, 1}};
+    g.trainers.push_back({105, 7200, 7200, 100, ALCHEMY, 100, 10, {0, 7100, 0}});
+    g.trainers.push_back({106, 7200, 7200, 200, ALCHEMY, 100, 10});
+    g.abilities.push_back(Ability(ALCHEMY, 7300, 100, 120, 140, 0));
+    g.spells.push_back(Spell(7300, "Ranked Elixir", Effect::Make, 9007));
+    g.spells.back().reagents = {{2447, 1}};
+    g.trainers.push_back({107, 7300, 7300, 50, ALCHEMY, 100, 10, {3101, 0, 0}});
     // The alchemy rank ladder, two rungs through a wrapper
     std::uint32_t const rungs[][3] = {{2259, 75, 1}, {3101, 150, 2}, {3464, 225, 3}, {11611, 300, 4}, {28596, 375, 5}};
     for (auto const& rung : rungs)
@@ -229,7 +252,7 @@ void CheckLoot()
     table[2] = {{20, 0, 100.0f, 0, 2, 2}};
     auto const expected = [&](std::uint32_t item)
     {
-        for (Yield const& yield : ExpectedYield(table, 1))
+        for (Yield const& yield : ExpectedYield(table, 1, nullptr, ServerRates{}))
             if (yield.item == item)
                 return yield.expected;
         return 0.0;
@@ -239,26 +262,202 @@ void CheckLoot()
     Check(same(expected(11), 0.5) && same(expected(12), 0.5), "a zero-chance group splits the roll");
     Check(same(expected(13), 0.6) && same(expected(14), 0.7), "explicit chance, then the rest to the unset item");
     Check(same(expected(20), 1.5), "a reference rolls its template max-count times at its chance");
-    Check(ExpectedYield(table, 99).empty(), "an unknown template yields nothing");
+    Check(ExpectedYield(table, 99, nullptr, ServerRates{}).empty(), "an unknown template yields nothing");
 
     // The server's references name templates of the reference table, not of the table the row is in
     LootTable references;
     references[2] = {{30, 0, 100.0f, 0, 1, 1}};
     double fromReference = 0.0;
     bool ownTwenty = false;
-    for (Yield const& yield : ExpectedYield(table, 1, &references))
+    for (Yield const& yield : ExpectedYield(table, 1, &references, ServerRates{}))
     {
         if (yield.item == 30)
             fromReference = yield.expected;
         ownTwenty = ownTwenty || yield.item == 20;
     }
     Check(same(fromReference, 0.75) && !ownTwenty, "a reference is read in the reference table");
+
+    // At the server's rates (WR29): an ungrouped row's chance times its quality's rate, at most certain; a row at
+    // 100 % stays one; a reference's chance times the reference rate, its runs max count x the amount (truncated); a
+    // top-level group draws again while it gave an item, a group inside a reference once
+    ServerRates rates;
+    rates.quality[1] = 3.0f;
+    rates.referenced = 2.0f;
+    rates.referencedAmount = 1.5f;
+    rates.groupAmount = 3.0f;
+    LootTable rated;
+    rated[1] = {{10, 0, 50.0f, 0, 1, 3, 1},                                // normal: 50 % x 3 capped at 100 %
+                {15, 0, 20.0f, 0, 1, 1, 2},                                // uncommon: its own rate (1)
+                {16, 0, 100.0f, 0, 2, 2, 1},                               // at 100 %: unchanged
+                {0, 2, 25.0f, 0, 1, 3, 1},                                 // 25 % x 2, runs 3 x 1.5 = 4 (truncated)
+                {11, 0, 40.0f, 1, 1, 1, 1},  {12, 0, 20.0f, 1, 1, 1, 1}};  // a group: 60 % an item, 40 % a miss
+    rated[2] = {{20, 0, 100.0f, 0, 1, 1, 1}, {21, 0, 50.0f, 1, 1, 1, 1}};  // a group inside a reference: one draw
+    std::map<std::uint32_t, double> at;
+    for (Yield const& yield : ExpectedYield(rated, 1, nullptr, rates))
+        at[yield.item] = yield.expected;
+    double const draws = 1.0 + 0.6 + 0.36;  // three draws, each after one that gave an item
+    Check(same(at[10], 2.0) && same(at[15], 0.2) && same(at[16], 2.0),
+          "rates: a row's chance times its quality's rate, at most certain; 100 % rows unchanged");
+    Check(same(at[20], 0.5 * 4.0) && same(at[21], 0.5 * 4.0 * 0.5),
+          "rates: a reference at its chance times the reference rate, max count x amount runs, its group drawn once");
+    Check(same(at[11], 0.4 * draws) && same(at[12], 0.2 * draws), "rates: a top-level group draws up to the amount");
+    rates.referencedAmount = 0.3f;
+    std::map<std::uint32_t, double> none;
+    for (Yield const& yield : ExpectedYield(rated, 1, nullptr, rates))
+        none[yield.item] = yield.expected;
+    Check(!none.count(20), "rates: a reference whose runs truncate to none gives nothing");
+    LootTable over;
+    over[1] = {{30, 0, 70.0f, 1, 1, 1, 1}, {31, 0, 70.0f, 1, 1, 1, 1}, {32, 0, 0.0f, 1, 1, 1, 1}};
+    std::map<std::uint32_t, double> capped;
+    for (Yield const& yield : ExpectedYield(over, 1, nullptr, ServerRates{}))
+        capped[yield.item] = yield.expected;
+    Check(same(capped[30], 0.7) && same(capped[31], 0.3) && !capped.count(32),
+          "a group's explicit chances in order, each at most what the earlier left; the zero-chance row gets the rest");
+}
+
+// The economy reference's loot cases (WR29): the world database's rows of each case (2026-11-25; Entry: Item,
+// Reference, Chance, GroupId, MinCount, MaxCount, the item's quality) at stock rates and at ours, against the case's
+// fixed values
+void CheckEconomyLoot()
+{
+    using EconomyCases::At;
+    LootTable nodes;  // gameobject_loot_template: Peacebloom 1618 and Copper Vein 1731
+    nodes[1415] = {{2447, 0, 100.0f, 0, 1, 3, 1}};
+    nodes[1502] = {{774, 0, 5.0f, 1, 1, 1, 2},
+                   {818, 0, 5.0f, 1, 1, 1, 2},
+                   {1210, 0, 5.0f, 1, 1, 1, 2},
+                   {2770, 0, 100.0f, 0, 1, 4, 1},
+                   {2835, 0, 50.0f, 0, 1, 6, 1}};
+    LootTable skinning;
+    skinning[100002] = {{2318, 0, 40.0f, 1, 1, 1, 1}, {2934, 0, 60.0f, 1, 1, 1, 1}};
+    LootTable disenchant;
+    disenchant[1] = {{10938, 0, 0.0f, 1, 1, 2, 2}, {10940, 0, 80.0f, 1, 1, 2, 1}};
+    LootTable milling;
+    milling[785] = {{11901, 11901, 100.0f, 0, 1, 1, 1}};
+    milling[2447] = {{11900, 11900, 100.0f, 0, 1, 1, 1}};
+    LootTable prospecting;
+    prospecting[2770] = {{774, 0, 0.0f, 1, 1, 1, 2}, {818, 0, 0.0f, 1, 1, 1, 2}, {1210, 0, 10.0f, 0, 1, 1, 2}};
+    LootTable references;
+    references[11900] = {{39151, 0, 100.0f, 0, 2, 4, 1}};
+    references[11901] = {{39334, 0, 100.0f, 0, 2, 3, 1}, {43103, 0, 25.0f, 0, 1, 3, 2}};
+    auto const units = [&references](LootTable const& table, std::uint32_t entry, ServerRates const& rates)
+    {
+        std::map<std::uint32_t, double> out;
+        for (Yield const& yield : ExpectedYield(table, entry, &references, rates))
+            out[yield.item] = yield.expected;
+        return out;
+    };
+    using Values = std::map<std::string, double>;
+    std::vector<EconomyCases::Case> const cases = {
+        {"gather_nodes",
+         {{"Herbs per successful eligible open", "herbs", At::Both, 2.0},
+          {"Ore per successful eligible open", "ores", At::Both, 5.0 / 2.0},
+          {"Rough Stone base", "stone", At::Stock, 7.0 / 4.0},
+          {"Rough Stone configured", "stone", At::Ours, 7.0 / 2.0},
+          {"Configured mean total gems", "gems", At::Ours, 69.0 / 400.0}},
+         [&](ServerRates const& rates)
+         {
+             std::map<std::uint32_t, double> herb = units(nodes, 1415, rates);
+             std::map<std::uint32_t, double> vein = units(nodes, 1502, rates);
+             return Values{{"herbs", herb[2447]},
+                           {"ores", vein[2770]},
+                           {"stone", vein[2835]},
+                           {"gems", vein[774] + vein[818] + vein[1210]}};
+         }},
+        {"skinning",
+         {{"Base Light Leather", "leather", At::Stock, 2.0 / 5.0},
+          {"Configured Light Leather", "leather", At::Ours, 4.0 / 5.0},
+          {"Configured Ruined Leather Scraps", "scraps", At::Ours, 6.0 / 5.0},
+          {"Long-run leather including converted scraps", "longRun", At::Ours, 6.0 / 5.0}},
+         [&](ServerRates const& rates)
+         {
+             constexpr double SCRAPS_PER_LEATHER = 3.0;  // the case's input (spell 2881)
+             std::map<std::uint32_t, double> skin = units(skinning, 100002, rates);
+             return Values{{"leather", skin[2318]},
+                           {"scraps", skin[2934]},
+                           {"longRun", skin[2318] + skin[2934] / SCRAPS_PER_LEATHER}};
+         }},
+        {"disenchant",
+         {{"Base dust", "dust", At::Stock, 6.0 / 5.0},
+          {"Base essence", "essence", At::Stock, 3.0 / 10.0},
+          {"Configured dust", "dust", At::Ours, 12.0 / 5.0},
+          {"Configured essence", "essence", At::Ours, 3.0 / 5.0},
+          {"Illustrative net over NPC alternative", "net", At::Ours, 68.0}},
+         [&](ServerRates const& rates)
+         {
+             constexpr double DUST_QUOTE = 40.0;  // the case's invented quotes and the pants' NPC sale
+             constexpr double ESSENCE_QUOTE = 120.0;
+             constexpr double RAW_SALE = 100.0;
+             std::map<std::uint32_t, double> made = units(disenchant, 1, rates);
+             return Values{{"dust", made[10940]},
+                           {"essence", made[10938]},
+                           {"net", made[10940] * DUST_QUOTE + made[10938] * ESSENCE_QUOTE - RAW_SALE}};
+         }},
+        {"peacebloom_mill",
+         {{"Base pigment mean", "pigments", At::Stock, 3.0},
+          {"Configured pigment mean", "pigments", At::Ours, 6.0},
+          {"Long-run herb budget per pigment", "herbsPerPigment", At::Ours, 5.0 / 6.0}},
+         [&](ServerRates const& rates)
+         {
+             double const pigments = units(milling, 2447, rates)[39151];
+             return Values{{"pigments", pigments}, {"herbsPerPigment", PROSPECT_MILL_COUNT / pigments}};
+         }},
+        {"mageroyal_mill",
+         {{"Base common", "common", At::Stock, 5.0 / 2.0},
+          {"Base rare", "rare", At::Stock, 1.0 / 2.0},
+          {"Configured common", "common", At::Ours, 5.0},
+          {"Configured rare", "rare", At::Ours, 2.0}},
+         [&](ServerRates const& rates)
+         {
+             std::map<std::uint32_t, double> made = units(milling, 785, rates);
+             return Values{{"common", made[39334]}, {"rare", made[43103]}};
+         }},
+        {"copper_prospect",
+         {{"Base mean Malachite", "malachite", At::Stock, 1.0 / 2.0},
+          {"Configured mean Malachite", "malachite", At::Ours, 1.0},
+          {"Configured mean Tigerseye", "tigerseye", At::Ours, 1.0},
+          {"Configured expected total", "total", At::Ours, 11.0 / 5.0},
+          {"Base expected total", "total", At::Stock, 11.0 / 10.0}},
+         [&](ServerRates const& rates)
+         {
+             std::map<std::uint32_t, double> made = units(prospecting, 2770, rates);
+             return Values{
+                 {"malachite", made[774]}, {"tigerseye", made[818]}, {"total", made[774] + made[818] + made[1210]}};
+         }},
+    };
+    EconomyCases::Run(cases, Check);
+    // A second control: the old shortcut, the stock yield times two, misses where the rates act per branch
+    ServerRates const stock;
+    Check(!EconomyCases::Same(2.0 * units(milling, 785, stock)[43103], 2.0) &&
+              !EconomyCases::Same(2.0 * units(nodes, 1502, stock)[2770], 5.0 / 2.0),
+          "control: the stock yield times two misses the configured rare pigment and the vein's ore");
+}
+
+// The rates the yields are at go into the dump's header and come back (v7); a dump without them reads as stock
+void CheckRates(RecipeIndex const& hand)
+{
+    RecipeIndex index = hand;
+    Check(index.Rates() == ServerRates{}, "an index without the server's rates has the stock values");
+    ServerRates const ours = EconomyCases::Ours();
+    index.SetRates(ours);
+    std::string const text = index.Dump("test", "core");
+    Check(text.find("\n# rates " + RatesText(ours) + "\n") != std::string::npos &&
+              RatesText(ours).find("gain.crafting=2 gain.gathering=2 chance=1000/750/250/0") == 0,
+          "the dump's header carries the rates");
+    RecipeIndex back;
+    std::string error;
+    Check(RecipeIndex::Parse(text, back, error) && back.Rates() == ours, "the rates come back from the dump: " + error);
+    std::string bad = text;
+    bad.replace(bad.find("gain.crafting=2"), 15, "gain.crafting=x");
+    Check(!RecipeIndex::Parse(bad, back, error), "a malformed rates line is refused");
+    ServerRates parsed;
+    Check(!ParseRates("gain.crafting=2", parsed), "a rates line without every word is refused");
 }
 
 void CheckDump(RecipeIndex const& index)
 {
     std::string const text = index.Dump("test", "core");
-    Check(text.rfind("# recipe-index-dump v5 module test core core records ", 0) == 0, "dump header");
+    Check(text.rfind("# recipe-index-dump v7 module test core core records ", 0) == 0, "dump header");
     RecipeIndex back;
     std::string error;
     Check(RecipeIndex::Parse(text, back, error), "the dump parses: " + error);
@@ -273,6 +472,189 @@ void CheckDump(RecipeIndex const& index)
     broken.erase(broken.rfind("I\t"));  // lose the last item record: the header's count no longer holds
     Check(!RecipeIndex::Parse(broken, back, error), "a dump with a missing record is refused");
     Check(!RecipeIndex::Parse("R\tx\n", back, error), "a dump without header or fields is refused");
+    Recipe const* spec = Find(back, 7000);
+    Check(spec && spec->trainerAbilities == std::vector<std::uint32_t>{7100}, "a trainer's abilities survive the dump");
+
+    // An older dump (v5: no trainer abilities, no drop rows) still reads
+    std::istringstream lines(text.substr(text.find('\n') + 1));
+    std::string line;
+    std::string body;
+    std::size_t records = 0;
+    while (std::getline(lines, line))
+    {
+        if (line.rfind("#D", 0) == 0 || line.rfind("D\t", 0) == 0)
+            continue;
+        if (line.rfind("R\t", 0) == 0)
+            line.erase(line.rfind('\t'));
+        if (!line.empty() && line[0] != '#')
+            ++records;
+        body += line + '\n';
+    }
+    std::string const older =
+        "# recipe-index-dump v5 module test core core records " + std::to_string(records) + "\n" + body;
+    RecipeIndex fromOlder;
+    Check(RecipeIndex::Parse(older, fromOlder, error), "a v5 dump still parses: " + error);
+    Check(fromOlder.Recipes().size() == index.Recipes().size() && Find(fromOlder, 7000) &&
+              Find(fromOlder, 7000)->trainerAbilities.empty() && fromOlder.Drops().empty(),
+          "a v5 dump reads its recipes, without abilities or drop rows");
+}
+
+// ---- WR20a: the trainer rows' abilities (WR.27) ----
+
+using Teaches = std::function<bool(Recipe const&, std::function<bool(std::uint32_t)> const&)>;
+
+// The rule: a recipe behind an ability is not taught to a learner without it, is with it, and a recipe a trainer
+// teaches without one is taught to anyone
+bool GuardHolds(RecipeIndex const& index, Teaches const& teaches)
+{
+    Recipe const* spec = Find(index, 7000);
+    Recipe const* either = Find(index, 7200);
+    Recipe const* elixir = Find(index, 1000);
+    auto const knowsNothing = [](std::uint32_t) { return false; };
+    auto const knowsSpecialist = [](std::uint32_t spell) { return spell == 7100; };
+    return spec && either && elixir && !teaches(*spec, knowsNothing) && teaches(*spec, knowsSpecialist) &&
+           teaches(*either, knowsNothing) && teaches(*elixir, knowsNothing);
+}
+
+void CheckAbilities(RecipeIndex const& index)
+{
+    Recipe const* spec = Find(index, 7000);
+    Recipe const* either = Find(index, 7200);
+    Recipe const* ranked = Find(index, 7300);
+    Check(spec && spec->trainerAbilities == std::vector<std::uint32_t>{7100}, "a trainer row's specialisation is kept");
+    Check(either && either->trainerAbilities.empty() && either->trainerCopper == 200 && either->trainers == 2,
+          "a trainer row that asks for nothing wins over a cheaper one that asks");
+    Check(ranked && ranked->trainerAbilities.empty(), "a rank spell asked for is the ladder's, not listed");
+    Teaches const rule = [](Recipe const& recipe, std::function<bool(std::uint32_t)> const& knows)
+    { return TrainerTeaches(recipe, knows); };
+    Teaches const ignoring = [](Recipe const&, std::function<bool(std::uint32_t)> const&) { return true; };
+    Check(GuardHolds(index, rule),
+          "WR.27: a recipe behind an ability the learner lacks is not learnable; with it, it is");
+    Check(!GuardHolds(index, ignoring), "negative control: a rule that ignores the abilities is caught");
+}
+
+// ---- WR20a: drop rows ----
+
+constexpr std::uint32_t LINEN = 2589;
+constexpr std::uint32_t LEATHER = 2318;
+constexpr std::uint32_t MEAT = 769;
+constexpr std::uint16_t SKINNING = 393;
+
+DropWorld HandDropWorld()
+{
+    DropWorld world;
+    world.creatures = {
+        {800, 5, 7, false}, {801, 20, 21, true}, {802, 10, 10, false}, {803, 30, 30, false}, {804, 8, 8, false}};
+    // 800: three spawns in zone 12 (nearest 30, 30, 40 yards), one in zone 40; 801 two in zone 12; 802 (friendly to
+    // both sides) and 804 (a rare drop) one each; 803 has none in the open world (an instance creature)
+    world.spawns = {{1, 800, 12, 0, 0.0f, 0.0f, 0.0f, 300},    {2, 800, 12, 0, 30.0f, 0.0f, 0.0f, 300},
+                    {3, 800, 12, 0, 30.0f, 40.0f, 0.0f, 600},  {4, 800, 40, 1, 0.0f, 0.0f, 0.0f, 120},
+                    {5, 801, 12, 0, 500.0f, 0.0f, 0.0f, 900},  {6, 801, 12, 0, 500.0f, 100.0f, 0.0f, 900},
+                    {7, 802, 12, 0, 100.0f, 100.0f, 0.0f, 60}, {8, 804, 12, 0, 200.0f, 200.0f, 0.0f, 60}};
+    return world;
+}
+
+std::vector<DropSource> HandSources(std::uint32_t item)
+{
+    auto const source =
+        [](DropKind kind, std::uint32_t entry, float chance, std::uint8_t minCount, std::uint8_t maxCount)
+    {
+        DropSource one;
+        one.kind = kind;
+        one.entry = entry;
+        one.chance = chance;
+        one.minCount = minCount;
+        one.maxCount = maxCount;
+        one.units = chance * (minCount + maxCount) / 2.0;  // a hand template: the chance times the mean count
+        return one;
+    };
+    std::vector<DropSource> sources;
+    if (item == LINEN)
+    {
+        sources.push_back(source(DropKind::Corpse, 800, 0.3f, 1, 2));
+        sources.push_back(source(DropKind::Corpse, 801, 0.5f, 1, 1));
+        sources.push_back(source(DropKind::Corpse, 802, 0.9f, 1, 1));
+        sources.back().friendlyTo = DROP_BOTH_SIDES;
+        sources.push_back(source(DropKind::Corpse, 803, 0.4f, 1, 1));
+        sources.push_back(source(DropKind::Corpse, 804, 0.01f, 1, 1));
+        sources.push_back(source(DropKind::Corpse, 805, 0.5f, 1, 1));
+        sources.back().units = 0.0;  // the source index lists it, its template gives none at the rates
+    }
+    else if (item == LEATHER)
+    {
+        sources.push_back(source(DropKind::Skin, 800, 1.0f, 1, 1));
+        sources.back().skill = SKINNING;
+        sources.back().friendlyTo = 1;  // friendly to one side: kept, the side is the reader's filter
+    }
+    else if (item == MEAT)
+    {
+        sources.push_back(source(DropKind::Corpse, 800, 0.5f, 1, 1));
+        sources.back().questOnly = true;
+    }
+    return sources;
+}
+
+bool Near(double a, double b) { return a > b - 0.01 && a < b + 0.01; }
+
+DropRow const* RowOf(std::vector<DropRow> const& rows, std::uint32_t item, std::uint32_t zone, std::uint32_t entry)
+{
+    for (DropRow const& row : rows)
+        if (row.item == item && row.zone == zone && row.entry == entry)
+            return &row;
+    return nullptr;
+}
+
+void CheckDrops(RecipeIndex const& hand)
+{
+    DropWorld const world = HandDropWorld();
+    DropBuild const built = BuildDrops({LINEN, LEATHER, MEAT, LINEN}, HandSources, world, 0.02f);
+    std::cout << "drop rows: " << built.rows.size() << " rows, " << built.spawns.size() << " spawns; left out "
+              << built.counts.underFloor << " under the floor, " << built.counts.questOnly << " quest-only, "
+              << built.counts.bothSides << " both sides, " << built.counts.noOpenSpawn << " without open spawn\n";
+    Check(built.rows.size() == 5, "linen from 800 in two zones and 801, leather skinned from 800 in two zones");
+    DropRow const* boars = RowOf(built.rows, LINEN, 12, 800);
+    Check(boars && boars->spawns == 3 && Near(boars->spacing, 100.0 / 3.0) && boars->respawnSecs == 400 &&
+              Near(boars->perKill, 0.45) && boars->minLevel == 5 && boars->maxLevel == 7 && boars->eliteShare == 0.0f &&
+              boars->kind == DropKind::Corpse && boars->skill == 0,
+          "a corpse row: spawns, mean nearest spacing, mean respawn, chance x mean count, levels");
+    DropRow const* lone = RowOf(built.rows, LINEN, 40, 800);
+    Check(lone && lone->spawns == 1 && lone->spacing == LONE_SPAWN_YARDS, "a lone spawn takes the lone spacing");
+    DropRow const* elites = RowOf(built.rows, LINEN, 12, 801);
+    Check(elites && elites->eliteShare == 1.0f && Near(elites->perKill, 0.5), "an elite kind's row");
+    DropRow const* skin = RowOf(built.rows, LEATHER, 12, 800);
+    Check(skin && skin->kind == DropKind::Skin && skin->skill == SKINNING && skin->friendlyTo == 1,
+          "a skin row carries its skill line and the side it is friendly to");
+    Check(!RowOf(built.rows, LINEN, 12, 802) && !RowOf(built.rows, LINEN, 12, 803) &&
+              !RowOf(built.rows, LINEN, 12, 804) && !RowOf(built.rows, MEAT, 12, 800),
+          "left out: friendly to both sides, no open-world spawn, under the floor, quest-only");
+    Check(!RowOf(built.rows, LINEN, 12, 805), "left out: a source whose template gives no units at the rates");
+    Check(built.counts.underFloor == 2 && built.counts.questOnly == 1 && built.counts.bothSides == 1 &&
+              built.counts.noOpenSpawn == 1 && built.counts.items == 2 && built.counts.creatures == 2 &&
+              built.counts.zones == 2,
+          "the counts of what was kept and left out");
+    Check(built.spawns.size() == 6, "the spawns of the rows' kinds are kept, no other");
+    DropBuild const floorless = BuildDrops({LINEN}, HandSources, world, 0.0f);
+    Check(RowOf(floorless.rows, LINEN, 12, 804) != nullptr,
+          "control: without the floor the rare source is a row (the floor check can fail)");
+
+    RecipeIndex index = hand;
+    index.SetDrops(built.rows, built.spawns);
+    Check(index.DropsOf(LINEN).size() == 3 && index.DropsOf(LEATHER).size() == 2 && index.DropsOf(MEAT).empty(),
+          "DropsOf by item");
+    std::span<DropSpawn const> const at = index.DropSpawnsOf(12, 800);
+    Check(at.size() == 3 && at[0].spawnId == 1 && at[2].spawnId == 3, "a kind's spawn points in a zone, by spawn id");
+    Check(index.DropSpawnsOf(12, 802).empty(), "no spawn table entry for a kind without a row");
+
+    std::string const text = index.Dump("test", "core");
+    RecipeIndex back;
+    std::string error;
+    Check(RecipeIndex::Parse(text, back, error), "a dump with drop rows parses: " + error);
+    Check(back.Dump("test", "core") == text, "the drop rows read back unchanged");
+    Check(back.Drops().size() == 5 && back.DropsOf(LINEN).size() == 3 && back.DropSpawns().empty(),
+          "the read-back rows answer the same; their spawns are not in the dump");
+    std::string broken = text;
+    broken.erase(broken.rfind("D\t"));
+    Check(!RecipeIndex::Parse(broken, back, error), "control: a dump that lost a drop row is refused");
 }
 
 // ---- WR3b: the dumped fixture ----
@@ -757,7 +1139,31 @@ void CheckDumpedFixture(std::string const& root)
     Check(ReadFile(root + "/tests/fixtures/recipe-index-dump.txt", text), "the dumped fixture is readable");
     Check(RecipeIndex::Parse(text, index, error), "the dumped fixture parses: " + error);
     std::string const again = index.Dump("x", "y");
-    Check(again.substr(again.find('\n')) == text.substr(text.find('\n')), "the dumped fixture reads back unchanged");
+    bool const v7 = text.rfind("# recipe-index-dump v7", 0) == 0;
+    if (v7 || text.rfind("# recipe-index-dump v6", 0) == 0)
+    {
+        // past the header line; a v6 fixture (stock rates, WR29) gets the rates line on the way back
+        std::size_t const body = again.find('\n', again.find('\n') + 1);
+        Check(v7 ? again.substr(again.find('\n')) == text.substr(text.find('\n'))
+                 : again.substr(body) == text.substr(text.find('\n')),
+              "the dumped fixture reads back unchanged");
+        Check(v7 || index.Rates() == ServerRates{}, "a v6 fixture reads at stock rates");
+        // WR20a: the live drop rows have cloth, leather and meat
+        Check(!index.DropsOf(LINEN).empty() && !index.DropsOf(LEATHER).empty() && !index.DropsOf(MEAT).empty(),
+              "the fixture's drop rows give linen, light leather and boar meat");
+        std::size_t specialised = 0;
+        for (Recipe const& recipe : index.Recipes())
+            specialised += !recipe.trainerAbilities.empty();
+        Check(specialised > 0, "the fixture's trainer rows ask for specialisations");
+        std::cout << "dumped fixture: " << index.Drops().size() << " drop rows, " << specialised
+                  << " recipes behind a trainer ability\n";
+    }
+    else
+    {
+        RecipeIndex reread;
+        Check(RecipeIndex::Parse(again, reread, error) && reread.Records() == index.Records(),
+              "an older fixture reads back as v7 with the same records");
+    }
     std::cout << "dumped fixture: " << text.substr(0, text.find('\n')) << '\n';
     for (ProfessionRules::ProfessionInfo const& profession : ProfessionRules::PROFESSIONS)
         std::cout << index.Summary(static_cast<std::uint16_t>(profession.Which), std::string(profession.Name)) << '\n';
@@ -784,13 +1190,17 @@ int main(int argc, char** argv)
     std::cout << "RECIPES selftest (RecipeIndex.h)\n";
     RecipeIndex const index = RecipeIndex::Build(HandGather());
     std::cout << index.Summary(ALCHEMY, "alchemy") << '\n' << index.Summary(BLACKSMITHING, "blacksmithing") << '\n';
-    Check(index.Recipes().size() == 6, "six abilities become six recipes");
+    Check(index.Recipes().size() == 10, "ten abilities become ten recipes");
     CheckThresholds(index);
     CheckLearned(index);
     CheckLadder(index);
     CheckMadeBy(index);
     CheckLoot();
+    CheckEconomyLoot();
+    CheckRates(index);
     CheckDump(index);
+    CheckAbilities(index);
+    CheckDrops(index);
     if (argc > 1)
         CheckDumpedFixture(argv[1]);
     else

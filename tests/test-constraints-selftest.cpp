@@ -9,7 +9,8 @@
 // (APPLIED); `hold` is the five hold rows, an unknown name is refused; a held
 // bot's idle update picks no goal, status or errand; an order is taken while held and the bot holds again after the
 // trip ends; a release clears only hold rows; any other row never ends the bot's status; orders merge later-wins per
-// bit; a constraint change is taken also in combat, a trip or an aboard order once out of it.
+// bit; a constraint change is taken also in combat, a trip or an aboard order once out of it; the set is 64 bits and
+// a bit past 31 survives every step that carries a set (shared-tools ST27b), the free bits printed.
 // The model bot below follows PlayerbotAI::UpdateAI's order intake (TravelOrders::TakeAndApply), then
 // NewRpgStatusUpdateAction::Execute's idle gate; its state rows run through TestConstraints::ChangeStates and
 // KeepStates as the server's do (the engine's side, aggro and damage refusal, is a live test).
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <optional>
 #include <string>
+#include <type_traits>
 
 #include "TestConstraints.h"
 
@@ -41,9 +43,10 @@ struct Order
     std::string place;
     bool stop{false};
     std::uint32_t postedMs{0};
-    std::uint32_t on{0};
-    std::uint32_t off{0};
+    Set on{0};
+    Set off{0};
     std::uint32_t aboard{0};
+    std::optional<int> aboardAt;  // the order's deck offset (TravelCrossing::Spot): its identity is enough here
     std::uint32_t quest{0};
     bool field{false};
     float minutes{0.0f};
@@ -107,7 +110,7 @@ static_assert(Covered(MODEL_OPS) == APPLIED, "the model covers every applied row
 
 struct ModelBot
 {
-    std::uint32_t set{0};
+    Set set{0};
     Status status{Status::Idle};
     std::optional<Order> pending;
     bool inCombat{false};
@@ -132,7 +135,7 @@ struct ModelBot
             pending.reset();
             if (order.on || order.off)
             {
-                std::uint32_t const before = set;
+                Set const before = set;
                 set = Next(before, order.on, order.off);
                 ChangeStates(MODEL_OPS, units, before, set);
                 ++constraintRows;
@@ -161,14 +164,14 @@ struct ModelBot
     }
 };
 
-Order On(std::uint32_t bits)
+Order On(Set bits)
 {
     Order order;
     order.on = bits;
     return order;
 }
 
-Order Off(std::uint32_t bits)
+Order Off(Set bits)
 {
     Order order;
     order.off = bits;
@@ -176,11 +179,11 @@ Order Off(std::uint32_t bits)
 }
 
 // `route release <bot> <kept>`
-Order Release(std::uint32_t kept)
+Order Release(Set kept)
 {
     Order order;
     order.on = kept;
-    order.off = static_cast<std::uint32_t>(HOLD & ~kept);
+    order.off = HOLD & ~kept;
     return order;
 }
 
@@ -318,6 +321,12 @@ bool RowWorks(Row const& row)
         return untouched && !FactoryMayRun(NOFACTORY) && !FactoryMayRun(HOLD | NOFACTORY) && FactoryMayRun(0) &&
                FactoryMayRun(STATES & ~NOFACTORY) && FactoryMayRun(HOLD) && (NOFACTORY & HOLD) == 0 &&
                !EndsStatus(0, NOFACTORY);
+    // Only circuit holds the bot on the questing circuit (questing WQ18b); nothing on the bot changes, the hold never
+    // sets it, it ends no status
+    if (name == "circuit")
+        return untouched && HeldOnCircuit(CIRCUIT) && HeldOnCircuit(HOLD | CIRCUIT) && !HeldOnCircuit(0) &&
+               !HeldOnCircuit(STATES & ~CIRCUIT) && !HeldOnCircuit(HOLD) && (CIRCUIT & HOLD) == 0 &&
+               !EndsStatus(0, CIRCUIT);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -348,6 +357,17 @@ bool RowWorks(Row const& row)
         return untouched && WalksFree(FREEWALK) && WalksFree(HOLD | FREEWALK) && !WalksFree(0) &&
                !WalksFree(STATES & ~FREEWALK) && !WalksFree(HOLD) && !RidesFree(FREEWALK) && (FREEWALK & HOLD) == 0 &&
                !EndsStatus(0, FREEWALK);
+    // Only often makes the `often` trigger fire at every check; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "often")
+        return untouched && OftenFires(OFTEN) && OftenFires(HOLD | OFTEN) && !OftenFires(0) &&
+               !OftenFires(STATES & ~OFTEN) && !OftenFires(HOLD) && (OFTEN & HOLD) == 0 && !EndsStatus(0, OFTEN);
+    // Only noprofession drops the profession and tool offers; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "noprofession")
+        return untouched && !ProfessionErrandsOffered(NOPROFESSION) && !ProfessionErrandsOffered(HOLD | NOPROFESSION) &&
+               ProfessionErrandsOffered(0) && ProfessionErrandsOffered(STATES & ~NOPROFESSION) &&
+               ProfessionErrandsOffered(HOLD) && (NOPROFESSION & HOLD) == 0 && !EndsStatus(0, NOPROFESSION);
     // Only casttrace traces the combat engine; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "casttrace")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.traced && !units.traced &&
@@ -402,6 +422,18 @@ void TestTable()
         Merge(flushOrder, std::move(statusOrder));
         Check(flushOrder.flush && flushOrder.status == "grind" && flushOrder.entry == 3,
               "status order merged onto a flush: both stay");
+        Order placedAt = aboardOrder;
+        placedAt.aboardAt = 1;
+        Order plain;
+        plain.aboard = 7;
+        Merge(placedAt, std::move(plain));
+        Order named;
+        named.aboard = 8;
+        named.aboardAt = 2;
+        Order later = aboardOrder;
+        Merge(later, std::move(named));
+        Check(placedAt.aboard == 7 && !placedAt.aboardAt && later.aboard == 8 && later.aboardAt == 2,
+              "aboard merged: the later placement replaces the earlier with its offset or without one (PA76)");
     }
     Parsed const unknown = Parse("nofight,ghost");
     Check(unknown.set == 0 && unknown.bad == "ghost", "parse: an unknown name is refused with the word");
@@ -415,7 +447,8 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory, freewalk",
+              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory, circuit, "
+              "freewalk, often, noprofession",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -526,19 +559,25 @@ void TestRelease()
     // ApplyTravelOrder's own errand-check forget (the order's before and after sets) is the same predicate
     int errandCases = 0;
     bool errandSame = true;
-    constexpr std::uint32_t SUBSETS[] = {0,       ERRAND,           PLANNER,           ERRAND | PLANNER,
-                                         NOFIGHT, ERRAND | NOFIGHT, PLANNER | NOFIGHT, ERRAND | PLANNER | NOFIGHT};
-    for (std::uint32_t const before : SUBSETS)
-        for (std::uint32_t const on : SUBSETS)
-            for (std::uint32_t const off : SUBSETS)
+    constexpr Set SUBSETS[] = {0,       ERRAND,           PLANNER,           ERRAND | PLANNER,
+                               NOFIGHT, ERRAND | NOFIGHT, PLANNER | NOFIGHT, ERRAND | PLANNER | NOFIGHT};
+    for (Set const before : SUBSETS)
+        for (Set const on : SUBSETS)
+            for (Set const off : SUBSETS)
             {
-                std::uint32_t const after = Next(before, on, off);
+                Set const after = Next(before, on, off);
                 errandSame =
                     errandSame && FreesErrands(before, after) == (!ErrandAllowed(before) && ErrandAllowed(after));
                 errandSame = errandSame && !FreesErrands(before, Next(before, 0, 0)) && Next(before, 0, 0) == before;
                 ++errandCases;
             }
     Check(errandSame && errandCases == 512, "release: FreesErrands equals the errand row turning from held to free");
+    // A release (professions WR30): some hold row turns off. The planner goals end there (goal-apply selftest)
+    Check(Releases(HOLD, Next(HOLD, 0, HOLD)) && Releases(HOLD, NOQUEST) && Releases(PLANNER | NOFIGHT, NOFIGHT),
+          "release: a hold row turning off is a release, also with rows kept");
+    Check(!Releases(0, Next(0, 0, HOLD)) && !Releases(HOLD, HOLD) && !Releases(NOFIGHT | NODAMAGE, 0) &&
+              !Releases(0, HOLD),
+          "release: no hold row turning off (a free bot, a hold, a state row) is none");
 }
 
 void TestStates()
@@ -620,6 +659,59 @@ void TestTakeAtNextUpdate()
     Check(boarding.Update() != Step::Order && boarding.pending && !boarding.aboard,
           "aboard: waits while the bot fights");
 }
+
+// The set is 64 bits (ST27b): a bit no row takes yet, past the 32 of the old set, goes through every step that carries
+// a set as a low one does. Each step's type is checked too, since a 32-bit parameter would truncate without a warning
+void TestWidth()
+{
+    static_assert(std::is_same_v<Set, std::uint64_t> && std::is_same_v<decltype(Row::bit), Set> &&
+                      std::is_same_v<decltype(Parsed::set), Set> && std::is_same_v<decltype(CHOICES), Set const> &&
+                      std::is_same_v<decltype(STATES), Set const> && std::is_same_v<decltype(HOLD), Set const> &&
+                      std::is_same_v<decltype(FREEWALK), Set const>,
+                  "the table, a parse and the row groups hold 64 bits");
+    static_assert(std::is_same_v<decltype(&Next), Set (*)(Set, Set, Set)> &&
+                      std::is_same_v<decltype(&Format), std::string (*)(Set)> &&
+                      std::is_same_v<decltype(&EndsStatus), bool (*)(Set, Set)> &&
+                      std::is_same_v<decltype(&Releases), bool (*)(Set, Set)> &&
+                      std::is_same_v<decltype(&FreesErrands), bool (*)(Set, Set)> &&
+                      std::is_same_v<decltype(&GateOf), IdleGate (*)(Set)> &&
+                      std::is_same_v<decltype(StateOps<ModelUnits>::bit), Set>,
+                  "every step that carries a set takes 64 bits");
+    constexpr Set HIGH = Set{1} << 40;
+    constexpr Set TOP = Set{1} << 63;
+    static_assert(!((HIGH | TOP) & (CHOICES | STATES)), "bits 40 and 63 are no row's yet");
+    Check(Next(0, HIGH | TOP, 0) == (HIGH | TOP) && Next(HIGH | TOP | NOFIGHT, 0, HIGH) == (TOP | NOFIGHT) &&
+              Next(FREEWALK, HIGH, FREEWALK) == HIGH,
+          "width: Next sets and clears bits 40 and 63 beside bit 31 and a low one");
+    Check(!EndsStatus(0, HIGH | TOP) && EndsStatus(HIGH, HIGH | HEARTH) && !Releases(HIGH | TOP, 0) &&
+              Releases(HIGH | ERRAND, HIGH) && FreesErrands(TOP | ERRAND, TOP) && GateOf(HIGH | TOP).planner,
+          "width: a high bit is no hold row (no status end, no release); hold rows beside it read as before");
+    Check(Format(HIGH | TOP | NOFIGHT | FREEWALK) == "nofight,freewalk" && Format(HIGH) == "none",
+          "width: Format names the rows beside a high bit, which is no row yet");
+    Order merged = On(HIGH | NOFIGHT);
+    Merge(merged, Off(NOFIGHT));
+    Check(merged.on == HIGH && merged.off == NOFIGHT, "width: Merge keeps an earlier high on bit");
+    Merge(merged, Off(HIGH));
+    Merge(merged, On(TOP));
+    Check(merged.on == TOP && merged.off == (HIGH | NOFIGHT), "width: Merge's later off and on win for high bits");
+    ModelBot bot;
+    bot.Post(On(HOLD | HIGH | TOP));
+    bot.Update();
+    Check(bot.set == (HOLD | HIGH | TOP) && bot.status == Status::Idle, "width: the model bot keeps bits 40 and 63");
+    bot.Post(Release(0));
+    bot.Update();
+    Check(bot.set == (HIGH | TOP), "width: a release clears the hold rows and keeps the high bits");
+    bot.Post(Off(TOP));
+    bot.Update();
+    Check(bot.set == HIGH, "width: an off order clears bit 63 alone");
+    std::string free;
+    for (int b = 0; b < 64; ++b)
+        if (!((CHOICES | STATES) & (Set{1} << b)))
+            free += (free.empty() ? "" : " ") + std::to_string(b);
+    std::printf("free bits: %d of 64 (%s)\n", FREE_BITS, free.c_str());
+    Check(FREE_BITS == 64 - static_cast<int>(std::size(ROWS)) && FREE_BITS > 0,
+          "width: the free bits are the rows' rest");
+}
 }  // namespace
 
 int main()
@@ -631,6 +723,7 @@ int main()
     TestStates();
     TestMerge();
     TestTakeAtNextUpdate();
+    TestWidth();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

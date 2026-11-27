@@ -93,8 +93,22 @@ For every `quest_poi_points` row:
 
 `navmesh` adds up to 8 points (one per polygon, capped at 8). A cluster with at
 least one navmesh polygon is `navmeshOk=1`. Candidates are sorted by
-`(-confidence, -nav_polys)` and deduplicated when their Z values are within
+`(-confidence, -nav_polys)` and deduplicated when their level heights are within
 8 yd; at most four ranks are emitted per point.
+
+The emitted `Z` of a cluster with navmesh polygons is its floor at the POI point
+(fork change, pathing PA59c). The cluster's own height is the middle of polygon
+centroids up to 40 yd away, which on a slope lies yards above or below the floor
+where the bot's walk ends; the engine looks for the end's polygon in a box 3 yd
+each way around it and refuses an end more than 7 yd from that polygon. The
+floors the lookup can find are the polygons whose bounds overlap that box, with
+their nearest point within 6.5 yd (when there are none, those within 6.5 yd
+beside the box: the engine's quantized tile bounds are a little wider); of these
+`Z` is the cluster's own polygon
+nearest the point, else the floor nearest the cluster's height (another cluster's
+polygon under the point). Only polygons the bots' path filter walks count (ground
+or water, not magma, slime or steep ground); a cluster with no floor in the box
+keeps its height. Scoring, ranks and deduplication still use the cluster's height.
 
 `WalkablePoints` is up to six navmesh polygon centroids in the cluster, sorted by
 2D distance to the POI point, formatted `x,y,z` with one decimal and separated
@@ -141,4 +155,6 @@ commit `ffd2a2c` (GPL-2.0), the same project that originally hosted the baker:
 `core/terrain/coords.py`, `mmap_reader.py`, `detour_parser.py`, `detour/`, and
 the `collect_mesh` portion of `area_map.py`. Imports were made relative and the
 SVG renderer was omitted. The baker logic itself is unchanged apart from
-self-contained imports, deterministic ordering, and the manifest output.
+self-contained imports, deterministic ordering, and the manifest output; this
+fork's floor at the point (above) also makes `collect_mesh` return each
+polygon's Detour flags.

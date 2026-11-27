@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ObjectGuid.h"
+#include "ServerRates.h"
 #include "TravelMgr.h"
 
 class GameObject;
@@ -100,6 +101,8 @@ public:
         auto const at = _hideYields.find(skinLootId);
         return at != _hideYields.end() ? &at->second : nullptr;
     }
+    // The server's rates the yields are at, read in Load (WR29): the pass-by gate's skill-gain step and chances
+    [[nodiscard]] Recipes::ServerRates const& Rates() const { return _rates; }
 
 private:
     bool IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node);
@@ -113,6 +116,7 @@ private:
     std::unordered_map<ObjectGuid::LowType, GatherNodeSpawn const*> _bySpawn;  // into _nodes, built after it
     std::unordered_map<uint32 /*entry*/, std::vector<GatherYield>> _nodeYields;
     std::unordered_map<uint32 /*SkinLootId*/, std::vector<GatherYield>> _hideYields;
+    Recipes::ServerRates _rates;
 };
 
 #define sGatherNodeMgr GatherNodeMgr::instance()

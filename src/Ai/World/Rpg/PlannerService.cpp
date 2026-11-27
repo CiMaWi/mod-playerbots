@@ -19,26 +19,32 @@
 #include <unordered_map>
 #include <utility>
 
+#include "Awareness.h"
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
+#include "BridgeKnowledgeRules.h"
 #include "Chat.h"
 #include "ClassQuestCompletion.h"
 #include "ClassQuestRules.h"
 #include "CraftVisit.h"
 #include "DBCStores.h"
 #include "EventLog.h"
+#include "Formulas.h"
+#include "GatherLive.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
 #include "InterludeInputs.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
+#include "LoneKeys.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
+#include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
 #include "NewRpgTriggers.h"
 #include "ObjectAccessor.h"
@@ -130,6 +136,9 @@ Limits ConfiguredLimits()
 // How long a planner goal's key stays blocked (GoalApply::BlockKey, questing WQ6b)
 uint32 BlockMs() { return sPlayerbotAIConfig.WorldTravel.PlannerBlockMinutes * MINUTE * IN_MILLISECONDS; }
 
+// How long a bot stays near an inn before the planner binds it there (NR.5); 0 = no dwell
+uint32 InnDwellMs() { return sPlayerbotAIConfig.WorldTravel.InnDwellMinutes * MINUTE * IN_MILLISECONDS; }
+
 Place PlaceOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}; }
 
 // What Player::DurabilityRepair would charge for the item, without repairing it (DurabilityRepairAll(false, ...)
@@ -195,6 +204,7 @@ void FillBags(Player* bot, Snapshot& snapshot)
                 ++free;
     }
     snapshot.bagFree = static_cast<uint16>(free);
+    snapshot.unarmed = !bot->GetWeaponForAttack(BASE_ATTACK);
 
     GearWear const wear = ReadGearWear(bot);
     snapshot.durabilityPercent = wear.durabilityPercent;
@@ -273,6 +283,8 @@ std::atomic<uint64> scopeRefused{0};      // a bot found out of scope right befo
 std::atomic<uint64> stalledSkips{0};      // an option not started: its key stalled (GoalApply::MayStart)
 std::atomic<uint64> switchNotStarted{0};  // a switch or a fallback's plan started nothing: no executor, stall, refusal
 std::atomic<uint64> retrySkips{0};        // an interlude passed over: its kind failed within the retry time (WT63c)
+std::atomic<uint64> routeResults{0};      // results taken by bots on a route goal (questing WQ18b)
+std::atomic<uint64> routeRejectedMoved{0};  // of those, rejected because the bot had moved over the recheck yards
 std::array<std::atomic<uint64>, static_cast<std::size_t>(GoalApply::Fallback::Count)> fallbacks{};
 
 // What `planner goal <bot>` shows, published by the bot's map thread when it changes (a goal, a plan, a fallback)
@@ -466,6 +478,22 @@ uint64 LogNow(Player* bot)
 // The level and XP as one number that grows with every XP gained (GoalApply::EndRun's grind and gather progress)
 uint64 XpNow(Player* bot) { return (static_cast<uint64>(bot->GetLevel()) << 32) | bot->GetUInt32Value(PLAYER_XP); }
 
+// What a gather or money goal takes (professions WR20c, GoalApply::GainIsProgress): the bot's copper plus the count of
+// the items in its bags. Read at a goal's start and end only
+uint64 GainNow(Player* bot)
+{
+    uint64 items = 0;
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            items += item->GetCount();
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                    items += item->GetCount();
+    return static_cast<uint64>(bot->GetMoney()) + items;
+}
+
 // Where the goal's place and quest are for the bot (GoalApply::ExecutorFor). A delivery on the bot's map passes the
 // circuit's turn-in test: no reward POI here or a turn-in that failed there (low priority) does not start
 GoalApply::Reach ReachOf(Player* bot, GoalApply::Active const& goal, QuestTests const& tests)
@@ -510,6 +538,48 @@ bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Que
     return true;
 }
 
+// The route goal's next order (questing WQ18b; GoalApply::NextOrder over the newest plan's route) to DO_QUEST in
+// order mode. An order its executor did not end (an interlude, a status ended from outside) is given again; an order
+// of another map than the bot's is passed over. False when the route has no order left (the goal ends and the plan
+// starts nothing more: GoalApply::AdvanceRoute) or the executor refuses (the quest index is building), which gives
+// the order again at the next start. A bot a test holds on the circuit (constraint `circuit`, part 3) starts none: a
+// route goal held from before the hold ends here, and a plan is asked for, which has no route (SituationOf)
+bool StartRoute(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
+                char const* word = WorldLog::STATUS_REASON_OTHER)
+{
+    bool const held = TestConstraints::HeldOnCircuit(botAI->testConstraints);
+    if (held)
+        botAI->planner.snapshotDue = true;
+    std::function<bool(QuestOrderNeed const&)> const open = NewRpgInternal::OrderNeedOpen(botAI, bot);
+    std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, LogNow(bot), getMSTime(), BlockMs());
+    GoalApply::RouteNext next = GoalApply::NextOrder(goals, open, closed, held);
+    while (next.step == GoalApply::RouteStep::Order && next.order->mapId != bot->GetMapId())
+        next = GoalApply::AdvanceRoute(goals, open, closed);  // ends: each order is given at most once
+    if (next.step == GoalApply::RouteStep::Done)
+        return false;
+    if (NewRpgInternal::StartRouteOrder(botAI, bot, *next.order, word))
+        return true;
+    GoalApply::OrderNotStarted(goals);
+    return false;
+}
+
+// The plan's estimate of a gather circuit or fishing trip, written beside its start row (professions WR25a): value the
+// minutes the plan gave it (a circuit: its laps' minutes; a trip: the walk and its time at the water), alternatives the
+// takes expected in them (a node harvested, a creature killed, a fish caught), the units those give and the fight
+// minutes of the kills; ref the goal's target as the start row's. A session then holds plan and outcome side by side.
+// The takes' name says the rate's source (WPC13b): `takes_observed` when the minutes per take were observed, else
+// `takes` (the static rule)
+void NoteEstimate(Player* bot, Professions::Reason way, GoalApply::Active const& goal)
+{
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                       Professions::ChoiceWord(Professions::Choice::Estimate), Professions::ReasonWord(way),
+                       goal.minutes,
+                       {{goal.observed ? "takes_observed" : "takes", goal.takes},
+                        {"units", goal.units},
+                        {"fight_minutes", goal.fightMinutes}},
+                       goal.target);
+}
+
 // Today's statuses are the executors (GoalApply::ExecutorFor). False when the goal cannot start here, having ended
 // nothing. `word` is the Status row's word; a running status ends as interrupted
 bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, GoalApply::Active const& goal,
@@ -520,6 +590,8 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
     {
         case GoalApply::Executor::Circuit:
             return StartQuest(botAI, bot, goals, tests, word);
+        case GoalApply::Executor::Route:
+            return StartRoute(botAI, bot, goals, word);
         case GoalApply::Executor::Deliver:
             if (Quest const* quest = sObjectMgr->GetQuestTemplate(goal.target))
             {
@@ -538,11 +610,18 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             NewRpgInfo::DoGather gather;
             Goals::GoalPlan const* plan = goals.plan.get();
             bool const circuit = plan && !plan->gatherStops.empty() && plan->gatherStops.front() == goal.target;
+            uint32 creatures = 0;
             if (circuit)
             {
                 gather.circuit.assign(plan->gatherStops.begin(), plan->gatherStops.end());
-                gather.takenMs.assign(gather.circuit.size(), 0);
                 gather.laps = std::max<uint32>(plan->gatherLaps, 1);
+                creatures = static_cast<uint32>(
+                    std::count_if(plan->gatherStops.begin(), plan->gatherStops.end(), Gather::IsCreatureStop));
+                // The span the observed rate counts (WPC13b): its zone and way as the circuit row names them
+                gather.spanStartMs = std::max<uint32>(getMSTime(), 1);
+                gather.span.zone = bot->GetZoneId();
+                gather.span.way =
+                    GatherRate::WayOf(static_cast<uint32>(plan->gatherStops.size()), plan->gatherHerbStops, creatures);
             }
             RpgStatus::Start(botAI, std::move(gather), word);
             if (circuit)
@@ -550,8 +629,11 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
                     bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Gather),
                     Professions::ReasonWord(Professions::Reason::Circuit), static_cast<float>(plan->gatherStops.size()),
                     {{"laps", static_cast<float>(std::max<uint32>(plan->gatherLaps, 1))},
-                     {"lap_minutes", plan->gatherLapMinutes}},
+                     {"herbs", static_cast<float>(plan->gatherHerbStops)},
+                     {"creatures", static_cast<float>(creatures)}},
                     goal.target);
+            if (circuit)
+                NoteEstimate(bot, Professions::Reason::Circuit, goal);
             return true;
         }
         case GoalApply::Executor::Fish:
@@ -569,6 +651,7 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
                                Professions::ChoiceWord(Professions::Choice::Fish), Professions::ReasonWord(reason),
                                goal.minutes, {}, goal.target);
+            NoteEstimate(bot, Professions::Reason::Trip, goal);
             return true;
         }
         case GoalApply::Executor::Travel:
@@ -593,12 +676,18 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
         }
         case GoalApply::Executor::Errand:
         {
+            // A sick bot outside every safe area goes in by its hearthstone (NR3); its errand at the inn comes next
+            if (goal.source == GoalApply::Source::Planner && goal.reason == Goals::SICK_HEARTH_REASON)
+                return NewRpgInternal::StartSickHearth(botAI, word);
             // The planner's order names its vendor (for a bag the nearest that sells it); the bridge's names none
             NewRpgInternal::ErrandOrder order{.order = true, .word = word};
             if (goal.source == GoalApply::Source::Planner)
             {
                 order.reason = goal.reason.c_str();
-                order.vendor = goal.target;
+                // A stop of its own (NR14) names a trainer key, a mount vendor or a beast: the trip plans it as the
+                // due need it is, not as an ordered vendor
+                if (!Goals::OwnStopReason(goal.reason))
+                    order.vendor = goal.target;
                 if (goal.kind == Goals::GoalKind::BuyBag)
                 {
                     std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr;
@@ -626,6 +715,19 @@ void LogGoal(Player* bot, Goals::Ranked const& ranked)
     }
 }
 
+// The route goal's row again, for the route a new plan gave the running goal (questing WQ18b part 3): written where
+// the plan replaces the running order (TakeGoals), so the log shows which goal the bot follows after a pickup's plan.
+// A plan that keeps the running order writes none: the goal's last row still names what the bot does
+void LogRouteGoal(Player* bot, Goals::Ranked const& ranked)
+{
+    for (std::size_t index = 0; index < ranked.options.size(); ++index)
+        if (ranked.options[index].targetType == Goals::TargetType::Route)
+        {
+            LogGoal(bot, GoalApply::ChosenFirst(ranked, index));
+            return;
+        }
+}
+
 void LogCircuit(Player* bot, GoalApply::BotGoals& goals)
 {
     if (goals.circuitLogged || !goals.plan || !WorldLog::Active())
@@ -645,7 +747,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::Active goal = GoalApply::FromOption(option, GoalApply::Source::Planner, now);
     if (!GoalApply::MayReplace(goals.slot.Query(), goal.source))
         return GoalApply::StartResult::Refused;
-    if (GoalApply::RetryWaits(goals, goal.kind, now))
+    if (GoalApply::RetryWaits(goals, goal.kind, now) || GoalApply::MissedWaits(goals, goal, bot->GetLevel(), now))
     {
         retrySkips.fetch_add(1, std::memory_order_relaxed);
         return GoalApply::StartResult::Retry;
@@ -659,17 +761,20 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     if (circuit)
         goals.circuitPlan = goals.plan;
     GoalApply::StartResult const result =
-        GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot), true, now, BlockMs()},
+        GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot), true, now, BlockMs(), GainNow(bot)},
                                [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
     NoteStalled(bot, goals);
     if (result == GoalApply::StartResult::Stalled)
         stalledSkips.fetch_add(1, std::memory_order_relaxed);
+    if (result == GoalApply::StartResult::Refused)
+        GoalApply::NoteRefused(goals, goal, bot->GetLevel(), now);
     if (result != GoalApply::StartResult::Started)
     {
         goals.circuitPlan = std::move(held);
         return result;
     }
     goals.bagBought = false;  // a new order buys its own bag (OrderedBag)
+    goals.ownStopDone = false;
     goals.slot.Set(std::move(goal));
     if (goals.plan)
         LogGoal(bot, GoalApply::ChosenFirst(goals.plan->ranked, index));
@@ -810,7 +915,44 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         goals.lastFailed = false;
         return;
     }
+    bool const wasReplaced = GoalApply::OrderReplaced(goals);
+    std::shared_ptr<Goals::GoalPlan const> const lastPlan = goals.plan;
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    // A plan with no option starts no goal, so no start writes its row: written here, so every plan taken that ranked
+    // nothing shows in the log (none:0)
+    if (answer->plan->ranked.options.empty())
+        LogGoal(bot, answer->plan->ranked);
+    // A route goal's running order (questing WQ18b): its executor learns whether the new route still begins with it
+    // (RefreshRoute). If not, its next tick ends the order as replaced and the new route's first order follows; the
+    // goal's row is written again for the new route, once (part 3)
+    if (goals.route.running)
+    {
+        bool const replaced = GoalApply::OrderReplaced(goals);
+        NewRpgInternal::MarkOrderReplaced(botAI, *goals.route.running, replaced);
+        if (replaced && !wasReplaced)
+            LogRouteGoal(bot, answer->plan->ranked);
+    }
+    // A wanted material only creatures too far above the bot give (professions WR20c): one skip row per change
+    Goals::GoalPlan const& taken = *answer->plan;
+    // A due stop of its own whose list this plan's snapshot left out (NR14c): the next snapshot seeks it
+    if (taken.ownStopsSkipped)
+        botAI->planner.snapshotDue = true;
+    if (taken.gatherRefusedItem && WorldLog::Active() &&
+        (!lastPlan || lastPlan->gatherRefusedItem != taken.gatherRefusedItem))
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                           Professions::ChoiceWord(Professions::Choice::Skip),
+                           Professions::ReasonWord(Professions::Reason::TooDangerous), taken.gatherRefusedLevels, {},
+                           taken.gatherRefusedItem);
+    // Bags above the gather status's limit refused the circuit (professions WPC9): one skip row per change
+    if (taken.gatherBagsFull && WorldLog::Active() && (!lastPlan || !lastPlan->gatherBagsFull))
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
+            Professions::ReasonWord(Professions::Reason::BagsFull), static_cast<float>(taken.gatherBagsFull));
+    // A bot without a weapon was refused creature stops (professions WPC10): one skip row per change
+    if (taken.gatherUnarmed && WorldLog::Active() && (!lastPlan || !lastPlan->gatherUnarmed))
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Skip),
+            Professions::ReasonWord(Professions::Reason::Unarmed), static_cast<float>(taken.gatherUnarmed));
     // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
     if (!answer->plan->classFailed.empty())
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
@@ -852,11 +994,84 @@ bool Trades(Player* bot, Service const& service)
     return bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(service.factionTemplate), bot) > REP_UNFRIENDLY;
 }
 
+static_assert(REP_HOSTILE == Upkeep::HUB_HOSTILE_RANK, "the hub's hostile rank is the core's REP_HOSTILE");
+
+// NR3 (NR.4, Upkeep::SafeAreas): the safe areas a point lies in for this bot. The city and the low zone from the
+// point's zone and area; the hubs: every hub circle of the map that holds the point and is safe for the bot (not the
+// other side's, a flight master or an innkeeper, no creature member hostile to the bot by its reputation), or with
+// `among` only the hubs of that list (a stop's, against the bot's own). Only for a sick bot, once per situation and
+// stop; map thread: the reactions read the bot's reputation
+Upkeep::SafeAreas SafeAreasAt(Player* bot, PlannerIndexes const& indexes, uint32 mapId, float x, float y, uint32 zoneId,
+                              uint32 areaId, std::vector<uint32_t> const* among)
+{
+    Upkeep::SafeAreas areas;
+    bool const alliance = bot->GetTeamId() == TEAM_ALLIANCE;
+    AreaTableEntry const* zone = zoneId ? sAreaTableStore.LookupEntry(zoneId) : nullptr;
+    AreaTableEntry const* area = areaId ? sAreaTableStore.LookupEntry(areaId) : nullptr;
+    areas.city = Upkeep::SafeCity(zoneId, areaId, PlayerbotBridge::Knowledge::IsOwnCapital(zoneId, alliance),
+                                  zone && zone->IsSanctuary(), area && area->IsSanctuary());
+    if (ZoneRecord const* record = indexes.FindZone(zoneId))
+        if (Upkeep::LowZoneSafe(record->high, record->side == (alliance ? ZoneSide::Alliance : ZoneSide::Horde),
+                                Acore::XP::GetGrayLevel(bot->GetLevel())))
+            areas.lowZone = zoneId;
+    auto const holds = [mapId, x, y](Hub const& hub)
+    { return hub.mapId == mapId && std::hypot(hub.x - x, hub.y - y) <= hub.radius; };
+    if (among)
+    {
+        for (uint32_t const hub : *among)
+            if (holds(indexes.hubs[hub]))
+                areas.hubs.push_back(hub);
+        return areas;
+    }
+    PlaceSide const other = alliance ? PlaceSide::Horde : PlaceSide::Alliance;
+    for (std::size_t i = 0; i < indexes.hubs.size(); ++i)
+    {
+        Hub const& hub = indexes.hubs[i];
+        if (!holds(hub))
+            continue;
+        bool const otherSide = hub.side == other;
+        bool const flightOrInn = hub.Has(ServiceKind::FlightMaster) || hub.Has(ServiceKind::Innkeeper);
+        bool const hostile =
+            !otherSide && flightOrInn &&
+            std::any_of(hub.members.begin(), hub.members.end(),
+                        [bot, &indexes](uint32_t member)
+                        {
+                            Service const& service = indexes.services[member];
+                            FactionTemplateEntry const* faction =
+                                service.mailbox || service.focus
+                                    ? nullptr
+                                    : sFactionTemplateStore.LookupEntry(service.factionTemplate);
+                            return faction &&
+                                   Upkeep::HostileMember(static_cast<int32>(bot->GetFactionReactionTo(faction, bot)));
+                        });
+        if (Upkeep::HubSafe(otherSide, flightOrInn, hostile))
+            areas.hubs.push_back(static_cast<uint32_t>(i));
+    }
+    return areas;
+}
+
+// NR3: the walk from a sick bot (its safe areas `here`) to a point stays in one safe area (Upkeep::SafeLeg on foot)
+bool SafeWalk(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, uint32 mapId, float x, float y,
+              uint32 zoneId, uint32 areaId)
+{
+    return Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, here,
+                           SafeAreasAt(bot, indexes, mapId, x, y, zoneId, areaId, &here.hubs));
+}
+
+bool SafeWalk(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, Service const& stop)
+{
+    return SafeWalk(bot, indexes, here, stop.mapId, stop.x, stop.y, stop.zoneId, stop.areaId);
+}
+
 // The errand inputs (WT63c, InterludeInputs.h) within the errand walk: the nearest vendors, the nearest repairer and
 // each near bag vendor's bags (the cheapest of each size), from the indexes and the vendor lists in memory;
-// the sellable stacks and the minutes to the next vendor stop as the errand start counts them
-void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
+// the sellable stacks and the minutes to the next vendor stop as the errand start counts them. A sick bot's (`sick`,
+// its safe areas, NR3) vendors, repairer and station are only those its walk reaches inside its safe area
+void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation,
+                    Upkeep::SafeAreas const* sick)
 {
+    auto const usable = [&](Service const& service)
+    { return Trades(bot, service) && (!sick || SafeWalk(bot, indexes, *sick, service)); };
     float const runSpeed = bot->GetSpeed(MOVE_RUN);
     float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
     uint32 const mapId = bot->GetMapId();
@@ -865,12 +1080,13 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
     float const z = bot->GetPositionZ();
     std::vector<Goals::VendorSeen> vendors;
     for (Nearby const& found : indexes.Nearest(ServiceKind::Vendor, mapId, x, y, z, VENDORS_SEEN, reach))
-        if (Service const& vendor = indexes.services[found.index]; Trades(bot, vendor))
-            vendors.push_back({vendor.entry, found.distance, (vendor.npcFlags & UNIT_NPC_FLAG_REPAIR) != 0});
+        if (Service const& vendor = indexes.services[found.index]; usable(vendor))
+            vendors.push_back(
+                {vendor.entry, found.distance, (vendor.npcFlags & UNIT_NPC_FLAG_REPAIR) != 0, sick != nullptr});
     for (Nearby const& found : indexes.Nearest(ServiceKind::Repairer, mapId, x, y, z, VENDORS_SEEN, reach))
-        if (Service const& repairer = indexes.services[found.index]; Trades(bot, repairer))
+        if (Service const& repairer = indexes.services[found.index]; usable(repairer))
         {
-            Goals::VendorSeen const seen{repairer.entry, found.distance, true};
+            Goals::VendorSeen const seen{repairer.entry, found.distance, true, sick != nullptr};
             vendors.insert(std::upper_bound(vendors.begin(), vendors.end(), seen,
                                             [](Goals::VendorSeen const& a, Goals::VendorSeen const& b)
                                             { return a.yards < b.yards; }),
@@ -920,25 +1136,113 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
     Recipes::Recipe const* recipe = recipes ? recipes->RecipeOf(craft->spell) : nullptr;
     situation.craft.worth = static_cast<float>(SkillPath::QueueWorth(*goals->path));
     situation.craft.walkMinutes = WorldTravel::WalkMinutes(stations.front().distance, runSpeed);
+    situation.craft.safe = sick && SafeWalk(bot, indexes, *sick, indexes.services[stations.front().index]);
     situation.craft.minutes =
         recipe ? static_cast<float>(craft->casts * recipe->castMs) / static_cast<float>(MINUTE * IN_MILLISECONDS)
                : 0.0f;
 }
 
+// NR14: the stops of the planner's errands of their own within the errand walk that trade with the bot, nearest
+// first, as the errand start finds them (TrainerSpawns, its mount vendors in reach): the class trainers of the bot's
+// class and the riding trainers, the vendors that sell a mount for gold; a sick bot's (`sick`, NR3) safe when its
+// walk stays in its safe area. Only the lists the last plan wants (GoalPlan::trainersWanted, mountVendorsWanted; both
+// before a bot's first plan): the job finds the due needs, so a plan that finds a stop due whose list was skipped asks
+// for the next plan at once (GoalPlan::ownStopsSkipped), whose snapshot seeks it.
+// A pass over the trainers or the mount offers and a ring search that stops at STOPS_SEEN kept spawns per list; the
+// job's NeedBridge::PlaceOwnStops picks the due stop's walk from them
+void FillOwnStopsSeen(Player* bot, PlannerIndexes const& indexes, Goals::GoalPlan const* lastPlan,
+                      Goals::Situation& situation, Upkeep::SafeAreas const* sick)
+{
+    bool const trainersWanted = !lastPlan || lastPlan->trainersWanted;
+    bool const vendorsWanted = !lastPlan || lastPlan->mountVendorsWanted;
+    situation.trainersSkipped = !trainersWanted;
+    situation.mountVendorsSkipped = !vendorsWanted;
+    if (!trainersWanted && !vendorsWanted)
+        return;
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!index)
+        return;
+    constexpr std::size_t STOPS_SEEN = 16;
+    float const runSpeed = bot->GetSpeed(MOVE_RUN);
+    float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
+    auto const seen = [&](ServiceKind kind, auto const& serves, std::vector<Goals::StopSeen>& out)
+    {
+        auto const keep = [&](Service const& spawn) { return serves(spawn.entry) && Trades(bot, spawn); };
+        for (Nearby const& found : indexes.NearestWhere(kind, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                                        bot->GetPositionZ(), STOPS_SEEN, keep, reach))
+        {
+            Service const& spawn = indexes.services[found.index];
+            out.push_back({spawn.entry, WorldTravel::WalkMinutes(found.distance, runSpeed),
+                           sick && SafeWalk(bot, indexes, *sick, spawn)});
+        }
+    };
+    if (trainersWanted)
+    {
+        std::vector<UpkeepTrainer const*> trainers;
+        for (UpkeepTrainer const& trainer : index->trainers)
+            if (trainer.kind == TrainerKind::Mount ||
+                (trainer.kind == TrainerKind::Class && trainer.requirement == bot->getClass()))
+                trainers.push_back(&trainer);
+        seen(
+            ServiceKind::Trainer,
+            [&trainers](uint32 entry)
+            {
+                return std::any_of(
+                    trainers.begin(), trainers.end(), [entry](UpkeepTrainer const* trainer)
+                    { return std::binary_search(trainer->entries.begin(), trainer->entries.end(), entry); });
+            },
+            situation.trainersSeen);
+    }
+    if (!vendorsWanted)
+        return;
+    std::vector<uint32> mountVendors;
+    for (VendorOffer const& offer : index->Offers(UpkeepStock::Mount))
+        if (offer.GoldOnly())
+            mountVendors.push_back(offer.vendorEntry);
+    std::sort(mountVendors.begin(), mountVendors.end());
+    mountVendors.erase(std::unique(mountVendors.begin(), mountVendors.end()), mountVendors.end());
+    if (!mountVendors.empty())
+        seen(
+            ServiceKind::Vendor, [&mountVendors](uint32 entry)
+            { return std::binary_search(mountVendors.begin(), mountVendors.end(), entry); },
+            situation.mountVendorsSeen);
+}
+
 // The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the
-// model weighs a bind at an inn only then (GoalModel AddHearth)
-void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
+// model weighs a bind at an inn only then (GoalModel AddHearth). The stays near inns (NR.5) are noted either way. A
+// sick bot's (`sick`, NR3) inn is safe when its walk there stays in its safe area
+void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation,
+                 Upkeep::SafeAreas const* sick)
 {
     bool const sameMap = bot->m_homebindMapId == bot->GetMapId();
     float const yards = sameMap ? bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) : 0.0f;
-    if (!WorldTravel::BindIsFar(sameMap, yards))
+    bool const bindFar = WorldTravel::BindIsFar(sameMap, yards);
+    GoalApply::BotGoals* const goals = botAI->planner.goals.get();
+    if (!bindFar && (!goals || !InnDwellMs()))
         return;
-    float const reach = WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float const reach = bindFar ? WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f)
+                                : WorldTravel::INN_BIND_FAR_YARDS;
     std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
+    uint32 const now = getMSTime();
+    if (goals)
+        Goals::NoteInnStays(goals->innStays, seen, PlaceOf(bot), now);
+    if (!bindFar)
+        return;
     Place const bind{bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ};
     FailedAttempts::Record const& record = botAI->GetTravel().Failures();
-    std::vector<FailedAttempts::Entry> const live = FailedAttempts::LiveEntries(record, getMSTime());
+    std::vector<FailedAttempts::Entry> const live = FailedAttempts::LiveEntries(record, now);
     situation.inns = Goals::InnInputs(seen, bind, live);
+    std::vector<Goals::InnStay> const none;
+    std::vector<Goals::InnStay> const& stays = goals ? goals->innStays : none;
+    Goals::MarkUnstayed(situation.inns, stays, now, InnDwellMs());
+    if (sick)
+        for (Goals::Inn& inn : situation.inns)
+        {
+            auto const it = std::find_if(seen.begin(), seen.end(),
+                                         [&inn](Goals::InnSeen const& candidate) { return candidate.entry == inn.id; });
+            inn.safe = it != seen.end() &&
+                       SafeWalk(bot, indexes, *sick, inn.place.map, inn.place.x, inn.place.y, it->zoneId, 0);
+        }
     if (!TestProbe::On(botAI->testConstraints))
         return;
     // A test bot's trace (WT63d); per seen inn (NE3, the inn list's causes B and C): usual, the refusing entry's cause,
@@ -963,9 +1267,11 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
             }
         }
         FailedAttempts::Entry const* refusal = Goals::InnRefusal(live, inn.place);
-        LOG_INFO("playerbots", "[Probe] {} inn {} usual {} refused {} nearest {:.1f} {} record {}", bot->GetName(),
-                 inn.entry, Goals::UsualInn(bind, inn.place) ? 1 : 0, refusal ? refusal->cause : "none", nearest,
-                 nearestCause, record.count);
+        Goals::InnStay const* stay = Goals::FindStay(stays, inn.entry);
+        LOG_INFO("playerbots", "[Probe] {} inn {} usual {} refused {} nearest {:.1f} {} record {} stayS {}",
+                 bot->GetName(), inn.entry, Goals::UsualInn(bind, inn.place) ? 1 : 0, refusal ? refusal->cause : "none",
+                 nearest, nearestCause, record.count,
+                 stay ? static_cast<int32>((now - stay->sinceMs) / IN_MILLISECONDS) : -1);
     }
 }
 
@@ -973,6 +1279,9 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
 {
     Goals::Situation situation;
     situation.here.hub = NO_HUB;  // the job finds it from its circuit (Goals::CircuitHub)
+    // Every planner bot gets its quest route, and the circuit only while the route has no order (questing WQ18b); a
+    // test holds a bot on the circuit (constraint circuit)
+    situation.onCircuit = TestConstraints::HeldOnCircuit(botAI->testConstraints);
     situation.healthPercent = bot->GetHealthPct();
     uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
     situation.manaPercent = maxMana > 0 ? static_cast<float>(PERCENT) * static_cast<float>(bot->GetPower(POWER_MANA)) /
@@ -980,6 +1289,9 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
                                         : -1.0f;
     // Class quests (upkeep WU20a): a governed bot's (one that keeps its possessions) facts for the unlock bonus; the
     // job adds the trainer's spells
+    situation.questsHeld = !TestConstraints::QuestChoicesAllowed(botAI->testConstraints);  // a test's noquest
+    situation.fightsHeld = !TestConstraints::StartsFights(botAI->testConstraints);         // a test's nofight
+    situation.questingOnly = sPlayerbotAIConfig.Lone.TestQuestingOnly;  // the questing test's setting (WQ37)
     situation.governed = botAI->KeepsPossessions();
     if (situation.governed)
     {
@@ -993,10 +1305,39 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
     }
     if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
     {
-        FillErrandSeen(botAI, bot, *indexes, situation);
-        FillInnSeen(botAI, bot, *indexes, situation);
+        // NR3 (NR.4): a sick bot's safe areas, where it stands and where its hearthstone is bound
+        std::optional<Upkeep::SafeAreas> sick;
+        if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+        {
+            sick = SafeAreasAt(bot, *indexes, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                               bot->GetZoneId(), bot->GetAreaId(), nullptr);
+            situation.sickSafeHere = Upkeep::IsSafe(*sick);
+            AreaTableEntry const* bindArea = sAreaTableStore.LookupEntry(bot->m_homebindAreaId);
+            uint32 const bindZone = bindArea ? (bindArea->zone ? bindArea->zone : bindArea->ID) : 0;
+            situation.sickHearthSafe =
+                Upkeep::IsSafe(SafeAreasAt(bot, *indexes, bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY,
+                                           bindZone, bot->m_homebindAreaId, nullptr));
+        }
+        FillErrandSeen(botAI, bot, *indexes, situation, sick ? &*sick : nullptr);
+        GoalApply::BotGoals const* const goals = botAI->planner.goals.get();
+        FillOwnStopsSeen(bot, *indexes, goals ? goals->plan.get() : nullptr, situation, sick ? &*sick : nullptr);
+        FillInnSeen(botAI, bot, *indexes, situation, sick ? &*sick : nullptr);
     }
     return situation;
+}
+
+// The upkeep row sick_area at recover's hand-over of a sick bot (NR3): the safe area it stands in, the sickness left
+void WriteSickArea(PlayerbotAI* botAI)
+{
+    if (!WorldLog::Active())
+        return;
+    Player* bot = botAI->GetBot();
+    std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr;
+    Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    float const seconds =
+        sickness ? static_cast<float>(std::max<int32>(sickness->GetDuration(), 0)) / IN_MILLISECONDS : 0.0f;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "sick_area",
+                       indexes ? Upkeep::SafeAreaWord(SafeAreasHere(bot, *indexes)) : "unknown", seconds);
 }
 
 // The goals job: the snapshot with the current goal, the plan's kept quests and the log quests' ages
@@ -1004,6 +1345,13 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
 {
     GoalApply::BotGoals& goals = GoalsOf(botAI, bot);
     Snapshot snapshot = TimedSnapshot(bot, state.stateVersion);
+    // NR3c: the job plans from the snapshot's hand-over (the sick gate), so the edge is the snapshot's as much as the
+    // errand trigger's (NoteSickOpen): an edge seen here writes its row only, the job is the plan; a hand-over this
+    // snapshot found closed is the trigger's edge again (run 1: a plan that rested on a closed snapshot after the
+    // trigger had seen it open waited 290 s for another change; an errand begun on the snapshot's hand-over wrote its
+    // row only at its end)
+    if (snapshot.sickMs && GoalApply::SickOpenChanged(goals, snapshot.sickErrandOpen))
+        WriteSickArea(botAI);
     // A test keeping the hearth off: no hearth or inn goal either (GoalModel AddHearth)
     if (!TestConstraints::HearthAllowed(botAI->testConstraints))
         snapshot.hasHearthstone = false;
@@ -1016,7 +1364,10 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
     // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
     // Item use's answer is a map-thread cache: the path's share of it is copied into the job here (WR11)
-    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot),
+    Goals::Situation situation = SituationOf(botAI, bot);
+    // The cells a dry order closed to the bot (questing WQ18b): its route passes them and their neighbours over
+    situation.closedCells = GoalApply::ClosedCells(goals, LogNow(bot), now, BlockMs());
+    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), situation,
                                    BotNeedRates(botAI, snapshot), PathInputsOf(botAI));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
@@ -1226,6 +1577,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
         if (uint16 const value = bot->GetPureSkillValue(skill))
             snapshot.skills.push_back(
                 {static_cast<uint16>(skill), value, static_cast<uint16>(bot->GetPureMaxSkillValue(skill))});
+    FillGatherSight(bot, snapshot);
     FillQuests(bot, snapshot);
     snapshot.hasHearthstone = bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1);
     snapshot.hearth = {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ};
@@ -1236,13 +1588,20 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
     snapshot.runSpeed = bot->GetSpeed(MOVE_RUN);
     snapshot.mounted = bot->IsMounted();
-    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16), or the due repair recover
-    // handed over (NE11)
+    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16), or once recover has handed the
+    // bot over a goal its sick gate passes (NR3). The rest is at a clear point: the bot's own, else the one recover
+    // walks it to (FindSafePoint around the bot within RISE_YARDS, as ReviveFromCorpseAction asks it)
     if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
     {
         snapshot.sickMs = static_cast<std::uint32_t>(std::max<int32>(sickness->GetDuration(), 0));
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         snapshot.sickErrandOpen = botAI && WorldTravel::SickErrandOpen(botAI);
+        if (botAI && !snapshot.sickErrandOpen && !Awareness::JudgePoint(botAI, *bot).clear)
+        {
+            AwarenessRules::SafePoint const safe = Awareness::FindSafePoint(botAI, *bot, AwarenessRules::RISE_YARDS);
+            if (safe.found && safe.clear)
+                snapshot.sickRest = Place{bot->GetMapId(), safe.x, safe.y, safe.z};
+        }
     }
     if (Group const* group = bot->GetGroup())
     {
@@ -1303,8 +1662,28 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
         Goals::GoalKind const kind = state.goals->slot.Query().kind;
         bool const repairDue = kind == Goals::GoalKind::Errand && outcome == StatusEnd::Outcome::Finished &&
                                WorldTravel::RepairErrandWanted(botAI->GetBot());
-        GoalApply::NoteInterludeEnd(*state.goals, kind, outcome, getMSTime(), repairDue);
+        GoalApply::NoteInterludeEnd(*state.goals, kind, outcome, getMSTime(), repairDue, botAI->GetBot()->GetLevel());
     }
+}
+
+void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached)
+{
+    Planner::BotState& state = botAI->planner;
+    Player* const bot = botAI->GetBot();
+    if (!state.goals || !bot)
+        return;
+    if (GoalApply::EndRouteOrder(*state.goals, order, end, LogNow(bot), getMSTime(), BlockMs(), reached))
+        NoteStalled(bot, *state.goals);  // the closed cell's row
+}
+
+void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note)
+{
+    Planner::BotState& state = botAI->planner;
+    Player* const bot = botAI->GetBot();
+    if (!state.goals || !bot || !GoalApply::FailsOrder(outcome))
+        return;
+    if (GoalApply::FailRouteOrder(*state.goals, order, outcome, note, LogNow(bot), getMSTime(), BlockMs()))
+        NoteStalled(bot, *state.goals);  // the closed cell's row
 }
 
 bool Owns(PlayerbotAI* botAI)
@@ -1320,6 +1699,34 @@ void SituationChanged(PlayerbotAI* botAI)
     if (state.goals)
         state.goals->situationChanged = true;
 }
+
+Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes)
+{
+    return SafeAreasAt(bot, indexes, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetZoneId(),
+                       bot->GetAreaId(), nullptr);
+}
+
+bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,
+                float y, float z)
+{
+    if (mapId != bot->GetMapId())
+        return false;
+    uint32 zoneId = 0;
+    uint32 areaId = 0;
+    bot->GetMap()->GetZoneAndAreaId(bot->GetPhaseMask(), zoneId, areaId, x, y, z);
+    return SafeWalk(bot, indexes, here, mapId, x, y, zoneId, areaId);
+}
+
+void NoteSickOpen(PlayerbotAI* botAI, bool open)
+{
+    Planner::BotState& state = botAI->planner;
+    if (!state.goals || !GoalApply::SickOpenChanged(*state.goals, open))
+        return;
+    SituationChanged(botAI);
+    WriteSickArea(botAI);
+}
+
+QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot) { return GoalsOf(botAI, bot).questStalls; }
 
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
 {
@@ -1361,7 +1768,13 @@ void NoteBindFar(PlayerbotAI* botAI, bool bindFar)
     if (TestProbe::On(botAI->testConstraints) && seen != state.goals->bindSeen)  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} bind seen {} -> {} edge {}", botAI->GetBot()->GetName(), seen,
                  state.goals->bindSeen, changed);
-    if (changed)
+    // Snapshots can be minutes apart, so a stay the bot left ends here too, and one that reached the dwell under a far
+    // bind is a changed situation: the planner may now bind there (NR.5)
+    Goals::DropLeftStays(state.goals->innStays, PlaceOf(botAI->GetBot()));
+    bool const ripened = bindFar && Goals::StayRipened(state.goals->innStays, getMSTime(), InnDwellMs());
+    if (ripened && TestProbe::On(botAI->testConstraints))
+        LOG_INFO("playerbots", "[Probe] {} inn stay reached the dwell", botAI->GetBot()->GetName());
+    if (changed || ripened)
         SituationChanged(botAI);
 }
 
@@ -1376,6 +1789,12 @@ void NoteBagBought(PlayerbotAI* botAI)
 {
     if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
         goals->bagBought = true;
+}
+
+void NoteOwnStopDone(PlayerbotAI* botAI)
+{
+    if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
+        goals->ownStopDone = true;
 }
 
 bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
@@ -1398,6 +1817,9 @@ bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
         facts.manaPercent = maxMana ? static_cast<float>(PERCENT) * static_cast<float>(bot->GetPower(POWER_MANA)) /
                                           static_cast<float>(maxMana)
                                     : -1.0f;
+        constexpr float AT_BIND_YARDS = 10.0f;  // the stone sets the bot down at its bind
+        facts.atBind = bot->GetMapId() == bot->m_homebindMapId &&
+                       bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) <= AT_BIND_YARDS;
         answer = GoalApply::PlannedEnd(goals->slot.Query(), facts);
     }
     if (answer.planned ? !answer.ends : !timerOver)
@@ -1406,7 +1828,12 @@ bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
         LOG_INFO("playerbots", "[Probe] {} status {} end {} after {} ms", bot->GetName(), status,
                  answer.planned ? answer.word : "timer", GetMSTimeDiffToNow(botAI->rpgInfo.startT));
     if (answer.planned)
+    {
         RpgStatus::End(botAI, answer.outcome, {answer.word});
+        // The stone moved the bot (NR3: a sick bot's hearth_bind): the next plan is made from its new place
+        if (answer.outcome == StatusEnd::Outcome::Arrived)
+            SituationChanged(botAI);
+    }
     else
         RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
     return true;
@@ -1447,6 +1874,18 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
             Verdict const verdict =
                 Recheck(*result, {bot->IsAlive(), state.stateVersion, PlaceOf(bot), now}, ConfiguredLimits());
             Pool().CountVerdict(verdict);
+            // A bot on a route walks: how often its results are rejected for the position (questing WQ18b)
+            if (goals && GoalApply::RunsRoute(goals->slot.Query()))
+            {
+                routeResults.fetch_add(1, std::memory_order_relaxed);
+                if (verdict == Verdict::Position)
+                {
+                    routeRejectedMoved.fetch_add(1, std::memory_order_relaxed);
+                    // The night list plans_rejected_moved counts these rows (part 3): one per rejected result
+                    if (WorldLog::Active())
+                        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Circuit, "plan:rejected", "moved", 0.0f);
+                }
+            }
             if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63c): a result not used is no plan
                 LOG_INFO("playerbots", "[Probe] {} plan result verdict {}", bot->GetName(), static_cast<int>(verdict));
             if (goals && goals->jobOut)
@@ -1508,14 +1947,18 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     if (GoalApply::StillPaused(goals, now))
         return {false, true, nullptr};
 
-    // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
+    // The current goal goes on: the circuit's next task or turn-in, the route's next order (questing WQ18b: StartRoute
+    // gives the order again when its executor did not end it), or the goal an interlude interrupted. A goal whose
     // executor ended ends its run (GoalApply::EndRun): its key stalls for the block time (BlockMs) when the log is as
     // it was at its start, unless its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting
     // again clears that mark
     if (goals.slot.Query().Is())
     {
         GoalApply::Active const current = goals.slot.Query();
-        if (GoalApply::RunsCircuit(current) && goals.run.running && StartQuest(botAI, bot, goals, tests))
+        bool const goesOn =
+            goals.run.running && ((GoalApply::RunsCircuit(current) && StartQuest(botAI, bot, goals, tests)) ||
+                                  (GoalApply::RunsRoute(current) && StartRoute(botAI, bot, goals)));
+        if (goesOn)
         {
             GoalApply::ContinueRun(goals);
             goalsContinued.fetch_add(1, std::memory_order_relaxed);
@@ -1523,7 +1966,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             return {true, false, nullptr};
         }
         if (goals.run.running && !Goals::IsInterlude(current.kind))
-            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs());
+            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs(), GainNow(bot));
         NoteStalled(bot, goals);
         if (goals.slot.End(now))
         {
@@ -1544,7 +1987,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             }
             NoteResumeNotStarted(bot, goals, resumed, executor);
             if (goals.run.running)
-                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs());
+                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs(), GainNow(bot));
             NoteStalled(bot, goals);
             goals.slot.End(now);
         }
@@ -1605,7 +2048,8 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
 std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
 {
     std::vector<NewRpgStatus> statuses;
-    for (uint32 const status : GoalApply::IdleList(step.fallback, step.moving))
+    for (uint32 const status :
+         GoalApply::IdleList(step.fallback, step.moving, sPlayerbotAIConfig.Lone.TestQuestingOnly))
         statuses.push_back(static_cast<NewRpgStatus>(status));
     return statuses;
 }
@@ -1836,6 +2280,10 @@ std::vector<std::string> PlannerStatus()
                             routeJobs, count(routeCosts.asked), routeSearches,
                             routeJobs ? static_cast<double>(routeSearches) / routeJobs : 0.0, ROUTE_SEARCHES_PER_JOB,
                             count(routeCosts.noRoute), count(routeCosts.capped)));
+    lines.push_back(
+        Acore::StringFormat("PLANNER route goals: {} results of bots on a route, {} rejected for the "
+                            "position (moved over the recheck yards)",
+                            count(routeResults), count(routeRejectedMoved)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;

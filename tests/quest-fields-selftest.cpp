@@ -29,6 +29,8 @@ namespace
 {
 constexpr std::uint32_t DEFAULT_SEED = 20261124;
 constexpr std::size_t LOGS = 600;
+constexpr std::uint32_t ALONE = 1;  // WQ38: the group size Needs is asked with: a lone bot, a party
+constexpr std::uint32_t PARTY = 5;
 constexpr std::uint32_t MAP_A = 0;
 constexpr std::uint32_t MAP_B = 1;
 constexpr std::int32_t CELL_LOW = -6;  // the made-up maps span cells -6 to 5: a cell border and negative coordinates
@@ -115,6 +117,7 @@ struct World
     QuestIndex index;
     std::vector<QuestSlot> log;
     std::uint8_t team{0};
+    std::uint32_t groupSize{ALONE};  // WQ38
     FieldAsk ask;
 };
 
@@ -182,6 +185,7 @@ World Generate(Gen& gen)
 {
     World w;
     w.team = static_cast<std::uint8_t>(gen.Int(0, 1));
+    w.groupSize = gen.Chance(0.7f) ? ALONE : static_cast<std::uint32_t>(gen.Int(2, 5));
     std::uint8_t const level = static_cast<std::uint8_t>(gen.Int(1, 60));
     // Homes: an entry's spawns lie in and around one cell; creatures within a few levels of the bot, some far above
     std::vector<Home> creatureHomes(CREATURES);
@@ -369,6 +373,14 @@ World Generate(Gen& gen)
             quest.refused[0] = static_cast<std::uint8_t>(QuestExec::Work::Escort) + 1;
         if (gen.Chance(0.1f))
             quest.refused[1] = static_cast<std::uint8_t>(QuestExec::Work::Event) + 1;
+        // WQ38: some quests listed as impossible, some elite, group or dungeon quests
+        if (gen.Chance(0.05f))
+            quest.impossible = "data";
+        if (gen.Chance(0.15f))
+        {
+            std::uint16_t const kinds[] = {QuestFlag::ELITE, QuestFlag::GROUP, QuestFlag::DUNGEON};
+            quest.flags |= kinds[gen.Int(0, 2)];
+        }
         if (gen.Chance(0.75f))
         {
             QuestSlot slot;
@@ -398,12 +410,18 @@ World Generate(Gen& gen)
 }
 
 // The needs a quest's slot must give, worked out again from the step's text
-std::size_t ExpectedNeeds(QuestRecord const& quest, QuestSlot const& slot, std::uint8_t team)
+// WQ38: a listed quest gives nothing; an elite, group or instance quest only its ready hand-in to a lone bot
+std::size_t ExpectedNeeds(QuestRecord const& quest, QuestSlot const& slot, std::uint8_t team, std::uint32_t groupSize)
 {
-    if (quest.refused[team])
+    if (quest.refused[team] || !quest.impossible.empty())
         return 0;
     if (slot.state & Circuit::SLOT_COMPLETE)
         return 1;
+    bool const waits =
+        (quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP | QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP)) !=
+        0;
+    if (waits && groupSize <= 1)
+        return 0;
     std::size_t count = 0;
     for (std::uint32_t at = 0; at < QuestExec::ObjectiveCount(quest); ++at)
     {
@@ -534,10 +552,11 @@ void GeneratedLogs(std::uint32_t seed)
     {
         World w = Generate(gen);
         FieldAsk const& ask = w.ask;
-        std::vector<Need> const needs = Needs(w.index, w.log, w.team, pricing);
+        std::vector<Need> const needs = Needs(w.index, w.log, w.team, pricing, w.groupSize);
         needCount += needs.size();
 
-        emptyLog.Note(Needs(w.index, std::span<QuestSlot const>(), w.team, pricing).empty(), logIndex, "not empty");
+        emptyLog.Note(Needs(w.index, std::span<QuestSlot const>(), w.team, pricing, w.groupSize).empty(), logIndex,
+                      "not empty");
 
         for (QuestSlot const& slot : w.log)
         {
@@ -550,8 +569,9 @@ void GeneratedLogs(std::uint32_t seed)
                     ++mine;
                     handIns += need.kind == NeedKind::HandIn ? 1 : 0;
                 }
-            std::size_t const expected = quest ? ExpectedNeeds(*quest, slot, w.team) : 0;
-            bool const ready = quest && !quest->refused[w.team] && (slot.state & Circuit::SLOT_COMPLETE);
+            std::size_t const expected = quest ? ExpectedNeeds(*quest, slot, w.team, w.groupSize) : 0;
+            bool const ready =
+                quest && !quest->refused[w.team] && quest->impossible.empty() && (slot.state & Circuit::SLOT_COMPLETE);
             perQuest.Note(mine == expected && handIns == (ready ? 1u : 0u), logIndex,
                           "quest " + std::to_string(slot.quest) + ": " + std::to_string(mine) + " needs, expected " +
                               std::to_string(expected));
@@ -598,7 +618,7 @@ void GeneratedLogs(std::uint32_t seed)
         }
         sorted.Note(order, logIndex, "out of order");
 
-        same.Note(NeedsText(needs) == NeedsText(Needs(w.index, w.log, w.team, pricing)) &&
+        same.Note(NeedsText(needs) == NeedsText(Needs(w.index, w.log, w.team, pricing, w.groupSize)) &&
                       RankingText(ranking) == RankingText(TopFields(w.map, needs, ask)),
                   logIndex, "a second call differs");
         {
@@ -791,7 +811,7 @@ void MomentTen()
                     MakeQuest(38, 400, {MakeObjective(ObjectiveKind::Item, EYE, 3, POI_FIRST_ITEM)})},
                    gather);
     std::vector<QuestSlot> const log = {{9, 0, {}}, {22, 0, {}}, {38, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, ALONE);
     Check(needs.size() == 3 && needs[0].kind == NeedKind::Kill && needs[1].kind == NeedKind::Loot &&
               needs[2].kind == NeedKind::Loot,
           "minute 10: three needs, a kill and two loots");
@@ -845,7 +865,7 @@ void TwoSources()
     QuestIndex const index =
         FixedIndex({MakeQuest(50, 100, {MakeObjective(ObjectiveKind::Item, ITEM, 10, POI_FIRST_ITEM)})}, gather);
     std::vector<QuestSlot> const log = {{50, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, ALONE);
     FieldAsk ask;
     ask.x = Mid(0);
     ask.y = Mid(0);
@@ -869,7 +889,7 @@ void TooHigh()
                                          MakeQuest(61, 500, {MakeObjective(ObjectiveKind::Kill, ABOVE, 5, 0)})},
                                         SourceGather{});
     std::vector<QuestSlot> const log = {{60, 0, {}}, {61, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, ALONE);
     FieldAsk ask;
     ask.x = Mid(2);
     ask.y = Mid(2);
@@ -912,7 +932,7 @@ void Kinds()
     place.entry = ENDER;
     index.places.push_back(place);
     std::vector<QuestSlot> const log = {{70, 0, {}}, {72, 0, {}}, {73, Circuit::SLOT_COMPLETE, {3, 0, 0, 0}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, ALONE);
     Check(needs.size() == 3 && needs[0].kind == NeedKind::Explore && needs[1].kind == NeedKind::Talk &&
               needs[1].sources.size() == 1 && needs[1].sources[0].entry == TALKER &&
               needs[2].kind == NeedKind::HandIn && needs[2].objective == HAND_IN && needs[2].sources.size() == 1 &&
@@ -965,8 +985,8 @@ void Steps()
     index.places.push_back(giver);
     std::vector<QuestSlot> const open = {{90, 0, {}}};
     std::vector<QuestSlot> const ready = {{90, Circuit::SLOT_COMPLETE, {4, 0, 0, 0}}, {91, Circuit::SLOT_COMPLETE, {}}};
-    std::vector<Need> const credits = Needs(index, open, 0, Pricing{});
-    std::vector<Need> const handIns = Needs(index, ready, 0, Pricing{});
+    std::vector<Need> const credits = Needs(index, open, 0, Pricing{}, ALONE);
+    std::vector<Need> const handIns = Needs(index, ready, 0, Pricing{}, ALONE);
     std::optional<Need> const take = TakeNeed(index, index.quests[0], 0, Pricing{});
     std::optional<Need> const bareTake = TakeNeed(index, index.quests[1], 0, Pricing{});
     Check(credits.size() == 2 && credits[0].left == 4 && Near(credits[0].worthPerCredit, 80.0) &&
@@ -996,7 +1016,7 @@ void LoneRare()
     QuestIndex const index =
         FixedIndex({MakeQuest(95, 800, {MakeObjective(ObjectiveKind::Kill, BOAR, 10, 0)})}, SourceGather{});
     std::vector<QuestSlot> const log = {{95, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, ALONE);
     FieldAsk ask;
     ask.x = Mid(0);
     ask.y = Mid(0);
@@ -1039,7 +1059,7 @@ void PlacesAndTakes()
         FixedIndex({MakeQuest(100, 500, {placedExplore, MakeObjective(ObjectiveKind::Explore, 4004, 0, POI_NONE)})},
                    SourceGather{});
     std::vector<QuestSlot> const log = {{100, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, ALONE);
     std::vector<FieldSpawn> spawns;
     AddSpawns(spawns, 340, 3, 3, 2, 5, 5, 300);
     FieldMap const map = FieldMap::Build(spawns);
@@ -1095,10 +1115,98 @@ void PlacesAndTakes()
               takes[0].kind == NeedKind::Take && takes[0].sources.size() == 1 && takes[0].sources[0].entry == 750 &&
               Near(takes[0].worthPerCredit, 40.0),
           "takes: of the quests given near the bot the one the rules allow (not too low, in the log or elite)");
+
+    // WQ18b part 3 (fault F5): the far takes. Forty givers in a row, a hundred yards apart, one quest each
+    QuestGather wide;
+    std::vector<std::uint32_t> nearest;
+    for (std::uint32_t i = 0; i < 40; ++i)
+    {
+        QuestRecord quest = MakeQuest(200 + i, 400, {});
+        if (i == 5)
+            quest.minLevel = 30;  // refused: the next giver's quest takes its turn
+        else if (i >= 1 && nearest.size() < FAR_TAKES)
+            nearest.push_back(200 + i);
+        wide.quests.push_back(quest);
+        QuestPlace place = near;
+        place.x = Mid(0) + 100.0f * static_cast<float>(i + 1);
+        place.entry = 800 + i;
+        wide.places.push_back(place);
+        wide.relations.push_back({200 + i, 800 + i, false, false});
+    }
+    QuestIndex const row = QuestIndex::Build(wide);
+    Take::Facts roamer = facts;
+    roamer.inLog = {};
+    roamer.takenGroups = {};
+    std::vector<std::uint32_t> const close = TakeCandidates(row, MAP_A, Mid(0), Mid(0), 150.0f);
+    std::vector<std::uint32_t> const far =
+        FarTakeCandidates(row, roamer, MAP_A, Mid(0), Mid(0), 150.0f, close, Pricing{});
+    // From 2000 yd before the row: its first ten givers lie within reach, none within the near radius
+    std::vector<std::uint32_t> const reached =
+        FarTakeCandidates(row, roamer, MAP_A, Mid(0) - 2000.0f, Mid(0), 150.0f, {}, Pricing{});
+    Check(close == std::vector<std::uint32_t>{200} && far.size() == FAR_TAKES && far == nearest && far.back() == 225 &&
+              reached == std::vector<std::uint32_t>{200, 201, 202, 203, 204, 206, 207, 208, 209},
+          "far takes: beyond the near radius the quests of the nearest givers within reach that the rules allow, at "
+          "most FAR_TAKES, none of the near ones (mutants: no count limit, no reach)");
+
+    // One far giver place with more quests than the cap: the count stops inside the place too (WQL5b review L9)
+    QuestGather crowded;
+    for (std::uint32_t i = 0; i < FAR_TAKES + 2; ++i)
+    {
+        crowded.quests.push_back(MakeQuest(300 + i, 400, {}));
+        crowded.relations.push_back({300 + i, 900, false, false});
+    }
+    QuestPlace hub = near;
+    hub.x = Mid(0) + 500.0f;
+    hub.entry = 900;
+    crowded.places.push_back(hub);
+    QuestIndex const busy = QuestIndex::Build(crowded);
+    std::vector<std::uint32_t> const capped =
+        FarTakeCandidates(busy, roamer, MAP_A, Mid(0), Mid(0), 150.0f, {}, Pricing{});
+    Check(capped.size() == FAR_TAKES,
+          "far takes: a far place that gives more quests than FAR_TAKES gives at most FAR_TAKES (mutant: the cap "
+          "inside a place removed)");
 }
 
 // WQ17b: the generated worlds again (their own stream of the seed) with givers, the take rules' fields and objective
 // places added: the shares, the takes, the places and ordinary hostiles over every log
+// WQ38: a quest on the list of impossible quests gives no need, its ready hand-in neither; an elite, group or dungeon
+// quest gives a lone bot no objective need (its ready hand-in, which a lone bot can do, stays) and a party all of them
+void ListedAndAlone()
+{
+    constexpr std::uint32_t BOAR = 101;
+    QuestRecord listed = MakeQuest(40, 400, {MakeObjective(ObjectiveKind::Kill, BOAR, 5, 0)});
+    listed.impossible = "far_trip";
+    QuestRecord elite = MakeQuest(41, 400, {MakeObjective(ObjectiveKind::Kill, BOAR, 5, 0)});
+    elite.flags = QuestFlag::ELITE;
+    QuestRecord group = MakeQuest(42, 400, {MakeObjective(ObjectiveKind::Kill, BOAR, 5, 0)});
+    group.flags = QuestFlag::GROUP;
+    QuestRecord dungeon = MakeQuest(43, 400, {MakeObjective(ObjectiveKind::Kill, BOAR, 5, 0)});
+    dungeon.flags = QuestFlag::DUNGEON;
+    QuestRecord plain = MakeQuest(44, 400, {MakeObjective(ObjectiveKind::Kill, BOAR, 5, 0)});
+    QuestIndex const index = FixedIndex({listed, elite, group, dungeon, plain}, SourceGather{});
+    std::vector<QuestSlot> const open = {{40, 0, {}}, {41, 0, {}}, {42, 0, {}}, {43, 0, {}}, {44, 0, {}}};
+    std::vector<QuestSlot> const ready = {{40, Circuit::SLOT_COMPLETE, {}},
+                                          {41, Circuit::SLOT_COMPLETE, {}},
+                                          {42, Circuit::SLOT_COMPLETE, {}},
+                                          {43, Circuit::SLOT_COMPLETE, {}}};
+    auto const quests = [](std::vector<Need> const& needs)
+    {
+        std::vector<std::uint32_t> ids;
+        for (Need const& need : needs)
+            ids.push_back(need.quest);
+        return ids;
+    };
+    Check(quests(Needs(index, open, 0, Pricing{}, ALONE)) == std::vector<std::uint32_t>{44},
+          "listed and alone: a lone bot's open needs are the plain quest's only");
+    Check(quests(Needs(index, open, 0, Pricing{}, 2)) == std::vector<std::uint32_t>{41, 42, 43, 44},
+          "listed and alone: a bot in a group of two works the elite, group and dungeon quests too, never the listed");
+    std::vector<Need> const handIns = Needs(index, ready, 0, Pricing{}, ALONE);
+    Check(
+        quests(handIns) == std::vector<std::uint32_t>{41, 42, 43} &&
+            std::all_of(handIns.begin(), handIns.end(), [](Need const& need) { return need.kind == NeedKind::HandIn; }),
+        "listed and alone: a lone bot hands in a ready flagged quest, a listed one not");
+}
+
 void GeneratedSteps(std::uint32_t seed)
 {
     Gen gen{std::mt19937(seed + 1)};
@@ -1208,14 +1316,14 @@ void GeneratedSteps(std::uint32_t seed)
             if (std::binary_search(inLog.begin(), inLog.end(), quest.id))
                 takeLog.Note(mine == 0, logIndex, "quest " + std::to_string(quest.id));
 
-            if (RefusedFor(quest, w.team))
+            if (RefusedFor(quest, w.team) || Listed(quest))
                 continue;
             float const worth = QuestWorth(quest, pricing);
             QuestShares const shares = SharesOf(quest, pricing);
             std::array<QuestSlot, 1> const open = {QuestSlot{quest.id, 0, {}}};
             std::array<QuestSlot, 1> const ready = {QuestSlot{quest.id, Circuit::SLOT_COMPLETE, {}}};
-            std::vector<Need> const credits = Needs(w.index, open, w.team, pricing);
-            std::vector<Need> const handIns = Needs(w.index, ready, w.team, pricing);
+            std::vector<Need> const credits = Needs(w.index, open, w.team, pricing, PARTY);
+            std::vector<Need> const handIns = Needs(w.index, ready, w.team, pricing, PARTY);
             std::optional<Need> const take = TakeNeed(w.index, quest, w.team, pricing);
             double sum = take ? take->worthPerCredit : shares.take;
             float most = 0.0f;
@@ -1232,7 +1340,7 @@ void GeneratedSteps(std::uint32_t seed)
                 handIn.Note(handIns[0].worthPerCredit > most, logIndex, "quest " + std::to_string(quest.id));
         }
 
-        std::vector<Need> needs = Needs(w.index, w.log, w.team, pricing);
+        std::vector<Need> needs = Needs(w.index, w.log, w.team, pricing, PARTY);
         needs.insert(needs.end(), takes.begin(), takes.end());
         Ranking const ranking = TopFields(w.map, needs, w.ask);
         for (std::uint32_t i = 0; i < needs.size(); ++i)
@@ -1304,6 +1412,7 @@ int main(int argc, char** argv)
     Steps();
     LoneRare();
     PlacesAndTakes();
+    ListedAndAlone();
     GeneratedSteps(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

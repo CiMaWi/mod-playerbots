@@ -18,6 +18,7 @@
 #include "BotTravel.h"
 #include "Corpse.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "FleeManager.h"
 #include "G3D/Vector3.h"
 #include "GameObject.h"
@@ -52,6 +53,7 @@
 #include "Unit.h"
 #include "Vehicle.h"
 #include "WaypointMovementGenerator.h"
+#include "WorldLog.h"
 
 MovementAction::MovementAction(PlayerbotAI* botAI, std::string const name) : Action(botAI, name)
 {
@@ -2668,14 +2670,14 @@ bool MoveToLootAction::Execute(Event /*event*/)
     LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
     if (availableLoot->HasInteraction() || bot->GetLootGUID())
     {
-        lootWatchGuid.Clear();
+        lootWatch = MoveToLootRules::Watch{};
         return false;
     }
 
     LootObject loot = AI_VALUE(LootObject, "loot target");
     if (!loot.IsLootPossible(bot))
     {
-        lootWatchGuid.Clear();
+        lootWatch = MoveToLootRules::Watch{};
         return false;
     }
 
@@ -2683,38 +2685,29 @@ bool MoveToLootAction::Execute(Event /*event*/)
     if (!target)
         return false;
 
-    float const distance = bot->GetDistance(target);
-    uint32 const nowMs = getMSTime();
-
-    constexpr uint32 evalGapMs = 10000;    // longer than the slowest out-of-combat tick (1-3 s)
-    constexpr uint32 noProgressMs = 5000;  // give up on a target after 5s without progress
-    constexpr float reachedMargin = 2.0f;  // near-target distance jitter margin
-
-    if (loot.guid != lootWatchGuid || nowMs - lootWatchLastEvalMs > evalGapMs)
-    {
-        lootWatchGuid = loot.guid;
-        lootWatchDistance = distance;
-        lootWatchMs = nowMs;
-    }
-    else if (distance < lootWatchDistance - 0.5f)
-    {
-        lootWatchDistance = distance;
-        lootWatchMs = nowMs;
-    }
-    lootWatchLastEvalMs = nowMs;
-
     // Drop a target the bot is not getting closer to (blocked path, pulled elsewhere), so the next
     // pickup chooses a closer reachable one.
-    if (distance > sPlayerbotAIConfig.ContactDistance + reachedMargin && nowMs - lootWatchMs >= noProgressMs)
+    if (MoveToLootRules::GiveUp(lootWatch, loot.guid.GetRawValue(), bot->GetDistance(target), getMSTime(),
+                                sPlayerbotAIConfig.ContactDistance))
     {
         availableLoot->DeferLoot(loot.guid);
+        if (WorldLog::Active())
+            EventLog::Emit(bot, EventLog::EventType::TravelLootDefer, "no_progress", 0,
+                           static_cast<int64>(loot.guid.GetRawValue()));
         if (AI_VALUE(LootObject, "loot target").guid == loot.guid)
             context->GetValue<LootObject>("loot target")->Set(LootObject());
-        lootWatchGuid.Clear();
         return false;
     }
 
-    return MoveNear(target, sPlayerbotAIConfig.ContactDistance);
+    if (MoveNear(target, sPlayerbotAIConfig.ContactDistance))
+        return true;
+
+    // A target passed by (GatherPassBy) is fetched from afar, where no point round it need be in sight (the way rounded
+    // a rise): the path then goes to the target itself, which the bot saw when it was admitted (WR30)
+    if (availableLoot->Reach(loot.guid) <= 0.0f)
+        return false;
+
+    return MoveTo(target->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
 }
 
 bool MoveOutOfEnemyContactAction::Execute(Event /*event*/)

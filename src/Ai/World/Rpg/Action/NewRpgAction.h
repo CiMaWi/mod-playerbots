@@ -159,8 +159,9 @@ public:
     static bool HoldUseChannel(PlayerbotAI* botAI);
 };
 
-// Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head
-// d4e5d110): selects it, stops the walk, dismounts and attacks. One job: the seek and the approach are the executor's
+// Attacks the target the quest executor or the gather status holds (questing WT35a, professions WR20c;
+// SoughtTarget::Held; ported/adapted from mod-playerbots PR #2632, head d4e5d110): selects it, stops the walk,
+// dismounts and attacks. One job: the seek and the approach are the executor's
 class NewRpgAttackQuestTargetAction : public AttackAction
 {
 public:
@@ -240,6 +241,9 @@ public:
 // A trip at a transport leg past its approach (waiting at the dock, boarding, aboard, walking off) keeps the bot on
 // foot: the boarding and exit moves dismount it, and the mount check would mount it again before the next one (WT54)
 bool TravelKeepsOnFoot(PlayerbotAI* botAI);
+// The held trip's transport leg holds the bot's eating and drinking (TravelLegs::HoldsUpkeep, PA91): from its dock on
+// to its end, unless it waits or rides with its docking far ahead
+bool TravelHoldsUpkeep(PlayerbotAI* botAI);
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction
 {

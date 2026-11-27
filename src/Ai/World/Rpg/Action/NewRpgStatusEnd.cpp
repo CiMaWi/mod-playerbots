@@ -14,6 +14,7 @@
 #include "BotTravel.h"
 #include "ErrandRules.h"
 #include "EventLog.h"
+#include "GatherLive.h"
 #include "GatherPassBy.h"
 #include "GoToRules.h"
 #include "GroundRules.h"
@@ -191,18 +192,45 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         NewRpgDoFishAction::EndTrip(botAI, *fish, outcome,
                                     note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome)));
     // A quest given up, by its executor or by whatever ended it: its failure row and record (questing WT35c). A free
-    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order only for
-    // its failed hand-ins (WQ19b, Pursuit::WritesFailure)
+    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order for its
+    // failed hand-ins (WQ19b, Pursuit::WritesFailure) and, at its own end below, for the planned takes it leaves open
+    // at their giver (WQ18c, QuestGiveUp::OrderEnded)
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
         quest && Pursuit::WritesFailure(quest->order.has_value(), outcome, word))
         QuestGiveUp::Noted(botAI, *quest, word);
-    // An order's one QuestOrder row, whatever ended it (questing WQ19a)
+    // An order's one QuestOrder row, whatever ended it (questing WQ19a); its own end goes on to the route it belongs
+    // to (WQ18b: the route's next order follows; an end that says the place gave nothing or was not reached closes
+    // its cell). Any other end goes there too (part 3): a failed walk closes the cell, a take-over gives the order
+    // again
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data); quest && quest->order)
-        QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word);
+    {
+        bool const reached = quest->order->arrivedAt != 0;
+        if (std::optional<Planner::QuestOrderEnd> const own =
+                QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word))
+            Planner::OnOrderEnd(botAI, quest->order->order, *own, reached);
+        else
+            Planner::OnOrderFailed(botAI, quest->order->order, outcome, note.source ? note.source : note.word);
+    }
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));
     GatherPassBy::NoteStatusEnd(botAI, oldStatus);  // the ended status's passes by cause (professions WR13c)
+    // A gather walk that ended no_walk: the current stop's place enters the record of failed attempts, so no circuit
+    // plans it while the entry lives (professions WPC9, DECISIONS WPC.12). A local piece's own no_walk entry there
+    // stays as it is
+    if (auto const* gather = std::get_if<NewRpgInfo::DoGather>(&info.data);
+        gather && gather->nodeSpawnId && ::GoTo::CauseOf(endWord) == "no_walk")
+    {
+        Player* const bot = botAI->GetBot();
+        WorldPosition const& stop = gather->nodePos;
+        FailedAttempts::Failure failure;
+        failure.goal = {stop.GetMapId(), stop.GetPositionX(), stop.GetPositionY(), stop.GetPositionZ()};
+        failure.spot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        botAI->GetTravel().NoteFailure("gather_no_walk", failure, 0);
+    }
+    // A planned circuit's span enters the observed rate's tally (professions WPC13b)
+    if (auto const* gather = std::get_if<NewRpgInfo::DoGather>(&info.data))
+        Planner::NoteGatherSpan(gather->span, gather->spanStartMs);
     RpgStatusCore::Replace(botAI, info, std::move(next), {outcome, endWord});
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
 }
@@ -237,12 +265,18 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
     std::optional<NewRpgInfo::DoFish> fishing;
     if (auto const* const fish = std::get_if<NewRpgInfo::DoFish>(&info.data))
         fishing = *fish;
+    // A planned circuit the reset drops is a span of the observed rate as at a status change (professions WPC13b)
+    std::optional<std::pair<GatherRate::Span, uint32>> gathering;
+    if (auto const* const gather = std::get_if<NewRpgInfo::DoGather>(&info.data))
+        gathering.emplace(gather->span, gather->spanStartMs);
     // The held trip first: kept with its holder across a far teleport, else ended without a row (as its status)
     hold.Reset(farTeleport);
     StatusEnd::ApplyReset(list.status, info);
     if (fishing && !std::holds_alternative<NewRpgInfo::DoFish>(info.data) && botAI->GetBot())
         NewRpgDoFishAction::EndTrip(botAI, *fishing, StatusEnd::Outcome::Interrupted,
                                     farTeleport ? "teleport" : "reset");
+    if (gathering && !std::holds_alternative<NewRpgInfo::DoGather>(info.data))
+        Planner::NoteGatherSpan(gathering->first, gathering->second);
     StatusEnd::ApplyReset(list.planner, botAI->planner);
     StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
     botAI->GetTravel().ResetFailures(list.rpgMemos);  // the record of failed attempts with the memos
@@ -292,7 +326,7 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
     }
     TravelTransportGeometry::DiscardMotion(*bot, trip->passengerMotion);
     LandsItsBot(botAI, *trip);
-    RpgStatusCore::Hold(travel).Finish(outcome, word);
+    RpgStatusCore::Hold(travel).Finish(outcome, word, bot->GetExactDist(trip->dest));
     TravelOrders::FlushWalk(botAI);
 }
 

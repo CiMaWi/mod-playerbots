@@ -29,6 +29,7 @@
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "TestConstraints.h"
+#include "TestProbe.h"
 #include "ThreadCheck.h"
 #include "TravelLegRules.h"
 
@@ -238,6 +239,17 @@ bool CheckMountStateAction::isUseful()
     if (botAI->IsInVehicle() || bot->isDead() || bot->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
         !bot->IsOutdoors() || bot->InArena())
         return false;
+
+    // A mount's cast takes the place of the bot's running cast or channel (a hearthstone, a craft): no mount until it
+    // ends (needs-and-errands-3 NR3c: a sick bot's stone ended interrupted:other in the update it began, when the
+    // speed packet of its dismount ran this action)
+    if (bot->IsNonMeleeSpellCast(false, false, true))
+    {
+        if (TestProbe::On(botAI->testConstraints))
+            if (Spell const* const spell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                LOG_INFO("playerbots", "[Probe] {} mount held: casting {}", bot->GetName(), spell->GetSpellInfo()->Id);
+        return false;
+    }
 
     master = GetMaster();
 

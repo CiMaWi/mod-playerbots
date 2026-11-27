@@ -38,13 +38,6 @@ namespace
 {
 // The bot looks for the banker once it is this close to the spawn (the spawn is the banker's own position)
 constexpr float BANKER_SEARCH_YARDS = 20.0f;
-// The nearest banker spawns on the map looked through for one whose faction serves the bot
-constexpr size_t BANKER_CANDIDATES = 32;
-
-bool Contains(std::vector<uint32> const& guids, uint32 guid)
-{
-    return std::find(guids.begin(), guids.end(), guid) != guids.end();
-}
 
 template <typename Verdicts>
 auto VerdictOf(Verdicts& verdicts, uint32 itemGuid) -> decltype(&verdicts.front())
@@ -52,6 +45,30 @@ auto VerdictOf(Verdicts& verdicts, uint32 itemGuid) -> decltype(&verdicts.front(
     auto verdict = std::find_if(verdicts.begin(), verdicts.end(),
                                 [itemGuid](BankVerdict const& known) { return known.itemGuid == itemGuid; });
     return verdict == verdicts.end() ? nullptr : &*verdict;
+}
+
+// The row's word for a move the core refused, one per result code
+BankReason RefusalOf(InventoryResult result)
+{
+    switch (result)
+    {
+        case EQUIP_ERR_ALREADY_LOOTED:
+            return BankReason::RefusedLooted;
+        case EQUIP_ERR_DONT_OWN_THAT_ITEM:
+            return BankReason::RefusedNotOwned;
+        case EQUIP_ERR_CANT_CARRY_MORE_OF_THIS:
+        case EQUIP_ERR_ITEM_MAX_LIMIT_CATEGORY_COUNT_EXCEEDED:
+            return BankReason::RefusedLimit;
+        case EQUIP_ERR_BANK_FULL:
+        case EQUIP_ERR_INVENTORY_FULL:
+            return BankReason::RefusedFull;
+        case EQUIP_ERR_CAN_ONLY_DO_WITH_EMPTY_BAGS:
+            return BankReason::RefusedBag;
+        case EQUIP_ERR_NONE:
+            return BankReason::RefusedInPlace;
+        default:
+            return BankReason::RefusedOther;
+    }
 }
 
 // The first plan's verdicts as they stand before any move: a planned withdrawal leaves the item in the bank, a
@@ -174,14 +191,16 @@ bool SpaceStep(Player* bot, BankVisitData& visit, BankIn const& in, BankPlan con
     return false;
 }
 
-// One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit
-void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
+// One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit. True:
+// the item moved
+bool MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
 {
     Item* item = bot->GetItemByPos(next.bag, next.slot);
+    uint32 const planNumber = static_cast<uint32>(visit.moved.size() + visit.refused.size());  // moves before it
     if (!item || item->GetGUID().GetCounter() != next.itemGuid)
     {
         visit.refused.push_back(next.itemGuid);  // not where the plan saw it this tick: left quietly
-        return;
+        return false;
     }
 
     bool const withdraw = next.kind == BankChoice::Withdraw;
@@ -193,11 +212,16 @@ void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan co
     if (result != EQUIP_ERR_OK)
     {
         visit.refused.push_back(next.itemGuid);
+        BankReason const refusal = RefusalOf(result);
         if (verdict)
-            verdict->reason = BankReason::Refused;
-        LOG_DEBUG("playerbots", "[Bank mail] {} bank visit: {} of item {} refused, error {}", bot->GetName(),
-                  ChoiceWord(next.kind), next.entry, static_cast<uint32>(result));
-        return;
+            verdict->reason = refusal;
+        if (refusal == BankReason::RefusedOther)
+            LOG_INFO("playerbots", "[Bank mail] {} bank visit: {} of item {} refused, error {}", bot->GetName(),
+                     ChoiceWord(next.kind), next.entry, static_cast<uint32>(result));
+        else
+            LOG_DEBUG("playerbots", "[Bank mail] {} bank visit: {} of item {} {}, error {}", bot->GetName(),
+                      ChoiceWord(next.kind), next.entry, ReasonWord(refusal), static_cast<uint32>(result));
+        return false;
     }
 
     visit.moved.push_back(next.itemGuid);
@@ -212,12 +236,22 @@ void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan co
     if (!verdict)
     {
         if (planned)
+        {
             visit.verdicts.push_back(*planned);
-        return;
+            visit.verdicts.back().plan = planNumber;
+        }
+        return true;
     }
     verdict->choice = next.kind;
-    if (planned)
-        verdict->reason = planned->reason;
+    if (!planned)
+        return true;
+    // The inputs of the plan that made the move (NR12a)
+    verdict->reason = planned->reason;
+    verdict->worth = planned->worth;
+    verdict->payout = planned->payout;
+    verdict->usage = planned->usage;
+    verdict->plan = planNumber;
+    return true;
 }
 
 // One bank decision row per item of the visit's first plan, with what was really done with it
@@ -230,6 +264,15 @@ void WriteBankRows(Player* bot, BankVisitData const& visit)
                             {"count", static_cast<float>(row.count)},
                             {"due_level", static_cast<float>(row.dueLevel)}},
                            row.entry);
+    // Needs and errands NR12a: a moved stack of sale stock writes its move's inputs in a row beside its own
+    for (BankVerdict const& row : visit.verdicts)
+        if (row.saleStock && (row.choice == BankChoice::Deposit || row.choice == BankChoice::Withdraw))
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Bank, "stock_inputs", ChoiceWord(row.choice),
+                               static_cast<float>(row.worth),
+                               {{"payout", static_cast<float>(row.payout)},
+                                {"usage", static_cast<float>(row.usage)},
+                                {"plan", static_cast<float>(row.plan)}},
+                               row.entry);
     // Professions WR17: the bank-space steps, and the decision that left something out
     for (SpaceAnswer const& row : visit.space)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Bank, SpaceChoiceWord(row.choice),
@@ -265,11 +308,11 @@ bool BankerInReach(Player* bot, WorldObject const& banker, float& /*range*/)
 
 // Bags and bank reads and the move: the bot's own map thread inside its AI update (see Withdraw). Planned again before
 // every move, so the bag slot a deposit frees serves a withdrawal that had no room
-VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
+BankMove NextMove(PlayerbotAI* botAI, Player* bot, BankVisitData& visit)
 {
-    BankVisitData& visit = botAI->bankMail.bankData;
-    BankIn const in = BuildBankIn(botAI);
-    BankPlan const plan = PlanBankVisit(in, visit.refused);
+    BankIn in = BuildBankIn(botAI);
+    in.bot.auctionNext = visit.auctionNext;
+    BankPlan const plan = PlanNextMove(in, visit.moved, visit.refused);
     if (!visit.planned)
     {
         visit.planned = true;
@@ -277,15 +320,21 @@ VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
     }
     // Room first (professions WR17): the deposits then fill a bank bag bought on this visit
     if (!visit.spaceDone && SpaceStep(bot, visit, in, plan))
+        return BankMove::Stopped;
+
+    if (plan.steps.empty())
+        return BankMove::NoneLeft;
+
+    return MoveItem(botAI, bot, visit, plan, plan.steps.front()) ? BankMove::Moved : BankMove::Stopped;
+}
+
+// One visit step: several moves (RunBankStep), so a visit does not wait an AI update per item
+VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
+{
+    if (RunBankStep([&] { return NextMove(botAI, bot, botAI->bankMail.bankData); }))
         return VisitTurn{VisitNext::Pending};
 
-    auto next = std::find_if(plan.steps.begin(), plan.steps.end(),
-                             [&visit](BankStep const& planned) { return !Contains(visit.moved, planned.itemGuid); });
-    if (next == plan.steps.end())
-        return VisitTurn{VisitNext::End, VisitEnd::Done};
-
-    MoveItem(botAI, bot, visit, plan, *next);
-    return VisitTurn{VisitNext::Pending};
+    return VisitTurn{VisitNext::End, VisitEnd::Done};
 }
 
 bool WriteBankEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, VisitEnd end)
@@ -322,68 +371,14 @@ constexpr VisitKindRow BANK_VISIT{.startWord = "bank",
                                   .end = &WriteBankEnd};
 }  // namespace
 
-std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
-{
-    refusal = nullptr;
-    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
-        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!bot || !indexes)
-    {
-        refusal = "the planner's indexes are not ready";
-        return std::nullopt;
-    }
-
-    std::vector<Planner::Nearby> const nearest =
-        indexes->Nearest(Planner::ServiceKind::Banker, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                         bot->GetPositionZ(), BANKER_CANDIDATES);
-    if (nearest.empty())
-    {
-        refusal = "no banker on the map";
-        return std::nullopt;
-    }
-
-    for (Planner::Nearby const& candidate : nearest)
-    {
-        Planner::Service const& service = indexes->services[candidate.index];
-        if (!BankerServes(bot, service.factionTemplate))
-            continue;
-        return BankerSpot{service.mapId, service.x, service.y, service.z, service.entry, candidate.distance};
-    }
-    refusal = "no banker near the bot serves its faction";
-    return std::nullopt;
-}
-
-bool BankerServes(Player const* bot, uint32 factionTemplate)
-{
-    // The banker's reaction must be above Unfriendly
-    return bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(factionTemplate), bot) > REP_UNFRIENDLY;
-}
-
-std::optional<BankerSpot> BankerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards)
-{
-    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
-        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!bot || !indexes)
-        return std::nullopt;
-
-    for (Planner::Nearby const& candidate :
-         indexes->Nearest(Planner::ServiceKind::Banker, mapId, x, y, z, BANKER_CANDIDATES, yards))
-    {
-        Planner::Service const& service = indexes->services[candidate.index];
-        if (BankerServes(bot, service.factionTemplate))
-            return BankerSpot{service.mapId, service.x,     service.y,
-                              service.z,     service.entry, bot->GetExactDist(service.x, service.y, service.z)};
-    }
-    return std::nullopt;
-}
-
 VisitKindRow const& BankVisitRow() { return BANK_VISIT; }
 
-bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
+bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot, bool auctionNext)
 {
     if (!BeginVisit(botAI, VisitKind::Bank, &spot))
         return false;
     botAI->bankMail.bankData = BankVisitData{};
+    botAI->bankMail.bankData.auctionNext = auctionNext;
     return true;
 }
 

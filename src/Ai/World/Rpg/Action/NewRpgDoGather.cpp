@@ -6,16 +6,26 @@
 
 #include "NewRpgDoGather.h"
 
+#include <cmath>
+#include <mutex>
+#include <unordered_map>
+
+#include "Creature.h"
 #include "GameObject.h"
+#include "GatherLive.h"
 #include "GatherNodeMgr.h"
+#include "GatherRules.h"
 #include "LootObjectStack.h"
+#include "Map.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectDefines.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PoolMgr.h"
 #include "ProfessionConfig.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
@@ -36,13 +46,142 @@ enum GatherSpells
 constexpr char const* CIRCUIT_DONE = "circuit_done";
 constexpr char const* MAP_CHANGED = "map_changed";
 // Why a stop resolved (its row's third alternative, the bot's distance to the node in yd): its own harvest cast went
-// at the node and the node went; seen down from afar (grid loaded, no live object); not there when the bot stood at
-// it; written off: no loot access, the harvest did not happen in time
+// at the node in this status and the node went, before or after the status targeted it (Gather::OwnTakeInStatus);
+// down, seen empty within the bot's sight (SeenEmpty) or when the bot stood at it, by the words of WR13d (DownStop,
+// Gather::DownCause); written off: no loot access, the harvest did not happen in time
 constexpr char const* STOP_HARVESTED = "harvested";
-constexpr char const* STOP_SEEN_DOWN = "seen_down";
-constexpr char const* STOP_GONE = "gone";
 constexpr char const* STOP_NO_LOOT = "no_loot";
-constexpr char const* STOP_TIMED_OUT = "timed_out";
+constexpr char const* STOP_TIMED_OUT = GatherStopWords::TIMED_OUT;
+// The bot walked toward the stop Gather::WALK_STALL_MS without moving (a fight or another pause does not count): the
+// stop resolves and the status ends stuck, so the planner picks again (a trip it holds can't be dropped otherwise)
+constexpr char const* STOP_UNREACHED = GatherStopWords::UNREACHED;
+// The loot pipeline's reach for a node: its height check (LootObject::IsLootPossible) and the close approach here
+constexpr float NODE_REACH = INTERACTION_DISTANCE - 2.0f;
+
+// Why a stop at a live node timed out (WPC8, its trace row's reason), the first that holds of what the bot read at the
+// write-off: its skill below the node's; no tool for the cast; the node open to another looter; the node more than
+// NODE_REACH above or below it, or out of that reach; an autorepeat spell running (it stops the loot pipeline's
+// open); its own harvest cast went at the spawn and the node stands; the loot pipeline aimed elsewhere; mounted;
+// refused by the loot pipeline for another reason; none of these, and no cast
+namespace TimedOutWords
+{
+constexpr char const* SKILL_LOW = "skill_low";
+constexpr char const* NO_TOOL = "no_tool";
+constexpr char const* IN_USE = "in_use";
+constexpr char const* HEIGHT = "height";
+constexpr char const* OUT_OF_REACH = "out_of_reach";
+constexpr char const* AUTOREPEAT = "autorepeat";
+constexpr char const* CAST_NO_TAKE = "cast_no_take";
+constexpr char const* OTHER_TARGET = "other_target";
+constexpr char const* MOUNTED = "mounted";
+constexpr char const* REFUSED = "refused";
+constexpr char const* NO_CAST = "no_cast";
+}  // namespace TimedOutWords
+
+namespace
+{
+// The last gather cast at each node spawn by any bot (WR13d, the diagnosis): the bot's guid counter and when. Bots run
+// on map threads, so the record is locked; one write per harvest cast, one read per stop found down. Players' takes
+// are not in it
+struct HarvestNote
+{
+    ObjectGuid::LowType bot{0};
+    uint32 ms{0};
+};
+std::mutex harvestNotesMutex;
+std::unordered_map<ObjectGuid::LowType, HarvestNote> harvestNotes;
+
+// How a stop whose spawn holds no live node ends, from what the bot can read now (the record, the map's store and
+// pool state): taken when its own cast went at the spawn since the status began (WPC13b), else down by its cause
+struct StopEnd
+{
+    bool taken{false};
+    std::string_view cause;
+};
+// Whether the bot's own gather cast went at the spawn since it reached the stop (the record NoteHarvestCast keeps)
+bool OwnCastSince(Player* bot, ObjectGuid::LowType spawnId, uint32 reachMs)
+{
+    std::lock_guard<std::mutex> lock(harvestNotesMutex);
+    auto const note = harvestNotes.find(spawnId);
+    return note != harvestNotes.end() && note->second.bot == bot->GetGUID().GetCounter() &&
+           GetMSTimeDiffToNow(note->second.ms) <= GetMSTimeDiffToNow(reachMs);
+}
+
+std::string_view TimedOutCause(Player* bot, GameObject* go, LootObject& lootObj, bool ownCast, bool targeted)
+{
+    using namespace TimedOutWords;
+    GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(go->GetSpawnId());
+    uint16 const skill = spawn ? static_cast<uint16>(spawn->skillId) : 0;
+    if (skill && (!bot->HasSkill(skill) || bot->GetSkillValue(skill) < spawn->reqSkillValue))
+        return SKILL_LOW;
+    if (uint32 const tool = Planner::GatherToolCategory(skill); tool && !bot->HasItemTotemCategory(tool))
+        return NO_TOOL;
+    if (go->getLootState() != GO_READY)
+        return IN_USE;
+    if (std::abs(go->GetPositionZ() - bot->GetPositionZ()) > NODE_REACH)
+        return HEIGHT;
+    if (bot->GetDistance(go) > NODE_REACH)
+        return OUT_OF_REACH;
+    if (bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+        return AUTOREPEAT;
+    if (ownCast)
+        return CAST_NO_TAKE;
+    if (!targeted)
+        return OTHER_TARGET;
+    if (bot->IsMounted())
+        return MOUNTED;
+    if (!lootObj.IsLootPossible(bot))
+        return REFUSED;
+    return NO_CAST;
+}
+
+StopEnd DownStop(Player* bot, ObjectGuid::LowType spawnId, uint32 statusStartMs)
+{
+    Gather::DownFacts facts;
+    GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(spawnId);
+    uint32 const respawnMs = spawn ? spawn->respawnSecs * IN_MILLISECONDS : 0;
+    {
+        std::lock_guard<std::mutex> lock(harvestNotesMutex);
+        auto const note = harvestNotes.find(spawnId);
+        if (note != harvestNotes.end() && GetMSTimeDiffToNow(note->second.ms) < respawnMs)
+        {
+            facts.ownTake = note->second.bot == bot->GetGUID().GetCounter();
+            facts.otherTake = !facts.ownTake;
+            if (facts.ownTake && Gather::OwnTakeInStatus(GetMSTimeDiffToNow(note->second.ms),
+                                                         GetMSTimeDiffToNow(statusStartMs), respawnMs))
+                return {true, STOP_HARVESTED};
+        }
+    }
+    Map* map = bot->GetMap();
+    auto const bounds = map->GetGameObjectBySpawnIdStore().equal_range(spawnId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+    {
+        facts.held = true;
+        if (it->second->isSpawned() && it->second->GetGoState() != GO_STATE_READY)
+            facts.notReady = true;
+    }
+    if (uint32 const pool = sPoolMgr->IsPartOfAPool<GameObject>(spawnId))
+    {
+        SpawnedPoolData const& spawned = map->GetPoolData();
+        facts.pooled = true;
+        facts.held = spawned.IsSpawnedObject<GameObject>(spawnId);
+        uint32 const up = spawned.GetSpawnedObjects(pool);
+        uint32 const mother = sPoolMgr->IsPartOfAPool<Pool>(pool);
+        facts.poolUp = up > (facts.held ? 1u : 0u) ||
+                       (mother && spawned.GetSpawnedObjects(mother) > (spawned.IsSpawnedObject<Pool>(pool) ? 1u : 0u));
+    }
+    return {false, Gather::DownCause(facts)};
+}
+
+// The bot sees the spawn point empty (WR13d): it lies within the bot's sight, the map's visibility range (as a player
+// sees a node on the minimap), its grid is loaded and it holds no live node. Beyond its sight the bot knows nothing
+// and walks closer
+bool SeenEmpty(Player* bot, WorldPosition const& pos, ObjectGuid::LowType spawnId)
+{
+    Map* map = bot->GetMap();
+    return bot->GetExactDist(pos) <= map->GetVisibilityRange() && GatherNodeMgr::IsVerifiablyDown(map, pos, spawnId);
+}
+}  // namespace
 
 void NewRpgDoGatherAction::ClearLootTargetForNode(ObjectGuid::LowType spawnId)
 {
@@ -87,7 +226,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // above this fill level (see StoreLootAction), so every harvest would
     // open the node, store nothing and stall until the timeout. Stop
     // farming and let the maintenance logic (sell/destroy) catch up.
-    if (AI_VALUE(uint8, "bag space") > 80)
+    if (Gather::BagsTooFull(AI_VALUE(uint8, "bag space")))
     {
         RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "bags_full"});
         return true;
@@ -106,13 +245,17 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     if (runPeriodicChecks)
         data.lastPassiveCheck = getMSTime();
 
-    // Periodically resolve a target that is verifiably empty (grid loaded, no
-    // live object) instead of walking all the way to it (taken when the bot
-    // was harvesting it): the respawn memory keeps it out until it is back.
-    if (runPeriodicChecks && data.nodeSpawnId &&
-        GatherNodeMgr::IsVerifiablyDown(bot->GetMap(), data.nodePos, data.nodeSpawnId))
+    // A creature stop has its own steps (professions WR20c)
+    if (Gather::IsCreatureStop(data.nodeSpawnId))
+        return FarmStop(data, runPeriodicChecks);
+
+    // Periodically resolve a target the bot sees empty instead of walking all
+    // the way to it (taken when the bot was harvesting it): the respawn
+    // memory keeps it out until it is back.
+    if (runPeriodicChecks && data.nodeSpawnId && SeenEmpty(bot, data.nodePos, data.nodeSpawnId))
     {
-        ResolveStop(data, data.harvestCast, false, data.harvestCast ? STOP_HARVESTED : STOP_SEEN_DOWN);
+        StopEnd const end = DownStop(bot, data.nodeSpawnId, info.startT);
+        ResolveStop(data, end.taken, false, end.cause);
         return true;
     }
 
@@ -124,8 +267,8 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
 
     // 10yd keeps the bot inside lootDistance (default 15) so the loot
     // pipeline's "loot available" trigger can fire on the node.
-    if (bot->GetExactDist(data.nodePos) > 10.0f)
-        return Away(data.nodePos, 10.0f).value_or(true);
+    if (std::optional<bool> const walking = WalkToStop(data, data.nodePos, 10.0f))
+        return *walking;
 
     if (!data.lastReach)
         data.lastReach = getMSTime();
@@ -136,7 +279,8 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     {
         // Harvested (taken when the bot's own cast went at it) or gone. NOT
         // written off: the respawn memory brings it back on a later lap.
-        ResolveStop(data, data.harvestCast, false, data.harvestCast ? STOP_HARVESTED : STOP_GONE);
+        StopEnd const end = DownStop(bot, data.nodeSpawnId, info.startT);
+        ResolveStop(data, end.taken, false, end.cause);
         return true;
     }
 
@@ -159,6 +303,21 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     bool timedOut = GetMSTimeDiffToNow(data.lastReach) > nodeStayTime;
     if (lootObj.IsEmpty() || timedOut)
     {
+        // The trace (WPC8): beside the stop row, what the bot read at the write-off. Value its height above the node
+        // (yd), alternatives its flat distance (yd), its own cast since it reached the stop and the loot target on
+        // the node (1 or 0)
+        if (!lootObj.IsEmpty())
+        {
+            bool const ownCast = OwnCastSince(bot, data.nodeSpawnId, data.lastReach);
+            bool const targeted = AI_VALUE(LootObject, "loot target").guid == go->GetGUID();
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::TimedOut),
+                TimedOutCause(bot, go, lootObj, ownCast, targeted), bot->GetPositionZ() - go->GetPositionZ(),
+                {{"flat", bot->GetExactDist2d(go)},
+                 {"cast", ownCast ? 1.0f : 0.0f},
+                 {"target", targeted ? 1.0f : 0.0f}},
+                data.nodeSpawnId);
+        }
         ResolveStop(data, false, true, lootObj.IsEmpty() ? STOP_NO_LOOT : STOP_TIMED_OUT);
         return true;
     }
@@ -183,7 +342,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // descends and routes around geometry to the node. This only runs when
     // the pipeline's higher-relevance approach already failed to move this
     // tick; a node with no reachable path is retired by the timeout above.
-    if (!lootObj.IsLootPossible(bot) || bot->GetDistance(go) > INTERACTION_DISTANCE - 2.0f)
+    if (!lootObj.IsLootPossible(bot) || bot->GetDistance(go) > NODE_REACH)
     {
         if (bot->isMoving())
             return false;
@@ -214,8 +373,29 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     return AI_VALUE(LootObjectStack*, "available loot")->Add(go->GetGUID());
 }
 
+std::optional<bool> NewRpgDoGatherAction::WalkToStop(NewRpgInfo::DoGather& data, WorldPosition const& pos, float reach)
+{
+    if (bot->GetExactDist(pos) <= reach)
+        return std::nullopt;
+    bool const first = !data.walkTickMs;
+    uint32 const sinceLast = first ? 0 : GetMSTimeDiffToNow(data.walkTickMs);
+    data.walkTickMs = std::max<uint32>(getMSTime(), 1);
+    if (Gather::WalkStalled(data.walkAnchor, data.walkStalledMs, first, sinceLast,
+                            {bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}))
+    {
+        if (Gather::IsCreatureStop(data.nodeSpawnId))
+            ResolveFarmStop(data, false, GatherStopWords::UNREACHED, false, true);
+        else
+            ResolveStop(data, false, true, STOP_UNREACHED);
+        RpgStatus::End(botAI, StatusEnd::Outcome::Stuck, {.word = STOP_UNREACHED});
+        return true;
+    }
+    return Away(pos, reach).value_or(true);
+}
+
 bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
 {
+    NewRpgInfo& info = botAI->rpgInfo;
     GatherNodeSpawn const* target = nullptr;
     if (data.circuit.empty())
     {
@@ -230,27 +410,63 @@ bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
     }
     else
     {
-        if (data.takenMs.size() != data.circuit.size())
-            data.takenMs.resize(data.circuit.size(), 0);
-        // The stops in walk order, lap after lap; a stop taken or found gone
-        // waits out its respawn, a written-off one is skipped
+        // The stops in walk order, lap after lap: one the bot took or found
+        // empty waits out its respawn (its gather memory, which outlives the
+        // status), a written-off one is skipped, one it sees empty from here
+        // resolves at once (WR13d)
+        uint32 const now = getMSTime();
         while (!target && data.lap < data.laps)
         {
-            for (; data.next < data.circuit.size(); ++data.next)
+            if (data.next >= data.circuit.size())
             {
-                GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(data.circuit[data.next]);
-                if (!spawn || data.visited.contains(spawn->spawnId))
-                    continue;
-                uint32 const taken = data.takenMs[data.next];
-                if (taken && GetMSTimeDiffToNow(taken) < spawn->respawnSecs * IN_MILLISECONDS)
-                    continue;
-                target = spawn;
-                break;
+                data.next = 0;
+                ++data.lap;
+                continue;
             }
-            if (target)
-                break;
-            data.next = 0;
-            ++data.lap;
+            // A creature stop (WR20c): its spawn point from the world's creature data; it resolves when the bot
+            // comes there (FarmStop)
+            uint32 const key = data.circuit[data.next];
+            if (Gather::IsCreatureStop(key))
+            {
+                CreatureData const* creature = sObjectMgr->GetCreatureData(key & ~Gather::CREATURE_STOP);
+                if (!creature || data.visited.contains(key) || info.gatherMemory.Away(key, now))
+                {
+                    ++data.next;
+                    continue;
+                }
+                if (creature->mapid != bot->GetMapId())
+                {
+                    RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = MAP_CHANGED});
+                    return false;
+                }
+                data.nodeSpawnId = key;
+                data.nodePos = WorldPosition(creature->mapid, creature->posX, creature->posY, creature->posZ);
+                data.creatureEntry = creature->id;
+                data.targetGuid.Clear();
+                data.killedMs = 0;
+                data.skinSeenMs = 0;
+                data.lastReach = 0;
+                data.harvestCast = false;
+                data.walkAnchor = {};
+                data.walkStalledMs = 0;
+                data.walkTickMs = 0;
+                return true;
+            }
+            GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(key);
+            if (!spawn || data.visited.contains(spawn->spawnId) || info.gatherMemory.Away(spawn->spawnId, now))
+            {
+                ++data.next;
+                continue;
+            }
+            if (spawn->pos.GetMapId() == bot->GetMapId() && SeenEmpty(bot, spawn->pos, spawn->spawnId))
+            {
+                data.nodeSpawnId = spawn->spawnId;
+                data.nodePos = spawn->pos;
+                StopEnd const end = DownStop(bot, spawn->spawnId, info.startT);
+                ResolveStop(data, end.taken, false, end.cause);  // the stop is due: next moves on
+                continue;
+            }
+            target = spawn;
         }
         if (!target)
         {
@@ -266,26 +482,46 @@ bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
     data.nodeSpawnId = target->spawnId;
     data.nodePos = target->pos;
     data.lastReach = 0;
-    data.harvestCast = false;
+    data.walkAnchor = {};
+    data.walkStalledMs = 0;
+    data.walkTickMs = 0;
     return true;
 }
 
 void NewRpgDoGatherAction::NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node)
 {
-    auto* data = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
-    if (!data || !data->nodeSpawnId || !node.IsGameObject())
-        return;
-    if (GameObject* go = botAI->GetGameObject(node))
-        if (go->GetSpawnId() == data->nodeSpawnId)
+    // A skin cast on a corpse of the current creature stop's kind (WR20c): the stop's kill, skinned. The loot and skin
+    // actions hold the ticks the status's own watch would see the skin on
+    if (node.IsCreatureOrVehicle())
+    {
+        auto* data = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
+        Creature* creature = data && data->creatureEntry ? botAI->GetCreature(node) : nullptr;
+        if (!creature || creature->GetEntry() != data->creatureEntry)
+            return;
+        if (data->targetGuid.IsEmpty() && creature->isTappedBy(botAI->GetBot()))
+        {
+            data->targetGuid = node;
+            data->killedMs = std::max<uint32>(getMSTime(), 1);
+        }
+        if (data->targetGuid == node)
             data->harvestCast = true;
+        return;
+    }
+    GameObject* go = node.IsGameObject() ? botAI->GetGameObject(node) : nullptr;
+    if (!go)
+        return;
+    // A node: the record, which the stop that resolves reads (DownStop), whether the status targets it yet or not
+    if (!go->GetSpawnId())
+        return;
+    std::lock_guard<std::mutex> lock(harvestNotesMutex);
+    harvestNotes[go->GetSpawnId()] = {botAI->GetBot()->GetGUID().GetCounter(), std::max<uint32>(getMSTime(), 1)};
 }
 
-void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, char const* cause)
+void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, std::string_view cause)
 {
     using namespace Professions;
     GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(data.nodeSpawnId);
-    bool const planned = data.next < data.circuit.size() && data.circuit[data.next] == data.nodeSpawnId &&
-                         data.takenMs.size() > data.next;
+    bool const planned = data.next < data.circuit.size() && data.circuit[data.next] == data.nodeSpawnId;
     // The stop's row (WR13b): taken or not, its number in walk order (0 off a circuit), the lap, the node's entry and
     // the cause with the bot's distance to the node
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, ChoiceWord(Choice::Gather),
@@ -295,12 +531,14 @@ void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, b
                         {"entry", spawn ? static_cast<float>(spawn->entry) : 0.0f},
                         {cause, bot->GetExactDist(data.nodePos)}},
                        data.nodeSpawnId);
+    ++data.span.resolved;  // the observed rate's span counts the rows part 4 counts (WPC13b)
+    if (taken)
+        ++data.span.takes;
+    // The respawn memory: taken, found empty or written off, the bot comes back after the respawn at the earliest
+    if (spawn)
+        botAI->rpgInfo.gatherMemory.Note(spawn->spawnId, getMSTime(), spawn->respawnSecs * IN_MILLISECONDS);
     if (planned)
-    {
-        data.takenMs[data.next] = std::max<uint32>(getMSTime(), 1);
         ++data.next;
-    }
     // Off a circuit every node is taken once; on it only a written-off one stays out
     AbandonNode(data, writeOff || data.circuit.empty());
-    data.harvestCast = false;
 }

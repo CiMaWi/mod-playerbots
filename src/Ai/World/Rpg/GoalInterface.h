@@ -11,16 +11,21 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "BridgeGoals.h"
+#include "FieldMap.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
+#include "InterludeInputs.h"
+#include "QuestFailRows.h"
 #include "QuestLogRules.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -159,6 +164,12 @@ public:
 
     Active const& Query() const { return _current; }
 
+    // A goal of this kind holds the slot or waits behind the interlude that holds it
+    bool Holds(Goals::GoalKind kind) const
+    {
+        return (_current.Is() && _current.kind == kind) || (_previous && _previous->kind == kind);
+    }
+
     // Minutes since the goal started, 0 without one
     float MinutesSince(std::uint32_t nowMs) const
     {
@@ -232,20 +243,25 @@ enum class Executor : std::uint8_t
     Rest,
     Errand,  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
     Bind,    // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
-    Fish     // a fishing trip (professions WR16b): DO_FISH at the goal's water
+    Fish,    // a fishing trip (professions WR16b): DO_FISH at the goal's water
+    Route    // the quest route (questing WQ18a): DO_QUEST with the route's next order (AdvanceRoute)
 };
 
-// What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, or
-// a move to another hub or camp in the bot's zone (how a starting area hands on to its next hub)
+// What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, a
+// move to another hub or camp in the bot's zone (how a starting area hands on to its next hub), or the quest route
+// on the bot's map (questing WQ18a)
 enum class QuestRole : std::uint8_t
 {
     Circuit,
     Delivery,
-    Move
+    Move,
+    Route
 };
 
 inline QuestRole RoleOf(Goals::TargetType targetType, std::string const& reason)
 {
+    if (targetType == Goals::TargetType::Route)
+        return QuestRole::Route;
     if (targetType == Goals::TargetType::Quest)
         return QuestRole::Delivery;
     return reason == Goals::CIRCUIT_REASON ? QuestRole::Circuit : QuestRole::Move;
@@ -269,6 +285,8 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
             {
                 case QuestRole::Circuit:
                     return Executor::Circuit;
+                case QuestRole::Route:
+                    return Executor::Route;
                 case QuestRole::Delivery:
                     // An external quest goal also works its quest (DO_QUEST); the planner's deliveries only deliver
                     if (!reach.deliverable)
@@ -304,6 +322,12 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
 inline bool RunsCircuit(Active const& goal)
 {
     return goal.kind == Goals::GoalKind::Quest && RoleOf(goal.targetType, goal.reason) == QuestRole::Circuit;
+}
+
+// The goal runs the quest route (Executor::Route wherever the bot is)
+inline bool RunsRoute(Active const& goal)
+{
+    return goal.kind == Goals::GoalKind::Quest && RoleOf(goal.targetType, goal.reason) == QuestRole::Route;
 }
 
 // What an idle bot does
@@ -363,9 +387,12 @@ constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
     StatusEnd::STATUS_REST,       StatusEnd::STATUS_OUTDOOR_PVP, StatusEnd::STATUS_DO_GATHER};
 
 // The fallback list; past the no-option bound (moving, WN4) without rest, so the bot walks on instead of resting at
-// the same spot again
-inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving)
+// the same spot again. With the questing test's setting (questing WQ37) a planner bot's fallback is a rest, past the
+// bound too: a wander serves no levelling, and the time it rests counts as the plan's fault
+inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving, bool questingOnly = false)
 {
+    if (fallback && questingOnly)
+        return {StatusEnd::STATUS_REST};
     std::vector<std::uint32_t> list =
         fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
                  : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());
@@ -495,6 +522,37 @@ inline QuestNext AdvanceQuest(QuestGoal& goal, CircuitPlan const& plan,
 // taken the bot away (an errand trip to a far vendor or bank), so the resumed circuit may send it to its givers again
 inline void ResumeQuest(QuestGoal& goal) { goal.giversVisited = false; }
 
+// A route goal's own progress (questing WQ18a), kept across plans as the circuit's is: the order its executor runs
+// and how far the held route (the newest plan's) is walked. A new goal starts it anew (StartActive)
+struct RouteGoal
+{
+    std::optional<QuestOrder> running;  // the order the executor runs
+    std::size_t next{0};                // into the held route's orders: those before it lie behind the bot
+    bool replaced{false};               // the newest route begins with another order: the running one ends as replaced
+};
+
+enum class RouteStep : std::uint8_t
+{
+    Done,  // no order left: the goal ends
+    Order  // DO_QUEST with this order
+};
+
+struct RouteNext
+{
+    RouteStep step{RouteStep::Done};
+    QuestOrder const* order{nullptr};  // into the held route
+};
+
+// An interlude ended and the route goal it interrupted goes on: its executor did not end the order it ran, so the
+// route gives that order again (unless a newer route replaced it meanwhile)
+inline void ResumeRoute(RouteGoal& goal)
+{
+    if (goal.running && !goal.replaced && goal.next > 0)
+        --goal.next;
+    goal.running.reset();
+    goal.replaced = false;
+}
+
 // The quest log and the level as one number (FNV-1a), a goal's progress: a quest taken, completed, turned in or
 // abandoned, an objective counted, a quest item collected (items: the log quests' item counts) or a level gained
 // changes it. XP is not in it: a kill on the way would lift every stall
@@ -547,6 +605,34 @@ inline std::uint64_t GoalKey(Active const& goal, Executor executor, std::uint64_
            (static_cast<std::uint64_t>(goal.targetType) << 40) | goal.target;
 }
 
+// A route's own key is never blocked (questing WQ18a, WQ.43 point 6): what a route remembers is the cell of an order
+// that ended dry, a block in the same list under a key of its own kind. The tag is bit 63, which no other key sets:
+// FieldMap.h's cell key holds the map in bits 48 to 63 and the game's map ids stay far below 32768, a goal's key
+// holds its executor in bits 56 to 63, a circuit's key nothing above bit 32
+constexpr std::uint64_t CELL_KEY = 1ULL << 63;
+static_assert(static_cast<std::uint64_t>(Executor::Route) < 128);
+
+inline bool IsRouteKey(std::uint64_t key) { return (key >> 56) == static_cast<std::uint64_t>(Executor::Route); }
+
+inline std::uint64_t CellBlockKey(std::uint64_t cell) { return CELL_KEY | cell; }
+
+inline bool IsCellBlock(std::uint64_t key) { return (key & CELL_KEY) != 0; }
+
+inline std::uint64_t CellOfBlock(std::uint64_t key) { return key & ~CELL_KEY; }
+
+// The cell is closed to the bot: one of the closed cells or a neighbour of one, as the route's build leaves them out
+// (Route::Detail::NearClosed; tests/quest-route-selftest.cpp holds the two together)
+inline bool CellClosed(std::span<std::uint64_t const> closed, std::uint64_t cell)
+{
+    return std::any_of(closed.begin(), closed.end(),
+                       [cell](std::uint64_t shut)
+                       {
+                           return FieldMapOf(shut) == FieldMapOf(cell) &&
+                                  std::abs(FieldCellXOf(shut) - FieldCellXOf(cell)) <= 1 &&
+                                  std::abs(FieldCellYOf(shut) - FieldCellYOf(cell)) <= 1;
+                       });
+}
+
 // The keys whose goals ended without progress or whose starts were refused, all for one log signature: a changed
 // signature lifts them all, and each block also ends by itself once the block time passed (questing WQ6b, the
 // stopgap of WQ.33: Planner.BlockMinutes), so whatever a bot's goals did, some goal may start again within the block
@@ -577,6 +663,13 @@ inline bool XpIsProgress(Goals::GoalKind kind)
     return kind == Goals::GoalKind::Grind || kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
 }
 
+// The goals judged by what they took (professions WR20c): a gather or a money goal that gained items or copper made
+// progress, whether or not its kills gave XP
+inline bool GainIsProgress(Goals::GoalKind kind)
+{
+    return kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
+}
+
 // The goal in the slot (no interlude) while its executor runs: its key, the log signature and the experience (level
 // and XP, XpNow) when it started
 struct Run
@@ -590,7 +683,9 @@ struct Run
     Goals::GoalKind kind{Goals::GoalKind::None};
     bool judged{false};  // a judged end of its executor came (NoteStatusEnd): the last one's outcome and note
     StatusEnd::Outcome lastOutcome{StatusEnd::Outcome::Finished};
-    char const* lastNote{""};  // a literal (StatusEnd::Note)
+    char const* lastNote{""};    // a literal (StatusEnd::Note)
+    std::uint64_t startGain{0};  // the bot's copper plus its bag items' count at the start (Planner GainNow)
+    bool gainCounts{false};      // GainIsProgress(kind): a gain of them is progress
 };
 
 // A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
@@ -667,6 +762,19 @@ inline Goals::Ranked ChosenFirst(Goals::Ranked ranked, std::size_t index)
     return ranked;
 }
 
+// The last interlude that missed what it went for (NoteInterludeEnd) or whose start was refused (NoteRefused): the
+// goal (kind, target, reason) at the bot's level then, when, and how many misses of it in a row came before
+struct Missed
+{
+    Goals::GoalKind kind{Goals::GoalKind::None};
+    Goals::TargetType targetType{Goals::TargetType::Default};
+    std::uint32_t target{0};
+    std::string reason;
+    std::uint8_t level{0};
+    std::uint32_t lastMs{0};  // 0 = none
+    std::uint32_t repeats{0};
+};
+
 // A bot's planner side on its map thread (Planner::BotState::goals). A reset of the AI starts it anew
 struct BotGoals
 {
@@ -678,6 +786,7 @@ struct BotGoals
     bool planUsed{false};                                // a plan starts at most one new goal
     std::vector<std::uint32_t> keep;                     // the plan's KeepList
     QuestGoal quest;                                     // the current circuit goal's progress, across plans
+    RouteGoal route;                                     // the current route goal's progress, across plans
     Run run;                                             // the current goal's run (the stall rule)
     std::optional<Stalled> stalled;                      // keys blocked: no progress, or a refused start
     bool circuitLogged{false};                           // this plan's circuit rows are written
@@ -701,11 +810,18 @@ struct BotGoals
     std::string shortKind;  // its kind word, as at the begin (the end row repeats it)
     // By goal kind: when an interlude of that kind last failed (NoteInterludeEnd); 0 = none
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
+    Missed missed;                  // the same goal's own, longer wait after misses in a row (MissedWaits)
     std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
     std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
+    bool sickOpenSeen{false};  // recover's hand-over of a sick bot as the errand trigger last saw it (SickOpenChanged)
+    std::vector<Goals::InnStay> innStays;  // the inns the bot is near and since when (NR.5)
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
+    // NR14: the planner's errand to a stop of its own (Goals::OwnStopReason) got what it went for there (the spells,
+    // the rank or its mount, the tame); a goal's start clears it
+    bool ownStopDone{false};
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
+    QuestFailRows::Sums questStalls;   // questing WQ38: per quest worked on orders, the time without a credit
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
     std::uint32_t pathMs{0};  // its snapshot's time
@@ -721,6 +837,10 @@ inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
     std::uint16_t const seen = std::exchange(goals.bagSlotsSeen, slots);
     return seen && seen != slots;
 }
+
+// Recover's hand-over of a sick bot now (Planner::NoteSickOpen, NR3): true only where it turned open, so the planner
+// plans from the hand-over once and not at every check; a healthy bot or one not handed over is seen closed
+inline bool SickOpenChanged(BotGoals& goals, bool open) { return !std::exchange(goals.sickOpenSeen, open) && open; }
 
 // The bind now (Planner::NoteBindFar): true when a bind seen near turned far or one seen far turned near (a plan
 // taken before the bind is then stale); the first look records it (the goals' first snapshot weighs the bind as it is)
@@ -743,15 +863,29 @@ struct PlanView
     bool paused{false};  // the bridge paused the bot's plan
 };
 
+// A new plan's route replaces the held one (questing WQ18a). The order that is running goes on when the new route's
+// first order is it (SameOrder: its cell and its word), and the walk goes on behind it: a refreshed route never
+// starts the running order again, which would begin its stay anew with every plan. Otherwise the running order is
+// replaced (the executor ends it by that word), and the bot's next order is the new route's first
+inline void RefreshRoute(RouteGoal& goal, Goals::RoutePlan const* fresh)
+{
+    bool const same =
+        goal.running && fresh && !fresh->orders.empty() && SameOrder(fresh->orders.front(), *goal.running);
+    goal.next = same ? 1 : 0;
+    goal.replaced = goal.running.has_value() && !same;
+}
+
 // A checked plan replaces the old one. The current goal's own progress (QuestGoal) stays, and a running circuit goal
 // keeps its own circuit: a plan for another circuit (the bot away on an interlude's trip to a far vendor or bank,
-// 3.19 (6)) does not replace it, a plan for the same circuit refreshes it
+// 3.19 (6)) does not replace it, a plan for the same circuit refreshes it. Its route replaces the held one
+// (RefreshRoute)
 inline void TakePlan(BotGoals& goals, std::shared_ptr<Goals::GoalPlan const> plan, std::uint32_t planMs)
 {
     goals.lastRejected = false;
     goals.lastFailed = false;
     goals.lastPlanMs = goals.planMs;
     goals.plan = std::move(plan);
+    RefreshRoute(goals.route, goals.plan ? &goals.plan->route : nullptr);
     bool const ownRun = goals.run.running && goals.circuitPlan && goals.run.key == CircuitKey(*goals.circuitPlan);
     if (!ownRun || (goals.plan && CircuitKey(*goals.plan) == goals.run.key))
         goals.circuitPlan = goals.plan;
@@ -819,10 +953,163 @@ inline bool BlockKey(BotGoals& goals, std::uint64_t key, std::uint64_t log, std:
     return !held;
 }
 
+// The cells closed to the bot now, sorted (Situation::closedCells, AdvanceRoute): those of the orders that ended dry
+// at this log within the block time. A changed log opens them again, as it lifts every stall
+inline std::vector<std::uint64_t> ClosedCells(BotGoals const& goals, std::uint64_t log, std::uint32_t nowMs,
+                                              std::uint32_t blockMs)
+{
+    std::vector<std::uint64_t> cells;
+    if (!goals.stalled || goals.stalled->log != log)
+        return cells;
+    for (Block const& block : goals.stalled->blocks)
+        if (IsCellBlock(block.key) && BlockHolds(block, nowMs, blockMs))
+            cells.push_back(CellOfBlock(block.key));
+    std::sort(cells.begin(), cells.end());
+    return cells;
+}
+
+// A changed log lifts every stall. A cell closed at this very log (an order that ended dry while the goal ran)
+// stays closed: its block is newer than the change
+inline void LiftStalls(BotGoals& goals, std::uint64_t log)
+{
+    if (goals.stalled && goals.stalled->log == log)
+        std::erase_if(goals.stalled->blocks, [](Block const& block) { return !IsCellBlock(block.key); });
+    if (goals.stalled && (goals.stalled->log != log || goals.stalled->blocks.empty()))
+        goals.stalled.reset();
+}
+
+// Whether an order's own end closes its cell (questing WQ18b part 3: the coordinator's ruling, which revises WQ.43
+// point 6 narrowly). One rule: the place gave nothing (dry) or could not be reached (`time` before the arrival: the
+// walk's bound passed). A stay that passed at the place, a done, a replaced, a no_ender and a bags end close nothing
+constexpr bool ClosesCell(QuestOrderEnd end, bool reached)
+{
+    return end == QuestOrderEnd::Dry || (end == QuestOrderEnd::Time && !reached);
+}
+
+// The same rule for a status end that is not the order's own: a judged failure of the order's walk or work (stuck,
+// abandoned by the walk's word, timed out by a walk) is a place that could not be reached. Any other end took the bot
+// over (an interlude, a switch, a hold, sickness), and the order is given again (NextOrder)
+constexpr bool FailsOrder(StatusEnd::Outcome outcome)
+{
+    return outcome == StatusEnd::Outcome::Stuck || outcome == StatusEnd::Outcome::Abandoned ||
+           outcome == StatusEnd::Outcome::TimedOut;
+}
+
+// An order's cell closes, and with it the cell's neighbours (CellClosed), for the block time: a route's whole memory
+// until batch F3. True: a new block, which gets its one GoalStalled row (a quest goal's order, with the outcome and
+// the word of what ended it: timeout/dry, timeout/time, abandoned/no_walk)
+inline bool CloseOrderCell(BotGoals& goals, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note,
+                           std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    if (!BlockKey(goals, CellBlockKey(order.cell), log, nowMs, blockMs))
+        return false;
+    goals.stallRow = StallRow{Goals::GoalKind::Quest, true, outcome, note};
+    return true;
+}
+
+// The running order ended, by the executor's word for its end; `reached`: the bot had arrived at its place. An end
+// that closes the cell (ClosesCell) blocks it; no other end blocks anything, and the route itself is never blocked
+// (EndRun, StartActive). True: a new block
+inline bool EndOrder(BotGoals& goals, QuestOrderEnd end, std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs,
+                     bool reached = true)
+{
+    std::optional<QuestOrder> const order = std::exchange(goals.route.running, std::nullopt);
+    goals.route.replaced = false;
+    if (!order || !ClosesCell(end, reached))
+        return false;
+    return CloseOrderCell(goals, *order, StatusEnd::Outcome::TimedOut, QuestOrderEndName(end), log, nowMs, blockMs);
+}
+
+// The running order's status ended by a failure that is not the order's own end (FailsOrder; `note`: a literal, null:
+// the outcome's word): the order is over, not given again, and its cell closes. True: a new block
+inline bool FailOrder(BotGoals& goals, StatusEnd::Outcome outcome, char const* note, std::uint64_t log,
+                      std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    std::optional<QuestOrder> const order = std::exchange(goals.route.running, std::nullopt);
+    goals.route.replaced = false;
+    if (!order)
+        return false;
+    return CloseOrderCell(goals, *order, outcome, note ? note : StatusEnd::Word(outcome), log, nowMs, blockMs);
+}
+
+// The route goal's next order (questing WQ18a): the held route's next whose cell is not closed and one of whose
+// expected needs is still open (`open`, read from the bot's log on its map thread). An order with nothing open is
+// never started, so a way, which expects nothing, is no route's order until a batch plans one. None left: done; the
+// goal ends and the held plan starts nothing more (planUsed), so the idle step asks for a new one
+inline RouteNext AdvanceRoute(BotGoals& goals, std::function<bool(QuestOrderNeed const&)> const& open,
+                              std::span<std::uint64_t const> closed)
+{
+    RouteGoal& goal = goals.route;
+    goal.running.reset();
+    goal.replaced = false;
+    if (goals.plan)
+    {
+        std::vector<QuestOrder> const& orders = goals.plan->route.orders;
+        while (goal.next < orders.size())
+        {
+            QuestOrder const& order = orders[goal.next++];
+            if (CellClosed(closed, order.cell) || std::none_of(order.expected.begin(), order.expected.end(), open))
+                continue;
+            goal.running = order;
+            return {RouteStep::Order, &order};
+        }
+    }
+    goals.planUsed = true;
+    return {};
+}
+
+// The executor ended an order by its own end (Planner::OnOrderEnd, questing WQ18b). Only the route's running order
+// ends by it: another order (a test's `route field` elsewhere) is not the route's. True: a new block (EndOrder)
+inline bool EndRouteOrder(BotGoals& goals, QuestOrder const& ended, QuestOrderEnd end, std::uint64_t log,
+                          std::uint32_t nowMs, std::uint32_t blockMs, bool reached = true)
+{
+    if (!goals.route.running || !SameOrder(*goals.route.running, ended))
+        return false;
+    return EndOrder(goals, end, log, nowMs, blockMs, reached);
+}
+
+// An order's status ended by a failure that is not its own end (Planner::OnOrderFailed, FailsOrder): the route's
+// running order only, as EndRouteOrder. True: a new block (FailOrder)
+inline bool FailRouteOrder(BotGoals& goals, QuestOrder const& ended, StatusEnd::Outcome outcome, char const* note,
+                           std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    if (!goals.route.running || !SameOrder(*goals.route.running, ended))
+        return false;
+    return FailOrder(goals, outcome, note, log, nowMs, blockMs);
+}
+
+// The route goal's executor starts (questing WQ18b): a new goal, the continuation after its order's end, the goal
+// resumed after an interlude. An order its executor did not end (the bot was taken from it: an interlude, a status
+// ended from outside) is given again (ResumeRoute), unless a newer route replaced it; then the route's next order
+// (AdvanceRoute). A bot a test holds on the circuit (the constraint `circuit`, part 3) gets no order: a route goal it
+// held from before the hold ends at this order boundary, and the held plan starts nothing more
+inline RouteNext NextOrder(BotGoals& goals, std::function<bool(QuestOrderNeed const&)> const& open,
+                           std::span<std::uint64_t const> closed, bool heldOnCircuit = false)
+{
+    if (heldOnCircuit)
+    {
+        goals.route = {};
+        goals.planUsed = true;
+        return {};
+    }
+    if (goals.route.running)
+        ResumeRoute(goals.route);
+    return AdvanceRoute(goals, open, closed);
+}
+
+// The order NextOrder gave could not start (its executor refused): the route gives it again at its next start
+inline void OrderNotStarted(BotGoals& goals) { ResumeRoute(goals.route); }
+
+// Whether the running order ends as replaced: the newest route begins with another order (RefreshRoute). The service
+// tells the executor at each plan taken (QuestOrderRun::replaced), in both directions: a later plan that begins with
+// the running order again lets it go on
+inline bool OrderReplaced(BotGoals const& goals) { return goals.route.running && goals.route.replaced; }
+
 // A goal (no interlude) starts: its run and its circuit progress start anew
 inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std::uint64_t xp = 0, bool xpCounts = false)
 {
     goals.quest = {};
+    goals.route = {};
     goals.run = {key, log, xp, xpCounts, true, false};
 }
 
@@ -855,25 +1142,61 @@ inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toId
 // of what it starts now is judged again
 inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 
+// The goal is the missed one: its kind, target and reason, at the level it missed at
+inline bool SameMissed(Missed const& missed, Active const& goal, std::uint8_t level)
+{
+    return missed.lastMs && missed.kind == goal.kind && missed.targetType == goal.targetType &&
+           missed.target == goal.target && missed.reason == goal.reason && missed.level == level;
+}
+
+// A miss of the goal at the bot's level: the same goal missed again counts one repeat more (at most
+// WorldTravel::STUCK_REPEAT_MAX); another goal, or a new level (it brings new due needs), starts the count anew
+inline void NoteMissed(BotGoals& goals, Active const& goal, std::uint8_t level, std::uint32_t nowMs)
+{
+    std::uint32_t const repeats =
+        SameMissed(goals.missed, goal, level) ? std::min(goals.missed.repeats + 1, WorldTravel::STUCK_REPEAT_MAX) : 0;
+    goals.missed = {goal.kind, goal.targetType, goal.target, goal.reason, level, std::max<std::uint32_t>(nowMs, 1),
+                    repeats};
+}
+
 // An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
 // waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
 // (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
 // failure (PlannedEnd). An interlude that finished without its result missed it, as a failure: a bag trip without its
 // bag (bagBought unset), an errand with the repair still due (repairDue, read at that end: a repairer dead or gone, a
-// stand point off the mesh; the due repair ranks first and would start the same trip again at once)
+// stand point off the mesh; the due repair ranks first and would start the same trip again at once), an errand to a
+// stop of its own without what it went for (ownStopDone unset, NR14: the due stop ranks first as the repair does).
+// Every failure is also the goal's miss (NoteMissed), a success of that goal ends its count
 inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs,
-                             bool repairDue = false)
+                             bool repairDue = false, std::uint8_t level = 0)
 {
     if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
         return;
+    Active const& goal = goals.slot.Query();
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
     bool const finished = outcome == StatusEnd::Outcome::Finished;
+    bool const ownStop = Goals::OwnStopReason(goal.reason) && !goals.ownStopDone;
     bool const missed = finished && ((kind == Goals::GoalKind::BuyBag && !goals.bagBought) ||
-                                     (kind == Goals::GoalKind::Errand && repairDue));
+                                     (kind == Goals::GoalKind::Errand && (repairDue || ownStop)));
     if (!missed && (outcome == StatusEnd::Outcome::Arrived || finished))
+    {
         failed = 0;
+        if (SameMissed(goals.missed, goal, level))
+            goals.missed = {};
+    }
     else if (StatusEnd::Judged(outcome))
+    {
         failed = std::max<std::uint32_t>(nowMs, 1);
+        NoteMissed(goals, goal, level, nowMs);
+    }
+}
+
+// An interlude whose start was refused (StartActive's Refused; a rest's refusal is none to wait on) counts as its
+// miss: the errand start, which computes the needs, is not tried again at every plan
+inline void NoteRefused(BotGoals& goals, Active const& goal, std::uint8_t level, std::uint32_t nowMs)
+{
+    if (Goals::IsInterlude(goal.kind) && goal.kind != Goals::GoalKind::Rest)
+        NoteMissed(goals, goal, level, nowMs);
 }
 
 // What a planned status's end reads besides the goal (3.19 (4)), on the bot's map thread
@@ -887,6 +1210,7 @@ struct PlannedFacts
     std::uint32_t statusMs{0};  // how long the status runs (a fallback's length)
     float healthPercent{100.0f};
     float manaPercent{-1.0f};  // -1: no mana
+    bool atBind{false};        // the bot stands at its hearthstone's bind (NR3: the sick bot's stone took it there)
 };
 
 struct PlannedAnswer
@@ -898,8 +1222,10 @@ struct PlannedAnswer
 };
 
 // A status the planner started for its goal ends by the goal's condition, not by upstream's timer (3.19 (4)): a grind
-// or money spot and a gather when the order's minutes since its start are over (finished, order_time; on the way to
-// the spot only the overrun); a rest once rested (finished, rested); any of them once the order ran
+// or money spot when the order's minutes since its start are over (finished, order_time; on the way to the spot only
+// the overrun); a gather by its executor's own ends (circuit_done, its stops' ends; professions WR13d-2: a circuit's
+// minutes are a straight-line estimate, and a one-stop lap of under a minute ended before its walk arrived), so only
+// the overrun bounds it; a rest once rested (finished, rested); any of them once the order ran
 // ORDER_OVERRUN_FACTOR times its minutes (timed out, order_overrun). Planned: a planner goal of those kinds in the
 // status that carries it out, for a bot the planner owns, no fallback, no sick rest. The other kinds keep their
 // executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. The idle step's fallback (3.19
@@ -913,6 +1239,20 @@ inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
                    ? PlannedAnswer{true, in.statusMs >= FALLBACK_STATUS_MS, StatusEnd::Outcome::TimedOut,
                                    "fallback_time"}
                    : PlannedAnswer{};
+    // NR3 (NR.4): a sick bot's stone in (the errand option sick_hearth, its cast in a rest) has arrived once the bot
+    // stands at its bind: the errand there is planned from the new place. A cast the bot never finished (a fight broke
+    // it) is overrun
+    constexpr float MS_PER_MINUTE = 60000.0f;
+    if (in.owns && goal.source == Source::Planner && goal.kind == GoalKind::Errand &&
+        goal.reason == Goals::SICK_HEARTH_REASON && in.status == StatusEnd::STATUS_REST)
+    {
+        if (in.atBind)
+            return {true, true, StatusEnd::Outcome::Arrived, "hearth_bind"};
+        float const minutes = static_cast<float>(in.nowMs - goal.startedMs) / MS_PER_MINUTE;
+        if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
+            return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};
+        return {true, false};
+    }
     if (!in.owns || in.sick || goal.source != Source::Planner || goal.minutes <= 0.0f)
         return {};
     bool const spot = in.status == StatusEnd::STATUS_WANDER_RANDOM;
@@ -923,14 +1263,13 @@ inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
                          (goal.kind == GoalKind::Rest && in.status == StatusEnd::STATUS_REST);
     if (!planned)
         return {};
-    constexpr float MS_PER_MINUTE = 60000.0f;
     float const minutes = static_cast<float>(in.nowMs - goal.startedMs) / MS_PER_MINUTE;
     if (goal.kind == GoalKind::Rest)
     {
         if (in.healthPercent >= RESTED_PERCENT && (in.manaPercent < 0.0f || in.manaPercent >= RESTED_PERCENT))
             return {true, true, StatusEnd::Outcome::Finished, "rested"};
     }
-    else if (!way && minutes >= goal.minutes)
+    else if (!way && !node && minutes >= goal.minutes)
         return {true, true, StatusEnd::Outcome::Finished, "order_time"};
     if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
         return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};
@@ -954,11 +1293,22 @@ inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_
     return failed && nowMs - failed < WorldTravel::ERRAND_RETRY_MS;
 }
 
+// The missed goal waits the errand retry time doubled per repeat (WorldTravel::StuckAvoidMs: 5, 10, 20, then 40 min),
+// so a due stop that keeps failing, which ranks first, is tried less and less often and the bot's quests fill the time
+inline bool MissedWaits(BotGoals const& goals, Active const& goal, std::uint8_t level, std::uint32_t nowMs)
+{
+    return SameMissed(goals.missed, goal, level) &&
+           nowMs - goals.missed.lastMs < WorldTravel::StuckAvoidMs(WorldTravel::ERRAND_RETRY_MS, goals.missed.repeats);
+}
+
 // The running goal's executor ended: its key stalls for the block time (BlockKey) when the log is as it was at the
-// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress: it does
-// not stall, and the others stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd)
-// closes without a stall; a changed log still lifts every stall
-inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs)
+// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress, and so
+// did a gather or money goal that gained items or copper (gain: GainNow, WR20c): it does not stall, and the others
+// stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall; a
+// changed log still lifts every stall (LiftStalls). A route's run never stalls: its dry orders close their cells
+// (EndOrder)
+inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs,
+                   std::uint64_t gain = 0)
 {
     if (!goals.run.running)
         return;
@@ -966,15 +1316,34 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
     bool const outside = std::exchange(goals.run.outside, false);
     if (log != goals.run.startLog)
     {
-        goals.stalled.reset();
+        LiftStalls(goals, log);
         return;
     }
-    if (outside)
+    if (outside || IsRouteKey(goals.run.key))
         return;
     if (goals.run.xpCounts && xp > goals.run.startXp)
         return;
+    if (goals.run.gainCounts && gain > goals.run.startGain)
+        return;
     if (BlockKey(goals, goals.run.key, log, nowMs, blockMs))
         goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
+}
+
+// A test's release (TestConstraints::Releases, TravelOrders::ApplyConstraints): every planner goal the bot holds ends,
+// of any kind and also one behind an interlude, with its run and without a stall, and the plan taken before the
+// release starts no goal, so the first goal after it comes from the release's own snapshot, chosen under the
+// constraints the release keeps (professions WR30: a zone move taken at the pool spot before the hold walked the
+// released bot away from its fixture). A quest goal under a kept noquest is one such goal; the plans offer it none
+// (Goals::Situation::questsHeld). The bridge's goal stays. The stall list goes too, also when no goal ended: a start
+// refused before the hold (a bot logged in flying) left nothing in the slot but its block. True when a goal ended
+inline bool Release(BotGoals& goals)
+{
+    goals.planUsed = true;
+    goals.stalled.reset();
+    if (!goals.slot.Cancel(Source::Planner))
+        return false;
+    goals.run = {};
+    return true;
 }
 
 // How a goal's start went (3.5); anything but Started changed nothing but a refused goal's block (StartActive)
@@ -996,6 +1365,7 @@ struct StartFacts
     bool stallRule{true};      // false: the bridge's order, the partner's wish
     std::uint32_t nowMs{0};    // the planner's clock (getMSTime)
     std::uint32_t blockMs{0};  // how long a block holds (Planner.BlockMinutes); 0: none holds
+    std::uint64_t gain{0};     // the bot's copper plus its bag items' count (GainNow)
 };
 
 // One goal started by its executor (3.5): `start` (StartGoal) returns false having ended nothing, and then the goals
@@ -1019,15 +1389,20 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
     if (facts.stallRule && !MayStart(goals, facts.key, facts.log, facts.nowMs, facts.blockMs))
         return StartResult::Stalled;
     QuestGoal progress = std::exchange(goals.quest, {});  // a goal's circuit progress starts anew
+    RouteGoal route = std::exchange(goals.route, {});     // and its route progress
     if (!start())
     {
         goals.quest = std::move(progress);
-        if (facts.stallRule && BlockKey(goals, facts.key, facts.log, facts.nowMs, facts.blockMs))
+        goals.route = std::move(route);
+        if (facts.stallRule && !IsRouteKey(facts.key) &&
+            BlockKey(goals, facts.key, facts.log, facts.nowMs, facts.blockMs))
             goals.stallRow = StallRow{kind, false, StatusEnd::Outcome::Finished, "", true};
         return StartResult::Refused;
     }
-    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs);
+    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs, facts.gain);
     goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
+    goals.run.startGain = facts.gain;
+    goals.run.gainCounts = GainIsProgress(kind);
     goals.noOptionRun = 0;
     return StartResult::Started;
 }
@@ -1057,7 +1432,7 @@ inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
 // What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
 // during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
 // sickness rest, a command, a test's order) and an external goal stay; a sickness rest yields to a plan whose best
-// option is the due repair recover handed over (NE11, Ranked::sickErrandOpen)
+// option passed the sick gate (NR3, Ranked::sickGoal: an errand in the safe area, the bind, the stone in)
 enum class FreshPlan : std::uint8_t
 {
     Keep,
@@ -1074,10 +1449,7 @@ inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
         return FreshPlan::Replan;
     if (!goals.plan || !goals.plan->ranked.ok)
         return FreshPlan::Keep;
-    Goals::Ranked const& ranked = goals.plan->ranked;
-    bool const sickErrand = ranked.sickErrandOpen && !ranked.options.empty() &&
-                            ranked.options.front().kind == Goals::GoalKind::Errand && ranked.options.front().due;
-    return goals.inFallback || sickErrand ? FreshPlan::Take : FreshPlan::Keep;
+    return goals.inFallback || goals.plan->ranked.sickGoal ? FreshPlan::Take : FreshPlan::Keep;
 }
 
 // The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way

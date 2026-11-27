@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "Define.h"
+#include "GatherMemoryState.h"
+#include "GatherRateTypes.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
@@ -133,14 +135,29 @@ struct NewRpgInfo
         std::unordered_set<ObjectGuid::LowType> visited;  // written off for this status
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
-        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times; per stop the time
-        // it was last taken or found gone (respawn memory, 0 = never); empty: the one nearest live node
+        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times (a stop taken or
+        // found empty waits out its respawn in the bot's gatherMemory); empty: the one nearest live node
         std::vector<ObjectGuid::LowType> circuit;
-        std::vector<uint32> takenMs;
         uint32 laps{1};
         uint32 lap{0};
-        uint32 next{0};           // the stop targeted or due
-        bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
+        uint32 next{0};  // the stop targeted or due
+        // A creature stop: the bot's skin cast went at its kill (NoteHarvestCast). A node stop's take is read from
+        // the record of harvest casts instead (Gather::OwnTakeInStatus), whichever came first, cast or target
+        bool harvestCast{false};
+        // The walk to the target and its watch (GatherRules.h Gather::WalkStalled), reset with the target
+        std::array<float, 3> walkAnchor{};
+        uint32 walkStalledMs{0};
+        uint32 walkTickMs{0};  // the walk's last tick; 0 before its first
+        // A creature stop (professions WR20c; nodeSpawnId its key, Gather::StopKey): the kind sought there, the
+        // creature attacked (SoughtTarget::Held), when it died to the bot and when its corpse was seen skinnable
+        uint32 creatureEntry{0};
+        ObjectGuid targetGuid;
+        uint32 killedMs{0};
+        uint32 skinSeenMs{0};
+        // The observed rate's span (professions WPC13b): a planned circuit's start (0: none, not observed), its zone
+        // and way then, the stops it took and resolved; the status's end enters it in the tally
+        uint32 spanStartMs{0};
+        GatherRate::Span span;
     };
     // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
     // probed there and the water it faces, what the pole replaced, the casts so far
@@ -155,18 +172,21 @@ struct NewRpgInfo
         uint32 planMs{0};       // the trip's time; 0: Fish::TRIP_MINUTES
         uint32 spell{0};        // the fishing rank it casts; 0 before the first tick
         uint32 castMs{0};       // the cast in flight began; 0: none
+        uint32 firstCastMs{0};  // the trip's first cast: its time at the water from here (FishRules.h); 0: none
         uint32 lootMs{0};       // a catch's loot window was first seen open; 0: none
         uint32 casts{0};
         uint32 catches{0};
         uint32 missesInARow{0};
-        uint32 refusedCasts{0};   // casts refused at this stand
-        uint32 probes{0};         // stand points tried
-        uint32 watchMs{0};        // the last tick that watched the cast (a test bot's trace)
-        uint32 watchGapMs{0};     // the cast's longest gap between two watching ticks (a test bot's trace)
-        float chance{1.0f};       // the bot's catch chance at this water (FishRules.h)
-        bool channelSeen{false};  // the cast in flight started its channel
-        bool poleOut{false};      // the trip put the pole in hand
-        bool standOnMesh{false};  // the stand is where the mesh's path to it ends: the walk goes all the way
+        uint32 refusedCasts{0};       // casts refused at this stand
+        uint32 probes{0};             // stand points tried
+        uint32 watchMs{0};            // the last tick that watched the cast (a test bot's trace)
+        uint32 watchGapMs{0};         // the cast's longest gap between two watching ticks (a test bot's trace)
+        float chance{1.0f};           // the bot's catch chance at this water (FishRules.h)
+        bool channelSeen{false};      // the cast in flight started its channel
+        bool poleOut{false};          // the trip put the pole in hand
+        bool standOnMesh{false};      // the stand is where the mesh's path to it ends: the walk goes all the way
+        char const* waitAt{nullptr};  // the branch the last tick waited in, for the deadline's trace; a literal
+        uint32 tickMs{0};             // the last tick of the trip's action; 0: none
     };
     // RPG_TRAVEL: the holder of a trip to dest (WT64f). The trip itself (legs, route wait, progress) is held in the
     // bot's travel block (BotTravel::Trip, HeldTrip.h), begun with this status by the status core; the route follower
@@ -193,6 +213,7 @@ struct NewRpgInfo
         bool trainerRiding{false};      // the trainer teaches riding (WU14), else the class trainer (WU13)
         bool trainerWeapon{false};      // a weapon master (WU15a)
         bool trainerProfession{false};  // a profession trainer (WR4b)
+        uint32 mountRank{0};            // the riding rank whose mount the trip planned here; 0 = none
         uint32 tameEntry{0};            // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
         // The tame at the stop (WU21b-2): the beast picked, the casts made, a cast whose channel's end is still to be
         // read, when the bot arrived or its last channel ended (the rest before a new try), the last cast and the
@@ -229,6 +250,8 @@ struct NewRpgInfo
         // queue's crafts looked at so far (one craft visit each, a bounded number per stop)
         bool craft{false};
         uint8 craftsTried{0};
+        // The auction errand (auction house WA3b): an auctioneer visit lists the bag stock, before the deposit
+        bool auction{false};
     };
     struct Errands
     {
@@ -236,6 +259,7 @@ struct NewRpgInfo
         uint8 stop{0};           // the stop the bot walks to or works at
         bool arrived{false};     // the bot reached the current stop
         bool vendorDone{false};  // the current stop's vendor part is done (or its vendor is gone)
+        uint8 awayTraced{0};     // the walk's answer last traced at the current stop (NR1 group D): 0 none, 1 + answer
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
         uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)
@@ -248,6 +272,9 @@ struct NewRpgInfo
     };
 
     uint32 startT{0};  // start timestamp of the current status
+    // The spawn points the bot took or found empty lately (professions WR13d): it outlives the gather status, so the
+    // next circuit's plan and lap skip them until their respawn (GatherMemoryState.h)
+    Gather::Memory gatherMemory;
 
     using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
                                  OutdoorPvP, DoGather, Travel, Errands, DoFish>;

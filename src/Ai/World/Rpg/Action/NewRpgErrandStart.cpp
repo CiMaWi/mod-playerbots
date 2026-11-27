@@ -6,14 +6,18 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "AuctionBuyList.h"
+#include "AuctionIndex.h"
 #include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
@@ -21,6 +25,7 @@
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
+#include "CheckMountStateAction.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
 #include "InterludeInputs.h"
@@ -28,6 +33,7 @@
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailVisit.h"
+#include "MountRules.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -35,6 +41,7 @@
 #include "NewRpgStatusEnd.h"
 #include "NewRpgTriggers.h"
 #include "ObjectMgr.h"
+#include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -43,11 +50,16 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
+#include "RouteService.h"
 #include "SkillPathLive.h"
+#include "Spell.h"
+#include "SpellAuraEffects.h"
+#include "SpellInfo.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "TestProbe.h"
 #include "TraitRules.h"
+#include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "UpkeepIndex.h"
 #include "UpkeepNeedRules.h"
@@ -85,6 +97,27 @@ std::vector<Planner::Service const*> StableMasterSpawns(Player* bot, Planner::Pl
 // Mailboxes and bankers (each kind's nearest few) that join the trip's stops by position
 constexpr std::size_t BANK_MAIL_STOPS = 4;
 
+// What the buy list's lines save at their typical prices (WA4b, AuctionBuyList.h WantedWorth; WA.4: no current offer
+// read here) for the gold the market may spend: the needs list's (cached per trip state, ErrandNeeds)
+uint32 WantedWorthOf(PlayerbotAI* botAI, Player* bot)
+{
+    std::shared_ptr<Planner::UpkeepIndex const> const upkeep =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    std::shared_ptr<AuctionIndex::Snapshot const> const market = AuctionIndex::Current();
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const needs =
+        upkeep && market ? NewRpgInternal::ErrandNeeds(botAI, upkeep) : nullptr;
+    if (!needs)
+        return 0;
+    uint64 const spendable = AuctionRules::Spendable(bot->GetMoney(), UpkeepNeeds::MarketKept(needs->needs), 0);
+    if (!spendable)
+        return 0;
+    uint64 worth = 0;
+    for (AuctionRules::BuyLine const& line : Planner::BuyListOf(botAI))
+        if (AuctionIndex::ItemEntry const* entry = market->Find(line.item))
+            worth += AuctionRules::WantedWorth(line, entry->typical.unitPrice, spendable);
+    return static_cast<uint32>(std::min<uint64>(worth, std::numeric_limits<uint32>::max()));
+}
+
 // The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (keeps its possessions).
 // With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go onto the vendor
 // stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
@@ -99,7 +132,8 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     BankMail::DueTotal const due = BankMail::DueAt(known.bank.kept, bot->GetLevel());
     uint32 carried = 0;
     for (BankMail::KeptEntry const& item : known.bank.carried.items)
-        carried += item.count;
+        // A due stack stays (auction stock, WA7b), so does one the core will not bank
+        carried += item.dueLevel > bot->GetLevel() && !item.blocked ? item.count : 0;
     snapshot.Orderliness = BotTraitMgr::instance().Trait(bot->GetGUID().GetCounter(), TraitRules::Trait::Orderliness);
     snapshot.MailWaiting = known.mail.waiting;
     snapshot.MailDefaultWorth = sPlayerbotAIConfig.BankMail.MailDefaultWorthCopper;
@@ -108,12 +142,21 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     snapshot.BankDueCount = due.count;
     snapshot.BankDueWorth = due.worth;
     snapshot.BankDepositSlots = std::min<uint32>(carried, known.bank.freeSlots);
+    // The bag stock's gain over a vendor, as SellableSlots' refresh just decided it at this level (WA3b)
+    if (known.bank.carried.level == bot->GetLevel())
+        snapshot.AuctionStockWorth = known.bank.carried.auctionGain;
+    snapshot.AuctionWantedWorth = WantedWorthOf(botAI, bot);
+    // NR12b: the banked sale stock's gain draws an auctioneer and the banker before it, only together (PlanTrip)
+    snapshot.BankStockWorth = known.bank.stockGain;
 
     bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
-    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
+    bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots || snapshot.BankStockWorth;
+    // The auction plan's worths (WA3b stock; WA4b wanted lines; NR12b banked stock): an auctioneer joins the stops only
+    // for them
+    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth || snapshot.BankStockWorth;
     std::shared_ptr<Planner::PlannerIndexes const> const indexes =
         Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!indexes || (!mail && !bank))
+    if (!indexes || (!mail && !bank && !auction))
         return;
 
     std::vector<WorldTravel::ServiceStop> extras;
@@ -124,16 +167,20 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
                               BANK_MAIL_STOPS, reachYards))
         {
             Planner::Service const& spot = indexes->services[found.index];
-            if (kind == Planner::ServiceKind::Banker && !BankMail::BankerServes(bot, spot.factionTemplate))
+            if ((kind == Planner::ServiceKind::Banker || kind == Planner::ServiceKind::Auctioneer) &&
+                !BankMail::BankerServes(bot, spot.factionTemplate))
                 continue;
-            extras.push_back(
-                {kind == Planner::ServiceKind::Banker ? spot.entry : 0, {spot.mapId, spot.x, spot.y, spot.z}, service});
+            extras.push_back({kind == Planner::ServiceKind::Mailbox ? 0 : spot.entry,
+                              {spot.mapId, spot.x, spot.y, spot.z},
+                              service});
         }
     };
     if (mail)
         add(Planner::ServiceKind::Mailbox, WorldTravel::SERVICE_MAILBOX);
     if (bank)
         add(Planner::ServiceKind::Banker, WorldTravel::SERVICE_BANKER);
+    if (auction)
+        add(Planner::ServiceKind::Auctioneer, WorldTravel::SERVICE_AUCTIONEER);
     WorldTravel::MergeServiceStops(snapshot.Stops, extras);
 }
 
@@ -182,6 +229,74 @@ void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& c
         completed.push_back(quest);
     }
 }
+// One PerfMonitor sample of a block's time; nothing while PerfMonitor is off
+class ErrandTimer
+{
+public:
+    explicit ErrandTimer(char const* name) : _row(sPerfMonitor.acquire(PERF_MON_TOTAL, name))
+    {
+        if (_row)
+            _started = std::chrono::steady_clock::now();
+    }
+    ~ErrandTimer()
+    {
+        if (_row)
+            _row->Record(static_cast<uint64>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - _started)
+                    .count()));
+    }
+    ErrandTimer(ErrandTimer const&) = delete;
+    ErrandTimer& operator=(ErrandTimer const&) = delete;
+
+private:
+    PerformanceData* _row;
+    std::chrono::steady_clock::time_point _started;
+};
+
+// The trip planned with its vendor stops held to the walk limit by their route (NR13): one search each from the bot,
+// asked as the trip's walk asks it (NewRpgTravelAction::RequestRoute) with the flight maps off (no flight search on a
+// map thread, contract C3). Before the travel graph is ready the straight distance stands. The PerfMonitor rows
+// "errand trip plan" (one per start) and "errand vendor route" (one per search) give the searches per start
+WorldTravel::TripPlan PlanErrandTrip(PlayerbotAI* botAI, WorldTravel::TripRequest const& request,
+                                     std::vector<WorldTravel::ServiceStop> const& stops,
+                                     std::vector<WorldTravel::ErrandOffer> const& offers,
+                                     std::vector<WorldTravel::DroppedVendor>& dropped)
+{
+    ErrandTimer const timer("errand trip plan");
+    if (!TravelGraph::Instance().IsReady())
+        return WorldTravel::PlanTrip(request, stops, offers);
+
+    Player* bot = botAI->GetBot();
+    std::optional<TravelRoute::Snapshot> snapshot;
+    std::shared_ptr<TravelRoute::StuckEdges const> stuck;
+    TravelRoute::Params params;
+    auto const routeSeconds = [&](WorldTravel::ErrandPlace const& place)
+    {
+        ErrandTimer const searchTimer("errand vendor route");
+        if (!snapshot)
+        {
+            snapshot = TravelRoute::FillSnapshot(bot, 0);
+            snapshot->allowTransport = true;
+            snapshot->hasHearthstone =
+                snapshot->hasHearthstone && TestConstraints::HearthAllowed(botAI->testConstraints);
+            if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
+                snapshot->knownTaxi.fill(0);
+            if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))
+                snapshot->flyOutland = snapshot->flyNorthrend = false;
+            stuck = TravelRoute::StuckBook::Instance().Current();
+            params = TravelRoute::ConfiguredParams();
+            params.flightMaps = nullptr;
+        }
+        TravelRoute::Request ask(*snapshot, {place.MapId, place.X, place.Y, place.Z});
+        ask.freeRides = TestConstraints::RidesFree(botAI->testConstraints);
+        TravelRoute::Result const route = TravelRoute::Search(TravelGraph::Instance(), ask, *stuck, params);
+        float const seconds = route.ok ? route.totalSeconds : -1.0f;
+        LOG_DEBUG("playerbots", "[New RPG] {} errand vendor at ({:.0f}, {:.0f}, {:.0f}): route {:.0f} s",
+                  bot->GetName(), place.X, place.Y, place.Z, seconds);
+        return seconds;
+    };
+    return WorldTravel::PlanTripByRoute(request, stops, offers, routeSeconds, dropped);
+}
 }  // namespace
 
 bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
@@ -190,7 +305,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     AiObjectContext* context = botAI->GetAiObjectContext();
     // A held errand row refuses the trigger's trip, also one fired before the hold was taken (WU15a); an order passes
     // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart); a sick
-    // bot's order passes only with the due repair recover handed over (NE11)
+    // bot's order passes only once recover has handed it over (NR3: the goal model's sick gate chose the errand)
     if (order.order ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
                        (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) && !WorldTravel::SickErrandOpen(botAI)) ||
                        bot->GetGroup() || bot->GetMap()->Instanceable())
@@ -378,6 +493,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     snapshot.Money = bot->GetMoney();
     snapshot.Rates = WorldTravel::CurrentRates(measure, band);
     snapshot.BagHorizonHours = band.BagHorizonHours;
+    snapshot.Weight = Planner::CopperWeightOf(botAI);
     snapshot.FreeSlots = freeSlots;
     snapshot.SellableSlots = sellableSlots;
     snapshot.MinutesToNextStop = static_cast<float>(config.ErrandNextStopMinutes);
@@ -493,9 +609,47 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
-    std::vector<WorldTravel::ErrandOffer> const offers =
-        WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
-    WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
+    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
+    if (!TestConstraints::ProfessionErrandsOffered(botAI->testConstraints))
+        std::erase_if(offers,
+                      [](WorldTravel::ErrandOffer const& offer)
+                      {
+                          return offer.Kind == WorldTravel::ErrandKind::Profession ||
+                                 (offer.Kind == WorldTravel::ErrandKind::Shop &&
+                                  offer.Id == Planner::StockBit(Planner::UpkeepStock::Tool));
+                      });
+    // A sick bot's trip (NR3, NR.4) starts no fight and keeps to the safe area it stands in: the tame and the stable's
+    // swap are left out, and so is every stop its walk would leave that area for
+    if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    {
+        Upkeep::SafeAreas const here = Planner::SafeAreasHere(bot, *indexes);
+        WorldTravel::KeepSickErrands(
+            snapshot.Stops, offers, [bot, &indexes, &here](WorldTravel::ErrandPlace const& place)
+            { return Planner::SafeWalkTo(bot, *indexes, here, place.MapId, place.X, place.Y, place.Z); });
+    }
+    // NR9: no stop at a place the record of failed attempts refuses (a trip's third death there, a route none): the
+    // next stop that serves is planned instead (the ordered stop below is not filtered)
+    std::vector<WorldTravel::Refusal> placeRefused;
+    FailedAttempts::Record const& failures = botAI->GetTravel().Failures();
+    if (failures.count)
+    {
+        uint32 const now = getMSTime();
+        placeRefused = WorldTravel::KeepUnrefusedErrands(
+            snapshot.Stops, offers,
+            [&failures, now](WorldTravel::ErrandPlace const& place)
+            {
+                return !FailedAttempts::IsPlaceRefused(
+                            failures, WorldTravel::SightPoint{place.MapId, place.X, place.Y, place.Z}, now)
+                            .empty();
+            });
+    }
+    std::vector<WorldTravel::DroppedVendor> dropped;
+    WorldTravel::TripPlan const plan = PlanErrandTrip(botAI, request, snapshot.Stops, offers, dropped);
+    if (WorldLog::Active())
+        for (WorldTravel::DroppedVendor const& vendor : dropped)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor_drop", vendor.Reason,
+                               vendor.RouteSeconds, {{"straight_yd", WorldTravel::Yards(request.Start, vendor.Place)}},
+                               vendor.Entry);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
     float tripMinutes = 0.0f;
@@ -526,11 +680,18 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 case WorldTravel::ErrandKind::Mail:
                     stop.mail = true;
                     continue;
+                case WorldTravel::ErrandKind::Auction:
+                    stop.auction = true;
+                    continue;
                 case WorldTravel::ErrandKind::Craft:
                     stop.craft = true;
                     break;
                 case WorldTravel::ErrandKind::TurnIn:
                     stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
+                    break;
+                case WorldTravel::ErrandKind::Ride:
+                    if (errand.Service == WorldTravel::SERVICE_MOUNT_VENDOR)
+                        stop.mountRank = errand.Id;
                     break;
                 case WorldTravel::ErrandKind::Tame:
                     stop.tameEntry = errand.Target;
@@ -564,7 +725,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
             for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
                 if (errand.Kind == WorldTravel::ErrandKind::Mail ||
                     errand.Kind == WorldTravel::ErrandKind::BankWithdraw ||
-                    errand.Kind == WorldTravel::ErrandKind::BankDeposit)
+                    errand.Kind == WorldTravel::ErrandKind::BankDeposit ||
+                    errand.Kind == WorldTravel::ErrandKind::Auction)
                     bankMail.emplace_back(errand, joined ? "joined" : "detour");
         }
         tripMinutes += tripStop.DetourMinutes;
@@ -589,8 +751,11 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                   bot->GetName(), nearest ? nearest->entry : 0, nearest ? nearestYards : 0.0f, walkMinutes,
                   sellableSlots, snapshot.FreeSlots, plan.Refused.size());
         // Without a vendor walkMinutes is 0
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", nearest ? "not_worth" : "no_vendor",
-                           walkMinutes * MINUTE, weighed);
+        // A trip that only refused places left without a stop says so (NR9), not not_worth
+        char const* const skip = !nearest                                        ? "no_vendor"
+                                 : !placeRefused.empty() && plan.Refused.empty() ? WorldTravel::PLACE_REFUSED
+                                                                                 : "not_worth";
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", skip, walkMinutes * MINUTE, weighed);
         return false;
     }
 
@@ -628,13 +793,18 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                                : order.reason                                   ? order.reason
                                                                                 : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
-    // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
-    // (detour_not_worth, too_far, no_stop)
+    // The bank and mail errands it takes, then the errands it leaves out: those at a place the record refuses
+    // (place_refused), the detour rule's refusals (detour_not_worth, too_far, no_stop)
     if (WorldLog::Active())
         for (std::pair<WorldTravel::ErrandOffer, char const*> const& errand : bankMail)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
                                WorldTravel::ErrandKindName(errand.first.Kind), errand.second, 0.0f,
                                {{"worth", errand.first.WorthCopper}});
+    if (WorldLog::Active())
+        for (WorldTravel::Refusal const& refusal : placeRefused)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
+                               WorldTravel::ErrandKindName(refusal.Offer.Kind), refusal.Reason, 0.0f,
+                               {{"worth", refusal.Offer.WorthCopper}});
     if (WorldLog::Active())
         for (WorldTravel::Refusal const& refusal : plan.Refused)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand,
@@ -648,6 +818,36 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/) { return StartErrand(bot
 
 bool NewRpgStartInnAction::Execute(Event /*event*/) { return StartBind(botAI, {}); }
 
+bool NewRpgInternal::StartSickHearth(PlayerbotAI* botAI, char const* word)
+{
+    constexpr uint32 HEARTHSTONE_SPELL = 8690;  // the stone's spell (NewRpgBaseAction.cpp's HEARTHSTONE_CAST_SPELL)
+    Player* bot = botAI->GetBot();
+    if (!bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || !TestConstraints::HearthAllowed(botAI->testConstraints) ||
+        !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) || bot->HasSpellCooldown(HEARTHSTONE_SPELL) ||
+        bot->IsInCombat() || bot->IsFlying() || bot->IsInFlight() || bot->IsNonMeleeSpellCast(false) ||
+        bot->GetGroup() || bot->GetMap()->Instanceable() || !WorldTravel::SickErrandOpen(botAI))
+        return false;
+    // The core refuses a mounted cast (as NewRpgBaseAction::CastHearth)
+    Unit::AuraEffectList const& mounts = bot->GetAuraEffectsByType(SPELL_AURA_MOUNTED);
+    uint32 const mountSpell = mounts.empty() ? 0 : mounts.front()->GetId();
+    if (bot->IsMounted())
+        CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
+    bool const cast = botAI->DoSpecificAction("hearthstone", Event(), true);
+    // NR3c's trace (run 1: two paladins' casts ended interrupted:other within 0.1 s): the mount before, what the bot
+    // casts after the use; one line per start
+    Spell const* casting = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    LOG_DEBUG("playerbots", "[NR3] {} sick hearth: use {}, mount spell {}, mounted after {}, stand {}, casting {}",
+              bot->GetName(), cast, mountSpell, bot->IsMounted(), static_cast<uint32>(bot->getStandState()),
+              casting ? casting->GetSpellInfo()->Id : 0);
+    if (!cast)
+        return false;
+    // The cast runs in a rest that ends at the bind (GoalApply::PlannedEnd, hearth_bind); the bot stands while it casts
+    RpgStatus::Start(botAI, NewRpgInfo::Rest{}, word);
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "sick_hearth", "cast",
+                       static_cast<float>(bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ)));
+    return true;
+}
+
 bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
 {
     Player* bot = botAI->GetBot();
@@ -656,10 +856,11 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
         if (TestProbe::On(botAI->testConstraints))
             LOG_INFO("playerbots", "[Probe] {} bind start {}", bot->GetName(), word);
     };
-    if (order.order
-            ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
-               bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())
-            : !WorldTravel::ErrandMayStart(botAI))
+    // A sick bot's order passes once recover has handed it over (NR3: the sick gate chose an inn in its safe area)
+    if (order.order ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+                       (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) && !WorldTravel::SickErrandOpen(botAI)) ||
+                       bot->GetGroup() || bot->GetMap()->Instanceable())
+                    : !WorldTravel::ErrandMayStart(botAI))
     {
         probe("refused");
         return false;

@@ -31,6 +31,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgSoughtTarget.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectDefines.h"
@@ -346,6 +347,15 @@ bool NewRpgDoQuestAction::SeekHeld(NewRpgInfo::DoQuest& data)
 
 namespace
 {
+// Whether a ready quest's hand-in fails for the bags alone (questing WQ18b): the game would reward it but for the room
+// its reward needs (the giver search's own test, CanRewardQuest with a reward)
+bool BagsRefuseHandIn(Player* bot, uint32 questId)
+{
+    Quest const* const quest = sObjectMgr->GetQuestTemplate(questId);
+    return quest && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, false) &&
+           !bot->CanRewardQuest(quest, 0, false);
+}
+
 // questing WQ20: the order's ask of the bot: where it stands, its level, and whether it walks to the place (before the
 // arrival the way's allowance applies, QuestFieldExec::OnOrder)
 Planner::QuestFieldExec::PickAsk OrderAsk(Player const* bot, NewRpgInfo::DoQuest const& data)
@@ -380,12 +390,19 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
         Trace(bot, "place_reached", "order", bot->GetDistance(data.pos), data.questId,
               {{"open", static_cast<float>(run.open.size())}, {"credits", static_cast<float>(run.wayCredits)}});
     }
-    // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows
-    if (std::optional<Planner::QuestOrderEnd> const end =
+    // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows, and a hand-in the
+    // bags refuse is none: the end names the bags (NameEnd, questing WQ18b)
+    if (std::optional<Planner::QuestOrderEnd> const found =
             Planner::QuestFieldExec::End(run, now, !data.targetGuid.IsEmpty()))
     {
+        // nor is one whose ender stands elsewhere in the field (part 4): no_ender is said at the ender
+        std::function<bool(uint32)> elsewhere = [](uint32) { return false; };
+        if (*found == Planner::QuestOrderEnd::NoEnder)
+            elsewhere = NewRpgInternal::OrderEnderElsewhere(bot, run.order);
+        Planner::QuestOrderEnd const end = Planner::QuestFieldExec::NameEnd(
+            run, *found, [this](uint32 questId) { return BagsRefuseHandIn(bot, questId); }, elsewhere);
         ClearTarget(data);
-        RpgStatus::End(botAI, Planner::QuestFieldExec::OutcomeOf(*end), {.word = Planner::QuestOrderEndName(*end)});
+        RpgStatus::End(botAI, Planner::QuestFieldExec::OutcomeOf(end), {.word = Planner::QuestOrderEndName(end)});
         return true;
     }
     if (!data.targetGuid.IsEmpty())
@@ -489,13 +506,8 @@ bool NewRpgDoQuestAction::PickNeed(NewRpgInfo::DoQuest& data, uint32 const need)
 
 bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const
 {
-    if (!creature || !creature->IsInWorld() || !creature->IsAlive() ||
-        Planner::QuestExec::Remembered(data.passed, creature->GetGUID()))
-        return false;
-    // Tapped by another: its kill would bring no credit
-    if (creature->hasLootRecipient() && !creature->isTappedBy(bot))
-        return false;
-    if (bot->IsFriendlyTo(creature))
+    // Open (alive, not tapped by another: its kill would bring no credit, not friendly) and not passed over
+    if (!SoughtTarget::Open(bot, creature) || Planner::QuestExec::Remembered(data.passed, creature->GetGUID()))
         return false;
     // WT35g: what a use brought forth is killed when it is hostile; a neutral one the use made (a cured beast) is left
     if ((data.work == static_cast<uint8>(Planner::QuestExec::Work::Use) ||
@@ -537,23 +549,12 @@ bool NewRpgDoQuestAction::SeekTarget(NewRpgInfo::DoQuest& data, float maxYards)
         return false;
 
     float const range = std::min({maxYards, QUEST_SCAN_YARDS, sPlayerbotAIConfig.SightDistance});
-    std::list<Creature*> creatures;
-    bot->GetCreatureListWithEntryInGrid(creatures, entries, range);
-    Creature* nearest = nullptr;
-    float nearestYards = range;
-    for (Creature* creature : creatures)
-    {
-        if (!ValidTarget(data, creature))
-            continue;
-        float const yards = bot->GetDistance(creature);
-        if (yards < nearestYards)
-        {
-            nearest = creature;
-            nearestYards = yards;
-        }
-    }
+    std::size_t candidates = 0;
+    Creature* nearest = SoughtTarget::Nearest(
+        bot, entries, range, [this, &data](Creature* creature) { return ValidTarget(data, creature); }, candidates);
     if (!nearest)
         return false;
+    float const nearestYards = bot->GetDistance(nearest);
 
     data.targetGuid = nearest->GetGUID();
     data.targetPos =
@@ -565,7 +566,7 @@ bool NewRpgDoQuestAction::SeekTarget(NewRpgInfo::DoQuest& data, float maxYards)
     LOG_DEBUG("playerbots", "[New RPG] {} holds quest target {} ({} yd) for quest {} objective {}", bot->GetName(),
               data.targetGuid.ToString(), nearestYards, data.questId, data.objectiveIdx);
     Trace(bot, "hold", seen ? "los" : "no_los", nearestYards, data.questId,
-          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(creatures.size())}});
+          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(candidates)}});
     return true;
 }
 
@@ -748,14 +749,15 @@ void NewRpgDoQuestAction::LeavePlace(NewRpgInfo::DoQuest& data)
     data.objectiveIdx = 0;
 }
 
-// Ported/adapted from mod-playerbots PR #2632 (head d4e5d110): the targeted attack
+// Ported/adapted from mod-playerbots PR #2632 (head d4e5d110): the targeted attack, of the quest status's target or
+// the gather status's (professions WR20c)
 Unit* NewRpgAttackQuestTargetAction::GetTarget()
 {
-    auto* data = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
-    if (!data || !data->targetGuid.IsAnyTypeCreature())
+    ObjectGuid const target = SoughtTarget::Held(botAI->rpgInfo);
+    if (!target.IsAnyTypeCreature())
         return nullptr;
 
-    return botAI->GetUnit(data->targetGuid);
+    return botAI->GetUnit(target);
 }
 
 bool NewRpgAttackQuestTargetAction::Execute(Event /*event*/)

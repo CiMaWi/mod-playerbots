@@ -23,7 +23,7 @@ struct Requirement
     char const* Update;  // the update file's name without .sql
 };
 
-inline constexpr std::array<Requirement, 14> Requirements = {{
+inline constexpr std::array<Requirement, 17> Requirements = {{
     {"playerbots_bot_profile", "", "2026_10_23_00_playerbots_bot_profile"},
     {"playerbots_acquaintance", "", "2026_10_25_00_playerbots_acquaintance"},
     {"playerbots_ladder_roster", "", "2026_10_26_00_playerbots_ladder_roster"},
@@ -36,6 +36,9 @@ inline constexpr std::array<Requirement, 14> Requirements = {{
     {"playerbots_bot_professions", "", "2026_11_18_07_playerbots_bot_professions"},
     {"playerbots_quest_poi_z", "", "2026_11_19_00_playerbots_quest_poi_z"},
     {"playerbots_bot_quest_fail", "", "2026_11_20_05_playerbots_bot_quest_fail"},
+    {"playerbots_auction_history", "", "2026_11_25_34_playerbots_auction_history"},
+    {"playerbots_quest_impossible", "", "2026_11_26_00_playerbots_quest_impossible"},
+    {"playerbots_auction_record", "", "2026_11_26_01_playerbots_auction_record"},
     {"playerbots_known_danger", "", "2026_11_27_10_playerbots_known_danger"},
     {"playerbots_known_danger_build", "", "2026_11_27_10_playerbots_known_danger"},
 }};

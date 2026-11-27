@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "ItemWorthRules.h"
 #include "MailRules.h"
 
@@ -44,9 +45,11 @@ enum class ErrandKind : uint8_t
     Tame,          // a hunter without a pet tames a beast at its spawn (upkeep WU21b)
     Stable,        // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
     Profession,    // a profession, its next rank or a recipe at a profession trainer (professions plan)
-    Craft          // a craft at a station: an anvil, a forge or a fire (professions plan)
+    Craft,         // a craft at a station: an anvil, a forge or a fire (professions plan)
+    Auction        // listing and buying at an auctioneer (auction plan)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 17;
+constexpr uint8_t ERRAND_KIND_COUNT = 18;
+static_assert(static_cast<uint8_t>(ErrandKind::Auction) + 1 == ERRAND_KIND_COUNT, "a count for every errand kind");
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -86,6 +89,8 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "profession";
         case ErrandKind::Craft:
             return "craft";
+        case ErrandKind::Auction:
+            return "auction";
     }
     return "other";
 }
@@ -116,12 +121,13 @@ constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
 constexpr uint32_t SERVICE_STABLE_MASTER = 1u << 11;  // keeps a hunter's pets (WU21c)
 constexpr uint32_t SERVICE_STATION = 1u << 13;        // a crafting station the bot's craft needs (professions plan)
+constexpr uint32_t SERVICE_AUCTIONEER = 1u << 14;     // an auctioneer: the one house every auctioneer serves (WA.9)
 // Every service has a bit of its own: two services merged onto one bit fail here
 constexpr uint32_t SERVICE_BITS[] = {
     SERVICE_QUEST_ENDER,        SERVICE_VENDOR,  SERVICE_REPAIR,         SERVICE_INNKEEPER,
     SERVICE_FLIGHT_MASTER,      SERVICE_TRAINER, SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,
     SERVICE_WEAPON_MASTER,      SERVICE_MAILBOX, SERVICE_BANKER,         SERVICE_STABLE_MASTER,
-    SERVICE_PROFESSION_TRAINER, SERVICE_STATION};
+    SERVICE_PROFESSION_TRAINER, SERVICE_STATION, SERVICE_AUCTIONEER};
 constexpr bool ServiceBitsDistinct()
 {
     uint32_t seen = 0;
@@ -254,6 +260,7 @@ struct CraftAt
     uint32_t Focus = 0;  // the spell focus of its station; 0 = none (done at any stop)
     float WorthCopper = 0.0f;
     bool Carried = false;  // the bot lights the station itself (a cook's campfire, WR15): done at any stop too
+    uint32_t Slots = 0;    // bag slots its first cast takes beyond what its reagents free
 };
 
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
@@ -279,8 +286,9 @@ struct ErrandSnapshot
     uint32_t BagHorizonHours = 0;
     uint32_t FreeSlots = 0;
     uint32_t SellableSlots = 0;
-    float MinutesToNextStop = 0.0f;  // until the bot passes a vendor anyway
-    uint64_t Reserve = 0;            // ShouldBuyBag's reserve
+    float MinutesToNextStop = 0.0f;     // until the bot passes a vendor anyway
+    uint64_t Reserve = 0;               // ShouldBuyBag's reserve
+    AuctionRules::CopperWeight Weight;  // the need factor a bag's price is paid at (AH.5); {} unknown: the reserve's
     uint32_t ThriftPercent = PERCENT;
     uint32_t BagBudgetPercent = PERCENT;
     std::vector<ServiceStop> Stops;
@@ -309,6 +317,12 @@ struct ErrandSnapshot
     CraftAt Craft;            // one station per trip
     PetAt Pet;
     StableAt Stable;
+    // The auction plan (WA3b fills the stock, WA4b the wanted lines)
+    uint32_t AuctionStockWorth = 0;   // copper listing the bag stock fetches above a vendor's payout (CarriedKeeps)
+    uint32_t AuctionWantedWorth = 0;  // copper the wanted lines of its buy list are worth to it
+    // Needs and errands NR12b: copper listing the banked sale stock fetches above a vendor's payout
+    // (BankKnowledge::stockGain): the auction offer counts it, and a banker before the auction stop withdraws it
+    uint32_t BankStockWorth = 0;
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -474,7 +488,8 @@ inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<Errand
 // station the bot lights itself (WR15) needs no station stop: any stop takes the craft, and its worth may open a trip
 inline void ProvideCraft(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Craft.Spell)
+    // A product that finds no room even after the trip's sale is not planned
+    if (!snapshot.Craft.Spell || snapshot.Craft.Slots > snapshot.FreeSlots + snapshot.SellableSlots)
         return;
 
     ErrandOffer offer;
@@ -536,7 +551,9 @@ inline void ProvideBags(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
 
         BagBuyInput in;
         in.Price = bag.Price;
-        in.Worth = BagWorth(snapshot.Rates, snapshot.FreeSlots, bag.Slots, bag.ReplacedSlots, snapshot.BagHorizonHours);
+        in.Worth = AuctionRules::BagCeiling(
+            BagWorth(snapshot.Rates, snapshot.FreeSlots, bag.Slots, bag.ReplacedSlots, snapshot.BagHorizonHours), 0,
+            snapshot.Weight);
         in.Gold = snapshot.Money;
         in.Reserve = snapshot.Reserve;
         in.ThriftPercent = snapshot.ThriftPercent;
@@ -591,17 +608,31 @@ inline void ProvideMail(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>
     offers.push_back(offer);
 }
 
-// Due items waiting in the bank, weighted by orderliness
+// The withdrawal of the banked sale stock (NR12b): worth the stock's gain over the vendor, which PlanTrip counts only
+// with an auction stop after it, so the stock is never fetched without its auction nor its auction drawn without it
+constexpr uint32_t STOCK_WITHDRAW_ID = 1;
+
+// Due items waiting in the bank, weighted by orderliness; and the banked sale stock's withdrawal for an auction
 inline void ProvideBankWithdraw(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    if (!snapshot.Governed || !snapshot.BankDueCount)
+    if (!snapshot.Governed)
         return;
 
     ErrandOffer offer;
     offer.Kind = ErrandKind::BankWithdraw;
     offer.Service = SERVICE_BANKER;
-    offer.WorthCopper = static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
-    offers.push_back(offer);
+    if (snapshot.BankDueCount)
+    {
+        offer.WorthCopper =
+            static_cast<float>(snapshot.BankDueWorth) * BankMail::OrderlinessWeight(snapshot.Orderliness);
+        offers.push_back(offer);
+    }
+    if (snapshot.BankStockWorth)
+    {
+        offer.Id = STOCK_WITHDRAW_ID;
+        offer.WorthCopper = static_cast<float>(snapshot.BankStockWorth);
+        offers.push_back(offer);
+    }
 }
 
 // Kept items out of the bags: the slots they free are worth the same as a sale's until the next stop, unweighted
@@ -615,6 +646,24 @@ inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<Erran
     offer.Service = SERVICE_BANKER;
     offer.WorthCopper =
         SaleWorth(snapshot.Rates, snapshot.FreeSlots, snapshot.BankDepositSlots, snapshot.MinutesToNextStop);
+    offers.push_back(offer);
+}
+
+// Auction stock in the bags (WA3b) and the buy list's wanted lines (WA4b): worth what listing the stock fetches above
+// a vendor's payout plus what the wanted lines save under their ceilings at their typical prices, against the detour
+// like any errand (selling and buying share one stop); an auctioneer beside a stop the bot makes anyway joins it. It
+// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later. Banked
+// sale stock (NR12b) makes the offer too, worth nothing of its own: its gain is the withdrawal's (PlanTrip)
+inline void ProvideAuction(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    uint64_t const worth = static_cast<uint64_t>(snapshot.AuctionStockWorth) + snapshot.AuctionWantedWorth;
+    if (!snapshot.Governed || (!worth && !snapshot.BankStockWorth))
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Auction;
+    offer.Service = SERVICE_AUCTIONEER;
+    offer.WorthCopper = static_cast<float>(worth);
     offers.push_back(offer);
 }
 
@@ -643,6 +692,18 @@ inline void MergeServiceStops(std::vector<ServiceStop>& stops, std::vector<Servi
     }
 }
 
+// NR12b: an auction errand is still ahead of a running trip from stop `from` on (that stop's own while its flag
+// stands): the bank visit there finds the sale stock due for it. A stop's flag drops once its errand ran, so an
+// auction stop before the bank's makes nothing due
+template <typename Stop>
+inline bool AuctionAhead(std::vector<Stop> const& stops, std::size_t from)
+{
+    for (std::size_t s = from; s < stops.size(); ++s)
+        if (stops[s].auction)
+            return true;
+    return false;
+}
+
 // The travel plan's providers; a later plan adds its row to its own copy of this table, PlanTrip stays as it is
 inline std::vector<ProviderRow> const& TravelProviders()
 {
@@ -665,7 +726,8 @@ inline std::vector<ProviderRow> const& TravelProviders()
 }
 
 // The trip's providers with the bank and mail rows. A stop does its errands in the order the offers come: a banker's
-// withdrawal first (it may bring gear or sellable items), then selling and the rest, then the deposit and the mailbox
+// withdrawal first (it may bring gear or sellable items), then selling and the rest, the auction stock's listing,
+// then the deposit and the mailbox
 inline std::vector<ProviderRow> const& TripProviders()
 {
     static std::vector<ProviderRow> const rows = []
@@ -673,6 +735,7 @@ inline std::vector<ProviderRow> const& TripProviders()
         std::vector<ProviderRow> all = {{ErrandKind::BankWithdraw, "bank_withdraw", &ProvideBankWithdraw}};
         all.insert(all.end(), TravelProviders().begin(), TravelProviders().end());
         all.push_back({ErrandKind::Craft, "craft", &ProvideCraft});  // before the deposit: its products may go too
+        all.push_back({ErrandKind::Auction, "auction", &ProvideAuction});  // before the deposit banks the stock
         all.push_back({ErrandKind::BankDeposit, "bank_deposit", &ProvideBankDeposit});
         all.push_back({ErrandKind::Mail, "mail", &ProvideMail});
         return all;
@@ -686,6 +749,24 @@ inline std::vector<ErrandOffer> CollectOffers(ErrandSnapshot const& snapshot, st
     for (ProviderRow const& row : rows)
         row.Provide(snapshot, offers);
     return offers;
+}
+
+// NR3 (NR.4): the errands that start a fight: the tame (it clears the site and fights the beast through the channel)
+// and the stable's swap (it tames the wanted pet after storing the old one)
+constexpr bool ErrandStartsFight(ErrandKind kind) { return kind == ErrandKind::Tame || kind == ErrandKind::Stable; }
+
+// A sick bot's trip (NR.4): no errand that starts a fight, no service stop and no placed errand outside the safe area
+// the bot stands in. `safeAt(place)` answers whether the walk from the bot to the place stays in that area
+// (Upkeep::SafeLeg on foot); the healthy bot's trip never calls this
+template <typename SafeAt>
+inline void KeepSickErrands(std::vector<ServiceStop>& stops, std::vector<ErrandOffer>& offers, SafeAt const& safeAt)
+{
+    stops.erase(
+        std::remove_if(stops.begin(), stops.end(), [&safeAt](ServiceStop const& stop) { return !safeAt(stop.Place); }),
+        stops.end());
+    offers.erase(std::remove_if(offers.begin(), offers.end(), [&safeAt](ErrandOffer const& offer)
+                                { return ErrandStartsFight(offer.Kind) || (offer.Placed && !safeAt(offer.Place)); }),
+                 offers.end());
 }
 
 struct TripStop
@@ -710,8 +791,8 @@ struct TripRequest
 struct Refusal
 {
     ErrandOffer Offer;
-    char const* Reason = "";  // detour_not_worth, too_far, no_stop
-    float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth)
+    char const* Reason = "";  // detour_not_worth, detour_cap, too_far, no_stop; place_refused (KeepUnrefusedErrands)
+    float CostCopper = 0.0f;  // the cheapest detour it would need (detour_not_worth, detour_cap)
     float WalkMinutes = 0.0f;
 };
 
@@ -730,6 +811,71 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
         return offer.Kind == ErrandKind::Craft;
 
     return (stop.Services & offer.Service) == offer.Service;
+}
+
+// The word of an errand left out because the record of failed attempts refuses its place (KeepUnrefusedErrands): its
+// own (R4), neither the entry's cause nor no_stop
+constexpr char const* PLACE_REFUSED = "place_refused";
+
+// NR9 (NR8: trips planned to a place where a trip had just died three times): no stop and no placed errand at a place
+// the record of failed attempts refuses (`refusedAt(place)`: a live entry there, FailedAttempts::IsPlaceRefused), so
+// the planner takes the next stop that serves; an errand that only refused stops took is left out too. What it leaves
+// out comes back as refusals with the word PLACE_REFUSED. The ordered stop never passes through it (an order names its
+// vendor); refusedAt is asked once per stop and placed errand
+template <typename RefusedAt>
+inline std::vector<Refusal> KeepUnrefusedErrands(std::vector<ServiceStop>& stops, std::vector<ErrandOffer>& offers,
+                                                 RefusedAt const& refusedAt)
+{
+    std::vector<ServiceStop> keptStops;
+    std::vector<TripStop> kept;  // the places left: the kept stops and the kept placed errands' own places
+    std::vector<TripStop> refused;
+    for (ServiceStop const& stop : stops)
+    {
+        TripStop const place{stop.Place, stop.Services, stop.Id, stop.Trainer, false, 0.0f, {}};
+        if (refusedAt(stop.Place))
+            refused.push_back(place);
+        else
+        {
+            kept.push_back(place);
+            keptStops.push_back(stop);
+        }
+    }
+    stops = std::move(keptStops);
+    std::vector<bool> placeRefused(offers.size(), false);
+    for (std::size_t i = 0; i < offers.size(); ++i)
+        if (offers[i].Placed)
+        {
+            placeRefused[i] = refusedAt(offers[i].Place);
+            if (!placeRefused[i])
+                kept.push_back({offers[i].Place, offers[i].Service, offers[i].Target, 0, false, 0.0f, {}});
+        }
+    auto const takenAt = [](std::vector<TripStop> const& places, ErrandOffer const& offer)
+    {
+        return std::any_of(places.begin(), places.end(),
+                           [&offer](TripStop const& place) { return StopTakes(place, offer); });
+    };
+    std::vector<Refusal> out;
+    std::vector<ErrandOffer> keptOffers;
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        ErrandOffer const& offer = offers[i];
+        bool const left = offer.Placed ? placeRefused[i] : takenAt(refused, offer) && !takenAt(kept, offer);
+        if (left)
+            out.push_back({offer, PLACE_REFUSED, 0.0f, 0.0f});
+        else
+            keptOffers.push_back(offer);
+    }
+    offers = std::move(keptOffers);
+    return out;
+}
+
+// NR9: the vendor part of a stop passed without a sale, by what stopped it: its vendor found neither near the stop nor
+// by its spawn (no_vendor), or the vendor found gone or dead before the bot stood at it (vendor_gone); nullptr while
+// it serves. The word of the `decision errand vendor` row (the skip row's no_vendor is the trip start's: no vendor in
+// reach at all)
+inline char const* VendorPassedWord(bool found, bool serving)
+{
+    return !found ? "no_vendor" : !serving ? "vendor_gone" : nullptr;
 }
 
 // A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that
@@ -805,6 +951,59 @@ inline void RankBeforeMount(std::vector<TripStop>& stops)
                     stops.begin() + static_cast<std::ptrdiff_t>(trainer) + 1);
 }
 
+// The first errand of a kind at a stop, or its errands' end
+inline std::vector<ErrandOffer>::iterator FindErrand(TripStop& stop, ErrandKind kind)
+{
+    return std::find_if(stop.Errands.begin(), stop.Errands.end(),
+                        [kind](ErrandOffer const& errand) { return errand.Kind == kind; });
+}
+
+// A stop the trip has vendor business at: the bot sells there, whatever else it came for
+inline bool SellsAt(TripStop const& stop)
+{
+    return (stop.Services & SERVICE_VENDOR) &&
+           std::any_of(stop.Errands.begin(), stop.Errands.end(), [](ErrandOffer const& errand)
+                       { return (errand.Service & (SERVICE_VENDOR | SERVICE_REPAIR)) != 0; });
+}
+
+// Full bags sell before they craft (NR22): a bank stop that withdraws comes before the trip's last vendor stop, and the
+// craft after it, its station's stop moved or, without a station, the errand alone
+inline void SellBeforeCraft(std::vector<TripStop>& stops)
+{
+    std::size_t sale = stops.size();
+    for (std::size_t i = 0; i < stops.size(); ++i)
+        if (SellsAt(stops[i]))
+            sale = i;
+    if (sale == stops.size())
+        return;
+
+    auto const at = [&stops](std::size_t i) { return stops.begin() + static_cast<std::ptrdiff_t>(i); };
+    for (std::size_t i = sale + 1; i < stops.size(); ++i)
+        if (FindErrand(stops[i], ErrandKind::BankWithdraw) != stops[i].Errands.end())
+        {
+            std::rotate(at(sale), at(i), at(i + 1));
+            ++sale;
+        }
+    // A trip holds one craft
+    for (std::size_t i = 0; i < sale; ++i)
+    {
+        auto const craft = FindErrand(stops[i], ErrandKind::Craft);
+        if (craft == stops[i].Errands.end())
+            continue;
+
+        if (craft->Service)
+            std::rotate(at(i), at(i + 1), at(sale + 1));
+        else
+        {
+            stops[sale].Errands.push_back(*craft);
+            stops[i].Errands.erase(craft);
+            if (stops[i].Errands.empty() && !stops[i].OnRoute)
+                stops.erase(at(i));
+        }
+        return;
+    }
+}
+
 // The detour rule: an errand joins a stop already on the trip when one can take it; a new stop opens only when the
 // pending errands it takes are worth more than its detour, the best gain first, until no detour pays or the trip has
 // MAX_DETOUR_STOPS detours. Deterministic: candidates in the order given, strict comparisons.
@@ -831,11 +1030,25 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         done[i] = true;
         plan.Refused.push_back({offers[i], "too_far", 0.0f, minutes});
     }
-    auto const join = [&plan, &offers, &done]()
+    // NR12b: the banked sale stock is one errand of two stops, its withdrawal at a banker and its listing at an
+    // auctioneer after it (or at the same stop, the withdrawal first). The withdrawal carries the stock's gain, the
+    // auction offer only what the bags' stock and the wanted lines are worth; the gain counts only for a stop that
+    // completes the pair, against its own detour and that of a banker stop it still needs, each new stop a detour as
+    // for any errand. A bank stop past the auction would fetch the stock for nothing
+    std::size_t stock = offers.size();
+    std::size_t auction = offers.size();
+    for (std::size_t i = 0; i < offers.size(); ++i)
+    {
+        if (offers[i].Kind == ErrandKind::BankWithdraw && offers[i].Id == STOCK_WITHDRAW_ID)
+            stock = i;
+        else if (offers[i].Kind == ErrandKind::Auction)
+            auction = i;
+    }
+    auto const join = [&plan, &offers, &done, stock]()
     {
         for (std::size_t i = 0; i < offers.size(); ++i)
             for (TripStop& stop : plan.Stops)
-                if (!done[i] && StopTakes(stop, offers[i]))
+                if (!done[i] && i != stock && StopTakes(stop, offers[i]))
                 {
                     stop.Errands.push_back(offers[i]);
                     done[i] = true;
@@ -891,22 +1104,162 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         join();
     };
 
+    // The first stop of `stops` that holds the auction errand, or that takes it while it is pending; the size if none
+    auto const auctionAt = [&offers, &done, auction](std::vector<TripStop> const& stops)
+    {
+        if (auction == offers.size())
+            return stops.size();
+
+        std::size_t at = 0;
+        auto const holds = [](ErrandOffer const& errand) { return errand.Kind == ErrandKind::Auction; };
+        while (at < stops.size() &&
+               !(done[auction] ? std::any_of(stops[at].Errands.begin(), stops[at].Errands.end(), holds)
+                               : StopTakes(stops[at], offers[auction])))
+            ++at;
+        return at;
+    };
+    // The banker in front of stop `before` of `stops`: of the candidates [first, last) with one, the place and index
+    // that add the fewest minutes; false when none takes the withdrawal. The walk limit is the caller's. A banker that
+    // takes the pending auction too is no second stop: the auction would join it and leave its own stop empty; it is
+    // weighed as a stop of its own
+    struct StockInsert
+    {
+        std::size_t Candidate = 0;
+        std::size_t Index = 0;
+        float Minutes = 0.0f;
+    };
+    auto const inFront = [&candidates, &offers, &done, &request, stock, auction](std::vector<TripStop> const& stops,
+                                                                                 std::size_t before, std::size_t first,
+                                                                                 std::size_t last, StockInsert& best)
+    {
+        bool found = false;
+        for (std::size_t c = first; c < last; ++c)
+        {
+            if (!StopTakes(candidates[c], offers[stock]) ||
+                (auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction])))
+                continue;
+
+            ErrandPlace const& place = candidates[c].Place;
+            for (std::size_t s = 0; s <= before; ++s)
+            {
+                ErrandPlace const& from = s ? stops[s - 1].Place : request.Start;
+                float const minutes =
+                    WalkMinutes(Yards(from, place) + Yards(place, stops[s].Place) - Yards(from, stops[s].Place),
+                                request.YardsPerSecond);
+                if (!std::isfinite(minutes) || (found && !(minutes < best.Minutes)))
+                    continue;
+
+                found = true;
+                best = {c, s, minutes};
+            }
+        }
+        return found;
+    };
+    // Candidate `c`, inserted at `index` with `minutes` of its own and taking the pending auction, completes the pair
+    // when a banker comes before it: a stop of the trip (no further minutes) or a stop of its own in front (Banker).
+    // Each new stop is a detour of its own, as for any errand
+    struct StockPair
+    {
+        bool Found = false;
+        bool Banker = false;
+        StockInsert Insert;
+        float Cost = 0.0f;
+    };
+    auto const pairWith = [&plan, &candidates, &offers, &request, &auctionAt, &inFront, stock](
+                              std::size_t c, std::size_t index, float minutes)
+    {
+        StockPair pair;
+        std::vector<TripStop> stops = plan.Stops;
+        stops.insert(stops.begin() + static_cast<std::ptrdiff_t>(index), candidates[c]);
+        std::size_t const at = auctionAt(stops);
+        if (at == stops.size())
+            return pair;
+
+        pair.Cost = DetourCost(request.Rates, minutes);
+        for (std::size_t s = 0; s <= at; ++s)
+            if (StopTakes(stops[s], offers[stock]))
+            {
+                pair.Found = true;
+                return pair;
+            }
+        if (!inFront(stops, at, 0, candidates.size(), pair.Insert))
+            return pair;
+
+        pair.Found = true;
+        pair.Banker = true;
+        pair.Cost += DetourCost(request.Rates, pair.Insert.Minutes);
+        return pair;
+    };
+    // The pair on stops the trip makes anyway: the withdrawal goes first at the first stop with a banker up to the
+    // auction's
+    auto const stockJoin = [&plan, &offers, &done, &auctionAt, stock]()
+    {
+        if (stock == offers.size() || done[stock])
+            return;
+
+        std::size_t const at = auctionAt(plan.Stops);
+        if (at == plan.Stops.size())
+            return;
+
+        for (std::size_t s = 0; s <= at; ++s)
+            if (StopTakes(plan.Stops[s], offers[stock]))
+            {
+                plan.Stops[s].Errands.insert(plan.Stops[s].Errands.begin(), offers[stock]);
+                done[stock] = true;
+                return;
+            }
+    };
+
     join();
     rideAlong();
-    for (std::size_t detours = 0; detours < MAX_DETOUR_STOPS; ++detours)
+    stockJoin();
+    std::size_t detours = 0;
+    // The pending offers of a detour that pays but finds no slot left under the cap, as the last round saw them
+    std::vector<bool> capped;
+    for (;;)
     {
+        capped.assign(offers.size(), false);
         bool found = false;
         float bestGain = 0.0f;
         std::size_t bestCandidate = 0;
         std::size_t bestIndex = 0;
         float bestMinutes = 0.0f;
+        StockPair bestPair;
         bool const rankPending = rank < offers.size() && !done[rank];
+        auto const consider = [&](std::size_t c, std::size_t index, float minutes, float worth, float cost,
+                                  StockPair const& pair, bool withStock)
+        {
+            if (!(worth > cost))
+                return;
+            if (detours + (pair.Banker ? 2 : 1) > MAX_DETOUR_STOPS)
+            {
+                for (std::size_t i = 0; i < offers.size(); ++i)
+                {
+                    bool const takes =
+                        i == stock ? withStock : StopTakes(candidates[c], offers[i]) && !(i == mount && rankPending);
+                    if (!done[i] && takes)
+                        capped[i] = true;
+                }
+                return;
+            }
+            if (found && !(worth - cost > bestGain))
+                return;
+
+            found = true;
+            bestGain = worth - cost;
+            bestCandidate = c;
+            bestIndex = index;
+            bestMinutes = minutes;
+            bestPair = pair;
+        };
+        bool const stockPending = stock < offers.size() && !done[stock];
+        std::size_t const auctionStop = auctionAt(plan.Stops);
         for (std::size_t c = 0; c < candidates.size(); ++c)
         {
             float worth = 0.0f;
             bool takes = false;
             for (std::size_t i = 0; i < offers.size(); ++i)
-                if (!done[i] && StopTakes(candidates[c], offers[i]))
+                if (!done[i] && i != stock && StopTakes(candidates[c], offers[i]))
                 {
                     if (i == rank && mount < offers.size() && !done[mount])
                         worth += offers[mount].WorthCopper;
@@ -914,24 +1267,30 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
                         worth += offers[i].WorthCopper;
                     takes = true;
                 }
-            if (!takes)
-                continue;
 
             std::size_t index = 0;
             float const minutes =
                 WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
-            if (!(minutes <= ERRAND_MAX_WALK_MINUTES))
+            bool const inReach = minutes <= ERRAND_MAX_WALK_MINUTES;
+            if (takes && inReach)
+                consider(c, index, minutes, worth, DetourCost(request.Rates, minutes), StockPair(), false);
+            if (!stockPending)
                 continue;
 
-            float const cost = DetourCost(request.Rates, minutes);
-            if (!(worth > cost) || (found && !(worth - cost > bestGain)))
-                continue;
-
-            found = true;
-            bestGain = worth - cost;
-            bestCandidate = c;
-            bestIndex = index;
-            bestMinutes = minutes;
+            float const withStock = worth + offers[stock].WorthCopper;
+            // The stop takes the pending auction: the banker before it comes too (a second stop when of its own)
+            if (inReach && auction < offers.size() && !done[auction] && StopTakes(candidates[c], offers[auction]))
+            {
+                StockPair const pair = pairWith(c, index, minutes);
+                if (pair.Found && (!pair.Banker || pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES))
+                    consider(c, index, minutes, withStock, pair.Cost, pair, true);
+            }
+            // A banker in front of the trip's auction stop
+            StockInsert front;
+            if (auctionStop < plan.Stops.size() && inFront(plan.Stops, auctionStop, c, c + 1, front) &&
+                front.Minutes <= ERRAND_MAX_WALK_MINUTES)
+                consider(c, front.Index, front.Minutes, withStock, DetourCost(request.Rates, front.Minutes),
+                         StockPair(), true);
         }
         if (!found)
             break;
@@ -939,11 +1298,38 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         TripStop stop = candidates[bestCandidate];
         stop.DetourMinutes = bestMinutes;
         plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
+        ++detours;
+        if (bestPair.Banker)
+        {
+            TripStop banker = candidates[bestPair.Insert.Candidate];
+            banker.DetourMinutes = bestPair.Insert.Minutes;
+            plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestPair.Insert.Index),
+                              std::move(banker));
+            ++detours;
+        }
         join();
         rideAlong();
+        stockJoin();
     }
 
-    // What is left: no place takes it, every place is beyond the walk limit, or no detour pays
+    // What is left: no place takes it, every place is beyond the walk limit, or no detour pays. Banked stock left
+    // without its withdrawal leaves the trip whole: an auction errand that holds nothing else comes off its stop, and
+    // the auction's refusal carries the stock's gain and the pair's cost (the withdrawal makes no row of its own)
+    bool const stockLeft = stock < offers.size() && !done[stock] &&
+                           (auction == offers.size() || !done[auction] || !(offers[auction].WorthCopper > 0.0f));
+    if (stockLeft)
+    {
+        done[stock] = true;
+        if (auction < offers.size() && done[auction])
+        {
+            for (TripStop& stop : plan.Stops)
+                stop.Errands.erase(
+                    std::remove_if(stop.Errands.begin(), stop.Errands.end(),
+                                   [](ErrandOffer const& errand) { return errand.Kind == ErrandKind::Auction; }),
+                    stop.Errands.end());
+            done[auction] = false;
+        }
+    }
     for (std::size_t i = 0; i < offers.size(); ++i)
     {
         if (done[i])
@@ -952,34 +1338,134 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         Refusal refusal;
         refusal.Offer = offers[i];
         refusal.Reason = "no_stop";
+        bool const paired = stockLeft && i == auction;
+        if (paired)
+            refusal.Offer.WorthCopper += offers[stock].WorthCopper;
         bool reachable = false;
-        for (TripStop const& candidate : candidates)
+        for (std::size_t c = 0; c < candidates.size(); ++c)
         {
-            if (!StopTakes(candidate, offers[i]))
+            if (!StopTakes(candidates[c], offers[i]))
                 continue;
 
             std::size_t index = 0;
-            float const minutes =
-                WalkMinutes(InsertYards(request.Start, plan.Stops, candidate.Place, index), request.YardsPerSecond);
-            if (!(minutes <= ERRAND_MAX_WALK_MINUTES))
+            float minutes =
+                WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
+            float cost = DetourCost(request.Rates, minutes);
+            // Banked stock alone: the pair's banker must be in reach too, and its detour adds to the cost
+            StockPair const pair =
+                paired && minutes <= ERRAND_MAX_WALK_MINUTES ? pairWith(c, index, minutes) : StockPair();
+            if (paired && minutes <= ERRAND_MAX_WALK_MINUTES && !pair.Found)
+                continue;
+            if (!(minutes <= ERRAND_MAX_WALK_MINUTES) ||
+                (pair.Banker && !(pair.Insert.Minutes <= ERRAND_MAX_WALK_MINUTES)))
             {
                 if (!reachable)
                     refusal.Reason = "too_far";
                 continue;
             }
-            float const cost = DetourCost(request.Rates, minutes);
+            if (pair.Found)
+            {
+                cost = pair.Cost;
+                minutes += pair.Banker ? pair.Insert.Minutes : 0.0f;
+            }
             if (!reachable || cost < refusal.CostCopper)
             {
                 refusal.CostCopper = cost;
                 refusal.WalkMinutes = minutes;
             }
             reachable = true;
-            refusal.Reason = "detour_not_worth";
         }
+        // detour_cap only where the cap alone held a paying detour back
+        if (reachable)
+            refusal.Reason = capped[i] || (paired && capped[stock]) ? "detour_cap" : "detour_not_worth";
         plan.Refused.push_back(refusal);
     }
     RankBeforeMount(plan.Stops);
+    SellBeforeCraft(plan.Stops);
     return plan;
+}
+
+// NR13: the vendor stops of a trip keep the errand walk limit by their route, not only the straight line: why a route
+// refuses a vendor (the words of its errand vendor_drop row)
+constexpr char const* VENDOR_NO_ROUTE = "no_route";
+constexpr char const* VENDOR_ROUTE_TOO_FAR = "route_too_far";
+// The route searches one errand start runs at most (a map thread); past them a vendor stands by its straight distance
+constexpr std::size_t VENDOR_ROUTE_SEARCHES = 8;
+
+struct DroppedVendor
+{
+    uint32_t Entry = 0;
+    ErrandPlace Place;
+    float RouteSeconds = 0.0f;  // 0 for no route
+    char const* Reason = "";
+};
+
+// A stop the bot opens to use its vendor: not one for its mailbox, banker or auctioneer alone
+inline bool UsesVendor(TripStop const& stop)
+{
+    return !stop.OnRoute && (stop.Services & SERVICE_VENDOR) &&
+           std::any_of(stop.Errands.begin(), stop.Errands.end(),
+                       [](ErrandOffer const& errand)
+                       {
+                           return errand.Kind != ErrandKind::Mail && errand.Kind != ErrandKind::BankWithdraw &&
+                                  errand.Kind != ErrandKind::BankDeposit && errand.Kind != ErrandKind::Auction;
+                       });
+}
+
+// PlanTrip, then the vendor stops it chose asked for their route's seconds from the start (`routeSeconds(place)`,
+// negative when there is none), in the trip's order. A vendor with no route or over the limit leaves the known stops,
+// with the vendors within STOP_JOIN_YARDS of it (the same walk), and the trip is planned again; an errand placed at
+// that vendor is left out with the same word
+template <typename RouteSeconds>
+inline TripPlan PlanTripByRoute(TripRequest const& request, std::vector<ServiceStop> stops,
+                                std::vector<ErrandOffer> offers, RouteSeconds const& routeSeconds,
+                                std::vector<DroppedVendor>& dropped)
+{
+    std::vector<ErrandPlace> fits;
+    std::vector<Refusal> leftOut;
+    std::size_t searches = 0;
+    for (;;)
+    {
+        TripPlan plan = PlanTrip(request, stops, offers);
+        bool replan = false;
+        for (TripStop const& stop : plan.Stops)
+        {
+            auto const here = [&stop](ErrandPlace const& place) { return Yards(place, stop.Place) <= STOP_JOIN_YARDS; };
+            if (searches >= VENDOR_ROUTE_SEARCHES || !UsesVendor(stop) || std::any_of(fits.begin(), fits.end(), here))
+                continue;
+
+            ++searches;
+            float const seconds = routeSeconds(stop.Place);
+            if (seconds >= 0.0f && seconds <= ERRAND_MAX_WALK_MINUTES * 60.0f)
+            {
+                fits.push_back(stop.Place);
+                continue;
+            }
+
+            char const* const reason = seconds < 0.0f ? VENDOR_NO_ROUTE : VENDOR_ROUTE_TOO_FAR;
+            dropped.push_back({stop.Id, stop.Place, std::max(seconds, 0.0f), reason});
+            stops.erase(std::remove_if(stops.begin(), stops.end(), [&here](ServiceStop const& service)
+                                       { return (service.Services & SERVICE_VENDOR) && here(service.Place); }),
+                        stops.end());
+            for (auto offer = offers.begin(); offer != offers.end();)
+            {
+                if (offer->Placed && (offer->Service & SERVICE_VENDOR) && here(offer->Place))
+                {
+                    leftOut.push_back({*offer, reason, 0.0f, 0.0f});
+                    offer = offers.erase(offer);
+                }
+                else
+                    ++offer;
+            }
+            replan = true;
+            break;
+        }
+        if (replan)
+            continue;
+
+        plan.Refused.insert(plan.Refused.end(), leftOut.begin(), leftOut.end());
+        return plan;
+    }
 }
 
 // How an errand trip's end is recorded (the status core's errand clean-up, CS14)
@@ -989,6 +1475,9 @@ enum class ErrandEndRow : uint8_t
     Abort,  // errand_abort: no stop was visited
     Sick    // errand_sick: resurrection sickness ended the trip; its minutes do not count
 };
+
+// An ordered bag is bought only when the money left after its price still covers the visit's upkeep reserve (NR21)
+inline bool BagBuyAllowed(uint64_t money, uint64_t price, uint64_t reserve) { return money >= price + reserve; }
 
 // Every end stamps the errand check; only a healthy trip with a visited stop adds its minutes to t
 inline ErrandEndRow ErrandEnd(SlotMeasure& measure, uint32_t nowMs, float minutes, bool visited, bool sick)

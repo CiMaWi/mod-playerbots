@@ -74,6 +74,7 @@ constexpr std::uint32_t ITEM_DEADLY_1 = 2892;      // level 28, lot 5, dearer pe
 constexpr std::uint32_t ITEM_BULLET = 2516;        // cheaper than the arrows: a bow must still never get them
 constexpr std::uint32_t ITEM_MEAT = 117;
 constexpr std::uint32_t ITEM_POWDER = 17020;
+constexpr std::uint32_t ITEM_FIGURINE = 16583;  // a warlock reagent of a quest's spell, on no trainer list
 constexpr std::uint32_t ITEM_HORSE = 2414;
 constexpr std::uint32_t ITEM_FAST_HORSE = 18776;
 constexpr std::uint32_t ITEM_GRYPHON = 25470;
@@ -233,6 +234,7 @@ UpkeepGather FixtureInput()
                    poisons[1],
                    poisons[2],
                    powder,
+                   Item(ITEM_FIGURINE, CLASS_MISC, 1, 1000, 1, 0),
                    Mount(ITEM_HORSE, 1 * GOLD, 75, RACE_HUMAN),
                    Mount(ITEM_WOLF, 1 * GOLD / 2, 75, RACE_ORC),
                    Mount(ITEM_FAST_HORSE, 10 * GOLD, 150, RACE_HUMAN),
@@ -254,6 +256,7 @@ UpkeepGather FixtureInput()
         {VENDOR_GENERAL, ITEM_BREAD, 0, 0, 0, true},
         {VENDOR_GENERAL, ITEM_ARROW, 0, 0, 0, true},
         {VENDOR_REAGENT, ITEM_POWDER, 0, 0, 0, true},
+        {VENDOR_REAGENT, ITEM_FIGURINE, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_HORSE, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_WOLF, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_FAST_HORSE, 0, 0, 0, true},
@@ -261,7 +264,7 @@ UpkeepGather FixtureInput()
         {VENDOR_MOUNTS, ITEM_FAST_GRYPHON, 0, 0, 0, true},
         {VENDOR_MOUNTS, ITEM_BADGE_GRYPHON, 0, 0, 2400, true},  // gold and badges
     };
-    input.reagents = {{ITEM_POWDER, CLASS_MAGE, SPELL_MAGE_POWDER}};
+    input.reagents = {{ITEM_POWDER, CLASS_MAGE}, {ITEM_FIGURINE, CLASS_WARLOCK}};
     return input;
 }
 
@@ -345,6 +348,9 @@ Snapshot Bot(UpkeepIndex const& index, std::uint8_t cls, std::uint8_t level, std
                 SetSpellBit(bot.knownClassSpells, position);
         }
     }
+    // SPELL_MAGE_POWDER, learned at level 10
+    if (cls == CLASS_MAGE && trainedTo >= 10)
+        bot.knownReagents = {ITEM_POWDER};
     TrainerList const* ridingList = index.RidingList(bot.race);
     bot.knownRidingSpells = SpellBits(ridingList->spells.size());
     bot.canLearnRidingSpells = SpellBits(ridingList->spells.size());

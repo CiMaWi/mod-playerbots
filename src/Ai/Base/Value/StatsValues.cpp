@@ -6,6 +6,7 @@
 
 #include "StatsValues.h"
 #include "AiObjectContext.h"
+#include "GatherRules.h"
 #include "Group.h"
 #include "Pet.h"
 #include "Player.h"
@@ -223,7 +224,7 @@ uint8 BagSpaceValue::Calculate()
         }
     }
 
-    return (static_cast<float>(totalused) / total) * 100;
+    return static_cast<uint8>(Gather::BagUsedPercent(total, total - totalused));
 }
 
 uint8 DurabilityValue::Calculate()

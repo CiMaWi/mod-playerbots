@@ -122,7 +122,8 @@ enum class NeedOrder : std::uint8_t
     Riding,
     Pet,  // a hunter's pet (WU21b) and its stable (WU21c)
     Use,  // item use WI9b: the potions, elixirs, scrolls and bandages demand wants, from the gold above the reserve
-    Profession  // professions WR4a: learn, rank and tools, funded last
+    Profession,  // professions WR4a: learn, rank and tools
+    Market       // auction house WA4a: the buy list's lines, last, from the gold above the reserve the use items leave
 };
 
 // What a profession need asks for
@@ -212,6 +213,14 @@ struct UseWant
     std::uint8_t slot{0};
 };
 
+// A buy list line the market prices under its ceiling (auction house WA4a, AuctionBuyList.h TypicalCopper)
+struct MarketWant
+{
+    std::uint32_t item{0};
+    std::uint32_t units{0};
+    std::uint64_t copper{0};  // at the typical unit price
+};
+
 // Demand's food, water or poison (WU37a, WU.27, ItemUse::StockWantOf): the items a persistent bot buys of the kind,
 // the strongest first, each with the units it may buy (a rogue's poison: its hand's share of the one stock), and the
 // usable units demand counts held. The need keeps the urgency, the reserve and the funding. Not answered: the kind's
@@ -247,6 +256,7 @@ struct NeedRates
     std::vector<PathPurchase> pathPurchases;
     std::uint16_t secondWaits{0};  // the path's second choice holds this craft's learn back; 0: none
     std::uint32_t pathFood{0};     // units of food the path's queue cooks from what the bot holds (WR15): food stock
+    std::vector<MarketWant> marketWants;  // the buy list's priced lines, in owner order (AddMarketNeeds)
 };
 
 struct NeedList
@@ -369,27 +379,26 @@ inline bool BitsAlign(UpkeepIndex const& index, Snapshot const& snapshot)
     return snapshot.upkeepVersion && snapshot.upkeepVersion == index.version;
 }
 
-// A reagent of a class spell the bot knows and casts with it (the index's reagent spells against the snapshot's known
-// and reagent-free bits). The generic sell keeps only the reagents of spells the bot has and pays them for
-// (ItemUsageValue::IsItemNeededForUsefullSpell): one for a spell not learned yet, or one a glyph makes free
-// (CastsWithoutReagent), would be sold at the next visit
-inline bool ReagentKnown(UpkeepIndex const& index, Snapshot const& snapshot, std::uint32_t item)
+// A reagent of a class spell the bot knows and pays for (Snapshot::knownReagents, ItemUsageValue::ClassSpellReagents).
+// The generic sell keeps only those: one for a spell not learned yet, or one a glyph makes free, would be sold at the
+// next visit
+inline bool ReagentKnown(Snapshot const& snapshot, std::uint32_t item)
 {
-    if (!BitsAlign(index, snapshot))
-        return false;
-    auto const [first, last] = index.ReagentSpells(snapshot.cls, item);
-    for (auto it = first; it != last; ++it)
-        if (Planner::HasSpellBit(snapshot.knownClassSpells, it->position) &&
-            !Planner::HasSpellBit(snapshot.reagentFreeClassSpells, it->position))
-            return true;
-    return false;
+    return std::binary_search(snapshot.knownReagents.begin(), snapshot.knownReagents.end(), item);
+}
+
+// The generic buy's skill line: a bot that shops its reagents (at the errand visit) buys none of a class spell it knows
+// there; knownReagents is sorted
+inline bool GenericBuysSkillItem(bool shopsReagents, std::vector<std::uint32_t> const& knownReagents,
+                                 std::uint32_t item)
+{
+    return !shopsReagents || !std::binary_search(knownReagents.begin(), knownReagents.end(), item);
 }
 
 // OfferFits, and a reagent only for a spell the bot knows
-inline bool OfferUsable(UpkeepIndex const& index, VendorOffer const& offer, Snapshot const& snapshot, UpkeepStock kind)
+inline bool OfferUsable(VendorOffer const& offer, Snapshot const& snapshot, UpkeepStock kind)
 {
-    return OfferFits(offer, snapshot, kind) &&
-           (kind != UpkeepStock::Reagent || ReagentKnown(index, snapshot, offer.item));
+    return OfferFits(offer, snapshot, kind) && (kind != UpkeepStock::Reagent || ReagentKnown(snapshot, offer.item));
 }
 
 // The better offer for the bot's level: the higher required level, then the cheaper per unit
@@ -410,7 +419,7 @@ inline VendorOffer const* BestOffer(UpkeepIndex const& index, Snapshot const& sn
     VendorOffer const* best = nullptr;
     for (VendorOffer const& offer : index.Offers(kind))
         if ((!vendorEntry || offer.vendorEntry == vendorEntry) && BetterOffer(offer, best) &&
-            OfferUsable(index, offer, snapshot, kind))
+            OfferUsable(offer, snapshot, kind))
             best = &offer;
     return best;
 }
@@ -1173,6 +1182,26 @@ inline RankValue const* BoughtRank(NeedList const& list, std::uint32_t spellId)
     return nullptr;
 }
 
+// A rank the bot lacks (not known, or known without its mount) by its spell; nullptr once it has both
+inline RankValue const* RankOf(NeedList const& list, std::uint32_t spellId)
+{
+    for (RankValue const& value : list.ranks)
+        if (value.rank.spellId == spellId)
+            return &value;
+    return nullptr;
+}
+
+// Why the stop the trip planned for a rank's mount buys none when the needs, read after the stop's earlier purchases,
+// hold no purchase this vendor makes. sold: the vendor sells a mount of the rank; price: the mount's at this vendor
+inline char const* MountStopEnd(RankValue const& rank, bool sold, std::uint64_t price, std::uint64_t money)
+{
+    if (!rank.known)
+        return "mount_no_rank";
+    if (!sold)
+        return "not_sold";
+    return money < price ? "money" : "not_due";
+}
+
 // The reserve's thrift scale applied to a sum of prices
 inline std::uint64_t Scaled(NeedList const& list, std::uint64_t copper)
 {
@@ -1717,8 +1746,28 @@ inline TrainingBuy TrainingPurchase(TrainerList const& list, std::vector<std::si
     return buy;
 }
 
+// The buy list's lines (auction house WA4a, NeedRates::marketWants), one need each. Like the use items: never due,
+// never in the reserve or the shortfall; Fund pays them after every other need and only from the gold above the
+// reserve the use items leave, so a purchase never takes what upkeep or a use item needs
+inline void AddMarketNeeds(NeedList& list, NeedRates const& rates)
+{
+    for (MarketWant const& want : rates.marketWants)
+    {
+        if (!want.item || !want.units || !want.copper)
+            continue;
+        Need need;
+        need.order = NeedOrder::Market;
+        need.kind = UpkeepKind::Gold;
+        need.units = want.units;
+        need.copper = want.copper;
+        need.item = want.item;
+        need.without = "goes without it";
+        list.needs.push_back(need);
+    }
+}
+
 // Short gold is spent in the fixed order: each need takes what is left (a bot repairs what it can, learns what it
-// can); the use items, last, take only the gold above the reserve
+// can); the use items and the market's lines take only the gold above the reserve
 inline void Fund(NeedList& list)
 {
     std::stable_sort(list.needs.begin(), list.needs.end(),
@@ -1727,12 +1776,29 @@ inline void Fund(NeedList& list)
     std::uint64_t above = list.money > list.reserve ? list.money - list.reserve : 0;
     for (Need& need : list.needs)
     {
-        bool const use = need.order == NeedOrder::Use;
-        need.funded = std::min(need.copper, use ? std::min(left, above) : left);
+        bool const aboveOnly = need.order == NeedOrder::Use || need.order == NeedOrder::Market;
+        need.funded = std::min(need.copper, aboveOnly ? std::min(left, above) : left);
         left -= need.funded;
-        if (use)
+        if (aboveOnly)
             above -= need.funded;
     }
+}
+
+// The copper the market leaves in the purse (auction house WA4b, PLAN 3.6), as Fund pays it: the market takes only
+// what every need before it leaves and only the gold above the reserve the use items leave, so it keeps the larger of
+// the two. A riding or training purchase beyond the reserve (a bot saving, a spendthrift's small reserve) stays kept
+inline std::uint64_t MarketKept(NeedList const& list)
+{
+    std::uint64_t before = 0;
+    std::uint64_t useFunded = 0;
+    for (Need const& need : list.needs)
+    {
+        if (need.order == NeedOrder::Market)
+            continue;
+        before += need.funded;
+        useFunded += need.order == NeedOrder::Use ? need.funded : 0;
+    }
+    return std::max(list.reserve + useFunded, before);
 }
 
 // The needs list, the reserve and the shortfall
@@ -1778,6 +1844,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
         if (need.kind == UpkeepKind::Pet && need.swap)
             need.due = need.due && PetSwapPayable(list.money, list.reserve, need.copper);
     AddUseNeeds(list, index, snapshot, rates);
+    AddMarketNeeds(list, rates);
     Fund(list);
     return list;
 }
@@ -1794,8 +1861,8 @@ inline std::string Money(std::uint64_t copper)
 
 inline char const* OrderWord(NeedOrder order)
 {
-    constexpr std::array<char const*, 9> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
-                                                  "pet",    "use",  "profession"};
+    constexpr std::array<char const*, 10> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
+                                                   "pet",    "use",  "profession",     "market"};
     return WORDS[static_cast<std::size_t>(order)];
 }
 
@@ -1927,7 +1994,7 @@ inline std::unordered_map<std::uint32_t, Planner::StockMask> VendorCover(UpkeepI
         for (VendorOffer const& offer : index.Offers(need.stock))
         {
             VendorOffer const*& at = best[offer.vendorEntry];
-            if (BetterOffer(offer, at) && OfferUsable(index, offer, snapshot, need.stock))
+            if (BetterOffer(offer, at) && OfferUsable(offer, snapshot, need.stock))
                 at = &offer;
         }
         for (auto const& [entry, offer] : best)

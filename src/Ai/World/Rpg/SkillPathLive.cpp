@@ -10,9 +10,12 @@
 #include <chrono>
 #include <vector>
 
+#include "AuctionIndex.h"
+#include "AuctionReference.h"
 #include "BotProfessionMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "GatherLive.h"
 #include "GoalInterface.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"
@@ -168,7 +171,37 @@ std::string SecondText(SkillPath::SecondChoice const& second)
 }
 
 constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps the command prints
+
+uint64 MicrosSince(std::chrono::steady_clock::time_point started)
+{
+    return static_cast<uint64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
+}
+
+void RecordMicros(char const* name, uint64 micros)
+{
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, name))
+        row->Record(micros);
+}
 }  // namespace
+
+Market::View MarketView()
+{
+    return {AuctionIndex::Current(), AuctionReference::HouseFees(AuctionRules::HOUSE_NEUTRAL),
+            sPlayerbotAIConfig.Auction, [](std::uint32_t item)
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+                return proto ? proto->GetMaxStackSize() : 1u;
+            }};
+}
+
+std::uint32_t MarketProceeds(Market::View const& market, std::uint32_t item)
+{
+    if (market.Empty())
+        return 0;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    return static_cast<std::uint32_t>(market.ProceedsOf(item, proto ? proto->SellPrice : 0u));
+}
 
 PathData PathDataNow()
 {
@@ -177,6 +210,7 @@ PathData PathDataNow()
         data.recipes = CurrentRecipeIndex();
     if (IndexesReady())
         data.indexes = Indexes();
+    data.gatherRates = GatherRatesNow();
     return data;
 }
 
@@ -275,22 +309,43 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         return nullptr;
     }
     auto const started = std::chrono::steady_clock::now();
+    // The creatures a skinner meets (WR20a), from the drop rows; read only for skinning: a skinner's stretches, or the
+    // second gatherer a bot short of gold may take where the market buys skins (SkillPathBridge::MarketPays)
+    Market::View market = MarketView();
+    std::vector<SkillPath::Skinnable> skinnables;
+    bool const skins =
+        !market.Empty() ||
+        std::any_of(
+            snapshot.skills.begin(), snapshot.skills.end(), [](Planner::Skill const& skill)
+            { return skill.value > 0 && skill.id == static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning); });
+    if (skins)
+    {
+        Materials::Bot killer;
+        killer.level = snapshot.level;
+        killer.side = Materials::SideBit(snapshot.team);
+        skinnables = SkillPath::SkinnablesOf(
+            *data.recipes, killer, [&market](std::uint32_t item) { return market.SaleOf(item, SellCopper(item)); });
+    }
+    uint64 const skinnablesMicros = MicrosSince(started);
     SkillPath::PathWorld const world{*data.recipes,
                                      [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
                                      SellCopper,
-                                     {},
+                                     std::move(skinnables),
                                      {},
                                      SkillPath::Fault::None,
-                                     ToolSources()};
+                                     ToolSources(),
+                                     std::move(market),
+                                     data.gatherRates};
     SkillPathBridge::Computed computed =
         SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
                                  CategoriesOf(snapshot.toolsHeld));
     needs = std::move(computed.needs);
     auto path = std::make_shared<SkillPath::Path const>(std::move(computed.path));
-    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "profession path computed"))
-        row->Record(static_cast<uint64>(std::max<long long>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(),
-            0)));
+    RecordMicros("profession path computed", MicrosSince(started));
+    // Its parts: the skinnables with the market view, both needs lists, the weigh with the second choice
+    RecordMicros("profession path computed: skinnables", skinnablesMicros);
+    RecordMicros("profession path computed: needs", computed.needsMicros);
+    RecordMicros("profession path computed: weigh", computed.weighMicros);
     return path;
 }
 
@@ -442,9 +497,18 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
     for (SkillPath::Craft const& craft : path->queue)
         queue += Acore::StringFormat("{}{}{} x{}{}", queue.empty() ? "" : ", ", craft.spell,
                                      craft.source ? Acore::StringFormat(" on {}", craft.source) : "", craft.casts,
-                                     craft.forSkill ? " (skill)" : "");
+                                     craft.forSkill  ? " (skill)"
+                                     : craft.forSale ? " (sale)"
+                                                     : "");
     handler->PSendSysMessage("  buys: {}; wants: {}; queue: {}", buys.empty() ? "none" : buys,
                              wants.empty() ? "none" : wants, queue.empty() ? "none" : queue);
+    // every material the path uses with its cheapest source (WR20a): kind and the item, zone or recipe it comes by
+    std::string materials;
+    for (SkillPath::Material const& material : path->materials)
+        materials += Acore::StringFormat(
+            "{}{} x{} {} {} ({} c)", materials.empty() ? "" : ", ", material.item, material.used,
+            Materials::KindWord(static_cast<Materials::Kind>(material.source)), material.via, material.copperEach);
+    handler->PSendSysMessage("  materials: {}", materials.empty() ? "none" : materials);
     handler->PSendSysMessage("  second profession: {}", SecondText(path->second));
     for (UpkeepNeeds::Need const& need : needs.needs)
         if (need.order == UpkeepNeeds::NeedOrder::Profession)

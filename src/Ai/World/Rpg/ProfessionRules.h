@@ -305,27 +305,39 @@ struct ToolRow
 };
 
 constexpr ToolRow TOOLS[] = {
-    {Skill::Mining, 2901, 165, true},        // Mining Pick
-    {Skill::Blacksmithing, 5956, 162, true}, // Blacksmith Hammer
-    {Skill::Engineering, 5956, 162, true},   // Blacksmith Hammer
-    {Skill::Engineering, 6219, 14, false},   // Arclight Spanner
-    {Skill::Engineering, 10498, 15, false},  // Gyromatic Micro-Adjustor
-    {Skill::Jewelcrafting, 20815, 0, true},  // Jeweler's Kit
-    {Skill::Jewelcrafting, 20824, 0, true},  // Simple Grinder
-    {Skill::Inscription, 39505, 121, true},  // Virtuoso Inking Set
-    {Skill::Alchemy, 9149, 12, false},       // Philosopher's Stone
-    {Skill::Enchanting, 6218, 6, false},     // Runed Copper Rod
-    {Skill::Enchanting, 6339, 7, false},     // Runed Silver Rod
-    {Skill::Enchanting, 11130, 8, false},    // Runed Golden Rod
-    {Skill::Enchanting, 11145, 9, false},    // Runed Truesilver Rod
-    {Skill::Enchanting, 16207, 10, false},   // Runed Arcanite Rod
-    {Skill::Enchanting, 22461, 41, false},   // Runed Fel Iron Rod
-    {Skill::Enchanting, 22462, 62, false},   // Runed Adamantite Rod
-    {Skill::Enchanting, 22463, 63, false},   // Runed Eternium Rod
-    {Skill::Enchanting, 44452, 190, false},  // Runed Titanium Rod
-    {Skill::Skinning, 7005, 166, true},      // Skinning Knife
-    {Skill::Fishing, 6256, 0, true},         // Fishing Pole
+    {Skill::Mining, 2901, 165, true},         // Mining Pick
+    {Skill::Blacksmithing, 5956, 162, true},  // Blacksmith Hammer
+    {Skill::Engineering, 5956, 162, true},    // Blacksmith Hammer
+    {Skill::Engineering, 6219, 14, false},    // Arclight Spanner
+    {Skill::Engineering, 10498, 15, false},   // Gyromatic Micro-Adjustor
+    {Skill::Jewelcrafting, 20815, 0, true},   // Jeweler's Kit
+    {Skill::Jewelcrafting, 20824, 0, true},   // Simple Grinder
+    {Skill::Inscription, 39505, 121, true},   // Virtuoso Inking Set
+    {Skill::Alchemy, 9149, 12, false},        // Philosopher's Stone
+    {Skill::Enchanting, 6218, 6, false},      // Runed Copper Rod
+    {Skill::Enchanting, 6339, 7, false},      // Runed Silver Rod
+    {Skill::Enchanting, 11130, 8, false},     // Runed Golden Rod
+    {Skill::Enchanting, 11145, 9, false},     // Runed Truesilver Rod
+    {Skill::Enchanting, 16207, 10, false},    // Runed Arcanite Rod
+    {Skill::Enchanting, 22461, 41, false},    // Runed Fel Iron Rod
+    {Skill::Enchanting, 22462, 62, false},    // Runed Adamantite Rod
+    {Skill::Enchanting, 22463, 63, false},    // Runed Eternium Rod
+    {Skill::Enchanting, 44452, 190, false},   // Runed Titanium Rod
+    {Skill::Skinning, 7005, 166, true},       // Skinning Knife
+    {Skill::Fishing, 6256, 0, true},          // Fishing Pole
 };
+
+// Whether a held item is a profession tool (PLAN NR20): a TOOLS row by its item id, or an item a cast asks for by a
+// tool category. The jeweler's kit and grinder have no category, so their rows are what makes them tools
+inline bool IsProfessionTool(uint32_t item, bool hasToolCategory)
+{
+    if (hasToolCategory)
+        return true;
+    for (ToolRow const& row : TOOLS)
+        if (row.Item == item)
+            return true;
+    return false;
+}
 
 // The pairs open to a class (WR.2): each craft it serves with its gatherer; tailoring and enchanting with each other
 // or with any gatherer. Two gatherers are never a pair. Roll picks a craft first (the fitted chances) and its partner

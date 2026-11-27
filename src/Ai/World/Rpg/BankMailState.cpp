@@ -9,10 +9,13 @@
 #include <algorithm>
 #include <limits>
 
+#include "AuctionIndex.h"
 #include "BankMailService.h"
 #include "BankRulesInput.h"
 #include "GameTime.h"
+#include "Item.h"
 #include "Mail.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "StringFormat.h"
@@ -39,9 +42,72 @@ uint16 CountWaitingMail(Player const* bot)
     return static_cast<uint16>(std::min<uint32>(waiting, std::numeric_limits<uint16>::max()));
 }
 
-void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail)
+namespace
+{
+bool Listed(std::vector<uint32> const& ids, uint32 id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); }
+
+// A mail with no money whose every item the core would still refuse the bot (R6)
+bool HoldsOnlyHeldCopies(Player* bot, Mail const& mail)
+{
+    if (mail.money || mail.items.empty())
+        return false;
+    return std::all_of(mail.items.begin(), mail.items.end(),
+                       [bot](MailItemInfo const& info)
+                       {
+                           Item* item = bot->GetMItem(info.item_guid);
+                           return item && bot->CanTakeMoreSimilarItems(item) != EQUIP_ERR_OK;
+                       });
+}
+}  // namespace
+
+void ReadMailUnits(Player* bot, MailKnowledge& known)
+{
+    time_t const now = GameTime::GetGameTime().count();
+    known.units.clear();
+    for (Mail const* mail : bot->GetMails())
+    {
+        if (mail->state == MAIL_STATE_DELETED || mail->COD || now > mail->expire_time)
+            continue;
+        for (MailItemInfo const& info : mail->items)
+            if (Item const* item = bot->GetMItem(info.item_guid))
+                AddUnits(known.units, info.item_template, item->GetCount());
+    }
+}
+
+// The copper of delivered auction house mail the bot has not taken (auction WA3b, WA4b): what the house's notices of
+// its sales and of bids given back told it, and the items a won auction or an unsold listing sent back, each counted
+// once at its typical price, else its vendor price (a stack is counted as one unit: the mail lists its items without
+// their counts). The trip planner sends the bot to a mailbox for them. Mail a visit saw and left is in the seen
+// worth and left out, as is a mail left for unique copies the bot still holds (needs NR.7)
+uint32 AuctionCopperWaiting(Player* bot, MailKnowledge const& known)
+{
+    time_t const now = GameTime::GetGameTime().count();
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    std::vector<WaitingAuctionMail> waiting;
+    for (Mail const* mail : bot->GetMails())
+    {
+        if (mail->state == MAIL_STATE_DELETED || mail->messageType != MAIL_AUCTION || now < mail->deliver_time ||
+            now > mail->expire_time)
+            continue;
+        if (Listed(known.uniqueMails, mail->messageID) && HoldsOnlyHeldCopies(bot, *mail))
+            continue;
+        uint64 copper = mail->money;
+        for (MailItemInfo const& info : mail->items)
+        {
+            AuctionIndex::ItemEntry const* entry = index ? index->Find(info.item_template) : nullptr;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(info.item_template);
+            copper += entry && entry->typical.unitPrice ? entry->typical.unitPrice : proto ? proto->SellPrice : 0;
+        }
+        waiting.push_back({mail->messageID, copper});
+    }
+    return UnseenCopper(waiting, known.seenMails);
+}
+
+void RefreshMailKnowledge(Player* bot, MailKnowledge& mail)
 {
     mail.waiting = CountWaitingMail(bot);
+    ReadMailUnits(bot, mail);
+    mail.expectedCopper = AuctionCopperWaiting(bot, mail);
     mail.refreshedMs = std::max<uint32>(getMSTime(), 1);
 }
 
@@ -77,9 +143,10 @@ std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounte
             ? std::string()
             : Acore::StringFormat(", no materials {}, no station {}, bags full {}", count(VisitEnd::NoMaterials),
                                   count(VisitEnd::NoStation), count(VisitEnd::BagsFull));
-    char const* const noSpot = kind == VisitKind::Mail   ? "no mailbox"
-                               : kind == VisitKind::Bank ? "no banker"
-                                                         : "no spot";
+    char const* const noSpot = kind == VisitKind::Mail      ? "no mailbox"
+                               : kind == VisitKind::Bank    ? "no banker"
+                               : kind == VisitKind::Auction ? "no auctioneer"
+                                                            : "no spot";
     return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, unreached {}{}, interrupted {} ({})", started,
                                count(VisitEnd::Done), count(VisitEnd::Timeout), noSpot, count(VisitEnd::NoSpot),
                                count(VisitEnd::Unreached), own, interrupted, each);
@@ -100,7 +167,11 @@ void WatchVisits(PlayerbotAI* botAI)
     VisitState const& visit = botAI->bankMail.visit;
     if (visit.phase == VisitPhase::None)
         return;
-    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+    VisitWatchIn in = WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs);
+    // An auction visit came into reach once it acted: only its act writes `tried` and `buying`
+    AuctionVisitData const& auction = botAI->bankMail.auctionData;
+    in.reached = visit.kind != VisitKind::Auction || !auction.tried.empty() || auction.buying;
+    if (std::optional<VisitEnd> const end = WatchVisit(in))
         EndVisit(botAI, *end);
 }
 

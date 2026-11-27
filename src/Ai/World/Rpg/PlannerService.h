@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "PlannerPoolTypes.h"
+#include "QuestOrderTypes.h"
 #include "QuestStatEvents.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -35,9 +36,25 @@ struct NeedRates;
 struct NeedList;
 }  // namespace UpkeepNeeds
 
+namespace AuctionRules
+{
+struct BuyLine;
+struct CopperWeight;
+}  // namespace AuctionRules
+
+namespace Upkeep
+{
+struct SafeAreas;
+}  // namespace Upkeep
+
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
+namespace QuestFailRows
+{
+struct Sums;  // QuestFailRows.h
+}
+
 class FieldMap;
 class PlannerIndexes;
 class PlannerPool;
@@ -84,12 +101,25 @@ void SituationChanged(PlayerbotAI* botAI);
 // (giverStillOffers: one still offers something). Once its round of pickups is due (QuestLog::PlanDue: no giver offers
 // more, or 30 s after the round's first accept) the situation changed. Nothing for a bot the planner does not own. O(1)
 void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers);
+// Questing WQ38: the bot's stall sums (QuestFailRows.h), kept with its goals so that they outlive an order (the goals
+// are made on first use, as for every reader of them). Map thread only. O(1)
+QuestFailRows::Sums& QuestStallsOf(PlayerbotAI* botAI, Player* bot);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
 // The inn trigger's edge for a bot with planner goals (planning WT63d): a bind that turned far or near
-// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. O(1)
+// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. So is
+// a stay near an inn that reached its dwell under a far bind (NR.5); the stays the bot left end here. O(1): a few inns
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
+// The errand trigger's edge for a sick planner bot (NR3): recover's hand-over that turned open
+// (GoalApply::SickOpenChanged) is a changed situation, the plan that rested until then goes; its upkeep row sick_area
+// names the safe area the bot stands in (Upkeep::SafeAreaWord). O(1) but at the edge
+void NoteSickOpen(PlayerbotAI* botAI, bool open);
+// NR3 (NR.4), map thread: the safe areas a sick bot stands in, and whether its walk to a place stays in one of them
+// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start
+Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes);
+bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,
+                float y, float z);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
 // (NoteBagBought) 0, so the trip's later stops buy no second one (WT63e). O(1)
@@ -97,6 +127,9 @@ std::uint32_t OrderedBag(PlayerbotAI* botAI);
 // The errand's vendor visit bought the ordered bag: the order is done, and its trip's end clears the retry stamp
 // (GoalApply::NoteInterludeEnd: a bag trip that finished without its bag stamps it). O(1)
 void NoteBagBought(PlayerbotAI* botAI);
+// NR14: a trip's trainer taught the spells or the riding rank, a vendor sold the mount, or the tame took: an errand to
+// a stop of its own got what it went for, and its trip's end clears the retry stamp (GoalApply::NoteInterludeEnd). O(1)
+void NoteOwnStopDone(PlayerbotAI* botAI);
 // The status core's end check of a status a planner goal may run (GO_GRIND, WANDER_RANDOM, DO_GATHER, REST), on the
 // bot's map thread every update: a planned status ends by its order (GoalApply::PlannedEnd, its outcome and word),
 // any other one when `timerOver` (upstream's timer; a sick bot's Upkeep::RestEnds). True when it ended. O(1)
@@ -109,6 +142,17 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32
 // snapshot due and ends a wait for a plan; the goal's run learns the outcome and its note (a literal: the trip's
 // source or the Status row's word; GoalApply::NoteStatusEnd). O(1)
 void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr);
+// The status core, right before OnStatusEnd, when the executor ended an order by its own end (questing WQ18b,
+// QuestFieldExec::OwnEnd): the route's running order ends (GoalApply::EndRouteOrder), so its next start gives the
+// next order. `reached`: the bot had arrived at the order's place. An end that says the place gave nothing or could
+// not be reached (dry; time before the arrival: GoalApply::ClosesCell) closes the order's cell for the block time,
+// with one GoalStalled row. Nothing for a bot the planner does not own or for an order that is not its route's. O(1)
+void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached);
+// The same door, when an order's status ended by anything else (part 3). A failure of its walk or work
+// (GoalApply::FailsOrder: stuck, abandoned, timed out; `note`: the end's word, a literal) ends the route's running
+// order and closes its cell as a dry end does, so the route does not give it again; any other end leaves the order
+// to be given again. O(1)
+void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or
@@ -243,13 +287,17 @@ struct StockDecision
     std::uint32_t keep{0};  // how many of it the bot keeps; the rest is surplus
 };
 StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto);
-// A class spell's reagent: the shopping list buys it for a bot not granted reagents
-bool ClassReagent(std::uint32_t item);
-// A spell the server charges no reagents for (Glyph of Renewed Life): its reagents are neither kept nor bought
-bool CastsWithoutReagent(Player* bot, SpellInfo const* info);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
+// The bot's thread: its buy list (auction house WA4b, AuctionBuyList.h): item use's lines a vendor sells (demand's
+// buyEntry and units, its worth to the bot, the vendor's price) and, for a bag slot empty or holding a smaller bag, the
+// generic bags the auction index knows, each by the slots it adds (ItemWorthRules.h BagWorth), all at the bot's
+// CopperWeightOf (AH.5). Empty for a bot that keeps no possessions (WA.12). The caller includes AuctionBuyList.h
+std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI);
+// The bot's thread: the copper weight its purchases are paid at (auction house AH9): its newest plan's need at the
+// money it holds now (Goals::NeedAt); {} without a plan (the reserve's share). The caller includes AuctionBuyList.h
+AuctionRules::CopperWeight CopperWeightOf(PlayerbotAI* botAI);
 // The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
 // cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
 void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);

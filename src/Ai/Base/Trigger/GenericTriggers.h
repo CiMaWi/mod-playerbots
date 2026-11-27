@@ -472,6 +472,15 @@ protected:
     uint32 lastCheck;
 };
 
+// `often`: random as every RandomTrigger; a test's `often` constraint makes it fire at every check
+class OftenTrigger : public RandomTrigger
+{
+public:
+    OftenTrigger(PlayerbotAI* botAI) : RandomTrigger(botAI, "often", 5) {}
+
+    bool IsActive() override;
+};
+
 class AndTrigger : public Trigger
 {
 public:

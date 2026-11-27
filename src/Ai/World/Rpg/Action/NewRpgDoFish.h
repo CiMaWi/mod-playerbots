@@ -32,6 +32,8 @@ public:
     // A fishing trip near its stand keeps the bot on foot (the mount policy, CheckMountStateAction::AskMountPolicy):
     // fishing is not cast mounted, and the mount action remounted the bot after each dismount (WR16b run 3)
     static bool KeepsOnFoot(PlayerbotAI* botAI, Player* bot);
+    // The status core's deadline of a fishing trip (NewRpgStatus.cpp): past its general bound, Fish::PastDeadline
+    static bool PastDeadline(PlayerbotAI* botAI);
     // The bot's AI held through its fishing channel (PlayerbotAI::UpdateAI, as HoldTameChannel): the bobber watched
     // every WATCH_TICK_MS and clicked at a bite, no engine pass. The core gives a bite 5 s (FISHING_BOBBER_READY_TIME);
     // the engine's ticks while the line was out came 4 to 12 s apart (WR16b runs 4 to 6), and most bites got away
@@ -46,8 +48,8 @@ private:
     // The cast in flight: the bite clicked, the miss or the refusal counted. True while it waits
     bool Watch(NewRpgInfo::DoFish& data);
     void Finish(char const* word);
-    // A test bot's trace of the branch a tick waits in, one "[Probe]" line at each change
-    void Trace(NewRpgInfo::DoFish const& data, char const* where);
+    // Keeps the branch a tick waits in (the deadline's trace); a test bot's trace, one "[Probe]" line at each change
+    void Trace(NewRpgInfo::DoFish& data, char const* where);
 
     char const* traced = nullptr;
 };

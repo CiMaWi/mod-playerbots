@@ -194,9 +194,10 @@ void CheckSickRests()
         Check(ground == !row.sickOpen, word + (row.sickOpen ? " stays" : " ends") + " while the bot is sick");
         Check(!air && !Upkeep::SickEndsStatus(row.status, true, true, true),
               word + ": a flight in the air lands first");
-        Check(sinceRise == (ground && row.status != 11),
-              word + (row.status == 11 ? ": a sick bot keeps the errand it started after the rise"
-                                       : ": the errand's start time does not keep it"));
+        bool const handedOver = row.status == 11 || row.status == 10;
+        Check(sinceRise == (ground && !handedOver),
+              word + (handedOver ? ": a sick bot keeps the goal it started after the rise (errand, bind walk)"
+                                 : ": the goal's start time does not keep it"));
         Check(!Upkeep::SickEndsStatus(row.status, false, false, false) &&
                   !Upkeep::SickEndsStatus(row.status, false, false, true),
               word + " never ends for a healthy bot");
@@ -212,8 +213,8 @@ void CheckSickRests()
     Check(!Upkeep::RestEnds(true, true) && !Upkeep::StatusPickable(2, true, false) &&
               !Upkeep::StatusPickable(4, true, false),
           "168: the rest outlasts its 35 s and the pick offers no go camp or wander npc");
-    Check(Upkeep::SickEndsStatus(10, true, false, false) && Upkeep::SickEndsStatus(10, true, false, true),
-          "636: the inn trip kept from before the death ends");
+    Check(Upkeep::SickEndsStatus(10, true, false, false) && !Upkeep::SickEndsStatus(10, true, false, true),
+          "636: the inn trip kept from before the death ends; NR3: the bind walk recover handed over goes on");
     Check(Upkeep::SickEndsStatus(6, true, false, false) && !Upkeep::SickEndsStatus(6, true, true, false),
           "a flight not yet in the air ends, one in the air lands");
     // The sickness over: rest times out and the pick offers every status again, the errand start too
@@ -252,9 +253,10 @@ void CheckErrandStart()
     Check(!Upkeep::ErrandMayStart(32, false, false), "a status out of range is never ended");
 }
 
-// NE11 (NE.3): the hand-over of recover to the due repair. Open only when sick, a repair due, the bot restored (the
-// rule recover waits for, AwarenessRules::Restored) and on a clear point; every other case rests as before, and the
-// rest ends with the sickness (RestEnds), so the wait has its exit
+// NR3 (NR.4): the hand-over of recover to the sick gate. Open only when sick, the bot restored (the rule recover waits
+// for, AwarenessRules::Restored) and on a clear point, with or without a repair due (NE11 needed one); which goal then
+// is the goal model's gate. Every other case rests as before, and the rest ends with the sickness (RestEnds), so the
+// wait has its exit
 void CheckSickErrandOpen()
 {
     AwarenessRules::RecoverFacts facts;
@@ -263,9 +265,10 @@ void CheckSickErrandOpen()
     facts.powerPct = 100;
     facts.usesMana = true;
     facts.own.clear = true;
-    auto const open = [](AwarenessRules::RecoverFacts const& f, bool repairDue)
-    { return Upkeep::SickErrandOpen(f.sick, repairDue, AwarenessRules::Restored(f), f.own.clear); };
-    Check(open(facts, true), "sick, a repair due, restored on a clear point: the errand opens");
+    auto const open = [](AwarenessRules::RecoverFacts const& f, bool /*repairDue*/)
+    { return Upkeep::SickErrandOpen(f.sick, AwarenessRules::Restored(f), f.own.clear); };
+    Check(open(facts, true) && open(facts, false),
+          "sick, restored on a clear point: the hand-over opens, a repair due or not (mutant: only with a repair)");
     AwarenessRules::RecoverFacts well = facts;
     well.sick = false;
     Check(!open(well, true), "a bot that is not sick is not this rule's (the errand rules of a healthy bot)");
@@ -279,10 +282,22 @@ void CheckSickErrandOpen()
     AwarenessRules::RecoverFacts dry = facts;
     dry.powerPct = AwarenessRules::RECOVER_POWER_PCT - 1;
     Check(!open(dry, true), "a mana user at 79 % mana: not restored, the bot rests");
-    Check(!open(facts, false), "nothing due (no repair): the bot rests, no stock or bag errand opens alone");
+    // Nothing due: the hand-over opens, the goal model's sick gate finds no option and the bot rests (forced), as
+    // GoalModelHarness's "a sick bot with nothing due rests" proves
     Check(!Upkeep::ErrandMayStart(7, true, open(low, true)) && Upkeep::RestEnds(true, false) &&
               !Upkeep::RestEnds(true, true),
           "a closed hand-over leaves the old rule: the sick bot rests until the sickness ends");
+    // The upkeep row sick_area (NR3): the city before a hub before a low zone, outside in none
+    Upkeep::SafeAreas areas;
+    std::string const outside = Upkeep::SafeAreaWord(areas);
+    areas.lowZone = 12;
+    std::string const lowZone = Upkeep::SafeAreaWord(areas);
+    areas.hubs.push_back(3);
+    std::string const hub = Upkeep::SafeAreaWord(areas);
+    areas.city = 1519;
+    std::string const city = Upkeep::SafeAreaWord(areas);
+    Check(outside == "outside" && lowZone == "low_zone" && hub == "hub" && city == "city",
+          "NR3: the sick_area word names the widest safe area the bot stands in");
 }
 }  // namespace
 

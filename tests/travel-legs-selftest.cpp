@@ -1092,9 +1092,10 @@ void CheckLanding()
           "landing: indoors, not the outdoor point nearest to the landing");
     Check(TravelLegs::LandingIndex(
               line, [](Point const&) { return true; }, joinedAll) == line.size() - 1 &&
-              TravelLegs::LandingIndex(
-                  line, [](Point const&) { return false; }, joinedAll) == line.size() - 1,
-          "landing: outdoors or no outdoor point, not the planned landing");
+              !TravelLegs::LandingIndex(
+                   line, [](Point const&) { return false; }, joinedAll)
+                   .has_value(),
+          "landing: open, not the planned landing; no open point (PA73), a landing on the line");
 
     Trip kept = trip;
     Check(!TravelLegs::MoveLanding(kept, kept.waypoints.back().at) && kept.landingChecked && kept.legs.size() == 1 &&
@@ -1154,8 +1155,8 @@ std::vector<std::pair<bool, std::string>> JoinedLandingCase(LandingRule rule)
                         "H1 joined landing: the joined point (index 1), not the pocket (index 6)");
     checks.emplace_back(!rule(line, outdoors, none).has_value(),
                         "H2 none joined: no landing, not the planned indoor one");
-    checks.emplace_back(rule(line, none, none) == std::optional<std::size_t>(7),
-                        "no outdoor point: the planned landing (as before)");
+    checks.emplace_back(!rule(line, none, none).has_value(),
+                        "H4 no open-sky point within 60 yd (PA73, G418): no landing on the line, not the planned one");
     checks.emplace_back(rule(line, LinePoints(line, {6, 7}), none) == std::optional<std::size_t>(7),
                         "the landing outdoors: the planned landing, joined not asked");
     return checks;
@@ -1206,6 +1207,122 @@ std::optional<std::size_t> KeepPlanned(std::vector<Point> const& line, LandingPr
     return index ? index : std::optional<std::size_t>(line.size() - 1);
 }
 
+// PA73 (G418): today's rule before PA73, a line without any open-sky point keeps the planned landing under the roof
+std::optional<std::size_t> NoSkyKeepsPlanned(std::vector<Point> const& line, LandingPredicate const& outdoors,
+                                             LandingPredicate const& joined)
+{
+    std::optional<std::size_t> const index = TravelLegs::LandingIndex(line, outdoors, joined);
+    bool const anyOpen = std::any_of(line.begin(), line.end(), [&outdoors](Point const& at) { return outdoors(at); });
+    return index || anyOpen ? index : std::optional<std::size_t>(line.size() - 1);
+}
+
+// PA73 (G418): a landing under rock or ice. OpenSky reads the terrain and the cover over a floor. H4 a cave landing
+// whose line has no open point lands at the nearest open graph node a walk joins to the end, with the walk in, or is
+// refused before its descent; the nodes are asked only then. A fly leg of two waypoints is checked too
+LandingPredicate PointsAt(std::vector<Point> const& points)
+{
+    return [points](Point const& point)
+    {
+        return std::any_of(points.begin(), points.end(), [&point](Point const& at)
+                           { return std::fabs(point.x - at.x) < 0.01f && std::fabs(point.y - at.y) < 0.01f; });
+    };
+}
+
+void CheckSkyLanding()
+{
+    Check(!TravelLegs::OpenSky(969.7f, 1173.0f, 969.7f), "open sky: a cave floor under a hill's terrain is open");
+    Check(!TravelLegs::OpenSky(1147.5f, 1120.0f, 1160.7f), "open sky: a cave floor under its ice ceiling is open");
+    Check(TravelLegs::OpenSky(100.0f, 98.0f, 100.0f) && TravelLegs::OpenSky(100.0f, 102.5f, 102.5f),
+          "open sky: a floor with nothing over it (or a step under 3 yd) is covered");
+    Check(!TravelLegs::OpenSky(TravelLegs::FLY_NO_GROUND, -60000.0f, -60000.0f), "open sky: no floor found is open");
+
+    Point const cave{571, 7620.4f, -1609.4f, 969.7f};
+    Point const mouth{571, 7313.96f, -1611.88f, 944.6f};
+    Point const sealed{571, 7600.0f, -1500.0f, 1100.0f};  // nearer the end, open, the walk does not join it
+    Leg leg = MakeLeg(LegType::Fly, {571, 8038.0f, -2645.0f, 1150.0f}, cave, {}, 60.0f);
+    leg.flightPoints = {{571, 8038.0f, -2645.0f, 1150.0f}, {571, 7800.0f, -2000.0f, 1250.0f}, cave};
+    LandingPredicate const open = PointsAt({sealed, mouth});
+    LandingPredicate const none = PointsAt({});
+    std::uint32_t asked = 0;
+    auto const nodes = [&asked, sealed, mouth]()
+    {
+        ++asked;
+        return std::vector<Point>{sealed, mouth};
+    };
+
+    Trip trip = StartedTrip({leg}, 0);
+    std::vector<Point> const line = TravelLegs::LandingLine(trip);
+    std::size_t const count = trip.waypoints.size();
+    bool const node =
+        TravelLegs::ChooseLanding(trip, line, nodes, open, PointsAt({mouth})) == TravelLegs::LandingCheck::Node;
+    Point const descent = trip.waypoints[count - 2].at;
+    Check(node && asked == 1 && trip.landingChecked && trip.legs.size() == 2 && trip.legs[0].to.x == mouth.x &&
+              trip.waypoints.back().at.x == mouth.x &&
+              std::hypot(descent.x - mouth.x, descent.y - mouth.y) <= TravelLegs::FLY_CLIMB_YARDS + 0.01f &&
+              descent.z == trip.waypoints[count - 3].at.z && trip.legs[1].type == LegType::Walk &&
+              trip.legs[1].from.x == mouth.x && trip.legs[1].to.x == cave.x,
+          "H4 cave landing: not at the joined open node (not the nearer unjoined one), its descent and the walk in");
+
+    Trip rearmed = StartedTrip({leg}, 0);
+    rearmed.next = static_cast<std::uint32_t>(rearmed.waypoints.size() - 2);
+    rearmed.heightChecked = rearmed.next;
+    Check(TravelLegs::ChooseLanding(rearmed, line, nodes, open, PointsAt({mouth})) == TravelLegs::LandingCheck::Node &&
+              TravelLegs::NeedsHeightCheck(rearmed),
+          "H4 cave landing at a node: the moved descent point not height-checked again");
+
+    Trip refused = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(refused, line, nodes, open, none) == TravelLegs::LandingCheck::Refused &&
+              refused.landingChecked && refused.legs.size() == 1 && refused.waypoints.back().at.x == cave.x &&
+              refused.waypoints.back().at.z == cave.z,
+          "H4 cave landing, no node joined: not refused before the descent, or the planned landing changed");
+
+    // PA99: a cave's own nodes nearest the end lie under its rock; they are not open, cost no walk, and the mouth
+    // behind them is reached. The walk is asked of LANDING_NODES open nodes at most
+    std::vector<Point> covered;
+    for (int k = 0; k < 6; ++k)
+        covered.push_back({571, cave.x - 10.0f * static_cast<float>(k + 1), cave.y, cave.z});
+    std::vector<Point> behind = covered;
+    behind.push_back(mouth);
+    Trip mouthTrip = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(
+              mouthTrip, line, [&behind]() { return behind; }, open, PointsAt({mouth})) ==
+                  TravelLegs::LandingCheck::Node &&
+              mouthTrip.waypoints.back().at.x == mouth.x,
+          "H4 cave landing: the open mouth behind six covered nodes not reached");
+    std::vector<Point> ridges;
+    for (int k = 0; k < 6; ++k)
+        ridges.push_back({571, cave.x - 20.0f * static_cast<float>(k + 1), cave.y + 50.0f, 1100.0f});
+    std::uint32_t walked = 0;
+    Trip capped = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(
+              capped, line, [&ridges]() { return ridges; }, PointsAt(ridges),
+              [&walked](Point const&)
+              {
+                  ++walked;
+                  return false;
+              }) == TravelLegs::LandingCheck::Refused &&
+              walked == TravelLegs::LANDING_NODES,
+          "H4 cave landing: the walk not asked of the first LANDING_NODES open nodes only");
+
+    Trip open_ = StartedTrip({leg}, 0);
+    asked = 0;
+    Check(TravelLegs::ChooseLanding(
+              open_, line, nodes, [](Point const&) { return true; }, none) == TravelLegs::LandingCheck::Kept &&
+              asked == 0 && open_.landingChecked && open_.legs.size() == 1,
+          "landing under open sky: not kept, or the graph nodes asked");
+
+    Point const takeoff{571, 7700.0f, -1650.0f, 1000.0f};
+    Trip hop = StartedTrip({MakeLeg(LegType::Fly, takeoff, cave, {}, 10.0f)}, 0);
+    std::vector<Point> const hopLine = TravelLegs::LandingLine(hop);
+    Check(hop.waypoints.size() == 2 && TravelLegs::NeedsLandingCheck(hop, takeoff) && hopLine.size() == 16 &&
+              hopLine.back().x == cave.x && hopLine.front().x > cave.x,
+          "two-waypoint fly leg: not checked, or its line not back towards the takeoff");
+    Check(TravelLegs::ChooseLanding(hop, hopLine, nodes, open, PointsAt({mouth})) == TravelLegs::LandingCheck::Node &&
+              hop.waypoints.size() == 2 && hop.waypoints.back().at.x == mouth.x && hop.legs.size() == 2 &&
+              hop.legs[1].to.x == cave.x && !TravelLegs::NeedsLandingCheck(hop, takeoff),
+          "two-waypoint fly leg: a cave landing not moved to the node, or checked again");
+}
+
 void CheckJoinedLanding()
 {
     for (auto const& [ok, name] : JoinedLandingCase(RealLandingIndex))
@@ -1220,6 +1337,7 @@ void CheckJoinedLanding()
     LandingMutant const landingMutants[] = {
         {"mutant killed: H1 the outdoors-only predicate picks the pocket", OutdoorsOnly},
         {"mutant killed: H2 keep the planned indoor landing", KeepPlanned},
+        {"mutant killed: H4 no open-sky point keeps the planned landing", NoSkyKeepsPlanned},
     };
     for (LandingMutant const& mutant : landingMutants)
     {
@@ -1239,18 +1357,20 @@ void CheckJoinedLanding()
     leg.flightClearance = 30.0f;
     std::vector<Point> const line = InnLandingLine();
     LandingPredicate const outdoors = LinePoints(line, {1, 6});
+    auto const noNodes = []() { return std::vector<Point>{}; };
     Trip joined = StartedTrip({leg}, 0);
-    Check(TravelLegs::ChooseLanding(joined, line, outdoors, LinePoints(line, {1})) == TravelLegs::LandingCheck::Moved &&
+    Check(TravelLegs::ChooseLanding(joined, line, noNodes, outdoors, LinePoints(line, {1})) ==
+                  TravelLegs::LandingCheck::Moved &&
               joined.legs.size() == 2 && std::fabs(joined.legs[0].to.x - line[1].x) < 0.01f &&
               joined.legs[1].type == LegType::Walk && joined.legs[1].to.x == INN_LANDING.x,
           "H1 joined landing: the trip lands at the joined point and walks in");
     Trip refused = StartedTrip({leg}, 0);
     Point const planned = refused.waypoints.back().at;
-    Check(
-        TravelLegs::ChooseLanding(refused, line, outdoors, LinePoints(line, {})) == TravelLegs::LandingCheck::Refused &&
-            refused.landingChecked && refused.legs.size() == 1 && refused.legs[0].to.x == INN_LANDING.x &&
-            refused.waypoints.back().at.x == planned.x && refused.waypoints.back().at.z == planned.z,
-        "H2 none joined: the landing is refused and not moved (the glue fails the leg landing)");
+    Check(TravelLegs::ChooseLanding(refused, line, noNodes, outdoors, LinePoints(line, {})) ==
+                  TravelLegs::LandingCheck::Refused &&
+              refused.landingChecked && refused.legs.size() == 1 && refused.legs[0].to.x == INN_LANDING.x &&
+              refused.waypoints.back().at.x == planned.x && refused.waypoints.back().at.z == planned.z,
+          "H2 none joined: the landing is refused and not moved (the glue fails the leg landing)");
 
     // H3 through the follower: down at the ceiling after the takeoff fails `landing`, on the floor it is done
     Trip ceiling = StartedTrip({leg}, 0);
@@ -3638,6 +3758,21 @@ void CheckVesselLeave()
                   f.underWay = true;
               }) == VesselLeave::Step,
           "vessel leave: ashore with one under way: steps once more (the exit's sample ends it)");
+    // G412: a lift's or the tram's car is left by the same get-off where its stop records have leaving rows; a car
+    // without them would give a stuck_aboard every period
+    VesselLeaveFacts car = aboard;
+    car.car = true;
+    car.carLeaves = true;
+    Check(DecideVesselLeave(car) == VesselLeave::Begin,
+          "vessel leave: a car with leaving rows, no trip: the get-off begins (G412)");
+    car.carLeaves = false;
+    Check(DecideVesselLeave(car) == VesselLeave::None, "vessel leave: a car without leaving rows: nothing");
+    car.carLeaves = true;
+    car.tripHeld = true;
+    Check(DecideVesselLeave(car) == VesselLeave::None, "vessel leave: a car's rider with a trip: its own get-off");
+    car.tripHeld = false;
+    car.owned = true;
+    Check(DecideVesselLeave(car) == VesselLeave::None, "vessel leave: a car's owned rider: not this rule");
 
     // The full sequence on a trip without legs: off_first, waits at sea, deck walk, crossing, ashore: left
     Trip off;
@@ -3679,6 +3814,226 @@ void CheckVesselLeave()
               Words(again) == "off_first,stuck_aboard",
           "vessel leave: the second period: one off_first, one stuck_aboard, nothing between");
     Check(std::string(TravelLegs::TransportSource(TransportEvent::Left)) == "left", "vessel leave: the word left");
+}
+
+// PA76 (G414): a rider whose every leaving row is refused by the deck path while it has not moved on the vessel
+// leaves that state by one defined exit, its hearthstone, within a bounded number of give-ups; a rider that crosses,
+// moves, or merely runs out of time is never touched. Driven as the glue (GetOffFirst) drives it: each tick
+// StepOffFirst, the deck walk's answer (RowRefused where the path is refused), then StrandedStep
+void CheckStranded()
+{
+    using TravelLegs::BeginOffFirst;
+    using TravelLegs::OffStep;
+    using TravelLegs::StepOffFirst;
+    using TravelLegs::Stone;
+    using TravelLegs::StrandedExit;
+    using TravelLegs::TransportEvent;
+
+    TravelLegs::Stranded rider;
+    struct Tick
+    {
+        OffStep step;
+        StrandedExit exit;
+    };
+    auto const tick = [&rider](Trip& trip, Observation const& seen, bool refuse, Stone stone)
+    {
+        std::uint8_t const boxed = trip.offFirst.boxed;
+        OffStep const step = StepOffFirst(trip, seen);
+        if (step == OffStep::Deck && refuse)
+            TravelLegs::RowRefused(trip, seen);
+        return Tick{step, TravelLegs::StrandedStep(rider, trip.offFirst, step, boxed, seen.offset, stone)};
+    };
+    // One get-off begun at t0 (a period of 300 s): stop B stands, its two leaving rows are walked for from `at`
+    // (refused or not), the period ends. exit: the bound's answer at the stop; end: the give-up's step
+    struct Run
+    {
+        Trip trip;
+        StrandedExit exit{StrandedExit::None};
+        OffStep end{OffStep::Wait};
+    };
+    auto const getOff = [&tick](std::uint32_t t0, TravelLifecycle::Point at, bool refuse, Stone stone = Stone::Ready)
+    {
+        Run run;
+        BeginOffFirst(run.trip, SHIP, VESSEL, 300000, t0);
+        for (Observation const& seen : {GetOff(t0 + 1000, at, &STOP_B, Docked(STOP_B, 250000)),
+                                        GetOff(t0 + 1500, at, &STOP_B), GetOff(t0 + 2000, at, &STOP_B)})
+        {
+            StrandedExit const exit = tick(run.trip, seen, refuse, stone).exit;
+            if (exit != StrandedExit::None)
+                run.exit = exit;
+        }
+        run.end = tick(run.trip, GetOff(t0 + 300001, at, &STOP_B), false, stone).step;
+        return run;
+    };
+    auto const strandedRows = [](Trip const& trip)
+    {
+        return std::count_if(trip.transportNotes.begin(), trip.transportNotes.end(),
+                             [](TravelLegs::TransportNote const& note)
+                             { return note.event == TransportEvent::StrandedHearth; });
+    };
+    constexpr std::uint32_t P = 301001;  // one get-off's span: the next begins right after its give-up
+
+    // (a) every row refused twice from one place: the third get-off's refusals at the stop take the hearthstone
+    Run const first = getOff(1000, PLACE, true);
+    Check(first.exit == StrandedExit::None && first.end == OffStep::GiveUp && rider.giveUps == 1 &&
+              Words(first.trip) == "off_first,cross_failed,cross_failed,stuck_aboard" && first.trip.offFirst.boxed == 1,
+          "stranded: a period with both rows refused: given up, counted once, no exit yet");
+    Run const second = getOff(1000 + P, PLACE, true);
+    Check(second.exit == StrandedExit::None && second.end == OffStep::GiveUp && rider.giveUps == 2,
+          "stranded: the second such period: counted twice; the exit waits for the stop's next refusals");
+    Run third = getOff(1000 + 2 * P, PLACE, true);
+    Check(third.exit == StrandedExit::Hearth, "stranded: then its rows refused again at the stop: the hearthstone");
+    TravelLegs::NoteStrandedExit(third.trip, rider, true);
+    Check(Last(third.trip, TransportEvent::StrandedHearth, SHIP, 1) &&
+              std::string(TravelLegs::TransportSource(TransportEvent::StrandedHearth)) == "stranded_hearth",
+          "stranded: the exit's row, stranded_hearth 1 (the cast began)");
+    Trip home;
+    BeginOffFirst(home, SHIP, VESSEL, 300000, 5000);
+    Check(tick(home, Seen(PIER_B, 6000, Gone()), false, Stone::Ready).step == OffStep::Lost && !rider.giveUps,
+          "stranded: the stone took it off (membership lost): the count ends");
+
+    // (b) one period refused, then a crossing tried at the next: never touched
+    rider = {};
+    getOff(1000, PLACE, true);
+    Trip tried;
+    BeginOffFirst(tried, SHIP, VESSEL, 300000, 1000 + P);
+    Observation const stands = GetOff(4000 + P, PLACE, &STOP_B, Docked(STOP_B, 250000));
+    Observation const atSecond = GetOff(6000 + P, DECK_B1, &STOP_B);
+    bool const crossTried = tick(tried, stands, true, Stone::Ready).step == OffStep::Deck &&
+                            tick(tried, atSecond, false, Stone::Ready).step == OffStep::Disembark;
+    TravelLegs::CrossIssued(tried, atSecond);
+    tick(tried, With(GetOff(7000 + P, DECK_B1, &STOP_B, Docked(STOP_B, 253000)), Passenger::Cancelled), false,
+         Stone::Ready);
+    Check(crossTried &&
+              tick(tried, GetOff(301002 + P, DECK_B1, &STOP_B), false, Stone::Ready).step == OffStep::GiveUp &&
+              !rider.giveUps && getOff(1000 + 2 * P, PLACE, true).exit == StrandedExit::None && rider.giveUps == 1,
+          "stranded: a crossing tried (then cancelled) ends the count; the next refused period counts from one");
+
+    // (c) give-ups by time alone (a car's short stand, a stop never stood at): never counted
+    rider = {};
+    Run const timeOne = getOff(1000, PLACE, false);
+    Run const timeTwo = getOff(1000 + P, PLACE, false);
+    Run const thenRefused = getOff(1000 + 2 * P, PLACE, true);
+    Check(timeOne.end == OffStep::GiveUp && timeTwo.end == OffStep::GiveUp && !timeTwo.trip.offFirst.boxed &&
+              thenRefused.exit == StrandedExit::None && rider.giveUps == 1,
+          "stranded: two give-ups by time without a refused row count nothing; the refused one after them counts one");
+
+    // (d) the bot moved between two give-ups: the count starts again at its new place
+    rider = {};
+    TravelLifecycle::Point const moved{-4.0f, 7.0f, 1.0f};  // 5 yd from PLACE
+    getOff(1000, PLACE, true);
+    Run const elsewhere = getOff(1000 + P, moved, true);
+    Check(elsewhere.exit == StrandedExit::None && rider.giveUps == 1 && rider.offset.y == 7.0f,
+          "stranded: refused from another place: counted from one there");
+    Check(getOff(1000 + 2 * P, moved, true).exit == StrandedExit::None && rider.giveUps == 2 &&
+              getOff(1000 + 3 * P, moved, true).exit == StrandedExit::Hearth &&
+              getOff(1000 + 4 * P, PLACE, true).exit == StrandedExit::None,
+          "stranded: two there, then the exit there; refused from the first place again: no exit");
+
+    // (e) a cooling stone (or a cast under way): waits aboard, the next stop's refusals cast it
+    rider = {};
+    getOff(1000, PLACE, true);
+    getOff(1000 + P, PLACE, true);
+    Run cooling = getOff(1000 + 2 * P, PLACE, true, Stone::Cooling);
+    Check(cooling.exit == StrandedExit::None && !strandedRows(cooling.trip) && rider.giveUps == 2 &&
+              getOff(1000 + 3 * P, PLACE, true).exit == StrandedExit::Hearth,
+          "stranded: the stone cools: no cast, no row; the next stop's refusals with the stone ready: the hearthstone");
+
+    // (f) no stone: nothing is done, its row once, never a cast
+    rider = {};
+    getOff(1000, PLACE, true);
+    getOff(1000 + P, PLACE, true);
+    Run bare = getOff(1000 + 2 * P, PLACE, true, Stone::Missing);
+    TravelLegs::NoteStrandedExit(bare.trip, rider, false);
+    Run bareAgain = getOff(1000 + 3 * P, PLACE, true, Stone::Missing);
+    TravelLegs::NoteStrandedExit(bareAgain.trip, rider, false);
+    Check(bare.exit == StrandedExit::Missing && Last(bare.trip, TransportEvent::StrandedHearth, SHIP, 0) &&
+              bareAgain.exit == StrandedExit::Missing && !strandedRows(bareAgain.trip),
+          "stranded: no stone: no cast; stranded_hearth 0 once, not again at the next period");
+}
+
+// G411: who stays on foot (TravelKeepsOnFoot's rule, TravelLegs::KeepsOnFoot) is one rule for every status: an
+// errand's tame or stable visit is one reason among the get-offs and the transport leg, not the errand's only answer
+void CheckTravelOnFoot()
+{
+    using TravelLegs::KeepsOnFoot;
+    using TravelLegs::OnFootFacts;
+
+    Trip const lift = StartedTrip({LiftLeg()}, 0);
+    Trip offFirst = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+    TravelLegs::BeginOffFirst(offFirst, SHIP, VESSEL, 300000, 2000);
+    Trip const walk = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+
+    OnFootFacts facts;
+    facts.trip = &lift;
+    Check(KeepsOnFoot(facts), "on foot: an errand's rider at its transport leg stays on foot (G411)");
+    facts.trip = &offFirst;
+    Check(KeepsOnFoot(facts), "on foot: an errand's rider getting off first stays on foot");
+    facts.trip = nullptr;
+    facts.vesselOff = true;
+    Check(KeepsOnFoot(facts), "on foot: an errand's rider on the trip-less get-off stays on foot");
+    facts.vesselOff = false;
+    facts.errandVisit = true;
+    Check(KeepsOnFoot(facts), "on foot: an errand's tame or stable visit, no trip: on foot");
+    facts.errandVisit = false;
+    facts.trip = &walk;
+    Check(!KeepsOnFoot(facts), "on foot: an errand's walking leg may mount");
+    facts.trip = nullptr;
+    Check(!KeepsOnFoot(facts), "on foot: an errand with no trip and no visit may mount");
+
+    OnFootFacts other;
+    other.trip = &lift;
+    Check(KeepsOnFoot(other), "on foot: any other status at its transport leg stays on foot");
+    other.trip = &walk;
+    Check(!KeepsOnFoot(other), "on foot: any other status on a walking leg may mount");
+    other.trip = nullptr;
+    Check(!KeepsOnFoot(other), "on foot: no trip, no get-off: may mount");
+}
+
+// PA91: what a transport leg lets start beside it (TravelLegs::HoldsUpkeep): no eat or drink from its dock on to its
+// end, unless the bot waits or rides with its docking foreseen more than UPKEEP_LEAD_MS ahead
+void CheckTravelUpkeep()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::HoldsUpkeep;
+    using TravelLegs::NO_DEADLINE;
+    using TravelLegs::UPKEEP_LEAD_MS;
+
+    std::int64_t const far = UPKEEP_LEAD_MS + 90000;
+    std::int64_t const near = UPKEEP_LEAD_MS - 10000;
+    Trip lift = StartedTrip({LiftLeg()}, 0);
+    Check(HoldsUpkeep(&lift, NO_DEADLINE), "upkeep: the walk to the lift's dock holds it");
+    lift.boarding = Boarding::Wait;
+    Check(HoldsUpkeep(&lift, NO_DEADLINE), "upkeep: a wait for a car without a window holds it (a short period)");
+    Check(HoldsUpkeep(&lift, 0), "upkeep: the car standing at the stop holds it");
+    lift.crossMs = 75202;
+    Check(HoldsUpkeep(&lift, far), "upkeep: a crossing under way holds it (Washamuz at 20652, PA91)");
+    lift.crossMs = 0;
+    lift.cancelled = true;
+    Check(HoldsUpkeep(&lift, far), "upkeep: a crossing cut, its verdict pending, holds it");
+    lift.cancelled = false;
+    lift.boarding = Boarding::Board;
+    Check(HoldsUpkeep(&lift, far), "upkeep: the boarding holds it");
+
+    Trip ship = StartedTrip({ShipLeg()}, 0);
+    ship.boarding = Boarding::Wait;
+    Check(!HoldsUpkeep(&ship, far), "upkeep: a wait for a vessel far off eats and drinks");
+    Check(HoldsUpkeep(&ship, near), "upkeep: a wait with the docking near holds it");
+    Check(HoldsUpkeep(&ship, NO_DEADLINE), "upkeep: a wait for a vessel not seen holds it");
+    ship.boarding = Boarding::Ride;
+    Check(!HoldsUpkeep(&ship, far), "upkeep: a ride far from its docking eats and drinks");
+    Check(HoldsUpkeep(&ship, near), "upkeep: a ride near its docking holds it");
+    ship.boarding = Boarding::Leave;
+    Check(HoldsUpkeep(&ship, far), "upkeep: the leave holds it");
+    ship.boarding = Boarding::Back;
+    Check(HoldsUpkeep(&ship, far), "upkeep: the way back holds it");
+
+    Trip offFirst = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+    TravelLegs::BeginOffFirst(offFirst, SHIP, VESSEL, 300000, 2000);
+    Check(HoldsUpkeep(&offFirst, NO_DEADLINE), "upkeep: the trip's get-off first holds it");
+    Trip const walk = StartedTrip({MakeLeg(LegType::Walk, PIER_A, PIER_B, {1, 3}, 20.0f)}, 0);
+    Check(!HoldsUpkeep(&walk, NO_DEADLINE), "upkeep: a walking leg eats and drinks");
+    Check(!HoldsUpkeep(nullptr, NO_DEADLINE), "upkeep: no trip eats and drinks");
 }
 
 void CheckDeckContact()
@@ -4051,6 +4406,7 @@ int main()
     CheckTripDeaths();
     CheckSickEnd();
     CheckJoinedLanding();
+    CheckSkyLanding();
     CheckStartRows();
     CheckFlyLeg();
     CheckFlyLegMountOwner();
@@ -4085,6 +4441,9 @@ int main()
     CheckOffFirst();
     CheckDeckContact();
     CheckVesselLeave();
+    CheckStranded();
+    CheckTravelOnFoot();
+    CheckTravelUpkeep();
     CheckNextDeadline();
     CheckWalkStartWord();
     std::cout << passed << " passed, " << failed << " failed\n";

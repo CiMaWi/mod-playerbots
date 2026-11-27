@@ -9,6 +9,7 @@
 
 #include "BankRules.h"
 
+class Item;
 class Player;
 class PlayerbotAI;
 
@@ -31,6 +32,8 @@ void RefreshBankKnowledge(PlayerbotAI* botAI);
 void RefreshCarriedKeeps(PlayerbotAI* botAI);
 // The later worth of one carried kept item of the entry, or 0 (KeptWorthEach at the bot's level)
 uint32_t CarriedWorthEach(PlayerbotAI* botAI, uint32_t entry);
+// Auction house WA3b: what a vendor pays for units of the item now, as its sell handler reads it (V of WA.17)
+uint32_t AuctionVendorPayout(Item const* item, uint32_t units);
 }  // namespace BankMail
 
 #endif

@@ -408,7 +408,7 @@ private:
     static Trigger* wsg_escort_separated(PlayerbotAI* botAI) { return new WsgEscortSeparated(botAI); }
     static Trigger* Random(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "random", 20); }
     static Trigger* seldom(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "seldom", 300); }
-    static Trigger* often(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "often", 5); }
+    static Trigger* often(PlayerbotAI* botAI) { return new OftenTrigger(botAI); }
     static Trigger* very_often(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "often", 3); }
     // every Playerbots.RepeatDelay (probability 1)
     static Trigger* bg_join_check(PlayerbotAI* botAI) { return new RandomTrigger(botAI, "bg join check", 1); }

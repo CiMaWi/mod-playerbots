@@ -13,16 +13,19 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GatherNodeMgr.h"
+#include "GatherRules.h"
 #include "GroundRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "Map.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
+#include "NewRpgDoFish.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
+#include "NewRpgTriggers.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
@@ -33,7 +36,6 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
-#include "ProfessionConfig.h"
 #include "PursuitRules.h"
 #include "QuestDef.h"
 #include "QuestFailRecord.h"
@@ -102,13 +104,14 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     NewRpgStatus status = info.GetStatus();
     // Resurrection sickness (upkeep §3.5): a sick bot rests until the sickness ends. Any other status ends, an errand
     // and a trip as given up (errand_sick, abort:sick); a flight in the air lands first. The status pick, the errand
-    // start and the travel orders keep it resting. An errand that started after the last rise goes on (NE11: only the
-    // due repair recover handed over starts one, Upkeep::SickErrandOpen); one from before the death ends
+    // start and the travel orders keep it resting. A goal that started after the last rise goes on (NR3: once recover
+    // has handed the bot over, Upkeep::SickErrandOpen, the goal model's sick gate starts its errand or its bind walk,
+    // WorldTravel::SickGoalRuns); one from before the death ends
     bool const sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
     Awareness::Store const* aware = botAI->awareness.get();
-    bool const errandSinceRise = sick && status == RPG_ERRANDS && aware && aware->rose &&
-                                 GetMSTimeDiffToNow(info.startT) <= GetMSTimeDiffToNow(aware->roseMs);
-    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight(), errandSinceRise))
+    bool const goalSinceRise = sick && WorldTravel::SickGoalRuns(botAI) && aware && aware->rose &&
+                               GetMSTimeDiffToNow(info.startT) <= GetMSTimeDiffToNow(aware->roseMs);
+    if (Upkeep::SickEndsStatus(status, sick, bot->IsInFlight(), goalSinceRise))
     {
         RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "sick", StatusEnd::Outcome::Sick);  // one Status row
         bot->SetStandState(UNIT_STAND_STATE_SIT);
@@ -226,13 +229,17 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             break;
         }
         case RPG_DO_GATHER:
+        {
+            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusDoGatherDuration)))
+                return true;
+            break;
+        }
         case RPG_DO_FISH:
         {
-            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer. DO_FISH: a trip its own
-            // rules have not ended by Fish.TripDeadlineSeconds is given up (its FishTrip row says "deadline")
-            int32 const limit = status == RPG_DO_GATHER ? statusDoGatherDuration
-                                                        : sPlayerbotAIConfig.Professions.FishTripDeadlineSeconds * 1000;
-            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(limit)))
+            // DO_FISH -> IDLE: a trip its own rules have not ended by twice its minutes is given up
+            // (Fish::PastDeadline, professions WR27; its FishTrip row says "deadline")
+            if (Planner::StatusOver(botAI, status, NewRpgDoFishAction::PastDeadline(botAI)))
                 return true;
             break;
         }
@@ -358,7 +365,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
                 {
-                    botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+                    // At this vendor: the nearest npcs scan filters by line of sight (professions WR30)
+                    botAI->DoSpecificAction("sell", Event("sell", creature->GetGUID()), true);
 
                     // Buying sorts the vendor list through the weight calculator; skip it for
                     // bots without money for cheap consumables.
@@ -548,7 +556,8 @@ static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
               "UpkeepRules.h's fighting statuses follow NewRpgStatus");
 static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP) == Upkeep::RPG_STATUS_GO_CAMP &&
                   uint32(RPG_WANDER_NPC) == Upkeep::RPG_STATUS_WANDER_NPC &&
-                  uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
+                  uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS &&
+                  uint32(RPG_TRAVEL) == Upkeep::RPG_STATUS_TRAVEL,
               "UpkeepRules.h's errand statuses follow NewRpgStatus");
 
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason, uint32 ref)
@@ -764,7 +773,7 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
 
             // No point farming with (nearly) full bags - the loot pipeline
             // can't store the harvest (see StoreLootAction).
-            if (AI_VALUE(uint8, "bag space") > 80)
+            if (Gather::BagsTooFull(AI_VALUE(uint8, "bag space")))
                 return false;
 
             return sGatherNodeMgr.HasUsableNodes(bot);

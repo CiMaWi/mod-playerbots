@@ -20,6 +20,7 @@
 #include <functional>
 #include <random>
 
+#include "NeedGoalBridge.h"
 #include "upkeep-fixture.h"
 
 namespace
@@ -800,22 +801,41 @@ void KeptItems(UpkeepIndex const& index)
     NeedList const noviceNeeds = Show("mage before the powder's spell, empty bags", novice, index, Rates(9));
     NeedList const adeptNeeds = ComputeNeeds(adept, index, Rates(12));
     NeedList const warriorNeeds = ComputeNeeds(warrior, index, Rates(30));
-    Check(!ReagentKnown(index, novice, ITEM_POWDER) && !Find(noviceNeeds, NeedOrder::ReagentPoison) &&
+    Check(!ReagentKnown(novice, ITEM_POWDER) && !Find(noviceNeeds, NeedOrder::ReagentPoison) &&
               !StockErrandDue(noviceNeeds) &&
               !VendorCover(index, novice, noviceNeeds, StockBit(UpkeepStock::Reagent)).count(VENDOR_REAGENT),
           "a reagent of a spell the mage has not learned: no need, no errand, no vendor covers it");
-    Check(ReagentKnown(index, adept, ITEM_POWDER) && Find(adeptNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent),
+    Check(ReagentKnown(adept, ITEM_POWDER) && Find(adeptNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent),
           "the spell learned: the reagent need");
     Snapshot glyphed = adept;
-    glyphed.reagentFreeClassSpells = SpellBits(glyphed.knownClassSpells.size() * BITS_PER_WORD);
-    auto const [powderFirst, powderLast] = index.ReagentSpells(CLASS_MAGE, ITEM_POWDER);
-    for (auto it = powderFirst; it != powderLast; ++it)
-        SetSpellBit(glyphed.reagentFreeClassSpells, it->position);
+    glyphed.knownReagents.clear();  // the live reading drops a spell cast without its reagent
     NeedList const glyphedNeeds = ComputeNeeds(glyphed, index, Rates(12));
-    Check(powderFirst != powderLast && !ReagentKnown(index, glyphed, ITEM_POWDER) &&
-              !Find(glyphedNeeds, NeedOrder::ReagentPoison) && !StockErrandDue(glyphedNeeds),
+    Check(!ReagentKnown(glyphed, ITEM_POWDER) && !Find(glyphedNeeds, NeedOrder::ReagentPoison) &&
+              !StockErrandDue(glyphedNeeds),
           "the spell cast without its reagent (a glyph): no need, no errand (WU26a-fix)");
     Check(!Find(warriorNeeds, NeedOrder::ReagentPoison), "a class no spell of which uses the powder: no need");
+
+    // A warlock's reagent of a quest's spell (on no trainer list): the generic line leaves it to the errand visit,
+    // which lists it. The line reads the bot's spells only, so the index being ready or not changes nothing
+    Snapshot warlock = Bot(index, CLASS_WARLOCK, 60, 100 * GOLD, 60);
+    warlock.stock.clear();
+    warlock.knownReagents = {ITEM_FIGURINE};
+    for (bool const ready : {true, false})
+    {
+        Snapshot at = warlock;
+        at.upkeepVersion = ready ? index.version : 0;
+        Check(!GenericBuysSkillItem(true, at.knownReagents, ITEM_FIGURINE) &&
+                  GenericBuysSkillItem(true, at.knownReagents, ITEM_POWDER) &&
+                  GenericBuysSkillItem(false, at.knownReagents, ITEM_FIGURINE),
+              "the generic line buys no reagent of a spell the bot knows, index ready or not");
+    }
+    NeedList const warlockNeeds = ComputeNeeds(warlock, index, Rates(60));
+    std::vector<ShopLine> const warlockLines = PlanShopping(warlockNeeds, index, warlock, VENDOR_REAGENT);
+    Check(Find(warlockNeeds, NeedOrder::ReagentPoison, UpkeepStock::Reagent) &&
+              VendorCover(index, warlock, warlockNeeds, StockBit(UpkeepStock::Reagent)).count(VENDOR_REAGENT) &&
+              Line(warlockLines, UpkeepStock::Reagent) &&
+              Line(warlockLines, UpkeepStock::Reagent)->item == ITEM_FIGURINE,
+          "the quest spell's reagent is on the visit's list");
 
     Snapshot hunter = Bot(index, CLASS_HUNTER, 30, 100 * GOLD, 30);
     SetStock(hunter, UpkeepStock::Ammo, 0);
@@ -1220,6 +1240,12 @@ void ProfessionNeeds()
     constexpr std::uint32_t VENDOR_SMITH = 602;
     constexpr std::uint32_t VENDOR_INN = 603;
     constexpr std::uint32_t ITEM_BREAD = 604;
+    // The jeweler's vendor sells its kit and grinder, which have no tool category (NR20: their TOOLS rows make them
+    // tools)
+    constexpr std::uint32_t VENDOR_JEWEL = 605;
+    constexpr std::uint32_t JEWELER_KIT = 20815;
+    constexpr std::uint32_t SIMPLE_GRINDER = 20824;
+    constexpr std::uint16_t JEWELCRAFTING = 755;
     constexpr std::uint32_t WEAPON = 2;  // ITEM_CLASS_WEAPON
     UpkeepGather input;
     UpkeepItemFacts pickFacts = Item(MINING_PICK, WEAPON, 14, 90, 1, 1);
@@ -1230,12 +1256,14 @@ void ProfessionNeeds()
     bread.spellCategory = UpkeepItem::CATEGORY_FOOD;
     UpkeepItemFacts plansFacts = Item(SMITH_PLANS, 9, 4, 400, 1, 1);  // ITEM_CLASS_RECIPE, blacksmithing
     plansFacts.tool = true;
-    input.items = {pickFacts, poleFacts, bread, plansFacts};
-    input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK},
-                         {VENDOR_SUPPLIER, FISHING_POLE},
-                         {VENDOR_SMITH, MINING_PICK},
-                         {VENDOR_SMITH, SMITH_PLANS},
-                         {VENDOR_INN, ITEM_BREAD}};
+    UpkeepItemFacts kitFacts = Item(JEWELER_KIT, 7, 0, 60, 1, 1);  // ITEM_CLASS_TRADE_GOODS
+    kitFacts.tool = true;
+    UpkeepItemFacts grinderFacts = Item(SIMPLE_GRINDER, 7, 0, 40, 1, 1);
+    grinderFacts.tool = true;
+    input.items = {pickFacts, poleFacts, bread, plansFacts, kitFacts, grinderFacts};
+    input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK}, {VENDOR_SUPPLIER, FISHING_POLE}, {VENDOR_SMITH, MINING_PICK},
+                         {VENDOR_SMITH, SMITH_PLANS},    {VENDOR_INN, ITEM_BREAD},        {VENDOR_JEWEL, JEWELER_KIT},
+                         {VENDOR_JEWEL, SIMPLE_GRINDER}};
     input.trainers.push_back({TRAINER_MINING,
                               TrainerKind::Tradeskill,
                               0,
@@ -1361,7 +1389,7 @@ void ProfessionNeeds()
     hold(miner, MINING, 20, 75);
     NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
     Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
-    Check(index.Offers(UpkeepStock::Tool).size() == 4 && index.Offers(UpkeepStock::Food).size() == 1,
+    Check(index.Offers(UpkeepStock::Tool).size() == 6 && index.Offers(UpkeepStock::Food).size() == 1,
           "the index's tool sellers: every vendor row of a tool or recipe item, nothing else");
     Check(pick && pick->item == MINING_PICK && pick->copper == 90 && pick->stock == UpkeepStock::Tool &&
               pick->lotPrice == 90 && pick->units == 1 && pick->due && pick->vendor != 0 && StockPayable(*pick) &&
@@ -1399,6 +1427,17 @@ void ProfessionNeeds()
     Check(unpaid && unpaid->funded < 90 && !StockPayable(*unpaid) && !AnyErrandDue(poorTools) && shortLine &&
               shortLine->outcome == ShopOutcome::Budget,
           "a miner short of the pick's price takes no trip for it; at a stop it is gold short");
+    // A jeweler's kit and grinder are tools by their TOOLS rows (NR20): held, neither is a need; without them, a need
+    Snapshot jeweler = bot;
+    jeweler.person = person(Skill::Mining, Skill::Jewelcrafting);
+    hold(jeweler, JEWELCRAFTING, 20, 75);
+    Need const* kit = need(ComputeNeeds(jeweler, index, Rates(5)), ProfessionStep::Tool, JEWELCRAFTING);
+    Check(kit && kit->item == JEWELER_KIT && kit->due,
+          "a jeweler without its kit and grinder has a due tool need for the kit");
+    Snapshot equipped = jeweler;
+    equipped.toolsHeld = {JEWELER_KIT, SIMPLE_GRINDER};
+    Check(!need(ComputeNeeds(equipped, index, Rates(5)), ProfessionStep::Tool, JEWELCRAFTING),
+          "a jeweler holding both tools has no tool need: it buys neither again");
     Snapshot smith = bot;
     hold(smith, SMITHING, 20, 75);
     Check(!need(ComputeNeeds(smith, index, Rates(5)), ProfessionStep::Tool, SMITHING),
@@ -2146,6 +2185,23 @@ void UseNeeds()
     Check(use && use->funded == std::min<std::uint64_t>(use->copper, above),
           "the use need is funded from the gold above the reserve");
 
+    // NR4 (item 17): the use need is no part of the reserve, so it never names the shortfall
+    Snapshot broke = bot;
+    broke.money = 0;
+    NeedRates large = plain;
+    large.useWants.push_back({{ITEM_SUPER_HEALING}, 1000, 1000, 0});
+    NeedList const wanting = ComputeNeeds(broke, index, large);
+    Need const* wanted = Find(wanting, NeedOrder::Use);
+    std::uint64_t dearest = 0;
+    for (Planner::NeedBridge::ReservePart const& part : Planner::NeedBridge::PartsOf(wanting))
+        dearest = std::max<std::uint64_t>(dearest, Scaled(wanting, part.copper));
+    Planner::NeedBridge::NeedInputs const named = Planner::NeedBridge::InputsOf(wanting);
+    std::cout << "   broke, wants 1000 potions: " << named.shortText << "\n";
+    Check(wanted && wanted->copper > dearest && named.shortfallCopper > 0 &&
+              named.shortText.find("for use") == std::string::npos &&
+              named.shortText.find("the reserve") == std::string::npos,
+          "a broke bot with a large use want names its shortfall by a reserve part, not use");
+
     std::cout << "   at the apothecary, the alchemist (the weaker potion only), the mana vendor and the inn:\n";
     std::vector<ShopLine> const apothecary = PlanShopping(with, index, bot, VENDOR_APOTHECARY);
     std::vector<ShopLine> const alchemist = PlanShopping(with, index, bot, VENDOR_ALCHEMIST);
@@ -2188,6 +2244,253 @@ void UseNeeds()
           "below the reserve the use need gets nothing");
 }
 
+constexpr std::uint32_t ITEM_MARKET_CLOTH = 4306;
+constexpr std::uint32_t ITEM_MARKET_BAG = 4500;
+
+// Fund with a fault, the controls of MarketNeeds: the market's lines before the use items, or paid from all the gold
+enum class FundFault
+{
+    MarketFirst,
+    MarketFromAll
+};
+
+void FundVariant(NeedList& list, FundFault fault)
+{
+    auto const rank = [fault](NeedOrder order)
+    { return fault == FundFault::MarketFirst && order == NeedOrder::Market ? -1 : static_cast<int>(order); };
+    std::stable_sort(list.needs.begin(), list.needs.end(),
+                     [&rank](Need const& a, Need const& b) { return rank(a.order) < rank(b.order); });
+    std::uint64_t left = list.money;
+    std::uint64_t above = list.money > list.reserve ? list.money - list.reserve : 0;
+    for (Need& need : list.needs)
+    {
+        bool const aboveOnly =
+            need.order == NeedOrder::Use || (need.order == NeedOrder::Market && fault != FundFault::MarketFromAll);
+        need.funded = std::min(need.copper, aboveOnly ? std::min(left, above) : left);
+        left -= need.funded;
+        if (aboveOnly)
+            above -= need.funded;
+    }
+}
+
+std::uint64_t FundedOf(NeedList const& list, NeedOrder order)
+{
+    std::uint64_t funded = 0;
+    for (Need const& need : list.needs)
+        funded += need.order == order ? need.funded : 0;
+    return funded;
+}
+
+// The reserve's parts as PartsOf counted them before the market (its control): every need with copper but repair,
+// training, riding, pet, use and professions, and the four reserve sums
+std::size_t PartsBeforeMarket(NeedList const& list)
+{
+    std::size_t parts = (list.reserveRepair ? 1 : 0) + (list.reserveTraining ? 1 : 0) + (list.reserveRiding ? 1 : 0) +
+                        (list.reserveProfession ? 1 : 0);
+    for (Need const& need : list.needs)
+        parts += need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
+                         need.order != NeedOrder::Riding && need.order != NeedOrder::Pet &&
+                         need.order != NeedOrder::Use && need.order != NeedOrder::Profession
+                     ? 1
+                     : 0;
+    return parts;
+}
+
+void MarketNeeds()
+{
+    std::cout << "Scenario: the market's lines (auction house WA4a): after the professions, never due, only from the "
+                 "gold above the reserve the use items leave\n";
+    UpkeepIndex const index = UseFixture();
+    NeedRates uses = Rates(60);
+    uses.useWants.push_back({{ITEM_SUPER_HEALING, ITEM_SUPERIOR_HEALING}, 6, 6, 0});
+    NeedRates markets = uses;
+    markets.marketWants.push_back({ITEM_MARKET_CLOTH, 20, 3000});
+    markets.marketWants.push_back({ITEM_MARKET_BAG, 1, 40000});
+    markets.marketWants.push_back({ITEM_MARKET_CLOTH, 0, 100});  // no units: no need
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 60, 100 * GOLD, 60);
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedList const shown =
+        Show("warrior 60, no food, wants potions, 20 cloth and a bag at the market", bot, index, markets);
+    std::size_t const n = shown.needs.size();
+    std::size_t marketCount = 0;
+    for (Need const& need : shown.needs)
+        marketCount += need.order == NeedOrder::Market ? 1 : 0;
+    bool last = marketCount == 2 && n >= 3 && shown.needs[n - 3].order != NeedOrder::Market;
+    for (std::size_t i = n >= 2 ? n - 2 : 0; last && i < n; ++i)
+        last = shown.needs[i].order == NeedOrder::Market && !shown.needs[i].due &&
+               shown.needs[i].kind == UpkeepKind::Gold && std::string(OrderWord(shown.needs[i].order)) == "market";
+    Check(last, "two market needs (a want without units adds none), last in the order, never due");
+
+    // Money from nothing to well above the reserve, the same bot with and without the market's lines
+    NeedList const base = ComputeNeeds(bot, index, uses);
+    std::uint64_t const top = base.reserve + 120000;
+    int steps = 0;
+    int partly = 0;
+    int useLoses = 0;
+    int overAbove = 0;
+    int reserveMoves = 0;
+    int partsMove = 0;
+    int controlUse = 0;
+    int controlAbove = 0;
+    int controlParts = 0;
+    for (std::uint64_t money = 0; money <= top; money += 997)
+    {
+        Snapshot rich = bot;
+        rich.money = static_cast<std::uint32_t>(money);
+        NeedList const without = ComputeNeeds(rich, index, uses);
+        NeedList const with = ComputeNeeds(rich, index, markets);
+        std::uint64_t const above = with.money > with.reserve ? with.money - with.reserve : 0;
+        ++steps;
+        std::uint64_t marketCopper = 0;
+        for (Need const& need : with.needs)
+            marketCopper += need.order == NeedOrder::Market ? need.copper : 0;
+        std::uint64_t const marketFunded = FundedOf(with, NeedOrder::Market);
+        partly += marketFunded && marketFunded < marketCopper ? 1 : 0;
+        useLoses += FundedOf(with, NeedOrder::Use) != FundedOf(without, NeedOrder::Use) ? 1 : 0;
+        overAbove += FundedOf(with, NeedOrder::Use) + marketFunded > above ? 1 : 0;
+        bool sameOthers = without.needs.size() + 2 == with.needs.size();
+        for (std::size_t i = 0; sameOthers && i < without.needs.size(); ++i)
+            sameOthers = with.needs[i].order == without.needs[i].order &&
+                         with.needs[i].funded == without.needs[i].funded &&
+                         with.needs[i].copper == without.needs[i].copper && with.needs[i].due == without.needs[i].due;
+        reserveMoves += with.reserve != without.reserve || with.shortfall != without.shortfall || !sameOthers ? 1 : 0;
+        Planner::NeedBridge::NeedInputs const in = Planner::NeedBridge::InputsOf(with);
+        Planner::NeedBridge::NeedInputs const out = Planner::NeedBridge::InputsOf(without);
+        std::size_t const partsWithout = Planner::NeedBridge::PartsOf(without).size();
+        partsMove += Planner::NeedBridge::PartsOf(with).size() != partsWithout ||
+                             in.reserveCopper != out.reserveCopper || in.shortfallCopper != out.shortfallCopper ||
+                             in.shortKind != out.shortKind || in.shortText != out.shortText
+                         ? 1
+                         : 0;
+
+        NeedList first = with;
+        FundVariant(first, FundFault::MarketFirst);
+        controlUse += FundedOf(first, NeedOrder::Use) != FundedOf(without, NeedOrder::Use) ? 1 : 0;
+        NeedList all = with;
+        FundVariant(all, FundFault::MarketFromAll);
+        controlAbove += FundedOf(all, NeedOrder::Use) + FundedOf(all, NeedOrder::Market) > above ? 1 : 0;
+        controlParts += PartsBeforeMarket(with) != partsWithout ? 1 : 0;
+    }
+    std::cout << "   " << steps << " purses from 0 to the reserve + 12g (reserve " << Money(base.reserve) << "), "
+              << partly << " with the market partly funded; counterexamples (rule / control): use " << useLoses << "/"
+              << controlUse << ", above the reserve " << overAbove << "/" << controlAbove << ", reserve parts "
+              << partsMove << "/" << controlParts << ", reserve and earlier needs " << reserveMoves << "\n";
+    Check(partly > 0, "the sweep passes purses that fund the market's lines only in part");
+    Check(useLoses == 0, "a use item's need never loses funding to the market's later lines");
+    Check(controlUse > 0, "control: the market funded before the use items takes from them (caught)");
+    Check(overAbove == 0, "the use items and the market's lines together stay within the gold above the reserve");
+    Check(controlAbove > 0, "control: the market paid from all the gold reaches into the reserve (caught)");
+    Check(reserveMoves == 0, "the market's lines change no reserve, shortfall or earlier need");
+    Check(partsMove == 0, "the market's lines are no reserve part: the planner's reserve and short text unchanged");
+    Check(controlParts > 0, "control: PartsOf without the market's exclusion adds them as parts (caught)");
+}
+
+// The market's kept copper (UpkeepNeeds::MarketKept, WA3-4 review N1): what the purse keeps from the auction visit and
+// the stop's worth. Over a sweep of purses, the spendable gold (the purse above it) never reaches into what Fund paid a
+// need before the market, and buys exactly the market's share. Its control, the reserve and the funded use items alone
+// (WA4b), lets a spendthrift's small reserve and a riding purchase beyond the reserve be spent at the market
+std::uint64_t MarketKeptOfWA4b(NeedList const& list) { return list.reserve + FundedOf(list, NeedOrder::Use); }
+
+void MarketKeptNeeds(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: the market keeps what Fund pays before it (WA3-4 review N1)\n";
+    auto const withMarket = [](NeedRates rates)
+    {
+        rates.marketWants.push_back({ITEM_MARKET_CLOTH, 20, 3000});
+        rates.marketWants.push_back({ITEM_MARKET_BAG, 1, 400000});
+        return rates;
+    };
+    Snapshot spendthrift = Bot(index, CLASS_WARRIOR, 20, 0, 14);
+    spendthrift.repairCost = 450;
+    spendthrift.traits = Traits(TraitRules::MIN_VALUE, 0, false);
+    // Riding bought for the want, its worth alone too small for the reserve: the purchase lies beyond the reserve
+    Snapshot rider = Bot(index, CLASS_WARRIOR, 20, 0, 20);
+    rider.traits = Traits(0, 0, true);
+    struct Case
+    {
+        char const* name;
+        Snapshot bot;
+        NeedRates rates;
+        int rule = 0;
+        int control = 0;
+        int funded = 0;
+    };
+    std::vector<Case> cases = {
+        {"spendthrift warrior at 20, six levels untrained, repair due", spendthrift, withMarket(Rates(20))},
+        {"collector warrior at 20 walking 3 min/h, riding bought beyond the reserve", rider,
+         withMarket(Rates(20, 3.0f))}};
+    for (Case& c : cases)
+    {
+        for (std::uint64_t money = 0; money <= 300 * GOLD; money += 4999)
+        {
+            Snapshot bot = c.bot;
+            bot.money = static_cast<std::uint32_t>(money);
+            NeedList const list = ComputeNeeds(bot, index, c.rates);
+            std::uint64_t before = 0;
+            std::uint64_t marketCopper = 0;
+            for (Need const& need : list.needs)
+            {
+                before += need.order != NeedOrder::Market ? need.funded : 0;
+                marketCopper += need.order == NeedOrder::Market ? need.copper : 0;
+            }
+            std::uint64_t const marketFunded = FundedOf(list, NeedOrder::Market);
+            auto const wrong = [&](std::uint64_t kept)
+            {
+                std::uint64_t const spendable = money > kept ? money - kept : 0;
+                return spendable + before > money || std::min(spendable, marketCopper) != marketFunded;
+            };
+            c.rule += wrong(MarketKept(list)) ? 1 : 0;
+            c.control += wrong(MarketKeptOfWA4b(list)) ? 1 : 0;
+            c.funded += before > list.reserve + FundedOf(list, NeedOrder::Use) ? 1 : 0;
+        }
+        std::cout << "   " << c.name << ": " << c.funded << " purses where earlier needs take more than the reserve "
+                  << "and the use items; counterexamples (rule / control) " << c.rule << "/" << c.control << "\n";
+        Check(c.rule == 0, std::string(c.name) + ": the market spends only its share, never an earlier need's");
+        Check(c.control > 0, std::string(c.name) + ": control: the reserve and the use items alone (caught)");
+    }
+}
+
+// NR3 (NR.4): a sick hunter's trip takes no errand that fights (the tame, the stable's swap) and no stop or placed
+// errand outside its safe area; the same hunter healthy keeps the tame and the sale (its trip never calls the filter)
+void SickTrip()
+{
+    using WorldTravel::ErrandKind;
+    std::vector<WorldTravel::ErrandOffer> offers(3);
+    offers[0].Kind = ErrandKind::Sell;
+    offers[0].Service = WorldTravel::SERVICE_VENDOR;
+    offers[1].Kind = ErrandKind::Tame;
+    offers[1].Placed = true;
+    offers[1].Place = {0, 10.0f, 10.0f, 0.0f};  // inside the safe area: the fight alone leaves it out
+    offers[1].Due = true;
+    offers[2].Kind = ErrandKind::TurnIn;
+    offers[2].Placed = true;
+    offers[2].Place = {0, 900.0f, 900.0f, 0.0f};
+    std::vector<WorldTravel::ServiceStop> stops(2);
+    stops[0].Id = 1;
+    stops[0].Place = {0, 5.0f, 5.0f, 0.0f};
+    stops[0].Services = WorldTravel::SERVICE_VENDOR;
+    stops[1].Id = 2;
+    stops[1].Place = {0, 800.0f, 800.0f, 0.0f};
+    stops[1].Services = WorldTravel::SERVICE_VENDOR;
+    auto const safeAt = [](WorldTravel::ErrandPlace const& place) { return place.X < 100.0f && place.Y < 100.0f; };
+    auto const has = [](std::vector<WorldTravel::ErrandOffer> const& list, ErrandKind kind)
+    {
+        return std::any_of(list.begin(), list.end(),
+                           [kind](WorldTravel::ErrandOffer const& offer) { return offer.Kind == kind; });
+    };
+    std::vector<WorldTravel::ErrandOffer> sick = offers;
+    std::vector<WorldTravel::ServiceStop> sickStops = stops;
+    WorldTravel::KeepSickErrands(sickStops, sick, safeAt);
+    Check(has(offers, ErrandKind::Tame) && has(offers, ErrandKind::Sell) && stops.size() == 2,
+          "a healthy hunter with a tame due keeps the tame stop and the sale");
+    Check(!has(sick, ErrandKind::Tame) && has(sick, ErrandKind::Sell) && !has(sick, ErrandKind::TurnIn) &&
+              sickStops.size() == 1 && sickStops.front().Id == 1,
+          "a sick hunter's trip has no tame stop and no stop outside its safe area (mutant: the tame stays)");
+    Check(WorldTravel::ErrandStartsFight(ErrandKind::Tame) && WorldTravel::ErrandStartsFight(ErrandKind::Stable) &&
+              !WorldTravel::ErrandStartsFight(ErrandKind::Sell) && !WorldTravel::ErrandStartsFight(ErrandKind::Repair),
+          "the tame and the stable's swap start a fight, a sale and a repair do not");
+}
+
 int main(int argc, char** argv)
 {
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
@@ -2216,6 +2519,7 @@ int main(int argc, char** argv)
     PetSwap();
     TameSteps();
     TameSiteRules();
+    SickTrip();
     FlyingRiding(index);
     MeasuredRiding(index);
     MountMissing(index);
@@ -2238,6 +2542,8 @@ int main(int argc, char** argv)
     StockRuleInvariant(index, seed, shared, "the stock rule (KeepOf)", true);
     DemandKinds(index);
     UseNeeds();
+    MarketNeeds();
+    MarketKeptNeeds(index);
     DemandStockNeeds();
 
     std::cout << passed << " passed, " << failed << " failed\n";

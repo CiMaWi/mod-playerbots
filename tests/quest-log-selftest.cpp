@@ -207,26 +207,29 @@ void Table()
     constexpr std::uint32_t GREY = 2;     // level 15 for a level-20 bot: grey at 4, not at 6
     constexpr std::uint32_t REFUSED = 3;  // the capability table refuses it for the Alliance
     constexpr std::uint32_t ELITE = 4;
-    constexpr std::uint32_t TAKE_REFUSED = 5;  // the game refused the take once
+    constexpr std::uint32_t TAKE_REFUSED = 5;  // a planned take ended without the accept once (WQ18c)
     constexpr std::uint32_t ONCE = 6;          // given up once (timeout)
     constexpr std::uint32_t TWICE = 7;         // given up twice, the last a refused take overwritten by a timeout
     constexpr std::uint32_t NO_ENDER = 8;      // its hand-in failed at its ender
     constexpr std::uint32_t EDGE = 9;          // level 16: not grey for a level-20 bot at 4
+    constexpr std::uint32_t TAKE_TWICE = 10;   // a planned take ended without the accept twice
 
     QuestRecord refused = Plain(REFUSED);
     refused.refused[0] = 1;
     QuestRecord elite = Plain(ELITE);
     elite.flags = QuestFlag::ELITE;
     QuestIndex const index = IndexOf({Plain(PLAIN), Plain(GREY, 15), refused, elite, Plain(TAKE_REFUSED), Plain(ONCE),
-                                      Plain(TWICE), Plain(NO_ENDER), Plain(EDGE, 16)});
+                                      Plain(TWICE), Plain(NO_ENDER), Plain(EDGE, 16), Plain(TAKE_TWICE)});
 
     Rows const rows = {{NO_ENDER, RowOf(1, "no_ender")},
                        {TWICE, RowOf(2, "timeout")},
                        {ONCE, RowOf(1, "timeout")},
-                       {TAKE_REFUSED, RowOf(1, "cannot_take")}};
+                       {TAKE_REFUSED, RowOf(1, "cannot_take")},
+                       {TAKE_TWICE, RowOf(2, "cannot_take")}};
     QuestLog::Record const record = QuestLog::Read(rows);
-    Check(record.givenUp == Ids({TAKE_REFUSED, TWICE, NO_ENDER}),
-          "read: given up are the refused take, twice, no ender");
+    Check(record.givenUp == Ids({TWICE, NO_ENDER, TAKE_TWICE}),
+          "read: given up are twice (a refused take twice too) and no ender; a take refused once is not (WQ.44 item "
+          "2; mutant: the refused take given up at once)");
     Check(record.handInFailed == Ids({NO_ENDER}), "read: the failed hand-in is no ender's");
     Check(QuestLog::Read({}).givenUp.empty() && QuestLog::Read({}).handInFailed.empty(), "read: no rows, nothing");
 
@@ -241,7 +244,10 @@ void Table()
     Check(may(EDGE, 3), "accept: four levels below is not grey");
     Check(!may(REFUSED, 3), "accept: the executor cannot do it");
     Check(!may(ELITE, 3), "accept: elite");
-    Check(!may(TAKE_REFUSED, 3), "accept: a take the game refused once");
+    Check(may(TAKE_REFUSED, 3), "accept: a take refused once is taken again, as any cause given up once");
+    Check(!may(TAKE_TWICE, 3) &&
+              Take::May(*index.Find(TAKE_TWICE), FactsOf(bot, GroupsOf(bot, index)), index) == Take::Reason::GivenUp,
+          "accept: a take refused twice is given up (the take test answers GivenUp)");
     Check(may(ONCE, 3), "accept: given up once by a timeout");
     Check(!may(TWICE, 3), "accept: given up twice");
     Check(!may(NO_ENDER, 3), "accept: its hand-in failed");
@@ -374,9 +380,8 @@ State GeneratedState(std::mt19937& rng)
           where + ": lists sorted");
     for (auto const& [id, row] : rows)
     {
-        bool const refusedTake = row.lastCause == "cannot_take";
         bool const noEnder = row.lastCause == "no_ender";
-        Check(Has(state.record.givenUp, id) == (row.giveUps >= 2 || refusedTake || noEnder),
+        Check(Has(state.record.givenUp, id) == (row.giveUps >= 2 || noEnder),
               where + ": quest " + std::to_string(id) + " " + row.lastCause + " x" + std::to_string(row.giveUps));
         Check(Has(state.record.handInFailed, id) == noEnder, where + ": failed hand-in of " + std::to_string(id));
     }
@@ -526,12 +531,68 @@ void GeneratedCases(std::uint32_t seed)
 }
 }  // namespace
 
+// Questing WQ18b: a reader that keeps what it made of a bot's rows reads the book again only after a write
+// (QuestFail::Reread over the book's version): the executor of a bot on an order asks at every tick
+void FailBookView()
+{
+    QuestFail::Book book;
+    book.Restore(7, 100, RowOf(1, "no_ender"));
+    book.Restore(8, 200, RowOf(2, "timeout"));
+    auto const read = [](Rows const& rows) { return QuestLog::Read(rows); };
+    std::shared_ptr<QuestLog::Record const> held;
+    std::uint64_t heldVersion = 0;
+    std::uint64_t copies = book.Copies();
+    for (int tick = 0; tick < 1000; ++tick)
+        QuestFail::Reread(book, 7, held, heldVersion, read);
+    Check(book.Copies() - copies == 1 && held && held->handInFailed == Ids{100} && held->givenUp == Ids{100},
+          "fail book: 1000 ticks without a write copy the bot's rows once (mutant: Reread copies at every call)");
+    book.Note(7, 101, "cannot_take", 0, 5);
+    copies = book.Copies();
+    for (int tick = 0; tick < 1000; ++tick)
+        QuestFail::Reread(book, 7, held, heldVersion, read);
+    bool const once = book.Copies() - copies == 1 && held->givenUp == Ids{100};
+    book.Note(7, 101, "cannot_take", 0, 6);
+    book.Note(7, 102, "cannot_take", 0, 6);
+    book.Note(7, 102, "timeout", 3, 7);
+    copies = book.Copies();
+    for (int tick = 0; tick < 1000; ++tick)
+        QuestFail::Reread(book, 7, held, heldVersion, read);
+    Check(once && book.Copies() - copies == 1 && held->givenUp == (Ids{100, 101, 102}),
+          "fail book: a write is read once, at the next tick; one refused take (cannot_take) is one give-up and not "
+          "given up, the second gives it up, as a refused take and a timeout do (WQ18c)");
+    std::uint64_t const version = book.Version();
+    book.RowsOf(7);
+    book.Find(7, 100);
+    book.Size();
+    book.TakeDirty();
+    book.Forget(9);
+    bool const still = book.Version() == version;
+    book.Restore(8, 201, RowOf(1, "timeout"));
+    std::uint64_t const restored = book.Version();
+    book.Forget(7);
+    QuestFail::Reread(book, 7, held, heldVersion, read);
+    Check(still && restored != version && book.Version() != restored && held->givenUp.empty() &&
+              held->handInFailed.empty(),
+          "fail book: reads and the forget of a bot without rows move no version; a restore and a forget do, and the "
+          "forgotten bot's copy is empty");
+    // The order's `bags` end writes no failure row, so the record has no failed hand-in and the ready quest stays
+    QuestLog::Held ready;
+    ready.id = 100;
+    ready.level = 10;
+    ready.ready = true;
+    QuestLog::Held handInFailed = ready;
+    handInFailed.handInFailed = true;
+    Check(QuestLog::Abandon(ready, 10, 5) == Drop::Keep && QuestLog::Abandon(handInFailed, 10, 5) == Drop::NoEnder,
+          "abandon: a ready quest stays unless a failed hand-in is on record (full bags put none there)");
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
     if (argc > 1)
         seed = static_cast<std::uint32_t>(std::strtoul(argv[1], nullptr, 10));
     Table();
+    FailBookView();
     GeneratedCases(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

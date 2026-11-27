@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "GoalInterface.h"
+#include "GoalRoute.h"
 #include "QuestRoute.h"
 
 using namespace Planner;
@@ -371,7 +373,7 @@ World Generate(Gen& gen)
     }
 
     Pricing const pricing{};
-    w.needs = Needs(w.index, w.log, team, pricing);
+    w.needs = Needs(w.index, w.log, team, pricing, 5);  // WQ38: as a party asks, every need of the log
 
     // The bot: anywhere, or at the spawn of a ready quest's ender (register row G344)
     Route::Ask& ask = w.ask;
@@ -787,7 +789,7 @@ Fixed WolvesAndBoars(bool wolvesInLog)
     std::vector<QuestSlot> log;
     if (wolvesInLog)
         log.push_back({90, 0, {}});
-    f.needs = Needs(f.index, log, 0, Pricing{});
+    f.needs = Needs(f.index, log, 0, Pricing{}, 1);
     if (std::optional<Need> take = TakeNeed(f.index, f.index.quests[1], 0, Pricing{}, MAP_A))
         f.needs.push_back(std::move(*take));
     f.ask.mapId = MAP_A;
@@ -892,7 +894,7 @@ void HandInHere()
     index.quests = {small, MakeQuest(93, 2000, {MakeObjective(ObjectiveKind::Kill, WOLF, 10, 0)})};
     index.places.push_back(MakePlace(CLERK, MAP_A, 0, 0));
     std::vector<QuestSlot> const log = {{92, Circuit::SLOT_COMPLETE, {1, 0, 0, 0}}, {93, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, 1);
     Route::Ask ask;
     ask.mapId = MAP_A;
     ask.x = Mid(0);
@@ -1076,7 +1078,7 @@ void FarField()
     QuestIndex index;
     index.quests = {MakeQuest(90, 1000, {MakeObjective(ObjectiveKind::Kill, WOLF, 2, 0)})};
     std::vector<QuestSlot> const log = {{90, 0, {}}};
-    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{}, 1);
     Route::Ask ask;
     ask.mapId = MAP_A;
     ask.x = Mid(9);
@@ -1120,8 +1122,292 @@ void FarField()
     Route::Plan const spent = Route::Build(map, index, needs, ask);
     Check(spent.stops.empty() && spent.walkCalls == 0 && spent.capped == 1,
           "no call allowed: no route, the need capped");
+
+    // WQ18b part 3: the far reach (Route::FAR_RADIUS). The same wolves from 2900 yd are a far stop; from 3900 yd
+    // they are beyond the reach: no stop, and the walk function is not asked
+    ask.walkBudget = Route::WALK_BUDGET;
+    refuse.clear();
+    called = 0;
+    ask.x = Mid(30);
+    Check(Route::Build(map, index, needs, ask).stops.size() == 1 && called > 0,
+          "a field 2900 yd away is within the far reach: a stop");
+    called = 0;
+    ask.x = Mid(40);
+    Route::Plan const beyond = Route::Build(map, index, needs, ask);
+    Check(beyond.stops.empty() && beyond.walkCalls == 0 && called == 0,
+          "a field 3900 yd away is beyond the far reach: no stop, no walk asked");
 }
 }  // namespace
+
+// Questing WQ18a: the goals' route (GoalRoute.h's build over the generated worlds) and its option
+constexpr std::uint32_t GOAL_SALT = 0x18A0C0DEu;  // the goal worlds' seed: the given seed with these bits flipped
+
+Snapshot BotOf(World const& w)
+{
+    Snapshot bot;
+    bot.bot = 1;
+    bot.level = w.ask.level;
+    bot.team = w.ask.team;
+    bot.race = w.ask.team ? ORC : HUMAN;
+    bot.cls = 1;
+    bot.position = {w.ask.mapId, w.ask.x, w.ask.y, 12.0f};
+    bot.quests = w.log;
+    bot.groupSize = w.ask.groupSize;
+    bot.runSpeed = 7.0f;
+    return bot;
+}
+
+bool IsRouteOption(Goals::Option const& option)
+{
+    return option.kind == Goals::GoalKind::Quest && option.targetType == Goals::TargetType::Route;
+}
+
+std::string GoalText(Goals::RoutePlan const& route, Goals::Ranked const& ranked)
+{
+    std::string text;
+    for (QuestOrder const& order : route.orders)
+    {
+        text += std::to_string(order.cell) + ":" + QuestOrderWordName(order.word) + ":" +
+                std::to_string(order.minutes) + ":" + std::to_string(order.walkMinutes);
+        for (QuestOrderNeed const& need : order.expected)
+            text += "," + std::to_string(need.quest) + "/" + std::to_string(need.objective) + "/" +
+                    std::to_string(need.credits);
+        text += ";";
+    }
+    text += std::to_string(route.worth) + "|" + std::to_string(route.minutes) + "|";
+    for (Goals::Option const& option : ranked.options)
+        text += Goals::ChoiceWord(option) + "=" + option.reason + "=" + std::to_string(option.valuePerMinute) + ";";
+    return text;
+}
+
+// The build as Goals::PlanGoals calls it (the model and the weights it hands on) and the options Goals::Rank makes of
+// the result. Not through PlanGoals: a generated world's index is filled by hand, without the lookups PlanCircuit
+// reads; GoalRouteTakes plans over a built one
+void GoalRoutes(std::uint32_t seed)
+{
+    Gen gen{std::mt19937(seed ^ GOAL_SALT)};
+    Invariant carried{"the goals' route is the one Route::Build makes of the bot's needs"};
+    Invariant twice{"the same bot and situation give the same route and the same options"};
+    Invariant shut{
+        "no order in a cell the situation closes or beside one; the map thread's test agrees with the route's"};
+    Invariant held{"a bot held on the circuit is offered no route: its options are those of a situation without one"};
+    Invariant owner{"a route is offered as the route's option when it has an order, and only then"};
+    Invariant searches{"far stops are priced by the job's search at the bot's height; a capped place is no gap"};
+    std::size_t routes = 0;
+    std::size_t farRoutes = 0;
+    for (std::size_t logIndex = 0; logIndex < LOGS / 2; ++logIndex)
+    {
+        World const w = Generate(gen);
+        Snapshot const bot = BotOf(w);
+        bool const withSearch = gen.Chance(0.4f);
+        int const noWay = gen.Int(0, 4);
+        bool const caps = gen.Chance(0.3f);
+        float const speed = 7.0f;
+        std::uint32_t asked = 0;
+        bool flat = true;
+        // The job's search: straight yards with a detour; no way to the cells of one class, past the cap for another
+        auto const seconds = [&](float fromX, float fromY, float toX, float toY) -> float
+        {
+            std::uint64_t const cell = FieldCellKeyAt(bot.position.map, toX, toY);
+            int const cls = ((FieldCellXOf(cell) * 3 + FieldCellYOf(cell)) % 5 + 5) % 5;
+            if (cls == noWay)
+                return TRAVEL_NO_ROUTE;
+            if (caps && cls == (noWay + 1) % 5)
+                return TRAVEL_CAPPED;
+            return 1.3f * std::hypot(toX - fromX, toY - fromY) / speed;
+        };
+        Goals::Situation situation;
+        situation.onCircuit = false;
+        situation.closedCells = w.closed;
+        Goals::Model const model = Goals::Prepare(bot, situation);
+        CircuitContext context;
+        context.quests = &w.index;
+        context.weights = Goals::CircuitWeightsFor(model);
+        if (withSearch)
+            context.travel = [&](Place const& from, Place const& to)
+            {
+                ++asked;
+                flat = flat && from.map == bot.position.map && to.map == bot.position.map && from.z == bot.position.z &&
+                       to.z == bot.position.z;
+                return seconds(from.x, from.y, to.x, to.y);
+            };
+        Goals::RoutePlan const route = GoalRoute::Build(w.map, bot, context, model, situation);
+        std::uint32_t const askedByRoute = asked;
+        situation.route = &route;
+        Goals::Ranked const ranked = Goals::Rank(bot, situation);
+        std::string const where = "log " + std::to_string(logIndex);
+
+        // The same route from the needs as this test states them
+        Pricing const pricing{context.weights, {}};
+        std::vector<Need> needs = Needs(w.index, w.log, bot.team, pricing, bot.groupSize);
+        std::vector<std::uint32_t> inLog;
+        for (QuestSlot const& slot : w.log)
+            inLog.push_back(slot.quest);
+        std::sort(inLog.begin(), inLog.end());
+        Route::Ask ask;
+        ask.mapId = bot.position.map;
+        ask.x = bot.position.x;
+        ask.y = bot.position.y;
+        ask.level = bot.level;
+        ask.team = bot.team;
+        ask.runSpeed = model.runSpeed;
+        ask.caution = model.cautionWeight;
+        ask.groupSize = bot.groupSize;
+        ask.freeSlots = QUEST_LOG_SLOTS - inLog.size();
+        ask.closed = w.closed;
+        ask.pricing = pricing;
+        std::uint32_t directCapped = 0;
+        if (withSearch)
+            ask.walk = [&](float fromX, float fromY, float toX, float toY) -> std::optional<float>
+            {
+                float const answer = seconds(fromX, fromY, toX, toY);
+                directCapped += answer == TRAVEL_CAPPED ? 1 : 0;
+                if (answer < 0.0f)
+                    return std::nullopt;
+                return answer / SECONDS_PER_MINUTE;
+            };
+        Route::Plan const direct = Route::Build(w.map, w.index, needs, ask);
+        bool same = route.orders.size() == direct.stops.size() && Near(route.worth, direct.worth) &&
+                    Near(route.minutes, direct.minutes);
+        for (std::size_t k = 0; same && k < direct.stops.size(); ++k)
+        {
+            QuestOrder const& mine = route.orders[k];
+            QuestOrder const& theirs = direct.stops[k].order;
+            same = SameOrder(mine, theirs) && mine.expected == theirs.expected && mine.minutes == theirs.minutes &&
+                   mine.walkMinutes == theirs.walkMinutes;
+        }
+        carried.Note(same, logIndex, where);
+        routes += route.orders.empty() ? 0 : 1;
+        if (withSearch)
+        {
+            searches.Note(flat && route.walkCalls == direct.walkCalls && route.walkCalls == askedByRoute &&
+                              route.walkCalls <= Route::WALK_BUDGET &&
+                              route.gaps + directCapped == direct.gaps.size() &&
+                              route.capped == direct.capped + directCapped,
+                          logIndex, where);
+            farRoutes += route.walkCalls ? 1 : 0;
+        }
+
+        Goals::RoutePlan const again = GoalRoute::Build(w.map, bot, context, model, situation);
+        Goals::Situation second = situation;
+        second.route = &again;
+        twice.Note(GoalText(again, Goals::Rank(bot, second)) == GoalText(route, ranked), logIndex, where);
+
+        for (QuestOrder const& order : route.orders)
+            shut.Note(!NearClosed(w.closed, order.cell) && !GoalApply::CellClosed(w.closed, order.cell), logIndex,
+                      where);
+        for (int k = 0; k < 8; ++k)
+        {
+            std::uint32_t const cellMap = gen.Chance(0.9f) ? bot.position.map : bot.position.map + 1;
+            std::int32_t const cellX = gen.Int(CELL_LOW - 2, CELL_HIGH + 2);
+            std::int32_t const cellY = gen.Int(CELL_LOW - 2, CELL_HIGH + 2);
+            std::uint64_t const cell = FieldCellKey(cellMap, cellX, cellY);
+            shut.Note(GoalApply::CellClosed(w.closed, cell) == NearClosed(w.closed, cell) &&
+                          GoalApply::CellClosed(w.closed, cell) == Route::Detail::NearClosed(w.closed, cell),
+                      logIndex, where);
+        }
+
+        bool const offered = std::any_of(ranked.options.begin(), ranked.options.end(), IsRouteOption);
+        owner.Note(ranked.ok && offered == !route.orders.empty(), logIndex, where);
+
+        Goals::Situation onCircuit = situation;
+        onCircuit.onCircuit = true;
+        Goals::Situation without = onCircuit;
+        without.route = nullptr;
+        Goals::Ranked const heldRanked = Goals::Rank(bot, onCircuit);
+        held.Note(GoalText({}, heldRanked) == GoalText({}, Goals::Rank(bot, without)) &&
+                      std::none_of(heldRanked.options.begin(), heldRanked.options.end(), IsRouteOption),
+                  logIndex, where);
+    }
+    std::printf("goal routes: %zu of %zu worlds with a route, %zu with far searches\n", routes, LOGS / 2, farRoutes);
+    Check(routes > LOGS / 8 && farRoutes > 0, "the goal routes: too few worlds with a route or with far searches");
+    Report(carried);
+    Report(twice);
+    Report(shut);
+    Report(held);
+    Report(owner);
+    Report(searches);
+}
+
+// Questing WQ18a: a built index (its giver grid gives the take candidates): the field, then the hand-in and the take
+// at one NPC, as FieldThenHandIn plans them from needs made by hand
+void GoalRouteTakes()
+{
+    std::vector<FieldSpawn> spawns;
+    AddSpawns(spawns, WOLF, 0, 0, 8, 9, 10, 300);
+    AddSpawns(spawns, BOAR, 7, 0, 8, 9, 10, 300);
+    spawns.push_back(MakeSpawn(FieldKind::Creature, CLERK, MAP_A, Mid(3), Mid(0), 10, 10, false, 300));
+    auto const map = std::make_shared<FieldMap const>(FieldMap::Build(spawns));
+    QuestGather gather;
+    gather.quests = {MakeQuest(90, 1000, {MakeObjective(ObjectiveKind::Kill, WOLF, 2, 0)}),
+                     MakeQuest(91, 500, {MakeObjective(ObjectiveKind::Kill, BOAR, 6, 0)})};
+    gather.places = {MakePlace(CLERK, MAP_A, 3, 0)};
+    gather.relations = {{90, CLERK, false, true}, {91, CLERK, false, false}};
+    QuestIndex const index = QuestIndex::Build(gather);
+    Snapshot bot;
+    bot.bot = 1;
+    bot.level = 10;
+    bot.race = HUMAN;
+    bot.cls = 1;
+    bot.position = {MAP_A, Mid(0), Mid(0), 0.0f};
+    bot.quests = {{90, 0, {}}};
+    bot.runSpeed = 7.0f;
+    CircuitContext context;
+    context.quests = &index;
+    Goals::Situation situation;
+    situation.onCircuit = false;
+    Goals::RouteBuild const build = GoalRoute::Builder(map);
+    auto const takes = [](Goals::GoalPlan const& plan)
+    {
+        std::size_t count = 0;
+        for (QuestOrder const& order : plan.route.orders)
+            count += Expects(order, 91, TAKE) ? 1 : 0;
+        return count;
+    };
+    Goals::GoalPlan const plan = Goals::PlanGoals(bot, context, situation, build);
+    std::vector<QuestOrder> const& orders = plan.route.orders;
+    Check(orders.size() >= 2 && orders[0].word == QuestOrderWord::Field && Expects(orders[0], 90, 0) &&
+              orders[1].word == QuestOrderWord::HandIn && Expects(orders[1], 90, HAND_IN) && takes(plan) == 1 &&
+              std::any_of(plan.ranked.options.begin(), plan.ranked.options.end(), IsRouteOption),
+          "goal route: the field, then the hand-in and the take at their NPC, offered as the route's option: " +
+              GoalText(plan.route, plan.ranked));
+    // The first stop's risk, for a bot half a level below the wolves' middle: a field without risk would prove nothing
+    Snapshot low = bot;
+    low.level = 9;
+    Goals::GoalPlan const lowPlan = Goals::PlanGoals(low, context, situation, build);
+    bool const wolvesFirst = !lowPlan.route.orders.empty() && Expects(lowPlan.route.orders[0], 90, 0);
+    FieldAsk fieldAsk;
+    fieldAsk.mapId = MAP_A;
+    fieldAsk.x = low.position.x;
+    fieldAsk.y = low.position.y;
+    fieldAsk.level = low.level;
+    fieldAsk.stayMinutes = Route::STAY_MINUTES;
+    fieldAsk.runSpeed = Goals::Prepare(low, situation).runSpeed;
+    Offer const offer = wolvesFirst ? FieldOffer(*map, Needs(index, low.quests, 0, Pricing{}, 1),
+                                                 lowPlan.route.orders[0].cell, fieldAsk)
+                                    : Offer{};
+    Goals::RiskInput const& risk = lowPlan.route.risk;
+    Check(wolvesFirst && offer.risk.levelsAbove > 0.0f && risk.levelsAbove == offer.risk.levelsAbove &&
+              risk.eliteShare == offer.risk.eliteShare && risk.enemyShare == offer.risk.enemyShare &&
+              risk.deaths == offer.risk.deaths,
+          "goal route: the plan carries the risk of its first stop's field (levels above " +
+              std::to_string(risk.levelsAbove) + ", the field's " + std::to_string(offer.risk.levelsAbove) +
+              "): " + GoalText(lowPlan.route, lowPlan.ranked));
+    Goals::Situation gaveUp = situation;
+    gaveUp.givenUpQuests = {91};
+    Snapshot rewarded = bot;
+    rewarded.rewardedQuests = {91};
+    Snapshot full = bot;
+    for (std::uint32_t id = 200; full.quests.size() < QUEST_LOG_SLOTS; ++id)
+        full.quests.push_back({id, 0, {}});
+    Check(takes(Goals::PlanGoals(bot, context, gaveUp, build)) == 0 &&
+              takes(Goals::PlanGoals(rewarded, context, situation, build)) == 0 &&
+              takes(Goals::PlanGoals(full, context, situation, build)) == 0,
+          "goal route: no take of a quest the bot gave up or was rewarded for, and none into a full log");
+    Check(!GoalRoute::Builder(nullptr) &&
+              Goals::PlanGoals(bot, context, situation, GoalRoute::Builder(nullptr)).route.orders.empty(),
+          "goal route: no field map, no build and no route");
+}
 
 int main(int argc, char** argv)
 {
@@ -1137,6 +1423,8 @@ int main(int argc, char** argv)
     GeneratedLogs(seed, show);
     FarField();
     FarStops(seed);
+    GoalRoutes(seed);
+    GoalRouteTakes();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

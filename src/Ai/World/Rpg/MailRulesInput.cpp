@@ -138,10 +138,11 @@ BagSpace BuildBagSpace(Player* bot)
     return space;
 }
 
-MailOptions BuildMailOptions()
+MailOptions BuildMailOptions(std::vector<uint32_t> const& uniqueMails)
 {
     MailOptions options;
     options.mailsPerVisit = sPlayerbotAIConfig.BankMail.MailsPerVisit;
+    options.uniqueMails = uniqueMails;
     return options;
 }
 }  // namespace BankMail

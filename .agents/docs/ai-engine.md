@@ -92,8 +92,11 @@ change, confirm:
   thread for it and for `playerbots planner needs`; its formatter `src/Bot/BridgeNeedsTopic.h` is included only by
   `BridgeBotState.cpp` and the selftest, never by a central header. `Catalogue()` returns both tables as plain values
   and `CatalogueHash` their FNV-1a 64; a new row changes the hash, which is how the bridge sees the change.
-  `professions` (WR18, the last row) words the bot's skill lines, what its kept path (`Planner::KeptPath`) works
+  `professions` (WR18) words the bot's skill lines, what its kept path (`Planner::KeptPath`) works
   towards and what it lacks, in rank words only (`src/Bot/BridgeProfessionsTopic.h`); what it can make is `recipes`.
+  `auction` (WA9, the last row; `src/Bot/BridgeAuctionTopic.h`, words only) tells what the bot has listed (a scan of
+  the core's auctions by owner: complete after a restart, on demand only), what it looks for with its ceilings
+  (`Planner::BuyListOf`) and its open bids; its own prices only, never a house's current offer.
 - The traits wire (`input.traits`): `ReadBotPersonality` (`src/Bot/BridgeBotTraits.cpp`) gives `words`, `areas` (one
   per word, same order) and `interests`. A trait's area (talk, others, work, wants) is `TRAIT_AREAS` in
   `src/Ai/World/Rpg/TraitRules.h`, in the `Trait` enum's order; a new trait needs its entry (the build checks the

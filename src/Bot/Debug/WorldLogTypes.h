@@ -63,10 +63,13 @@ enum class DecisionKind : uint8_t
     Stand,         // pathing PA47: an approach's stand point (side, its distance, or the rule's word for none)
     CombatOffengine,  // casttrace (CFM12c): an open fight outside the combat engine (open, still, ran, rejects)
     Target,           // awareness (AW14): the grind leaves a candidate by the target judgement (strong, many)
+    Auction,          // auction (WA1a): post, hold, relist, buy, bid, skip (AuctionConfig.h); written from WA3b/WA4b
+    Gear,             // gear (WG3): equip, an item the upgrade rule's pass newly wears (EquipAction.cpp); buy,
+                      // skip: a vendor upgrade bought or refused by its worth (BuyAction.cpp, WG5)
     Way               // awareness (AW37b): a trip's route judged by the known danger (refused, least_deadly)
 };
 
-constexpr size_t DECISION_KIND_COUNT = 33;
+constexpr size_t DECISION_KIND_COUNT = 35;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
     "rpg_status",       "route",        "trip",         "errand",       "inn",
     "upkeep",           "death",        "circuit",      "goal",         "fight_start",
@@ -74,7 +77,7 @@ constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS 
     "item_spend",       "item_buff",    "profession",   "quest_exec",   "combat_action",
     "combat_reject",    "combat_known", "combat_table", "combat_rows",  "combat_sample",
     "combat_effect",    "combat_cast",  "combat_heal",  "combat_dealt", "stand",
-    "combat_offengine", "target",       "way"};
+    "combat_offengine", "target",       "auction",      "gear",         "way"};
 static_assert(static_cast<size_t>(DecisionKind::Way) + 1 == DECISION_KIND_COUNT, "a word for every decision kind");
 
 constexpr size_t DECISION_ALTERNATIVES = 3;

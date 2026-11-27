@@ -47,7 +47,11 @@ constexpr float ALLOWANCE_YARDS = 184.0f;        // the median of the user's det
 constexpr float STAY_MINUTES = 5.0f;             // a field's planned stay (PLAN 3.10 part 1)
 constexpr float NPC_STAY_FLOOR_MINUTES = 0.25f;  // the shortest stay at hand-ins and takes
 constexpr std::uint32_t WALK_BUDGET = 24;  // walk calls per route: PlannerRouteCost.h's ROUTE_SEARCHES_PER_JOB, copied
-constexpr float FAR_RADIUS = 1.0e6f;       // far candidates: TopFields over the whole map
+// Far candidates: TopFields within the bot's reach, the far takes' (questing WQ18b part 3). Over the whole map every
+// stop of every route priced each field of the continent that holds a source of a need: lab13, 2026-11-25, 53 ms a
+// job in the stops (max 5 s) against 3.8 ms for the whole goals job without a route. A need whose fields all lie
+// beyond the reach gets no stop; a bot with no order has the circuit, which plans its move as before
+constexpr float FAR_RADIUS = QuestFields::FAR_TAKE_YARDS;
 
 // The minutes of walk from a point to another on the bot's map, or none: no way (the planner's route search)
 using Walk = std::function<std::optional<float>(float fromX, float fromY, float toX, float toY)>;
@@ -243,7 +247,7 @@ inline std::vector<QuestFields::Need> NeedsOf(QuestIndex const& index, Ask const
     QuestSlot slot;
     slot.quest = quest;
     slot.state = ready ? Circuit::SLOT_COMPLETE : 0;
-    return QuestFields::Needs(index, std::span<QuestSlot const>(&slot, 1), ask.team, ask.pricing);
+    return QuestFields::Needs(index, std::span<QuestSlot const>(&slot, 1), ask.team, ask.pricing, ask.groupSize);
 }
 
 // Register row G344: the best candidate around the bot's own cell that hands in a ready quest whose ender stands in

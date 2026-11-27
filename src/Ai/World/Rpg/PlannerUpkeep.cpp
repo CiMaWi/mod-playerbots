@@ -23,16 +23,25 @@
 #include <vector>
 
 #include "AiObjectContext.h"
+#include "AuctionBuyList.h"
+#include "AuctionIndex.h"
+#include "AuctionReference.h"
+#include "AuctionRules.h"
 #include "Bag.h"
+#include "BankMailService.h"
 #include "BotProfessionMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "GoalInterface.h"
+#include "InventorySlots.h"
 #include "ItemDemand.h"
+#include "ItemUsageValue.h"
 #include "ItemUseIndex.h"
 #include "ItemWorthRules.h"
 #include "LabCopies.h"
 #include "Log.h"
+#include "MaterialRules.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -210,23 +219,30 @@ StockItem StockEntryOf(UpkeepItemFacts const& facts, StockMask kinds, uint32 cou
     return entry;
 }
 
-// The spell's reagents, and those of the spell it teaches (a trainer spell can be a learn spell)
-void AddReagents(uint32 spellId, uint8 cls, std::vector<ReagentUse>& reagents)
+// The reagents of every class spell a player can learn (it has a skill line ability), by the class of its spell
+// family: not only the trainers' spells, a quest rewards some
+void GatherReagents(std::vector<ReagentUse>& reagents)
 {
-    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-    if (!info)
-        return;
-    for (int32 const reagent : info->Reagent)
-        if (reagent > 0)
-            reagents.push_back({static_cast<uint32>(reagent), cls, spellId});
-    for (SpellEffectInfo const& effect : info->GetEffects())
+    std::array<uint32, UPKEEP_CLASS_SLOTS> families{};
+    for (uint8 cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+        if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(cls))
+            families[cls] = entry->spellfamily;
+    for (uint32 spellId = 1; spellId < sSpellMgr->GetSpellInfoStoreSize(); ++spellId)
     {
-        if (effect.Effect != SPELL_EFFECT_LEARN_SPELL || !effect.TriggerSpell)
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->SpellFamilyName == SPELLFAMILY_GENERIC)
             continue;
-        if (SpellInfo const* learned = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
-            for (int32 const reagent : learned->Reagent)
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        if (bounds.first == bounds.second)
+            continue;  // no player learns it (a creature's spell)
+        for (uint8 cls = 1; cls < UPKEEP_CLASS_SLOTS; ++cls)
+        {
+            if (families[cls] != info->SpellFamilyName)
+                continue;
+            for (int32 const reagent : info->Reagent)
                 if (reagent > 0)
-                    reagents.push_back({static_cast<uint32>(reagent), cls, spellId});
+                    reagents.push_back({static_cast<uint32>(reagent), cls});
+        }
     }
 }
 
@@ -340,6 +356,8 @@ UpkeepGather GatherUpkeep()
              std::count_if(tameSpawns.begin(), tameSpawns.end(),
                            [](auto const& each) { return !UpkeepNeeds::TameTargetSpawns(each.second); }));
 
+    GatherReagents(input.reagents);
+
     std::unordered_map<Trainer::Trainer const*, uint32> trainerKeys;  // the core keeps one object per trainer id
     std::unordered_set<uint32> itemsSeen;
     for (auto const& [entry, creature] : creatures)
@@ -373,8 +391,6 @@ UpkeepGather GatherUpkeep()
                                 copy.teaches[taught++] = effect.TriggerSpell;
                     }
                     facts.spells.push_back(copy);
-                    if (classTrainer)
-                        AddReagents(spell.SpellId, static_cast<uint8>(facts.requirement), input.reagents);
                     // Weapon masters are tradeskill trainers; their weapon skill spells (WU15a)
                     if (facts.kind == TrainerKind::Tradeskill)
                         if (uint32 const skill = WeaponSkillOf(spell.SpellId))
@@ -480,8 +496,9 @@ void AddWeapon(Snapshot& snapshot, Player* bot, Item const* item)
     snapshot.ownedWeaponSkills.push_back({static_cast<uint16>(skill), bot->GetSkillValue(skill) > 0});
 }
 
-// A profession tool it holds, once each (professions WR1): an item a cast asks for by its tool category (a knife, a
-// rod, a pick, a hammer, a spanner, a stone), not a shaman's totem; or a fishing pole
+// A profession tool it holds, once each (professions WR1, NR20): a TOOLS row by its item id (a jeweler's kit and
+// grinder have no tool category); an item a cast asks for by its tool category (a knife, a rod, a pick, a hammer, a
+// spanner, a stone), not a shaman's totem; or a fishing pole
 void AddTool(Snapshot& snapshot, Item const* item)
 {
     ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
@@ -491,7 +508,7 @@ void AddTool(Snapshot& snapshot, Item const* item)
         proto->TotemCategory ? sTotemCategoryStore.LookupEntry(proto->TotemCategory) : nullptr;
     bool const tool = category && category->categoryType != TOTEM_CATEGORY_TYPE_TOTEM;
     bool const pole = proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
-    if ((tool || pole) &&
+    if ((ProfessionRules::IsProfessionTool(proto->ItemId, tool) || pole) &&
         std::find(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), proto->ItemId) == snapshot.toolsHeld.end())
         snapshot.toolsHeld.push_back(proto->ItemId);
 }
@@ -771,25 +788,7 @@ void FillMounts(Player* bot, Snapshot& snapshot)
     }
 }
 
-// The known reagent spells of the class the bot casts without their reagents (CastsWithoutReagent, which the generic
-// sell reads too): their reagents are no need (UpkeepNeeds::ReagentKnown)
-void FillReagentFree(Player* bot, UpkeepIndex const& index, TrainerList const& list, Snapshot& snapshot)
-{
-    snapshot.reagentFreeClassSpells = SpellBits(list.spells.size());
-    uint8 const cls = bot->getClass();
-    auto it = std::lower_bound(index.reagentSpells.begin(), index.reagentSpells.end(), ReagentSpell{cls, 0, 0});
-    for (; it != index.reagentSpells.end() && it->cls == cls; ++it)
-    {
-        if (it->position >= list.spells.size() || !HasSpellBit(snapshot.knownClassSpells, it->position))
-            continue;
-        SpellInfo const* info = sSpellMgr->GetSpellInfo(list.spells[it->position].spellId);
-        if (info && CastsWithoutReagent(bot, info))
-            SetSpellBit(snapshot.reagentFreeClassSpells, it->position);
-    }
-}
 }  // namespace
-
-bool CastsWithoutReagent(Player* bot, SpellInfo const* info) { return bot->CanNoReagentCast(info); }
 
 StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto)
 {
@@ -828,12 +827,6 @@ StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* prot
     decision.kept = keep.verdict >= UpkeepNeeds::StockVerdict::Keep;
     decision.keep = keep.keep;
     return decision;
-}
-
-bool ClassReagent(uint32 item)
-{
-    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
-    return index && index->ReagentClassMask(item);
 }
 
 bool WeaponToLearn(Player* bot, ItemTemplate const* proto)
@@ -926,8 +919,7 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         TrainerList const* classList = index->ClassList(cls);
         TrainerList const* riding = index->RidingList(bot->getRace(true));
         FillKnown(bot, classList, snapshot.knownClassSpells, snapshot.canLearnClassSpells);
-        if (classList)
-            FillReagentFree(bot, *index, *classList, snapshot);
+        snapshot.knownReagents = ItemUsageValue::ClassSpellReagents(bot);
         FillKnown(bot, riding, snapshot.knownRidingSpells, snapshot.canLearnRidingSpells);
         FillMounts(bot, snapshot);
         if (classList)
@@ -971,6 +963,149 @@ void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
             if (buy.slot == line.slot)
                 want.items.push_back(buy.entry);
         rates.useWants.push_back(std::move(want));
+    }
+}
+
+namespace
+{
+// The bag lines' candidates (WA4b): the generic bags any class and race may carry that a player can trade, read once
+// from the item templates (immutable after the load), so a buy list looks up a few dozen entries, never the index
+std::vector<ItemTemplate const*> const& BagCandidates()
+{
+    static std::vector<ItemTemplate const*> const bags = []
+    {
+        std::vector<ItemTemplate const*> found;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+            if (proto.Class == ITEM_CLASS_CONTAINER && proto.SubClass == ITEM_SUBCLASS_CONTAINER &&
+                proto.ContainerSlots > 0 && proto.BuyPrice > 0 && proto.AllowableClass == -1 &&
+                proto.AllowableRace == -1 && proto.Bonding != BIND_WHEN_PICKED_UP &&
+                proto.Quality <= ITEM_QUALITY_UNCOMMON)
+                found.push_back(&proto);
+        return found;
+    }();
+    return bags;
+}
+}  // namespace
+
+AuctionRules::CopperWeight CopperWeightOf(PlayerbotAI* botAI)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    GoalApply::BotGoals const* goals = bot ? botAI->planner.goals.get() : nullptr;
+    if (!goals || !goals->plan)
+        return {};
+    Planner::Goals::Need const need = Planner::Goals::NeedAt(goals->plan->ranked.need, bot->GetMoney());
+    return {need.exchange, need.factor};
+}
+
+std::vector<AuctionRules::BuyLine> BuyListOf(PlayerbotAI* botAI)
+{
+    std::vector<AuctionRules::BuyLine> lines;
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !botAI->KeepsPossessions())
+        return lines;
+
+    // What waits in the bot's mail counts as had in every line (needs and errands NR.7). Read here too: a lot won since
+    // the last mail visit is paid for. Every caller is on the bot's map thread or the world thread (BankMailService.h)
+    BankMail::MailKnowledge& mail = botAI->bankMail.mail;
+    BankMail::ReadMailUnits(bot, mail);
+
+    // Every line at one copper weight, the need factor at the money held now (AH.5, AH.19). A vendor's price caps a
+    // use or bag line only where a spawned vendor stocks the item; until the reference table is built every template
+    // price still caps, so no ceiling rises by accident
+    AuctionRules::CopperWeight const weight = CopperWeightOf(botAI);
+    std::shared_ptr<AuctionRules::Table const> const reference = AuctionReference::Current();
+    auto const stockedCopper = [&reference](uint32 item, uint32 copper)
+    {
+        if (!reference)
+            return copper;
+        AuctionRules::ItemInput const* input = reference->Input(item);
+        return input && input->vendorStocked ? copper : 0u;
+    };
+
+    // Item use's lines (WA.6: no gear): demand's strongest offered entry up to the wanted stock; food, drink and
+    // coatings stay upkeep's vendor stock (FillUseWants). An entry bound on pickup (a battleground supply officer's
+    // bandage) never stands in a house: no line. A copy: a worth asked of demand may answer anew
+    if (ItemUse::DemandAnswers(botAI) && !Upkeep::Granted(bot, UpkeepKind::Consumable))
+    {
+        auto const demand = ItemUse::DemandOf(botAI).lines;
+        for (ItemUse::DemandLine const& line : demand)
+        {
+            if (!line.buyUnits || !line.buyEntry || ItemUse::UpkeepStockSlot(line.slot))
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(line.buyEntry);
+            if (!proto || proto->Bonding == BIND_WHEN_PICKED_UP || proto->Bonding == BIND_QUEST_ITEM)
+                continue;
+            uint32 const vendorEach = proto->BuyPrice / std::max<uint32>(proto->BuyCount, 1);
+            uint32 const units = BankMail::UnitsLacking(line.buyUnits, BankMail::UnitsOf(mail.units, line.buyEntry));
+            lines.push_back(AuctionRules::UseLine(line.buyEntry, units, ItemUse::DemandWorthEach(botAI, line.buyEntry),
+                                                  stockedCopper(line.buyEntry, vendorEach), proto->SellPrice, weight));
+        }
+    }
+
+    // The bags the index knows that add slots: each by its worth, its ceiling at most a stocking vendor's price
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    if (index)
+    {
+        WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+        WorldTravel::SlotBand const& band = config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())];
+        WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
+            botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet(), band);
+        uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
+        uint32 const smallest = ItemUsageValue::SmallestBagSize(bot);
+        for (ItemTemplate const* proto : BagCandidates())
+        {
+            if (proto->ContainerSlots <= smallest || !index->Find(proto->ItemId) ||
+                BankMail::UnitsOf(mail.units, proto->ItemId))
+                continue;
+            uint32 const worth =
+                WorldTravel::BagWorth(rates, freeSlots, proto->ContainerSlots, smallest, band.BagHorizonHours);
+            if (worth)
+                lines.push_back(
+                    AuctionRules::BagLine(proto->ItemId, worth, stockedCopper(proto->ItemId, proto->BuyPrice), weight));
+        }
+    }
+
+    // The skill path's materials the auction sells cheapest (auction house WA7b and AH8, PLAN 3.7): the kept path's
+    // wants there, each at most what getting it the cheapest other way costs, or what the path counted at the auction
+    // where it is the only source, and at most a stocking vendor's price (AH.19), at the copper weight above (none
+    // without a plan); funded as the market's claim, after the profession reserve (UpkeepNeeds::Fund). The path was
+    // computed earlier: the units held now (bags and bank, as the path's snapshot counts them, and the mail) come off
+    // its want
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (SkillPath::Path const* path = KeptPath(botAI); path && goals && goals->plan)
+    {
+        auto const held = [bot, &mail](uint32 item)
+        { return bot->GetItemCount(item, true) + BankMail::UnitsOf(mail.units, item); };
+        auto const payout = [](uint32 item)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+            return proto ? proto->SellPrice : 0u;
+        };
+        auto const vendor = [&stockedCopper](uint32 item)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+            return proto ? stockedCopper(item, proto->BuyPrice / std::max<uint32>(proto->BuyCount, 1)) : 0u;
+        };
+        for (AuctionRules::BuyLine const& line : AuctionRules::PathLines(
+                 path->materials, static_cast<uint8>(Materials::Kind::Auction), weight, held, payout, vendor))
+            lines.push_back(line);
+    }
+    return AuctionRules::BuyList(std::move(lines));
+}
+
+// The buy list's lines the market prices under their ceilings (WA4b, AuctionBuyList.h TypicalCopper): upkeep's
+// market needs (AddMarketNeeds), funded last
+void FillMarketWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
+{
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    if (!index)
+        return;
+    for (AuctionRules::BuyLine const& line : BuyListOf(botAI))
+    {
+        AuctionIndex::ItemEntry const* entry = index->Find(line.item);
+        std::uint64_t const copper = entry ? AuctionRules::TypicalCopper(line, entry->typical.unitPrice) : 0;
+        if (copper)
+            rates.marketWants.push_back({line.item, line.units, copper});
     }
 }
 
@@ -1042,6 +1177,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
     FillStockWants(rates, botAI);
+    FillMarketWants(rates, botAI);
     AddKeptPath(botAI, rates);
     return rates;
 }

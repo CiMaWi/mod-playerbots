@@ -24,6 +24,10 @@ public:
 
 private:
     uint32 GetQuestItemRequirement(uint32 itemId);
+
+    // The vendor a visit stands at (an event carrying its guid): the sale goes to it, not to the first vendor of the
+    // line-of-sight-filtered "nearest npcs" (professions WR30: a tall bot at Thurman Mullby had no sight of him)
+    ObjectGuid sellAt;
 };
 
 #endif

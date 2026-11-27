@@ -18,6 +18,10 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
+#include "AuctionFixture.h"
+#include "AuctionIndex.h"
+#include "AuctionReference.h"
+#include "AuctionVisit.h"
 #include "Awareness.h"
 #include "BankCommands.h"
 #include "BattleGroundTactics.h"
@@ -40,6 +44,7 @@
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "Fixture.h"
+#include "GearSweep.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -369,6 +374,20 @@ public:
             {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
+        // Auction WA1b: an item's entry in the price index (read only); WA1c: the test fixture's verbs; WA2a: an
+        // item's reference value (read only)
+        static ChatCommandTable playerbotsAuctionCommandTable = {
+            {"index", AuctionIndex::HandleIndexCommand, SEC_PLAYER, Console::Yes},
+            {"ref", AuctionReference::HandleRefCommand, SEC_PLAYER, Console::Yes},
+            {"fixture", AuctionFixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
+            {"visit", BankMail::HandleAuctionVisitCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        // Gear WG1: the upgrade rule's answers over real items and its invariant counts (read only)
+        static ChatCommandTable playerbotsGearCommandTable = {
+            {"sweep", GearSweep::HandleSweepCommand, SEC_PLAYER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -390,6 +409,7 @@ public:
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
             {"ladder", playerbotsLadderCommandTable},
+            {"gear", playerbotsGearCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},
             {"tactics", playerbotsTacticsCommandTable},
@@ -410,6 +430,7 @@ public:
             {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
+            {"auction", playerbotsAuctionCommandTable},
         };
 
         static ChatCommandTable wlogCommandTable = {
@@ -716,7 +737,7 @@ public:
 
     // A test's constraint change (TestConstraints, functional tests): posted like a travel order, so the bot's map
     // thread applies it ahead of the AI's delays and writes a Constraint row
-    static void PostConstraints(PlayerbotAI* botAI, uint32 on, uint32 off)
+    static void PostConstraints(PlayerbotAI* botAI, TestConstraints::Set on, TestConstraints::Set off)
     {
         TravelOrder order;
         order.on = on;
@@ -853,7 +874,7 @@ public:
         if (!botAI)
             return false;
         TestConstraints::Parsed const parsed = TestConstraints::Parse(std::string_view(choices));
-        uint32 const states = parsed.set & TestConstraints::STATES;
+        TestConstraints::Set const states = parsed.set & TestConstraints::STATES;
         if (!parsed.bad.empty() || states)
         {
             handler->SendErrorMessage("ROUTE release: unknown choice '{}' ({})",
@@ -861,26 +882,31 @@ public:
                                       TestConstraints::Format(TestConstraints::CHOICES));
             return false;
         }
-        PostConstraints(botAI, parsed.set, static_cast<uint32>(TestConstraints::HOLD & ~parsed.set));
+        PostConstraints(botAI, parsed.set, TestConstraints::HOLD & ~parsed.set);
         handler->PSendSysMessage("ROUTE release: {} ordered (kept off: {})", target.GetName(),
                                  TestConstraints::Format(parsed.set));
         return true;
     }
 
-    // `playerbots route aboard <bot> <entry>` (tests): stands the bot on the deck of that docked ship or zeppelin on
-    // its map, as its passenger; the outcome is the world-log row Aboard placed|failed|refused:<why>
-    static bool HandleRouteAboardCommand(ChatHandler* handler, PlayerIdentifier target, uint32 entry)
+    // `playerbots route aboard <bot> <entry> [x y z]` (tests): stands the bot on the deck of that docked ship or
+    // zeppelin on its map, as its passenger; x y z: at that offset on the deck (a rider's logged place, PA76), refused
+    // more than the passenger check's half yard off the vessel's mesh; the outcome is the world-log row Aboard
+    // placed|failed|refused:<why>
+    static bool HandleRouteAboardCommand(ChatHandler* handler, PlayerIdentifier target, uint32 entry, Optional<float> x,
+                                         Optional<float> y, Optional<float> z)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
         if (!botAI)
             return false;
-        if (!entry)
+        if (!entry || x.has_value() != y.has_value() || y.has_value() != z.has_value())
         {
-            handler->SendErrorMessage("Usage: .playerbots route aboard <bot> <transport entry>");
+            handler->SendErrorMessage("Usage: .playerbots route aboard <bot> <transport entry> [x y z]");
             return false;
         }
         TravelOrder order;
         order.aboard = entry;
+        if (x)
+            order.aboardAt = TravelCrossing::Spot{*x, *y, *z};
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE aboard: {} on {} ordered", target.GetName(), entry);

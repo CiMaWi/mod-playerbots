@@ -40,6 +40,22 @@ bool OnOrder(PlayerbotAI* botAI)
     return doing && doing->order;
 }
 
+std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(Player* bot, Planner::QuestOrderRun& run)
+{
+    return QuestFail::Reread(QuestFailRecord::Rows(), bot->GetGUID().GetCounter(), run.fails, run.failsVersion,
+                             [](std::vector<std::pair<std::uint32_t, QuestFail::Row>> const& rows)
+                             { return Planner::QuestLog::Read(rows); });
+}
+
+std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(PlayerbotAI* botAI, Player* bot)
+{
+    auto* const doing = botAI ? std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data) : nullptr;
+    if (doing && doing->order)
+        return OrderRecord(bot, *doing->order);
+    return std::make_shared<Planner::QuestLog::Record const>(
+        Planner::QuestLog::Read(QuestFailRecord::RowsOf(bot->GetGUID().GetCounter())));
+}
+
 void OrderTake::Build()
 {
     _built = true;
@@ -53,7 +69,7 @@ void OrderTake::Build()
     RewardedQuestSet const& rewarded = _bot->getRewardedQuests();
     _rewarded.assign(rewarded.begin(), rewarded.end());
     std::sort(_rewarded.begin(), _rewarded.end());
-    _givenUp = Planner::QuestLog::Read(QuestFailRecord::RowsOf(_bot->GetGUID().GetCounter())).givenUp;
+    _givenUp = OrderRecord(GET_PLAYERBOT_AI(_bot), _bot)->givenUp;
     _takenGroups.clear();
     if (_quests)
         _takenGroups = Planner::QuestFields::TakenGroups(*_quests, _log, _rewarded);
@@ -163,7 +179,7 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
     return false;
 }
 
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints, OrderTake* take)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, TestConstraints::Set constraints, OrderTake* take)
 {
     ObjectGuid guid = object->GetGUID();
     bot->PrepareQuestMenu(guid);

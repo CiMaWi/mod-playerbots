@@ -12,13 +12,17 @@
 #include "DeathEdgeRules.h"
 #include "EventLog.h"
 #include "EventWanted.h"
+#include "GameObject.h"
+#include "GatherNodeMgr.h"
 #include "Item.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Player.h"
+#include "ProfessionConfig.h"
 #include "QuestDef.h"
+#include "QuestFailRows.h"
 #include "QuestStatEvents.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
@@ -46,6 +50,29 @@ constexpr uint32 MS_PER_SECOND = 1000;
 constexpr int64 ONE_EVENT = 1;
 
 thread_local char const* questDropWord = nullptr;  // WorldLog::QuestDropWord
+thread_local uint32 questDropQuest = 0;            // and the quest it drops, with its done share (-1: none)
+thread_local int32 questDropShare = -1;
+
+// Questing WQ38: the share of the quest's credits done (QuestFailRows::DoneShare) from the bot's log; none when the
+// quest is not in it (the core's abandon cleared it, or it never was)
+std::optional<uint32> DoneShareOf(Player* bot, uint32 questId)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    auto const it = bot->getQuestStatusMap().find(questId);
+    if (!quest || it == bot->getQuestStatusMap().end())
+        return std::nullopt;
+    QuestStatusData const& data = it->second;
+    std::vector<Planner::QuestFailRows::Credit> credits;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i] > 0)
+            credits.push_back({data.CreatureOrGOCount[i], static_cast<uint32>(quest->RequiredNpcOrGoCount[i])});
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
+            credits.push_back({data.ItemCount[i], static_cast<uint32>(quest->RequiredItemCount[i])});
+    if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
+        credits.push_back({data.Explored ? 1u : 0u, 1u});
+    return Planner::QuestFailRows::DoneShare(credits, data.Status == QUEST_STATUS_COMPLETE);
+}
 
 uint32 ItemLevelOf(Item const* item)
 {
@@ -173,6 +200,40 @@ void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* sour
 {
     if (uint32 const entry = EventLog::TakeStoredEntry(item))
         EventLog::Emit(player, EventLog::EventType::ItemIn, source, entry, count);
+}
+
+// What a harvest gave (professions WR19c): an item looted from a node of the gather index or from a skinned corpse is a
+// `profession gather yield` row, value the count, alternatives the item and the node's or the creature's entry, ref the
+// spawn. The loot's source is read on the looter's thread, as the core's loot handler reads it
+void WriteHarvestYield(Player* player, ObjectGuid loot, uint32 entry, uint32 count)
+{
+    char const* kind = nullptr;
+    uint32 target = 0;
+    uint32 spawn = 0;
+    if (loot.IsGameObject())
+    {
+        GameObject* node = player->GetMap()->GetGameObject(loot);
+        if (!node || !node->GetSpawnId() || !sGatherNodeMgr.Find(node->GetSpawnId()))
+            return;
+        kind = "node";
+        target = node->GetEntry();
+        spawn = node->GetSpawnId();
+    }
+    else if (loot.IsCreatureOrVehicle())
+    {
+        Creature* corpse = player->GetMap()->GetCreature(loot);
+        if (!corpse || corpse->loot.loot_type != LOOT_SKINNING)
+            return;
+        kind = "skin";
+        target = corpse->GetEntry();
+        spawn = corpse->GetSpawnId();
+    }
+    else
+        return;
+    WorldLog::Decision(player, WorldLogFormat::DecisionKind::Profession,
+                       Professions::ChoiceWord(Professions::Choice::Gather),
+                       Professions::ReasonWord(Professions::Reason::Yield), static_cast<float>(count),
+                       {{"item", static_cast<float>(entry)}, {kind, static_cast<float>(target)}}, spawn);
 }
 
 class WorldLogPlayerScript : public PlayerScript
@@ -439,9 +500,14 @@ public:
             EventLog::NoteStoredItem(item, item->GetEntry());
     }
 
-    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
+    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid lootguid) override
     {
-        EmitStoredItemIn(player, item, count, "loot");
+        uint32 const entry = EventLog::TakeStoredEntry(item);
+        if (!entry)
+            return;
+        EventLog::Emit(player, EventLog::EventType::ItemIn, "loot", entry, count);
+        if (WorldLog::Active())
+            WriteHarvestYield(player, lootguid, entry, count);
     }
 
     // A won need or greed roll: Group stores the item itself and fires only this hook, not OnPlayerLootItem
@@ -473,11 +539,14 @@ public:
     }
 
     // A mail item is moved into the bags, not stored new, so there is no note and the item is read here: safe while
-    // no script registered before this one destroys the taken item in this hook (none does)
+    // no script registered before this one destroys the taken item in this hook (none does). The take of an auction
+    // house mail runs under the source auction (PlayerbotMgr's QueuedPacketSource): a won or returned item (WA4b)
     void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
     {
-        if (item && player && EventLog::Wanted(EventLog::EventType::ItemIn))
-            EventLog::Emit(player, EventLog::EventType::ItemIn, "mail", item->GetEntry(), count);
+        if (!item || !player || !EventLog::Wanted(EventLog::EventType::ItemIn))
+            return;
+        bool const auction = EventLog::SourceWordOf(EventLog::CurrentSource()) == "auction";
+        EventLog::Emit(player, EventLog::EventType::ItemIn, auction ? "auction" : "mail", item->GetEntry(), count);
     }
 
     // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole
@@ -598,13 +667,31 @@ void WorldLog::NoteQuestAbandon(Player* bot, uint32_t questId, char const* reaso
         return;
 
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    // WQ38: the amount carries the done share: the one taken before the bot's abandon packet (QuestDropWord), else
+    // the log's while the quest is still in it (DropQuestAction); a client's abandon has none
+    std::optional<uint32> const share = questDropQuest == questId && questDropShare >= 0
+                                            ? std::optional<uint32>(static_cast<uint32>(questDropShare))
+                                            : DoneShareOf(bot, questId);
+    int32 const level = quest ? bot->GetQuestLevel(quest) : 0;
     EventLog::Emit(bot, EventLog::EventType::QuestAbandon, reason ? reason : EventLog::SOURCE_OTHER, questId,
-                   quest ? bot->GetQuestLevel(quest) : 0);
+                   Planner::QuestFailRows::AbandonAmount(static_cast<uint32>(std::max(level, 0)), share));
 }
 
-WorldLog::QuestDropWord::QuestDropWord(char const* reason) : _previous(questDropWord) { questDropWord = reason; }
+WorldLog::QuestDropWord::QuestDropWord(char const* reason, Player* bot, uint32_t questId)
+    : _previous(questDropWord), _previousQuest(questDropQuest), _previousShare(questDropShare)
+{
+    questDropWord = reason;
+    std::optional<uint32> const share = bot && questId ? DoneShareOf(bot, questId) : std::nullopt;
+    questDropQuest = share ? questId : 0;
+    questDropShare = share ? static_cast<int32>(*share) : -1;
+}
 
-WorldLog::QuestDropWord::~QuestDropWord() { questDropWord = _previous; }
+WorldLog::QuestDropWord::~QuestDropWord()
+{
+    questDropWord = _previous;
+    questDropQuest = _previousQuest;
+    questDropShare = _previousShare;
+}
 
 void WorldLog::NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool flying)
 {

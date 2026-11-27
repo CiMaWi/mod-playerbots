@@ -18,6 +18,7 @@
 #include "ItemUsable.h"
 #include "ItemVisitors.h"
 #include "LastSpellCastValue.h"
+#include "NewRpgTriggers.h"
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -27,6 +28,7 @@
 #include "SharedDefines.h"
 #include "TargetValue.h"
 #include "TemporarySummon.h"
+#include "TestConstraints.h"
 #include "ThreatManager.h"
 #include "Timer.h"
 #include "Upkeep.h"
@@ -312,6 +314,11 @@ bool RandomTrigger::IsActive()
         k = 1;
 
     return (rand() % k) == 0;
+}
+
+bool OftenTrigger::IsActive()
+{
+    return TestConstraints::OftenFires(botAI->testConstraints) || RandomTrigger::IsActive();
 }
 
 bool AndTrigger::IsActive() { return ls && rs && ls->IsActive() && rs->IsActive(); }
@@ -775,11 +782,11 @@ bool CorpseNearTrigger::IsActive()
 
 bool RecoveringTrigger::IsActive()
 {
-    // NE11: a sick bot on its errand (the due repair recover handed over on a clear point, Upkeep::SickErrandOpen)
-    // walks it; recover moves it no more
+    // NR3: a sick bot on the goal recover handed it over to on a clear point (Upkeep::SickErrandOpen; its errand or
+    // its bind walk, WorldTravel::SickGoalRuns) walks it; recover moves it no more
     AwarenessRules::RecoverFacts facts;
     return Awareness::RecoverFactsOf(botAI, facts) && AwarenessRules::Recovering(facts) &&
-           !(facts.sick && botAI->rpgInfo.GetStatus() == RPG_ERRANDS);
+           !(facts.sick && WorldTravel::SickGoalRuns(botAI));
 }
 
 bool WayDangerTrigger::IsActive() { return Awareness::WayJudgeDue(botAI); }

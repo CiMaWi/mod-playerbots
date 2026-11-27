@@ -1047,6 +1047,47 @@ std::vector<uint32> const& RandomItemMgr::GetEnchantmentPool(uint32 entry) const
 
 bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32 level) const
 {
+    if (!CanEquipArmorKind(proto, clazz, level))
+        return false;
+
+    // tabards, and the shields and relics the kind check left in, skip the stat table
+    if (proto->InventoryType == INVTYPE_TABARD)
+        return true;
+
+    switch (proto->SubClass)
+    {
+        case ITEM_SUBCLASS_ARMOR_SHIELD:
+        case ITEM_SUBCLASS_ARMOR_LIBRAM:
+        case ITEM_SUBCLASS_ARMOR_IDOL:
+        case ITEM_SUBCLASS_ARMOR_TOTEM:
+        case ITEM_SUBCLASS_ARMOR_SIGIL:
+            return true;
+        default:
+            break;
+    }
+
+    // skip stats calculation for poor/normal quality items (grey/white)
+    if (proto->Quality < ITEM_QUALITY_UNCOMMON)
+        return true;
+
+    uint8 sp = 0;
+    uint8 ap = 0;
+    uint8 tank = 0;
+
+    for (uint8 j = 0; j < MAX_ITEM_PROTO_STATS; ++j)
+    {
+        // skip items with no stats value
+        if (!proto->ItemStat[j].ItemStatValue)
+            continue;
+
+        AddItemStats(proto->ItemStat[j].ItemStatType, sp, ap, tank);
+    }
+
+    return CanUseItemStats(clazz, sp, ap, tank);
+}
+
+bool RandomItemMgr::CanEquipArmorKind(ItemTemplate const* proto, uint8 clazz, uint32 level) const
+{
     // skip null proto or invalid class
     if (!proto || clazz >= MAX_CLASSES)
         return false;
@@ -1080,7 +1121,7 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
         return ITEM_SUBCLASS_ARMOR_CLOTH; // mage/warlock/priest
     }();
 
-    // a relic fits only the class it is made for; its effect is a spell, which the stat rule below cannot read
+    // a relic fits only the class it is made for; its effect is a spell, which the stat table cannot read
     switch (proto->SubClass)
     {
         case ITEM_SUBCLASS_ARMOR_LIBRAM:
@@ -1095,30 +1136,10 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
             break;
     }
 
-    // skip armor of wrong subclass (exempt: cloaks, and the misc subclass of rings, necks, trinkets, shirts and held
+    // the bot's armor subclass only (exempt: cloaks, and the misc subclass of rings, necks, trinkets, shirts and held
     // off-hands, which is no armor kind and needs no armor skill)
-    if (proto->InventoryType != INVTYPE_CLOAK && proto->SubClass != ITEM_SUBCLASS_ARMOR_MISC &&
-        proto->SubClass != requiredSubClass)
-        return false;
-
-    // skip stats calculation for poor/normal quality items (grey/white)
-    if (proto->Quality < ITEM_QUALITY_UNCOMMON)
-        return true;
-
-    uint8 sp = 0;
-    uint8 ap = 0;
-    uint8 tank = 0;
-
-    for (uint8 j = 0; j < MAX_ITEM_PROTO_STATS; ++j)
-    {
-        // skip items with no stats value
-        if (!proto->ItemStat[j].ItemStatValue)
-            continue;
-
-        AddItemStats(proto->ItemStat[j].ItemStatType, sp, ap, tank);
-    }
-
-    return CanUseItemStats(clazz, sp, ap, tank);
+    return proto->InventoryType == INVTYPE_CLOAK || proto->SubClass == ITEM_SUBCLASS_ARMOR_MISC ||
+           proto->SubClass == requiredSubClass;
 }
 
 bool RandomItemMgr::CanEquipWeapon(ItemTemplate const* proto, uint8 clazz) const
@@ -1390,6 +1411,22 @@ bool RandomItemMgr::IsInternalItem(ItemTemplate const* proto)
         return false;
 
     if (proto->HasFlag(ITEM_FLAG_DEPRECATED))
+        return true;
+
+    // Templates no loot, vendor or quest hands out, most without armour (world DB, 2026-11-27): copies of tier pieces
+    // whose names end in a space, second copies of tier pieces, and an unused copy of a raid's loot
+    constexpr uint32 SPACE_NAMED_COPIES_FIRST = 48725;
+    constexpr uint32 SPACE_NAMED_COPIES_LAST = 48931;
+    constexpr uint32 SECOND_TIER_COPIES_FIRST = 51682;
+    constexpr uint32 SECOND_TIER_COPIES_LAST = 51776;
+    constexpr uint32 RAID_LOOT_COPIES_FIRST = 53491;
+    constexpr uint32 RAID_LOOT_COPIES_LAST = 53509;
+    uint32 const id = proto->ItemId;
+    if (id >= SPACE_NAMED_COPIES_FIRST && id <= SPACE_NAMED_COPIES_LAST && !proto->Name1.empty() &&
+        proto->Name1.back() == ' ')
+        return true;
+    if ((id >= SECOND_TIER_COPIES_FIRST && id <= SECOND_TIER_COPIES_LAST) ||
+        (id >= RAID_LOOT_COPIES_FIRST && id <= RAID_LOOT_COPIES_LAST))
         return true;
 
     char const* name = proto->Name1.c_str();

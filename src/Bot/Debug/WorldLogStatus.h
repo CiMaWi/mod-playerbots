@@ -32,17 +32,21 @@ constexpr char const* QUEST_ABANDON_CLEANUP = "cleanup";
 void NoteQuestAbandon(Player* bot, uint32_t questId, char const* reason);
 
 // The reason of the abandon packets the bot sends while the scope lives (this thread): the packet's QuestAbandon row
-// names it instead of QUEST_ABANDON_CLIENT
+// names it instead of QUEST_ABANDON_CLIENT. Questing WQ38: given the bot and the quest it drops, the scope also takes
+// the share of the quest's credits done before the packet (the core clears the quest's counts before its abandon
+// hook), for that row's amount
 class QuestDropWord
 {
 public:
-    explicit QuestDropWord(char const* reason);
+    explicit QuestDropWord(char const* reason, Player* bot = nullptr, uint32_t questId = 0);
     ~QuestDropWord();
     QuestDropWord(QuestDropWord const&) = delete;
     QuestDropWord& operator=(QuestDropWord const&) = delete;
 
 private:
     char const* _previous;
+    uint32_t _previousQuest;
+    int32_t _previousShare;
 };
 
 // The words NewRpgInfo::StatusFromString accepts, by NewRpgStatus value (PlayerbotAIConfig.h; NewRpgBaseAction.cpp

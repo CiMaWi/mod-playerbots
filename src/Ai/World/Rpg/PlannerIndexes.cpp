@@ -217,6 +217,7 @@ GatherInput GatherWorld()
         spawn.y = data.posY;
         spawn.z = data.posZ;
         spawn.entry = data.id;
+        spawn.spawnId = guid;
         spawn.npcFlags = static_cast<uint32>(creature->npcflag);
         spawn.factionTemplate = creature->faction;
         auto const [known, added] = reactions.try_emplace(creature->faction);
@@ -270,6 +271,7 @@ GatherInput GatherWorld()
         spawn.y = data.posY;
         spawn.z = data.posZ;
         spawn.entry = data.id;
+        spawn.spawnId = guid;
         spawn.mailbox = mailbox;
         if (station)
         {

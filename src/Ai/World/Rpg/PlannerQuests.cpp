@@ -29,6 +29,7 @@
 #include "GameObjectData.h"
 #include "GatherLive.h"
 #include "GoalModel.h"
+#include "GoalRoute.h"
 #include "Log.h"
 #include "NeedGoalBridge.h"
 #include "NewRpgInfo.h"
@@ -38,12 +39,14 @@
 #include "PlannerIndexes.h"
 #include "PlannerPool.h"
 #include "PlannerQuestInternal.h"
+#include "PlannerRecipes.h"
 #include "PlannerRouteCost.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "QueryResult.h"
 #include "QuestCircuit.h"
 #include "QuestDef.h"
 #include "QuestExecRules.h"
@@ -953,6 +956,33 @@ void LogPlaceCensus(QuestIndexStats const& s)
 }
 }  // namespace
 
+// Questing WQ38: the list of quests known to be impossible (playerbots_quest_impossible: quest, cause word, note), read
+// at startup on the world thread as the floors are; each listed quest's record carries its cause word into the index
+// (an empty word reads "other"). A change of the list needs a restart
+void MarkImpossible(std::vector<QuestRecord>& quests)
+{
+    std::unordered_map<uint32, std::string> causes;
+    if (PreparedQueryResult result =
+            PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_QUEST_IMPOSSIBLE)))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            std::string cause = fields[1].Get<std::string>();
+            causes[fields[0].Get<uint32>()] = cause.empty() ? std::string("other") : std::move(cause);
+        } while (result->NextRow());
+    }
+    uint32 marked = 0;
+    for (QuestRecord& quest : quests)
+        if (auto const it = causes.find(quest.id); it != causes.end())
+        {
+            quest.impossible = it->second;
+            ++marked;
+        }
+    LOG_INFO("server.loading", "Quest index: {} quests listed as impossible ({} rows in playerbots_quest_impossible)",
+             marked, causes.size());
+}
+
 void StartQuestIndex()
 {
     QuestIndexState expected = QuestIndexState::NotStarted;
@@ -969,6 +999,7 @@ void StartQuestIndex()
         QuestPoiZStore floors;
         floors.Load();
         input = std::make_shared<QuestGather>(GatherQuests(floors, *fieldSpawns));
+        MarkImpossible(input->quests);
     }
     uint32 const gatherMs = MsSince(gatherStart);
     LOG_INFO(
@@ -1029,6 +1060,7 @@ void StartQuestIndex()
                 }
                 questBook.Publish(std::move(index));
                 questState.store(QuestIndexState::Ready, std::memory_order_release);
+                StartDropRows();  // WR20a: the recipe index's drop rows read the source index
             }
             catch (std::exception const& e)
             {
@@ -1218,6 +1250,8 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 UpkeepNeeds::NeedList needs;
                 path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs);
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(needs));
+                NeedBridge::PlaceOwnStops(filled, needs, *upkeep, snapshot.race, snapshot.cls, snapshot.position,
+                                          snapshot.runSpeed);
                 // The gather circuit at the path's prices (professions WR13b), against the zone's other gatherers
                 uint32 competing = 0;
                 if (context.crowding)
@@ -1228,11 +1262,20 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                     --competing;
                 gatherRates = std::make_shared<Materials::Rates const>(
                     SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)));
-                FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing, filled);
+                FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing,
+                                  SkillPathBridge::ShortOfGold(snapshot, needs), filled);
                 // A fishing trip in the zone at the same prices (professions WR16b)
                 FillFishWaters(snapshot, path.get(), *gatherRates, filled);
             }
-            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, std::move(context), filled));
+            // The route's build over the field map (questing WQ18a): PlanGoals calls it for a bot not held on the
+            // circuit (WQ18b: every planner bot but a test's). Its two parts are PerfMonitor rows (part 3)
+            auto const routePart = [](char const* part, std::uint64_t micros)
+            {
+                if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, part))
+                    row->Record(micros);
+            };
+            plan = std::make_shared<Goals::GoalPlan const>(
+                Goals::PlanGoals(snapshot, std::move(context), filled, GoalRoute::Builder(data.fields, routePart)));
         }
         catch (...)
         {

@@ -24,15 +24,21 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <memory>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
+#include "BankMailTypes.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "NeedGoalBridge.h"
@@ -176,6 +182,21 @@ void ShortForRiding(UpkeepIndex const& index)
     Check(GoalHarness::TopIs(quests, GoalKind::Quest, GoalHarness::HOME_HUB, Goals::CIRCUIT_REASON) &&
               !HasReason(quests, "gold_short") && quests.shortText.empty(),
           "the bot quests again");
+}
+
+// NR17: the stop planned for a mount ends with a word; money is what the earlier purchases left
+void MountStopWords()
+{
+    std::cout << "the planned mount stop's end:\n";
+    RankValue rank;
+    rank.known = true;
+    std::uint64_t const price = GOLD;
+    // A bag of 50 s bought first out of the mount's money
+    Check(std::string(MountStopEnd(rank, true, price, price - 50 * 100)) == "money", "money spent before: money");
+    Check(std::string(MountStopEnd(rank, false, price, price)) == "not_sold", "no mount of the rank sold: not_sold");
+    Check(std::string(MountStopEnd(rank, true, price, price)) == "not_due", "gold there, no purchase due: not_due");
+    rank.known = false;
+    Check(std::string(MountStopEnd(rank, true, price, price)) == "mount_no_rank", "rank not learned: mount_no_rank");
 }
 
 void ReserveCovered(UpkeepIndex const& index)
@@ -423,40 +444,90 @@ Snapshot PathSnapshot(UpkeepIndex const& index, PathSample const& sample, std::u
 // A vendor's price for the tools of ProfessionRules::TOOLS: the world DB's item_template.BuyPrice (2026-11-20)
 std::uint32_t ToolPrice(std::uint32_t item)
 {
-    static std::map<std::uint32_t, std::uint32_t> const prices = {{2901, 81},   {5956, 18},    {7005, 82},
-                                                                   {6256, 23},   {20815, 800}, {20824, 25000},
-                                                                   {39505, 750}};
+    static std::map<std::uint32_t, std::uint32_t> const prices = {{2901, 81},   {5956, 18},     {7005, 82},  {6256, 23},
+                                                                  {20815, 800}, {20824, 25000}, {39505, 750}};
     auto const found = prices.find(item);
     return found == prices.end() ? 0 : found->second;
 }
 
-SkillPathBridge::Computed PathOf(Snapshot const& bot, UpkeepIndex const& index, PathSample const& sample,
-                                 Recipes::RecipeIndex const& recipes, bool sells = true,
-                                 bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+// WR10's harness stand-in for the vendor's sell price (live: the item template's)
+double StandInSell(Recipes::RecipeIndex const& recipes, std::uint32_t item)
 {
-    // WR10's harness stand-in for the vendor's sell price (live: the item template's)
-    auto const sell = [&recipes](std::uint32_t item)
-    {
-        Recipes::ItemFact const* fact = recipes.Item(item);
-        double const level = fact ? fact->itemLevel : 0.0;
-        return fact ? std::floor(level * level * SELL_COPPER_PER_LEVEL_SQUARED *
-                                 std::max<std::uint32_t>(fact->quality, 1))
-                    : 0.0;
-    };
+    Recipes::ItemFact const* fact = recipes.Item(item);
+    double const level = fact ? fact->itemLevel : 0.0;
+    return fact ? std::floor(level * level * SELL_COPPER_PER_LEVEL_SQUARED * std::max<std::uint32_t>(fact->quality, 1))
+                : 0.0;
+}
+
+// market: the typical prices the path sees (WA7a); empty: only vendors buy and sell
+SkillPathBridge::Computed PathOf(Snapshot const& bot, UpkeepIndex const& index, PathSample const& sample,
+                                 Recipes::RecipeIndex const& recipes, bool sells = true, Market::View market = {},
+                                 SkillPath::Fault fault = SkillPath::Fault::None)
+{
     SkillPath::PathWorld world{recipes,
                                [](std::uint32_t spell) { return MayLearn(spell); },
-                               sell,
+                               [&recipes](std::uint32_t item) { return StandInSell(recipes, item); },
                                {},
                                {},
-                               SkillPath::Fault::None,
-                               SkillPathBridge::ToolSourcesOf(ToolPrice)};
+                               fault,
+                               SkillPathBridge::ToolSourcesOf(ToolPrice),
+                               std::move(market),
+                               {}};
     if (!sells)
         world.sellCopper = nullptr;
     SkillPath::PathInputs inputs;
     inputs.consumables = sample.consumables;
     inputs.uses = sample.uses;
-    return SkillPathBridge::Compute(bot, index, Rates(bot.level), inputs, world, {}, sample.categories, buyers);
+    return SkillPathBridge::Compute(bot, index, Rates(bot.level), inputs, world, {}, sample.categories);
 }
+
+// A harness market (WA7a): the items `priced` picks at MARKET_TIMES x the stand-in sell price (at least
+// MARKET_FLOOR_COPPER), sold steadily (10 sales in the window, no expiry), listed by the stack (Market::MAX_LOT) at
+// the shared house's fees (5/5). unpriced: the same entries without a sale (a market that prices nothing)
+constexpr std::uint32_t MARKET_TIMES = 3;
+constexpr std::uint32_t MARKET_FLOOR_COPPER = 200;
+
+Market::View MarketOf(Recipes::RecipeIndex const& recipes, std::function<bool(std::uint32_t)> const& priced,
+                      bool unpriced = false)
+{
+    auto snapshot = std::make_shared<AuctionIndex::Snapshot>();
+    auto const add = [&](std::uint32_t item)
+    {
+        if (!item || !priced(item) || snapshot->items.count(item))
+            return;
+        AuctionIndex::TypicalPrice& typical = snapshot->items[item].typical;
+        if (unpriced)
+            return;
+        typical.unitPrice =
+            std::max(static_cast<std::uint32_t>(StandInSell(recipes, item)) * MARKET_TIMES, MARKET_FLOOR_COPPER);
+        typical.sample = 10;
+        typical.weight = 10.0;
+    };
+    for (Recipes::NodeRow const& row : recipes.Nodes())
+        add(row.item);
+    for (Recipes::DropRow const& row : recipes.Drops())
+        add(row.item);
+    for (Recipes::ItemFact const& fact : recipes.Items())
+        add(fact.id);
+    return {snapshot, {}, {}, [](std::uint32_t) { return Market::MAX_LOT; }};
+}
+
+// What the gatherers yield: a node's item of herbalism or mining, a skin
+std::function<bool(std::uint32_t)> GatheredBy(Recipes::RecipeIndex const& recipes)
+{
+    auto items = std::make_shared<std::set<std::uint32_t>>();
+    for (Recipes::NodeRow const& row : recipes.Nodes())
+        if (row.skill == static_cast<std::uint16_t>(Skill::Herbalism) ||
+            row.skill == static_cast<std::uint16_t>(Skill::Mining))
+            items->insert(row.item);
+    for (Recipes::DropRow const& row : recipes.Drops())
+        if (row.kind == Recipes::DropKind::Skin)
+            items->insert(row.item);
+    return [items](std::uint32_t item) { return items->count(item) > 0; };
+}
+
+constexpr std::uint32_t LINEN_CLOTH = 2589;
+constexpr std::uint32_t WOOL_CLOTH = 2592;
 
 std::string Serial(SkillPathBridge::Computed const& computed)
 {
@@ -470,7 +541,7 @@ std::string Serial(SkillPathBridge::Computed const& computed)
     for (SkillPath::Want const& want : path.wants)
         out << " w" << want.item << ':' << want.count;
     for (SkillPath::Craft const& craft : path.queue)
-        out << " q" << craft.spell << ':' << craft.casts;
+        out << " q" << craft.spell << ':' << craft.casts << (craft.forSale ? "s" : "");
     SkillPath::SecondChoice const& second = path.second;
     out << " c" << second.craft << ':' << second.gatherer << ':' << second.take << ':'
         << static_cast<int>(second.reason) << ':' << second.craftWorth << ':' << second.gathererWorth;
@@ -658,20 +729,33 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
               LearnsOf(UpkeepNeeds::ComputeNeeds(flushEngineer, index, Rates(flushEngineer.level)), Skill::Engineering),
           "a craft taken keeps its learn need as without the path");
 
-    // while only vendors buy materials (SkillPath::BUYERS_BEYOND_VENDORS, the review's hold) no gatherer takes the
-    // craft's place: the craft's learn waits
+    // without a market only vendors buy materials (WR11's hold): no gatherer takes the craft's place, the craft's
+    // learn waits
     Snapshot const poorEnchanter = PathSnapshot(index, enchanter, poor);
     SkillPathBridge::Computed const held = PathOf(poorEnchanter, index, enchanter, recipes);
-    std::cout << "  " << enchanter.name << ", " << Money(poor) << " (short of gold), only vendors buy: "
-              << SecondText(held.path.second) << "\n";
-    Check(!SkillPath::BUYERS_BEYOND_VENDORS && held.path.second.craft && !held.path.second.gatherer &&
-              !held.path.second.take,
-          std::string(enchanter.name) + ", short of gold, only vendors buy: no second gatherer, the craft waits");
-    // the branch once another buyer pays (WR23)
-    SkillPathBridge::Computed const tookGatherer = PathOf(poorEnchanter, index, enchanter, recipes, true, true);
+    std::cout << "  " << enchanter.name << ", " << Money(poor)
+              << " (short of gold), no market: " << SecondText(held.path.second) << "\n";
+    Check(held.path.second.craft && !held.path.second.gatherer && !held.path.second.take,
+          std::string(enchanter.name) + ", short of gold, no market: no second gatherer, the craft waits");
+    // a market that buys no gatherer's yields (cloth only, WA7a): the craft still waits; the control weighs a gatherer
+    // for any market view and must take one
+    Market::View const cloth =
+        MarketOf(recipes, [](std::uint32_t item) { return item == LINEN_CLOTH || item == WOOL_CLOTH; });
+    SkillPath::SecondChoice const clothOnly = PathOf(poorEnchanter, index, enchanter, recipes, true, cloth).path.second;
+    SkillPath::SecondChoice const anyMarket =
+        PathOf(poorEnchanter, index, enchanter, recipes, true, cloth, SkillPath::Fault::AnyMarket).path.second;
+    std::cout << "  " << enchanter.name << ", " << Money(poor)
+              << " (short of gold), a market for cloth only: " << SecondText(clothOnly)
+              << "\n    control any_market: " << SecondText(anyMarket) << "\n";
+    Check(clothOnly.craft && !clothOnly.gatherer && !clothOnly.take,
+          std::string(enchanter.name) + ", a market for no gatherer's yields: no second gatherer, the craft waits");
+    Check(anyMarket.gatherer != 0, "control any_market: a gatherer weighed where the market buys none of its yields");
+    // a market that buys the gatherers' yields above the vendors (WR23, WA7a): the gatherer weighed with its proceeds
+    Market::View const gathered = MarketOf(recipes, GatheredBy(recipes));
+    SkillPathBridge::Computed const tookGatherer = PathOf(poorEnchanter, index, enchanter, recipes, true, gathered);
     SkillPath::SecondChoice const& replaced = tookGatherer.path.second;
-    std::cout << "  " << enchanter.name << ", " << Money(poor) << " (short of gold), other buyers: "
-              << SecondText(replaced) << "\n";
+    std::cout << "  " << enchanter.name << ", " << Money(poor)
+              << " (short of gold), a market for gathered yields: " << SecondText(replaced) << "\n";
     Check(replaced.craft == static_cast<std::uint16_t>(Skill::Enchanting) && replaced.take == replaced.gatherer &&
               ProfessionRules::Is(static_cast<Skill>(replaced.take), ProfessionRules::Kind::Gatherer) &&
               replaced.reason == SkillPath::Reason::GoldShort && replaced.gathererWorth > 0.0 &&
@@ -682,7 +766,7 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
     Snapshot stored = poorEnchanter;
     stored.person->Mains[1] = static_cast<Skill>(replaced.take);
     stored.person->From = ProfessionRules::Origin::Chosen;
-    SkillPathBridge::Computed const after = PathOf(stored, index, enchanter, recipes, true, true);
+    SkillPathBridge::Computed const after = PathOf(stored, index, enchanter, recipes, true, gathered);
     std::cout << "    stored as the person: " << SecondText(after.path.second) << ", "
               << LearnsOf(after.needs, static_cast<Skill>(replaced.take)) << " learn needs of the gatherer\n";
     Check(!after.path.second.craft, "once the gatherer is stored as the person no second choice is due");
@@ -696,9 +780,10 @@ void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes
           "a bot with gold weighs no second gatherer; a craft not worth it waits");
     Check(!LearnsOf(waits.needs, Skill::Enchanting), "a craft that waits is no learn need");
 
-    // where nothing sells, no gatherer brings anything either: the craft waits, nothing replaces it
-    SkillPathBridge::Computed const unsold =
-        PathOf(PathSnapshot(index, enchanter, poor), index, enchanter, recipes, false, true);
+    // where nothing sells (no vendor, a market without a sale), no gatherer brings anything either: the craft waits,
+    // nothing replaces it
+    SkillPathBridge::Computed const unsold = PathOf(PathSnapshot(index, enchanter, poor), index, enchanter, recipes,
+                                                    false, MarketOf(recipes, GatheredBy(recipes), true));
     std::cout << "  " << enchanter.name << ", " << Money(poor) << ", nothing sold: " << SecondText(unsold.path.second)
               << "\n";
     Check(unsold.path.second.craft && !unsold.path.second.take, "where nothing sells no gatherer replaces the craft");
@@ -770,8 +855,8 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     bracers.chosen = 0;
     for (SkillPath::Fault const fault : {SkillPath::Fault::NoExpand, SkillPath::Fault::None})
     {
-        SkillPath::PathWorld const world{recipes, [](std::uint32_t spell) { return MayLearn(spell); }, nullptr, {}, {},
-                                         fault, {}};
+        SkillPath::PathWorld const world{
+            recipes, [](std::uint32_t spell) { return MayLearn(spell); }, nullptr, {}, {}, fault, {}, {}, {}};
         SkillPath::Weigher const weigher(smith, world);
         SkillPath::Claims const claims = weigher.Claim(bracers);
         std::vector<SkillPath::Want> const wants = weigher.Wants(bracers, claims);
@@ -781,8 +866,8 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
         for (SkillPath::Craft const& craft : claims.queue)
             shown << " craft " << craft.spell << " x" << craft.casts << (craft.forSkill ? " (skill)" : "");
         bool const fixed = fault == SkillPath::Fault::None;
-        std::cout << "  a smith with 40 copper ore, 38 bracers casts chosen" << (fixed ? "" : " (wants unexpanded, as the review found)")
-                  << ":" << shown.str() << "\n";
+        std::cout << "  a smith with 40 copper ore, 38 bracers casts chosen"
+                  << (fixed ? "" : " (wants unexpanded, as the review found)") << ":" << shown.str() << "\n";
         if (!fixed)
             continue;
         bool const wantsBar = std::any_of(wants.begin(), wants.end(),
@@ -811,8 +896,7 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     noHammer.tools = {2901};
     noHammer.categories = {165};
     std::uint32_t const flush = PATH_MONEY[5];
-    SkillPath::SecondChoice const with =
-        PathOf(PathSnapshot(index, hammer, flush), index, hammer, recipes).path.second;
+    SkillPath::SecondChoice const with = PathOf(PathSnapshot(index, hammer, flush), index, hammer, recipes).path.second;
     SkillPath::SecondChoice const without =
         PathOf(PathSnapshot(index, noHammer, flush), index, noHammer, recipes).path.second;
     std::cout << "  " << hammer.name << ": " << SecondText(with) << "\n  " << noHammer.name << ": "
@@ -834,7 +918,7 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     Check(toolStep && climbs.path.chosen != SkillPath::NONE,
           std::string(engineer.name) + ": the hammer is a step of its climb, and a stretch is chosen");
 
-    // a level-6 herbalist with alchemy unlearned, short of gold: never a second gatherer while only vendors buy
+    // a level-6 herbalist with alchemy unlearned, short of gold: never a second gatherer without a market
     PathSample const herbalist{"level-6 rogue, herbalism 20, alchemy unlearned",
                                6,
                                CLASS_ROGUE_ID,
@@ -846,17 +930,203 @@ void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
                                {},
                                {}};
     bool gatherer = false;
+    Market::View const gathered = MarketOf(recipes, GatheredBy(recipes));
     for (std::uint32_t const money : {PATH_MONEY[0], PATH_MONEY[1], PATH_MONEY[2]})
     {
         Snapshot const young = PathSnapshot(index, herbalist, money);
         SkillPath::SecondChoice const second = PathOf(young, index, herbalist, recipes).path.second;
-        SkillPath::SecondChoice const buyers = PathOf(young, index, herbalist, recipes, true, true).path.second;
+        SkillPath::SecondChoice const priced = PathOf(young, index, herbalist, recipes, true, gathered).path.second;
         std::cout << "  " << herbalist.name << ", " << Money(money) << ": " << SecondText(second)
-                  << "; once others buy: " << SecondText(buyers) << "\n";
-        gatherer = gatherer || second.gatherer ||
-                   (second.take && second.take != static_cast<std::uint16_t>(Skill::Alchemy));
+                  << "; with a market for gathered yields: " << SecondText(priced) << "\n";
+        gatherer =
+            gatherer || second.gatherer || (second.take && second.take != static_cast<std::uint16_t>(Skill::Alchemy));
     }
-    Check(!gatherer, std::string(herbalist.name) + " at 3s, 10s and 30s: no second gatherer while only vendors buy");
+    Check(!gatherer, std::string(herbalist.name) + " at 3s, 10s and 30s: no second gatherer without a market");
+}
+
+std::string SkillWord(std::uint16_t skill)
+{
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+        if (static_cast<std::uint16_t>(info.Which) == skill)
+            return std::string(info.Name);
+    return skill ? "skill " + std::to_string(skill) : std::string("none");
+}
+
+// One line of the printed paths (WA7a-paths.txt): the stretch taken and the second-profession choice, in words
+std::string PathWords(SkillPath::Path const& path)
+{
+    std::ostringstream out;
+    if (path.chosen < 0)
+        out << "no stretch taken (" << SkillPath::ReasonWord(path.reason) << ")";
+    else
+    {
+        SkillPath::Stretch const& stretch = path.weighed[static_cast<std::size_t>(path.chosen)];
+        double const copper = static_cast<double>(stretch.copper);
+        out << SkillWord(stretch.skill) << " " << stretch.from << " to " << stretch.to << ", "
+            << (copper < 0.0 ? "earns " : "spends ") << Money(static_cast<std::uint32_t>(std::fabs(copper)))
+            << " net, net worth " << std::lround(stretch.netWorth);
+    }
+    SkillPath::SecondChoice const& second = path.second;
+    out << "; second profession: ";
+    if (!second.craft)
+        out << "not due";
+    else
+    {
+        out << (second.take ? "takes " + SkillWord(second.take) : std::string("waits")) << " ("
+            << SkillPath::ReasonWord(second.reason) << "; craft " << SkillWord(second.craft) << " worth "
+            << std::lround(second.craftWorth);
+        if (second.gatherer)
+            out << ", gatherer " << SkillWord(second.gatherer) << " worth " << std::lround(second.gathererWorth);
+        out << ")";
+    }
+    return out.str();
+}
+
+// The queue's crafts for sale (WA7b), in words
+std::string SaleWords(SkillPath::Path const& path)
+{
+    std::ostringstream out;
+    for (SkillPath::Craft const& craft : path.queue)
+        if (craft.forSale)
+            out << (out.tellp() ? ", " : "") << craft.spell << " x" << craft.casts;
+    return out.tellp() ? out.str() : "none";
+}
+
+std::size_t SaleCrafts(SkillPath::Path const& path)
+{
+    return static_cast<std::size_t>(std::count_if(path.queue.begin(), path.queue.end(),
+                                                  [](SkillPath::Craft const& craft) { return craft.forSale; }));
+}
+
+// WA7a (PLAN 3.7): sample bots' paths and second choices without and with a market, and the empty-market equality: a
+// view with an empty snapshot and one whose entries carry no sale give the vendor-only path and needs byte for byte
+// (Serial). Control: weighing a second gatherer for any view (Fault::AnyMarket) must break it
+void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
+{
+    std::cout << "Scenario: paths and second choices without and with a market (WA7a)\n";
+    std::vector<PathSample> samples = PathSamples();
+    samples.push_back({"level-20 mage, tailoring 90, enchanting unlearned",
+                       20,
+                       CLASS_MAGE_ID,
+                       Skill::Tailoring,
+                       90,
+                       Skill::Enchanting,
+                       0,
+                       {},
+                       {},
+                       {}});
+    samples.push_back({"level-20 warrior, mining 90, engineering unlearned",
+                       20,
+                       CLASS_WARRIOR,
+                       Skill::Mining,
+                       90,
+                       Skill::Engineering,
+                       0,
+                       {},
+                       {2901, 5956},
+                       {162, 165}});
+    Market::View const gathered = MarketOf(recipes, GatheredBy(recipes));
+    Market::View const everything = MarketOf(recipes, [](std::uint32_t) { return true; });
+    Market::View const emptySnapshot{std::make_shared<AuctionIndex::Snapshot>(), {}, {}, {}};
+    Market::View const unsold = MarketOf(recipes, [](std::uint32_t) { return true; }, true);
+    // WA7b: a market that sells every item at a sixth of the stand-in's price, under the vendors' and often under the
+    // gathering's cost, so the auction is the cheapest source of some materials
+    auto cheapSnapshot = std::make_shared<AuctionIndex::Snapshot>(*everything.snapshot);
+    for (auto& [item, entry] : cheapSnapshot->items)
+        entry.typical.unitPrice = std::max<std::uint32_t>(entry.typical.unitPrice / (MARKET_TIMES * 2), 1);
+    Market::View cheap = everything;
+    cheap.snapshot = cheapSnapshot;
+    std::size_t compared = 0;
+    std::size_t differ = 0;
+    std::size_t controlDiffer = 0;
+    std::size_t changed = 0;
+    // The path's buy lines (WA7b): exactly the wanted materials the auction sells cheapest with another way, each at
+    // the other way's cost, not below the auction's; none without a market
+    std::uint8_t const auctionKind = static_cast<std::uint8_t>(Materials::Kind::Auction);
+    std::size_t plainLines = 0;
+    std::size_t marketLines = 0;
+    std::size_t lineViolations = 0;
+    std::size_t controlCaught = 0;
+    std::size_t plainSales = 0;  // crafts for sale (WA7b): none without a market
+    std::size_t marketSales = 0;
+    auto const linesOf = [&](SkillPath::Path const& path)
+    {
+        // the sample bots hold nothing, as when their paths were computed: every want stands. At the reserve (the
+        // need factor equal to the exchange) a line's ceiling is the path's copper
+        auto const none = [](std::uint32_t) { return 0u; };
+        AuctionRules::CopperWeight const atReserve{1.0f, 1.0f};
+        std::vector<AuctionRules::BuyLine> const lines =
+            AuctionRules::BuyList(AuctionRules::PathLines(path.materials, auctionKind, atReserve, none, none, none));
+        std::size_t expected = 0;
+        for (SkillPath::Material const& material : path.materials)
+        {
+            lineViolations += material.source != auctionKind && material.otherCopperEach != 0;
+            if (!material.wanted || material.source != auctionKind)
+                continue;
+            ++expected;
+            auto const line = std::find_if(lines.begin(), lines.end(), [&material](AuctionRules::BuyLine const& l)
+                                           { return l.item == material.item; });
+            // the cheapest other way's cost, or (AH8) what the path counted at the auction, its only source
+            std::uint32_t const ceiling = material.otherCopperEach ? material.otherCopperEach : material.copperEach;
+            lineViolations += line == lines.end() || line->units != material.wanted ||
+                              AuctionRules::CeilingOf(*line) != ceiling ||
+                              (material.otherCopperEach && material.otherCopperEach < material.copperEach);
+            // control: a ceiling at the auction's own cost is never above that cost
+            controlCaught +=
+                AuctionRules::CeilingOf(AuctionRules::PathLine(material.item, material.wanted, material.copperEach, 0,
+                                                               atReserve, 0, 0)) <= material.copperEach;
+        }
+        lineViolations += lines.size() != expected;
+        return lines.size();
+    };
+    for (PathSample const& sample : samples)
+        for (std::uint32_t const money : PATH_MONEY)
+        {
+            Snapshot const bot = PathSnapshot(index, sample, money);
+            SkillPathBridge::Computed const plain = PathOf(bot, index, sample, recipes);
+            std::string const serial = Serial(plain);
+            bool const same = serial == Serial(PathOf(bot, index, sample, recipes, true, emptySnapshot)) &&
+                              serial == Serial(PathOf(bot, index, sample, recipes, true, unsold));
+            ++compared;
+            differ += same ? 0 : 1;
+            plainLines += linesOf(plain.path);
+            plainSales += SaleCrafts(plain.path);
+            std::string const control =
+                Serial(PathOf(bot, index, sample, recipes, true, unsold, SkillPath::Fault::AnyMarket));
+            controlDiffer += serial != control ? 1 : 0;
+            if (money != PATH_MONEY[0] && money != PATH_MONEY[4])
+                continue;
+            SkillPathBridge::Computed const sold = PathOf(bot, index, sample, recipes, true, gathered);
+            SkillPathBridge::Computed const all = PathOf(bot, index, sample, recipes, true, everything);
+            changed += Serial(sold) != serial || Serial(all) != serial ? 1 : 0;
+            SkillPathBridge::Computed const bargain = PathOf(bot, index, sample, recipes, true, cheap);
+            std::size_t const bargainLines = linesOf(bargain.path);
+            marketLines += linesOf(sold.path) + linesOf(all.path) + bargainLines;
+            marketSales += SaleCrafts(sold.path) + SaleCrafts(all.path) + SaleCrafts(bargain.path);
+            std::cout << "  " << sample.name << ", " << Money(money) << "\n"
+                      << "    no market:                  " << PathWords(plain.path) << "\n"
+                      << "    market for gathered yields: " << PathWords(sold.path) << "\n"
+                      << "    market for every item:      " << PathWords(all.path) << "\n"
+                      << "    an empty market gives the no-market path and needs: " << (same ? "yes" : "NO") << "\n"
+                      << "    a market at a sixth of the price: " << PathWords(bargain.path) << "; " << bargainLines
+                      << " path buy lines\n"
+                      << "    crafts for sale: gathered yields " << SaleWords(sold.path) << "; every item "
+                      << SaleWords(all.path) << "; a sixth of the price " << SaleWords(bargain.path) << "\n";
+        }
+    std::cout << "  empty-market equality: " << compared << " bots compared, " << differ
+              << " differ; control any_market: " << controlDiffer << " differ; " << changed
+              << " printed bots change with a market\n";
+    Check(compared > 0 && differ == 0, "an empty market gives every sample the vendor-only path and needs");
+    Check(controlDiffer > 0, "control any_market: a market without prices changes a decision");
+    std::cout << "  path buy lines (WA7b): " << plainLines << " without a market, " << marketLines
+              << " with one; violations " << lineViolations << "; control auction-cost ceilings: " << controlCaught
+              << '\n';
+    Check(plainLines == 0 && marketLines > 0 && lineViolations == 0,
+          "a path line exactly where the auction sells a wanted material cheapest, at the other way's cost");
+    Check(controlCaught == marketLines, "control: a ceiling at the auction's own cost bounds nothing (caught)");
+    std::cout << "  crafts for sale (WA7b): " << plainSales << " without a market, " << marketSales
+              << " in the printed bots' markets\n";
+    Check(plainSales == 0, "no craft for sale without a market");
 }
 
 void PathLive(UpkeepIndex const& index, std::string const& root)
@@ -953,6 +1223,7 @@ void PathLive(UpkeepIndex const& index, std::string const& root)
 
     SecondChoices(index, recipes);
     ReviewProbes(index, recipes);
+    MarketPaths(index, recipes);
 
     // the cost per plan: the whole compute (needs, path, needs) for each profession at two skills
     std::cout << "  cost per plan (microseconds per compute, best of " << TIMED_RUNS << "):\n";
@@ -995,6 +1266,36 @@ void PathLive(UpkeepIndex const& index, std::string const& root)
 }
 }  // namespace
 
+// Needs and errands NR.7: units waiting in the mail count as had, for the path's line and the use line
+void WaitingInMail()
+{
+    constexpr std::uint32_t ITEM = 2589;
+    std::vector<BankMail::WaitingUnits> waiting;
+    BankMail::AddUnits(waiting, ITEM, 12);
+    BankMail::AddUnits(waiting, ITEM, 8);
+    std::vector<SkillPath::Material> materials(1);
+    materials[0].item = ITEM;
+    materials[0].used = 20;
+    materials[0].wanted = 20;
+    materials[0].copperEach = 100;
+    materials[0].source = static_cast<std::uint8_t>(Materials::Kind::Auction);
+    auto const none = [](std::uint32_t) { return 0u; };
+    auto const held = [&waiting](std::uint32_t item) { return BankMail::UnitsOf(waiting, item); };
+    AuctionRules::CopperWeight const atReserve{1.0f, 1.0f};
+    auto const pathLines = [&](auto const& heldNow)
+    {
+        return AuctionRules::BuyList(
+            AuctionRules::PathLines(materials, materials[0].source, atReserve, heldNow, none, none));
+    };
+    Check(pathLines(none).size() == 1, "control: without the mail the path line asks for the 20 units");
+    Check(pathLines(held).empty(), "a path line of 20 units with 20 in the mail asks for 0");
+    auto const useLines = [&](std::uint32_t units)
+    { return AuctionRules::BuyList({AuctionRules::UseLine(ITEM, units, 100, 0, 0, atReserve)}); };
+    Check(useLines(20).size() == 1, "control: without the mail the use line asks for the 20 units");
+    Check(useLines(BankMail::UnitsLacking(20, BankMail::UnitsOf(waiting, ITEM))).empty(),
+          "a use line of 20 units with 20 in the mail asks for 0");
+}
+
 int main(int argc, char** argv)
 {
     std::string root;
@@ -1010,9 +1311,11 @@ int main(int argc, char** argv)
     if (!root.empty())
         PathLive(index, root);
     ShortForRiding(index);
+    MountStopWords();
     ReserveCovered(index);
     FrugalSavesEarlier(index);
     SickRests(index);
+    WaitingInMail();
     InvariantSearch(index, seed, count);
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

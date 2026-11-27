@@ -30,6 +30,7 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
+#include "AuctionConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
@@ -274,8 +275,7 @@ void TestProfessionWalk()
     FakeReader empty;
     Check(LoadConfigFamily(ProfessionFamily, config, empty, warn) == 0 && warnings.empty(),
           "Professions: no key, no warning");
-    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 &&
-              config.FishTripDeadlineSeconds == 1200 && config.VisitStepSeconds == 10,
+    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 && config.VisitStepSeconds == 10,
           "Professions: the walk resets to the initializers");
 
     FakeReader probe;
@@ -284,7 +284,7 @@ void TestProfessionWalk()
     Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.GathererLevel == 10 && config.CraftVisitDeadlineSeconds == 60,
           "Professions: a value in range kept, one below its bound clamped with a warning");
-    Check(ProfessionFamily.Rows.size() == 72, "Professions: four plain rows, eight shares and sixty biases");
+    Check(ProfessionFamily.Rows.size() == 71, "Professions: three plain rows, eight shares and sixty biases");
     Check(config.CraftShare[0] == 12.5f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 2.0f,
           "Professions: the shares are equal and the hunters' engineering bias 2 by default");
     probe.values = {{"Playerbots.Professions.Share.Blacksmithing", "50"},
@@ -300,6 +300,35 @@ void TestProfessionWalk()
     Check(config.UnreachableCrafts == 0u && ProfessionUnreachableCrafts(config).empty() &&
               config.Chance[ProfessionRules::Cell(0, 0)] > 0.0 && config.Chance[ProfessionRules::Cell(0, 4)] > 0.0,
           "Professions: the defaults reach every share and fit chances for the served crafts");
+}
+
+// WA1a: the auction family's walk; the defaults are the initializers, a value outside its bounds clamped
+void TestAuctionWalk()
+{
+    AuctionConfig config;
+    config.PublishSeconds = 5;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    Check(LoadConfigFamily(AuctionFamily, config, empty, warn) == 0 && warnings.empty(), "Auction: no key, no warning");
+    Check(config.PublishSeconds == 60 && config.SaveSeconds == 300 && config.HistoryDays == 7 &&
+              config.OpenBidsMax == 3 && config.UndercutPercent == 3 && config.RelistStepPercent == 10 &&
+              config.RelistLimit == 3 && config.FirstDurationHours == 24 && config.RelistDurationHours == 48 &&
+              config.ChanceEvenHours == 24 && config.ChanceKindPriorHours == 48 && config.ChanceItemPriorHours == 48,
+          "Auction: the walk resets to the initializers");
+
+    FakeReader probe;
+    probe.values = {{"Playerbots.Auction.Bid.OpenMax", "5"}, {"Playerbots.Auction.Post.FirstDurationHours", "72"}};
+    Check(LoadConfigFamily(AuctionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
+              config.OpenBidsMax == 5 && config.FirstDurationHours == 48,
+          "Auction: a value in range kept, one above its bound clamped with a warning");
+    Check(AuctionFamily.Rows.size() == 13, "Auction: thirteen rows");
+    Check(AuctionWords::ChoiceWord(AuctionWords::Choice::Skip) == "skip" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Chance) == "chance" &&
+              AuctionWords::ChoiceWord(AuctionWords::Choice::Factor) == "factor" &&
+              AuctionWords::ReasonWord(AuctionWords::Reason::DetourTooLong) == "detour_too_long",
+          "Auction: the decision words");
 }
 
 void TestTypesWalk()
@@ -475,6 +504,12 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     for (std::string const& problem : professionProblems)
         std::cout << "  " << problem << "\n";
     Check(professionProblems.empty(), "Professions: rows unique, defaults in bounds, conf.dist agrees with the rows");
+    std::vector<std::string> auctionProblems = RowProblems(AuctionFamily, seen);
+    std::vector<std::string> const auctionDist = DistProblems(AuctionFamily, dist);
+    auctionProblems.insert(auctionProblems.end(), auctionDist.begin(), auctionDist.end());
+    for (std::string const& problem : auctionProblems)
+        std::cout << "  " << problem << "\n";
+    Check(auctionProblems.empty(), "Auction: rows unique, defaults in bounds, conf.dist agrees with the rows");
 
     // CS22c-f: the tactic and skill families; rows unique, defaults in bounds, conf.dist agrees with the rows. Several
     // families share a prefix (the per-tactic table and a tactic's numbers), so a dist key is "without a row" only when
@@ -523,7 +558,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
-        visit(WorldTravelFamily, 19, "World travel");
+        visit(WorldTravelFamily, 20, "World travel");
         visit(PvpGearFamily, 8, "PvP gear");
         visit(ArenaRecruitFamily, 8, "Arena recruit");
         visit(ArenaTeamFamily, 28, "Arena team");
@@ -1064,8 +1099,9 @@ void TestWorldFamilies()
                        got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
                        got.BagHorizonHours == want.BagHorizonHours;
     }
-    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 1,
-          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit is listed");
+    Check(
+        defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 2,
+        "travel: the default texts parse to DEFAULT_SLOT_BANDS; only InnDwellMinutes and Traits.AllowEdit are listed");
     FakeReader travelReader;
     travelReader.values = {{"Playerbots.WorldTravel.Slots.TripMinutes", "1,2,3,4,5"},
                            {"Playerbots.WorldTravel.Bags.HorizonHours", "1,2,3"},
@@ -1277,6 +1313,7 @@ int main(int argc, char** argv)
 
     TestBankMailWalk();
     TestProfessionWalk();
+    TestAuctionWalk();
     TestTypesWalk();
     TestLastFamilies();
     TestUnknownRetiredPrint();

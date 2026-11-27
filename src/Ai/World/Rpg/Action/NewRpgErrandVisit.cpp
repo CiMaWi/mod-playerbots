@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "AuctionVisit.h"
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
@@ -28,6 +29,7 @@
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "MailVisit.h"
+#include "Map.h"
 #include "ModelIgnoreFlags.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
@@ -91,9 +93,33 @@ UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
     return levels;
 }
 
-// A bank or mail errand at the stop: the visit's own action (relevance 13, any status) walks to the box and holds
-// the bot until the visit ends with its row; the trip goes on after it. A box beyond the stop's reach or a refused
-// start skips the errand with a row, so the trip never waits for it
+// NR9 (NR8: Felika walks her path up to 229 yd from her spawn, past the near search): the stop's vendor by its indexed
+// spawn at the stop's place, wherever it walks on the bot's map (a creature the map has loaded); nullptr when the index
+// is not ready, the stop is no indexed vendor's spawn or the creature is not in the world. Once per stop, on arrival
+Creature* SpawnedVendor(Player* bot, NewRpgInfo::ErrandStop const& stop)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!indexes || stop.pos.GetMapId() != bot->GetMapId())
+        return nullptr;
+    uint32 const entry = stop.vendorEntry;
+    std::vector<Planner::Nearby> const spawns = indexes->NearestWhere(
+        Planner::ServiceKind::Vendor, stop.pos.GetMapId(), stop.pos.GetPositionX(), stop.pos.GetPositionY(),
+        stop.pos.GetPositionZ(), 1, [entry](Planner::Service const& service)
+        { return service.entry == entry && service.spawnId; }, WorldTravel::STOP_JOIN_YARDS);
+    if (spawns.empty())
+        return nullptr;
+    auto const bounds =
+        bot->GetMap()->GetCreatureBySpawnIdStore().equal_range(indexes->services[spawns[0].index].spawnId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+        if (it->second && it->second->IsInWorld())
+            return it->second;
+    return nullptr;
+}
+
+// A bank, mail or auction errand at the stop: the visit's own action (relevance 13, any status) walks to the box or
+// NPC and holds the bot until the visit ends with its row; the trip goes on after it. One beyond the stop's reach or a
+// refused start skips the errand with a row, so the trip never waits for it
 bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kind)
 {
     auto const* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
@@ -103,7 +129,16 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
     float const joinYards = WorldTravel::STOP_JOIN_YARDS;
     char const* reason = "busy";
     bool started = false;
-    if (kind == WorldTravel::ErrandKind::Mail)
+    if (kind == WorldTravel::ErrandKind::Auction)
+    {
+        std::optional<BankMail::AuctioneerSpot> const spot = BankMail::AuctioneerSpotNear(
+            bot, place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), joinYards);
+        if (!spot)
+            reason = "no_auctioneer";
+        else
+            started = BankMail::BeginAuctionVisit(botAI, *spot);
+    }
+    else if (kind == WorldTravel::ErrandKind::Mail)
     {
         std::optional<BankMail::MailboxSpot> const spot = BankMail::MailboxSpotNear(
             bot, place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), joinYards);
@@ -119,7 +154,8 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
         if (!spot)
             reason = "no_banker";
         else
-            started = BankMail::BeginBankVisit(botAI, *spot);
+            // NR12b: with an auction errand still ahead on the trip, the sale stock is due for it
+            started = BankMail::BeginBankVisit(botAI, *spot, WorldTravel::AuctionAhead(errands->stops, errands->stop));
     }
     if (!started)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, WorldTravel::ErrandKindName(kind), reason, 0.0f);
@@ -129,7 +165,7 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
 // The planner's bag purchase at the vendor (Planner::OrderedBag): the bag its plan weighed is bought here, not by the
 // generic buy's own worth test, which judges by the trigger's slot measure and may refuse what the plan chose (WT63c,
 // lab14 seed 75779019: a trip to the planner's bag vendor sold and bought no bag). A test bot logs the outcome word
-void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
+void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor, uint64 reserve)
 {
     Player* bot = botAI->GetBot();
     uint32 const item = Planner::OrderedBag(botAI);
@@ -144,8 +180,12 @@ void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
         word = "no_order";
     else if (!proto || !items || slot >= items->GetItemCount())
         word = "vendor_lacks";
-    else if (price > bot->GetMoney())
-        word = "money";
+    else if (!WorldTravel::BagBuyAllowed(bot->GetMoney(), price, reserve))
+    {
+        word = "reserve";
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "bag", word, static_cast<float>(price),
+                           {{"money", static_cast<float>(bot->GetMoney())}, {"reserve", static_cast<float>(reserve)}});
+    }
     else
     {
         uint32 const before = bot->GetItemCount(item, false);
@@ -153,6 +193,9 @@ void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
         if (bot->GetItemCount(item, false) > before)
         {
             EventLog::Emit(bot, EventLog::EventType::Inventory, "bag_bought", item, price);
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Upkeep, "bag", "bought", static_cast<float>(price),
+                {{"money_after", static_cast<float>(bot->GetMoney())}, {"reserve", static_cast<float>(reserve)}});
             Planner::NoteBagBought(botAI);
             botAI->DoSpecificAction("equip upgrades packet action");
         }
@@ -210,7 +253,20 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             // The walk uses stock and wears gear, which the needs list's key does not hold
             data->needs.reset();
             // One trip per stop, held by the errand status (WT64b)
-            return Away(stop.pos, VENDOR_SEARCH_YARDS).value_or(true);
+            std::optional<bool> const away = Away(stop.pos, VENDOR_SEARCH_YARDS);
+            // NR1 group D (bots that stood beside the stop to the status deadline): the walk's answer with the planar
+            // and 3D distances, once per stop and answer (0 there, 1 walking, 2 spent)
+            uint8 const traced = 1 + (!away ? 0 : *away ? 2 : 1);
+            if (data->awayTraced != traced)
+            {
+                data->awayTraced = traced;
+                LOG_DEBUG("playerbots",
+                          "[Errand] {} stop {} away {} planar {:.1f} yd 3d {:.1f} yd bot z {:.1f} stop z {:.1f}",
+                          bot->GetName(), data->stop, traced - 1,
+                          bot->GetExactDist2d(stop.pos.GetPositionX(), stop.pos.GetPositionY()),
+                          bot->GetExactDist(stop.pos), bot->GetPositionZ(), stop.pos.GetPositionZ());
+            }
+            return away.value_or(true);
         }
         data->arrived = true;
     }
@@ -237,8 +293,13 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         {
             Creature* found =
                 bot->FindNearestCreature(stop.vendorEntry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
+            // A vendor that walks a path is found by its spawn wherever it walks (NR9) and approached below
+            if (!found)
+                found = SpawnedVendor(bot, stop);
             if (!found)
             {
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor",
+                                   WorldTravel::VendorPassedWord(false, false), 0.0f, {}, stop.vendorEntry);
                 data->vendorDone = true;
                 return true;
             }
@@ -249,6 +310,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         Creature* vendor = object ? object->ToCreature() : nullptr;
         if (!vendor || !vendor->IsAlive())
         {
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "vendor",
+                               WorldTravel::VendorPassedWord(true, false), 0.0f, {}, stop.vendorEntry);
             data->vendorDone = true;
             return true;
         }
@@ -274,7 +337,9 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
         if (shopping)
             UpkeepNeeds::SampleUse(measure, StockLevelsOf(botAI), bot->getClass(), bot->GetLevel(), getMSTime());
-        botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
+        // At the vendor it stands at (WR30: a scan of the nearest npcs filters by line of sight, which a tall bot
+        // on Thurman Mullby's spot lacked, so its sale failed silently while the shop step reached him)
+        botAI->DoSpecificAction("sell", Event("sell", vendor->GetGUID()), true);
         // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
         if (WorldTravel::MoveSpareBagToBackpack(bot, ItemUsageValue::SmallestBagSize(bot)))
             botAI->DoSpecificAction("equip upgrades packet action");
@@ -285,14 +350,29 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         if (vendor->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) &&
             (AI_VALUE(bool, "can repair") || WorldTravel::RepairErrandWanted(bot)))
         {
-            botAI->DoSpecificAction("repair", Event("repair"), true);
+            uint32 const moneyBefore = bot->GetMoney();
+            Planner::GearWear const wearBefore = Planner::ReadGearWear(bot);
+            bool const found = botAI->DoSpecificAction("repair", Event("repair", vendor->GetGUID()), true);
             repaired = true;
+            // NR1 group C (bots beside the repairer that paid nothing): what the repair found and paid, once per stop
+            Planner::GearWear const wearAfter = Planner::ReadGearWear(bot);
+            LOG_DEBUG("playerbots",
+                      "[Errand] {} repair at {} ({}) found {} money {} -> {} broken {} -> {} lowest {}% -> {}% "
+                      "can_repair {} wanted {}",
+                      bot->GetName(), vendor->GetEntry(), vendor->GetGUID().ToString(), found, moneyBefore,
+                      bot->GetMoney(), wearBefore.broken, wearAfter.broken, wearBefore.lowestPercent,
+                      wearAfter.lowestPercent, AI_VALUE(bool, "can repair"), WorldTravel::RepairErrandWanted(bot));
         }
 
         if (shopping)
         {
-            ShopAtVendor(botAI, vendor, repaired);
-            BuyOrderedBag(botAI, vendor);
+            ShopAtVendor(botAI, vendor, repaired, stop.mountRank);
+            // NR21: the ordered bag must leave the visit's upkeep reserve, read after the shopping (ErrandNeeds
+            // refreshes on the money the shopping spent)
+            std::shared_ptr<Planner::UpkeepIndex const> const index =
+                Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+            if (index)
+                BuyOrderedBag(botAI, vendor, ErrandNeeds(botAI, index)->needs.reserve);
         }
 
         if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
@@ -448,6 +528,15 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         return BankMail::CraftStop(botAI, stop.craftsTried, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS,
                                    stop.craft, data->visited);
 
+    // The auction errand (auction house WA3b): the bag stock is listed before the deposit would bank it
+    if (stop.auction)
+    {
+        stop.auction = false;
+        if (StartStopVisit(botAI, bot, WorldTravel::ErrandKind::Auction))
+            data->visited = true;
+        return true;
+    }
+
     if (stop.bankAfter || stop.mail)
     {
         WorldTravel::ErrandKind const kind =
@@ -462,6 +551,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     ++data->stop;
     data->arrived = false;
     data->vendorDone = false;
+    data->awayTraced = 0;
     data->vendor = ObjectGuid();
     data->needs.reset();  // the stop's turn-ins, deposit and mail moved items without gold: the next stop computes anew
     return true;

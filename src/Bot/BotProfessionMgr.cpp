@@ -51,8 +51,6 @@ constexpr uint32 FirstVersion = 1;
 constexpr uint32 DefaultSample = 10;
 constexpr uint32 MaxSample = 50;
 constexpr uint32 RaceClassTries = 1000;
-constexpr uint32 SelftestGuid = 4242;
-constexpr uint32 SelftestBotsPerClass = 1000;
 constexpr char const* Columns = "`guid`, `version`, `origin`, `main1`, `main2`, `first_aid`, `fishing`, `cooking`";
 
 constexpr uint8 PlayableRaces[] = {RACE_HUMAN,  RACE_ORC,   RACE_DWARF, RACE_NIGHTELF, RACE_UNDEAD_PLAYER,
@@ -107,56 +105,12 @@ BotProfessions RulesAnswer(Player* bot)
     return ProfessionRules::Adopt(rolled, HeldSkills(bot));
 }
 
-bool Selftest(ChatHandler* handler)
-{
-    uint32 checks = 0;
-    uint32 failures = 0;
-    auto const check = [&](bool ok, std::string const& what)
-    {
-        ++checks;
-        if (ok)
-            return;
-
-        ++failures;
-        handler->PSendSysMessage("PROFESSIONS selftest failed: {}", what);
-    };
-
-    TraitRules::BotTraits const traits = TraitRules::Roll(SelftestGuid, FirstVersion, RACE_HUMAN, CLASS_WARRIOR);
-    BotProfessions const first = ProfessionRules::Roll(SelftestGuid, FirstVersion, CLASS_WARRIOR, traits, Chances());
-    BotProfessions const again = ProfessionRules::Roll(SelftestGuid, FirstVersion, CLASS_WARRIOR, traits, Chances());
-    check(first.Mains == again.Mains && first.Secondary == again.Secondary, "the same guid and version roll alike");
-
-    uint32 oneMain = 0;
-    for (uint8 const cls : PlayableClasses)
-        for (uint32 guid = 1; guid <= SelftestBotsPerClass; ++guid)
-        {
-            uint8 const race = PlayableRaces[guid % std::size(PlayableRaces)];
-            BotProfessions const person = ProfessionRules::Roll(
-                guid, FirstVersion, cls, TraitRules::Roll(guid, FirstVersion, race, cls), Chances());
-            std::string const violation = ProfessionRules::Violation(person, cls);
-            std::size_t const mains = ProfessionRules::MainCount(person);
-            if (!violation.empty() || !mains)
-                check(false, Acore::StringFormat("class {} guid {}: {}", cls, guid,
-                                                 violation.empty() ? "no main profession" : violation));
-
-            oneMain += mains == 1 ? 1 : 0;
-        }
-
-    BotProfessions const held = ProfessionRules::Adopt(first, {Skill::Tailoring, Skill::Skinning});
-    check(held.Mains[0] == Skill::Skinning && held.Mains[1] == Skill::Tailoring &&
-              held.From == ProfessionRules::Origin::Held,
-          "a warrior's held tailoring and skinning become its person");
-    uint32 const bots = SelftestBotsPerClass * static_cast<uint32>(std::size(PlayableClasses));
-    handler->PSendSysMessage("PROFESSIONS selftest: {} checks, {} failures ({}); {:.1f} % of {} bots with one main",
-                             checks, failures, failures ? "FAIL" : "PASS", 100.0 * oneMain / bots, bots);
-    return !failures;
-}
-
 void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
         "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
-        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | nodes <bot> | selftest]",
+        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | nodes <bot> | rates "
+        "[<zone>]]",
         MaxSample);
 }
 
@@ -304,8 +258,6 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     std::string const target = words.empty() ? "" : words[0];
     std::string const verb = words.size() > 1 ? words[1] : "";
-    if (target == "selftest")
-        return Selftest(handler);
 
     if (target == "index")  // read-only; the dump writes a file in the logs folder
         return Planner::HandleRecipeIndexCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
@@ -318,6 +270,9 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     if (target == "nodes")  // read-only: the gather rules on the bot's zone now (WR13a)
         return Planner::HandleNodesCommand(handler, verb);
+
+    if (target == "rates")  // read-only: the observed minutes per take per zone and way (WPC13b); `set` a GM's fixture
+        return Planner::HandleRatesCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
 
     if (target == "visit")  // a GM test: the profession trainer stop's handler on the trainer in reach
     {

@@ -198,6 +198,7 @@ struct TripEnd
 {
     Outcome outcome{Outcome::Interrupted};
     char const* word{nullptr};
+    float yards{0.0f};  // an end left unread (Finish): the bot to the trip's destination as the trip left it
 };
 
 // One held trip and its holder. The status core begins it with its holder's status and ends it before that status
@@ -237,11 +238,12 @@ public:
 
     // The trip ended by itself (the follower's arrival or a failed leg); its holder's status goes on and reads the end
     // once. False: no trip was held
-    bool Finish(Outcome outcome, char const* word)
+    bool Finish(Outcome outcome, char const* word, float yards = 0.0f)
     {
         std::uint32_t const by = holder;
         if (!End(outcome, word))
             return false;
+        lastEnd.yards = yards;
         unread = true;
         endHolder = by;
         return true;

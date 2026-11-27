@@ -16,6 +16,7 @@
 #include "ProfessionRules.h"
 #include "RouteRules.h"
 #include "TraitRules.h"
+#include "WorldTravelTypes.h"
 
 // The bot as the planner sees it (PlannerPool.h): Planner::Snapshot and the plain types it holds. The
 // snapshot contract: a step that gives the planner a new fact adds its field here.
@@ -115,6 +116,7 @@ struct Snapshot
     std::uint32_t money{0};
     std::uint16_t bagSlots{0};  // general slots: the backpack and plain bags
     std::uint16_t bagFree{0};
+    bool unarmed{false};  // no weapon in the main hand: no creature stop (WPC10)
     std::uint8_t durabilityPercent{100};
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
@@ -130,10 +132,11 @@ struct Snapshot
     std::optional<TraitRules::BotTraits> traits;
     float runSpeed{0.0f};
     bool mounted{false};
-    std::uint8_t groupSize{0};   // 0 = no group
-    std::uint32_t sickMs{0};     // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
-    bool sickErrandOpen{false};  // sick, and recover handed over a due repair (Upkeep::SickErrandOpen, NE11)
-    Goal currentGoal;            // WT16 fills the goals
+    std::uint8_t groupSize{0};      // 0 = no group
+    std::uint32_t sickMs{0};        // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
+    bool sickErrandOpen{false};     // sick, and recover handed the bot over: restored on a clear point (NR3)
+    std::optional<Place> sickRest;  // NR3: where a sick bot rests: a clear point (its own, or recover's FindSafePoint)
+    Goal currentGoal;               // WT16 fills the goals
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
     std::vector<StockItem> stock;  // the backpack and every bag, one entry per item id
     std::uint8_t petDiet{0};       // the hunter pet's diet (bit FoodType - 1); 0 = unknown
@@ -156,9 +159,9 @@ struct Snapshot
     // Bit i: the abilities the class list's spell i needs that are on neither list (talents, racials, quest spells
     // such as Summon Warhorse) are all known
     std::vector<std::uint64_t> offListMetClassSpells;
-    // Bit i: the class list's spell i is known and cast without its reagents (Player::CanNoReagentCast: Glyph of
-    // Renewed Life frees Reincarnation's Ankh); only the reagent spells' positions are filled
-    std::vector<std::uint64_t> reagentFreeClassSpells;
+    // The reagent items of the class spells the bot knows and pays reagents for, sorted
+    // (ItemUsageValue::ClassSpellReagents)
+    std::vector<std::uint32_t> knownReagents;
     // The riding skill the bot's best known mount of each kind needs; a riding rank is complete with a mount of its
     // skill or better (WU14). The travel shares are no snapshot fields: the needs read them from the slot measure
     std::uint16_t groundMountSkill{0};
@@ -190,6 +193,16 @@ struct Snapshot
     std::optional<ProfessionRules::BotProfessions> person;
     std::vector<ProfessionRung> ladders;
 
+    // What a gatherer knows of its zone's spawn points (WR13d, GatherLive.cpp FillGatherSight; a herbalist or miner
+    // only): those within its sight (the map's visibility range) that hold a node, and those within it that hold none
+    // or that it took or found empty within their respawn (Gather::Memory); spawn ids, sorted. The circuit counts
+    // the first as up and leaves the second out (Gather::ApplySight)
+    std::vector<std::uint32_t> gatherUp;
+    std::vector<std::uint32_t> gatherDown;
+    // The places the record of failed attempts refuses as the bot plans (Gather::RefusedPlaces): no stop of a gather
+    // circuit is within them (Gather::DropRefused, professions WPC9)
+    std::vector<WorldTravel::SightPoint> gatherRefused;
+
     // The route search's own view of the bot as a trip asks it (planning WN1a, PlannerRouteCost.h): filled on the map
     // thread with the rest, transports on and the test constraints applied; its points and taxi mask are its own copy
     TravelRoute::Snapshot route;
@@ -208,10 +221,13 @@ struct Snapshot
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
                ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
-               (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
+               (knownReagents.capacity() + knownRecipes.capacity() + toolsHeld.capacity() + gatherUp.capacity() +
+                gatherDown.capacity()) *
+                   sizeof(std::uint32_t) +
+               gatherRefused.capacity() * sizeof(WorldTravel::SightPoint) +
                ladders.capacity() * sizeof(ProfessionRung) + materials.capacity() * sizeof(MaterialHeld) +
-               (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
-                canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
+               (knownClassSpells.capacity() + knownRidingSpells.capacity() + canLearnClassSpells.capacity() +
+                canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);
     }
 };

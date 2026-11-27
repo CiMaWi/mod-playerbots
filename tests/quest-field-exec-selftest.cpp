@@ -14,6 +14,8 @@
 // WQ20: on the way (Detour, OnOrder): before the arrival a field order with an allowance and a way (WayOrder) take
 // what lies within the allowance on the way, generated walks from 150 to 600 yards off; cases shaped as way-kill,
 // way-far and way-trip.
+// WQ38: the stall sum and its rows (QuestFailRows.h): hand cases on the rule's edges and generated timelines checked
+// against the harness's own count; the abandon's done share and the two rows' amounts.
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //       tests/quest-field-exec-selftest.cpp
@@ -26,10 +28,13 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "PursuitRules.h"
+#include "QuestFailRows.h"
 #include "QuestFieldExec.h"
 
 using namespace Planner;
@@ -380,6 +385,7 @@ StatusEnd::Outcome ExpectedOutcome(QuestOrderEnd end)
             return StatusEnd::Outcome::Finished;
         case QuestOrderEnd::Arrived:
             return StatusEnd::Outcome::Arrived;
+        case QuestOrderEnd::Bags:
         case QuestOrderEnd::Time:
         case QuestOrderEnd::Dry:
             return StatusEnd::Outcome::TimedOut;
@@ -1291,6 +1297,837 @@ void Bounds()
 }
 }  // namespace
 
+// WQ18b: an order of takes only (the pickup at a hub), the end that names the bags, the order's own end at the
+// status door
+void SwitchRules()
+{
+    constexpr std::uint32_t QUEST_A = 50;
+    constexpr std::uint32_t QUEST_B = 51;
+    QuestOrder order;
+    order.word = QuestOrderWord::HandIn;
+    order.end = QuestOrderEnd::Done;
+    order.mapId = MAP_A;
+    order.x = -8903.0f;
+    order.y = -163.0f;
+    order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+    order.expected = {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}};
+    order.walkMinutes = 1.0f;
+    order.minutes = 5.0f;
+    std::set<std::uint32_t> taken;
+    auto const takeable = [&taken](std::uint32_t quest) { return taken.count(quest) == 0; };
+    // The order's count of a log that holds none of its quests
+    auto const counted = [&takeable](QuestOrderRun& run)
+    {
+        run.open.clear();
+        X::OpenTakes(run.open, run.order, takeable);
+    };
+    {
+        QuestOrderRun run;
+        run.order = order;
+        run.startedAt = run.lastCount = X::Stamp(1000);
+        counted(run);
+        bool const opened = run.open.size() == 2 && X::ExpectedOpen(order, run.open) && !X::End(run, 1000, false);
+        X::OpenTakes(run.open, run.order, takeable);
+        bool const once = run.open.size() == 2;
+        taken.insert(QUEST_A);
+        counted(run);
+        bool const half = run.open.size() == 1 && !X::End(run, 3000, false);
+        taken.insert(QUEST_B);
+        counted(run);
+        Check(opened && once && half && X::End(run, 5000, false) == QuestOrderEnd::Done,
+              "take-only: an order that expects only takes is not done at its first tick; it is done once the last "
+              "quest is taken (mutant: OpenTakes opens nothing)");
+    }
+    {
+        taken.clear();
+        QuestOrderRun dry;
+        dry.order = order;
+        dry.startedAt = dry.lastCount = X::Stamp(1000);
+        dry.arrivedAt = X::Stamp(2000);
+        counted(dry);
+        Check(!X::End(dry, 2000 + X::LOOK_MS - 1, false) && X::End(dry, 2000 + X::LOOK_MS, false) == QuestOrderEnd::Dry,
+              "take-only: a take that never comes ends dry after the look time at the place (its give-up: "
+              "RefusedTakes)");
+    }
+    {
+        std::vector<QuestOrderOpen> const counts = {{7, 0, 2}, {8, HAND_IN, 1}, {9, 1, 0}};
+        taken = {QUEST_B};
+        bool const byNeed =
+            X::NeedOpen(counts, {QUEST_A, TAKE, 1}, takeable) && !X::NeedOpen(counts, {QUEST_B, TAKE, 1}, takeable) &&
+            X::NeedOpen(counts, {7, 0, 2}, takeable) && X::NeedOpen(counts, {8, HAND_IN, 1}, takeable) &&
+            !X::NeedOpen(counts, {9, 1, 1}, takeable) && !X::NeedOpen(counts, {7, 1, 1}, takeable);
+        taken = {QUEST_A, QUEST_B};
+        QuestOrderRun gone;
+        gone.order = order;
+        counted(gone);
+        Check(byNeed && gone.open.empty() && !X::NeedOpen(counts, order.expected.front(), takeable),
+              "need open: a take while its quest can be taken, any other need while the log has credits left; an "
+              "order whose takes are all gone has nothing open, so the route does not start it");
+    }
+
+    auto const handIns = []
+    {
+        QuestOrderRun at;
+        at.order.word = QuestOrderWord::HandIn;
+        at.order.expected = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}};
+        at.open = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}, {70, 0, 4}};
+        return at;
+    };
+    {
+        QuestOrderRun all = handIns();
+        QuestOrderEnd const end = X::NameEnd(all, QuestOrderEnd::NoEnder, [](std::uint32_t) { return true; });
+        Check(end == QuestOrderEnd::Bags && X::NoEnderQuests(all).empty() && all.open.back().left == 4 &&
+                  X::OutcomeOf(end) == StatusEnd::Outcome::TimedOut &&
+                  !Pursuit::WritesFailure(true, X::OutcomeOf(end), QuestOrderEndName(end)) &&
+                  std::string(QuestOrderEndName(end)) == "bags" &&
+                  std::string(X::RowSource(QuestOrderWord::Field, end)) == "field:bags" &&
+                  std::string(X::RowSource(QuestOrderWord::HandIn, end)) == "hand_in:bags" &&
+                  std::string(X::RowSource(QuestOrderWord::Way, end)) == "way:bags",
+              "bags: every expected hand-in left is one the bags refuse: the order ends bags, by the clock, with no "
+              "failure row for any quest (mutant: NameEnd keeps no_ender)");
+        QuestOrderRun mixed = handIns();
+        QuestOrderEnd const mixedEnd =
+            X::NameEnd(mixed, QuestOrderEnd::NoEnder, [](std::uint32_t quest) { return quest == 61; });
+        Check(mixedEnd == QuestOrderEnd::NoEnder && X::NoEnderQuests(mixed) == std::vector<std::uint32_t>{60, 62} &&
+                  Pursuit::WritesFailure(true, X::OutcomeOf(mixedEnd), QuestOrderEndName(mixedEnd)),
+              "bags: with a hand-in its ender failed among them the end stays no_ender, and only that one's quests "
+              "get a failure row");
+        QuestOrderRun none = handIns();
+        bool const kept =
+            X::NameEnd(none, QuestOrderEnd::NoEnder, [](std::uint32_t) { return false; }) == QuestOrderEnd::NoEnder &&
+            X::NoEnderQuests(none).size() == 3;
+        std::size_t passedOn = 0;
+        for (QuestOrderEnd const other : {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time,
+                                          QuestOrderEnd::Dry, QuestOrderEnd::Replaced})
+        {
+            QuestOrderRun run = handIns();
+            passedOn += X::NameEnd(run, other, [](std::uint32_t) { return true; }) == other &&
+                        X::NoEnderQuests(run).size() == 3;
+        }
+        Check(kept && passedOn == 5, "bags: no refusal keeps no_ender with its rows; any other end is named as found");
+    }
+    {
+        std::size_t own = 0;
+        for (QuestOrderEnd const end :
+             {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time, QuestOrderEnd::Dry,
+              QuestOrderEnd::Replaced, QuestOrderEnd::NoEnder, QuestOrderEnd::Bags})
+            own += X::OwnEnd(QuestOrderEndName(end), X::OutcomeOf(end)) == end;
+        Check(own == 7 && !X::OwnEnd(nullptr, StatusEnd::Outcome::Ordered) &&
+                  !X::OwnEnd("order", StatusEnd::Outcome::Ordered) &&
+                  !X::OwnEnd("dry", StatusEnd::Outcome::Interrupted) &&
+                  !X::OwnEnd("replaced", StatusEnd::Outcome::Interrupted) &&
+                  !X::OwnEnd("switch", StatusEnd::Outcome::Interrupted),
+              "own end: each end's word with its outcome is the order's own end; a status taken over (an order, a "
+              "switch, an interruption) is none");
+    }
+}
+
+// WQ18b part 3 (fault F4): an order at NPCs. Its bounds last the look time longer and its stay restarts at each count
+// of the log; it walks to the nearest spot of an expected need that is open, within its field
+void NpcOrders()
+{
+    constexpr std::uint32_t STAY_MS = 15 * 1000;     // 0.25 min
+    constexpr std::uint32_t WALK_MS = 2 * 6 * 1000;  // twice 0.1 min
+    QuestOrderRun run;
+    run.order.word = QuestOrderWord::HandIn;
+    run.order.mapId = MAP_A;
+    run.order.x = 150.0f;
+    run.order.y = 150.0f;
+    run.order.cell = FieldCellKeyAt(MAP_A, 150.0f, 150.0f);
+    run.order.minutes = 0.25f;
+    run.order.walkMinutes = 0.1f;
+    run.order.expected = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    run.startedAt = run.lastCount = 1000;
+    bool const walk = !X::End(run, 1000 + WALK_MS + STAY_MS + X::LOOK_MS - 1, false) &&
+                      X::End(run, 1000 + WALK_MS + STAY_MS + X::LOOK_MS, false) == QuestOrderEnd::Time;
+    run.arrivedAt = 5000;
+    bool const look =
+        !X::End(run, 5000 + X::LOOK_MS - 1, false) && X::End(run, 5000 + X::LOOK_MS, false) == QuestOrderEnd::NoEnder;
+    bool const clock = !X::End(run, 5000 + STAY_MS + X::LOOK_MS - 1, true) &&
+                       X::End(run, 5000 + STAY_MS + X::LOOK_MS, true) == QuestOrderEnd::Time;
+    run.lastCount = run.lastFound = 40000;  // the hand-in came: the log is counted, the take is still open
+    run.open[0].left = 0;
+    bool const restarted = !X::End(run, 40000 + STAY_MS + X::LOOK_MS - 1, true) &&
+                           X::End(run, 40000 + STAY_MS + X::LOOK_MS, true) == QuestOrderEnd::Time &&
+                           X::End(run, 40000 + X::LOOK_MS, false) == QuestOrderEnd::Dry;
+    QuestOrderRun field = run;
+    field.order.word = QuestOrderWord::Field;
+    field.open[0].left = 1;
+    bool const planned = !X::End(field, 5000 + STAY_MS - 1, true) &&
+                         X::End(field, 5000 + STAY_MS, true) == QuestOrderEnd::Time &&
+                         X::End(field, 40000 + 1, true) == QuestOrderEnd::Time;
+    Check(walk && look && clock && restarted && planned,
+          "an order at NPCs: its walk's bound and its stay last the look time longer, so the look ends it (no_ender, "
+          "dry) before the clock; a count of the log restarts its stay; a field's stay is the planned one from the "
+          "arrival (mutants: End without NpcSlackMs, the stay from the arrival only)");
+
+    run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    std::vector<X::NpcSpot> const spots = {{7, HAND_IN, 180.0f, 150.0f, 5.0f},
+                                           {8, TAKE, 120.0f, 150.0f, 6.0f},
+                                           {9, HAND_IN, 151.0f, 150.0f, 0.0f},  // no need the order expects
+                                           {8, TAKE, 450.0f, 150.0f, 0.0f}};    // outside the field
+    bool const nearest = X::NearestSpot(run.order, run.open, spots, 170.0f, 150.0f) == std::size_t{0} &&
+                         X::NearestSpot(run.order, run.open, spots, 125.0f, 150.0f) == std::size_t{0} &&
+                         X::NearestSpot(run.order, run.open, spots, 440.0f, 150.0f) == std::size_t{0};
+    // part 4: a field order walks to its NPCs too and, with none open, to its place; an order at NPCs stays
+    bool const fieldToo = X::NearestSpot(field.order, field.open, spots, 125.0f, 150.0f) == std::size_t{0};
+    std::optional<X::OrderAim> const toEnder = X::AimOf(field.order, field.open, spots, 125.0f, 150.0f);
+    field.open[0].left = field.open[1].left = 0;
+    std::optional<X::OrderAim> const toPlace = X::AimOf(field.order, field.open, spots, 125.0f, 150.0f);
+    run.open[0].left = 0;
+    bool const next = X::NearestSpot(run.order, run.open, spots, 180.0f, 150.0f) == std::size_t{1};
+    run.open[1].left = 0;
+    bool const none = !X::NearestSpot(run.order, run.open, spots, 180.0f, 150.0f);
+    bool const aims = toEnder && toEnder->npc && toEnder->x == 180.0f && toEnder->z == 5.0f && toPlace &&
+                      !toPlace->npc && toPlace->x == 150.0f && toPlace->y == 150.0f &&
+                      !X::AimOf(run.order, run.open, spots, 180.0f, 150.0f);
+    std::vector<X::NpcSpot> const away = {{8, TAKE, 450.0f, 150.0f, 0.0f}};
+    run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
+    bool const keepsPlace = !X::NearestSpot(run.order, run.open, away, 180.0f, 150.0f);
+    Check(nearest && next && none && fieldToo && aims && keepsPlace,
+          "an order walks to the nearest spot of an expected hand-in still open, within its field, then to its "
+          "takes'; a need done sends it on to the next NPC; with none a field order goes to its place and an order at "
+          "NPCs stays (mutants: NearestSpot for orders at NPCs only, the nearest spot whatever its need)");
+}
+
+// WQ18b part 4 (lab13, 2026-11-25: quest 313 ready, its ender 122 yards from the field order's place, beyond the giver
+// search; the order ended no_ender twice and the quest was abandoned). The harness's own executor round an order's
+// aim: each tick an NPC within reach that gives closes its need (the hand-in, the take), at the place the field's work
+// earns a credit every creditTicks ticks (0: none), a change counts the log and asks AimOf again (a new aim is a new
+// walk: the arrival is taken again), the bot steps to its aim and arrives within ten yards, and End speaks
+constexpr float WALK_STEP = 14.0f;    // 7 yards a second, a tick of 2 s
+constexpr float WALK_ARRIVE = 10.0f;  // the executor's arrival
+constexpr float NPC_REACH = 20.0f;    // an NPC this near gives for certain (the game's search reaches farther)
+constexpr std::uint32_t WALK_LIMIT_TICKS = 1800;  // an hour
+constexpr std::size_t ENDER_WALKS = 600;
+
+struct AimWalk
+{
+    std::optional<QuestOrderEnd> end;
+    float x{0.0f};
+    float y{0.0f};
+    std::vector<std::uint32_t> handed;  // the quests handed in
+    std::vector<std::uint32_t> rows;    // the quests a no_ender end gives up
+};
+
+template <typename Gives>
+AimWalk WalkAims(QuestOrderRun& run, std::vector<X::NpcSpot> const& spots, Gives const& gives, float x, float y,
+                 std::uint32_t creditTicks)
+{
+    AimWalk walk;
+    std::uint32_t now = 1000;
+    run.startedAt = run.lastCount = now;
+    float toX = run.order.x;
+    float toY = run.order.y;
+    bool atNpc = false;
+    auto const walkMinutes = [&]() { return static_cast<float>(Yards(x, y, toX, toY)) / 7.0f / 60.0f; };
+    auto const aim = [&]()
+    {
+        std::optional<X::OrderAim> const next = X::AimOf(run.order, run.open, spots, x, y);
+        if (!next)
+            return;
+        atNpc = next->npc;
+        if (Yards(next->x, next->y, toX, toY) <= 1.0)
+            return;
+        toX = next->x;
+        toY = next->y;
+        run.arrivedAt = 0;
+        run.order.walkMinutes = walkMinutes();
+    };
+    run.order.walkMinutes = walkMinutes();
+    aim();
+    for (std::uint32_t tick = 1; tick <= WALK_LIMIT_TICKS; ++tick)
+    {
+        now += TICK_MS;
+        bool changed = false;
+        bool finding = false;
+        for (X::NpcSpot const& spot : spots)
+            if (gives(spot) && Yards(x, y, spot.x, spot.y) <= NPC_REACH)
+                for (QuestOrderOpen& need : run.open)
+                    if (need.left && need.quest == spot.quest && need.objective == spot.objective)
+                    {
+                        need.left = 0;
+                        if (spot.objective == HAND_IN)
+                        {
+                            ++run.handIns;
+                            walk.handed.push_back(spot.quest);
+                        }
+                        else
+                            ++run.takes;
+                        changed = true;
+                    }
+        if (run.arrivedAt && !atNpc && creditTicks && tick % creditTicks == 0)
+            for (QuestOrderOpen& need : run.open)
+                if (need.left && need.objective != HAND_IN && need.objective != TAKE)
+                {
+                    --need.left;
+                    ++run.placeCredits;
+                    changed = finding = true;
+                    break;
+                }
+        if (changed)
+        {
+            run.lastFound = run.lastCount = now;
+            aim();
+        }
+        if (!run.arrivedAt && Yards(x, y, toX, toY) <= WALK_ARRIVE)
+            run.arrivedAt = now;
+        if (std::optional<QuestOrderEnd> const found = X::End(run, now, finding))
+        {
+            walk.end = X::NameEnd(
+                run, *found, [](std::uint32_t) { return false; },
+                [&](std::uint32_t quest) { return X::EnderElsewhere(run.order, spots, quest, x, y); });
+            if (walk.end == QuestOrderEnd::NoEnder)
+                walk.rows = X::NoEnderQuests(run);
+            break;
+        }
+        if (!run.arrivedAt)
+        {
+            double const left = Yards(x, y, toX, toY);
+            double const step = std::min<double>(WALK_STEP, left);
+            x += static_cast<float>((toX - x) * step / left);
+            y += static_cast<float>((toY - y) * step / left);
+        }
+    }
+    walk.x = x;
+    walk.y = y;
+    return walk;
+}
+
+// Generated orders with one to three NPCs (enders and givers; nine in ten in the order's field, three in four giving),
+// field orders with work at the place among them, each walked from up to 300 yards off
+void EnderWalks(std::uint32_t seed)
+{
+    Gen gen{std::mt19937(seed ^ 0x51ED270Bu)};
+    Invariant bounded("part 4: every walked order ends");
+    Invariant atEnder(
+        "part 4: a no_ender end gives up only a quest whose ender the bot stands at, or that has none in "
+        "the order's field");
+    Invariant handed(
+        "part 4: with every ender of the field taking its quest, no such hand-in is left when the look "
+        "ends the order");
+    Invariant done("part 4: an order whose NPCs all stand in its field and give, with its field's credits, ends done");
+    std::size_t noEnders = 0;
+    std::size_t dones = 0;
+    std::size_t fieldHandIns = 0;
+    for (std::size_t at = 0; at < ENDER_WALKS; ++at)
+    {
+        QuestOrderRun run;
+        QuestOrder& order = run.order;
+        bool const field = gen.Chance(0.7f);
+        std::int32_t const cellX = gen.Int(CELL_LOW + 2, CELL_HIGH - 2);
+        std::int32_t const cellY = gen.Int(CELL_LOW + 2, CELL_HIGH - 2);
+        order.word = field ? QuestOrderWord::Field : QuestOrderWord::HandIn;
+        order.end = QuestOrderEnd::Done;
+        order.mapId = MAP_A;
+        order.x = (static_cast<float>(cellX) + (field ? gen.Real(0.05f, 0.95f) : 0.5f)) * 100.0f;
+        order.y = (static_cast<float>(cellY) + (field ? gen.Real(0.05f, 0.95f) : 0.5f)) * 100.0f;
+        order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+        order.minutes = field ? 5.0f : 0.25f;
+        std::vector<X::NpcSpot> spots;
+        std::set<std::uint32_t> giving;
+        bool allGive = true;
+        bool endersGive = true;
+        int const npcs = gen.Int(1, 3);
+        for (int n = 0; n < npcs; ++n)
+        {
+            std::uint32_t const quest = FIRST_QUEST + static_cast<std::uint32_t>(n);
+            std::uint32_t const objective = gen.Chance(0.7f) ? HAND_IN : TAKE;
+            bool const inField = gen.Chance(0.9f);
+            bool const gives = gen.Chance(0.75f);
+            // its spot: in one of the field's nine cells, or two cells off
+            float const spotX =
+                (static_cast<float>(cellX + (inField ? gen.Int(-1, 1) : 2)) + gen.Real(0.02f, 0.98f)) * 100.0f;
+            float const spotY = (static_cast<float>(cellY + gen.Int(-1, 1)) + gen.Real(0.02f, 0.98f)) * 100.0f;
+            order.expected.push_back({quest, objective, 1});
+            run.open.push_back({quest, objective, 1});
+            spots.push_back({quest, objective, spotX, spotY, 0.0f});
+            if (gives)
+                giving.insert(quest);
+            allGive = allGive && inField && gives;
+            endersGive = endersGive && (objective != HAND_IN || !inField || gives);
+            fieldHandIns += field && inField && objective == HAND_IN ? 1 : 0;
+        }
+        std::uint32_t const credits = field && gen.Chance(0.8f) ? static_cast<std::uint32_t>(gen.Int(1, 5)) : 0;
+        std::uint32_t const creditTicks = credits && gen.Chance(0.8f) ? static_cast<std::uint32_t>(gen.Int(2, 20)) : 0;
+        if (credits)
+        {
+            order.expected.push_back({FIRST_QUEST + 9, 0, credits});
+            run.open.push_back({FIRST_QUEST + 9, 0, credits});
+        }
+        float const x = order.x + gen.Real(-300.0f, 300.0f);
+        float const y = order.y + gen.Real(-300.0f, 300.0f);
+        AimWalk const walk = WalkAims(
+            run, spots, [&giving](X::NpcSpot const& spot) { return giving.count(spot.quest) > 0; }, x, y, creditTicks);
+        bounded.Note(walk.end.has_value(), at, "no end within an hour");
+        if (!walk.end)
+            continue;
+        noEnders += *walk.end == QuestOrderEnd::NoEnder ? 1 : 0;
+        dones += *walk.end == QuestOrderEnd::Done ? 1 : 0;
+        for (std::uint32_t const quest : walk.rows)
+        {
+            bool inField = false;
+            bool stoodAt = false;
+            for (X::NpcSpot const& spot : spots)
+                if (spot.quest == quest && spot.objective == HAND_IN && HarnessInField(order, MAP_A, spot.x, spot.y))
+                {
+                    inField = true;
+                    stoodAt = stoodAt || Yards(walk.x, walk.y, spot.x, spot.y) <= NPC_REACH + 0.01;
+                }
+            atEnder.Note(!inField || stoodAt, at, "quest " + std::to_string(quest) + " given up away from its ender");
+        }
+        if (endersGive && (*walk.end == QuestOrderEnd::NoEnder || *walk.end == QuestOrderEnd::Dry))
+            for (X::NpcSpot const& spot : spots)
+                if (spot.objective == HAND_IN && HarnessInField(order, MAP_A, spot.x, spot.y))
+                    handed.Note(std::find(walk.handed.begin(), walk.handed.end(), spot.quest) != walk.handed.end(), at,
+                                "quest " + std::to_string(spot.quest) + " not handed in, end " + Name(walk.end));
+        if (allGive && (!credits || creditTicks))
+            done.Note(*walk.end == QuestOrderEnd::Done, at, Name(walk.end));
+    }
+    std::printf("part 4: walked orders=%zu, hand-ins in a field order's field=%zu, ends done %zu, no_ender %zu\n",
+                ENDER_WALKS, fieldHandIns, dones, noEnders);
+    Report(bounded);
+    Report(atEnder);
+    Report(handed);
+    Report(done);
+    Check(noEnders > 0 && dones > 0 && fieldHandIns > 0,
+          "the walked orders end no_ender and done, field orders among them");
+}
+
+// part 4, the lab's case: a field order at -5470 -520 that expects quest 313's hand-in (its ender at -5473 -642, in the
+// field, 122 yards from the place) and two credits of quest 317, the bot 285 yards north of the place
+void FieldEnder()
+{
+    auto const make = []()
+    {
+        QuestOrderRun run;
+        run.order.word = QuestOrderWord::Field;
+        run.order.end = QuestOrderEnd::Done;
+        run.order.mapId = MAP_A;
+        run.order.x = -5470.0f;
+        run.order.y = -520.0f;
+        run.order.cell = FieldCellKeyAt(MAP_A, -5470.0f, -520.0f);
+        run.order.minutes = 5.0f;
+        run.order.expected = {{313, HAND_IN, 1}, {317, 0, 2}};
+        run.open = {{313, HAND_IN, 1}, {317, 0, 2}};
+        return run;
+    };
+    std::vector<X::NpcSpot> const spots = {{313, HAND_IN, -5473.0f, -642.0f, 400.0f}};
+    QuestOrderRun taken = make();
+    std::optional<X::OrderAim> const first = X::AimOf(taken.order, taken.open, spots, -5494.0f, -235.0f);
+    AimWalk const handedIn = WalkAims(taken, spots, [](X::NpcSpot const&) { return true; }, -5494.0f, -235.0f, 10);
+    Check(first && first->npc && first->y == -642.0f && handedIn.end == QuestOrderEnd::Done && taken.handIns == 1 &&
+              taken.placeCredits == 2 && handedIn.rows.empty(),
+          "part 4, the lab's case: a field order whose ready quest's ender stands 122 yards from its place walks to "
+          "the ender first, hands in, works its field and ends done (mutant: NearestSpot for orders at NPCs only)");
+    QuestOrderRun refused = make();
+    AimWalk const failed = WalkAims(refused, spots, [](X::NpcSpot const&) { return false; }, -5494.0f, -235.0f, 10);
+    Check(failed.end == QuestOrderEnd::NoEnder && failed.rows == std::vector<std::uint32_t>{313} &&
+              Yards(failed.x, failed.y, -5473.0, -642.0) <= WALK_ARRIVE + 1.0,
+          "part 4: an ender that does not take the quest: no_ender at the ender after the look time, its one row");
+
+    // The end's name: the bot at quest 60's ender; quest 61's stands 100 yards off in the field, quest 62's outside it
+    std::vector<X::NpcSpot> const enders = {{60, HAND_IN, -5470.0f, -520.0f, 0.0f},
+                                            {61, HAND_IN, -5470.0f, -620.0f, 0.0f},
+                                            {62, HAND_IN, -5470.0f, -820.0f, 0.0f}};
+    auto const noBags = [](std::uint32_t) { return false; };
+    QuestOrderRun three = make();
+    three.order.expected = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}};
+    three.open = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}};
+    QuestOrderEnd const named =
+        X::NameEnd(three, QuestOrderEnd::NoEnder, noBags, [&](std::uint32_t quest)
+                   { return X::EnderElsewhere(three.order, enders, quest, -5465.0f, -520.0f); });
+    bool const rows = named == QuestOrderEnd::NoEnder && X::NoEnderQuests(three) == std::vector<std::uint32_t>{60, 62};
+    QuestOrderRun away = make();
+    away.order.expected = {{61, HAND_IN, 1}};
+    away.open = {{61, HAND_IN, 1}};
+    bool const dry =
+        X::NameEnd(away, QuestOrderEnd::NoEnder, noBags, [&](std::uint32_t quest)
+                   { return X::EnderElsewhere(away.order, enders, quest, -5465.0f, -520.0f); }) == QuestOrderEnd::Dry &&
+        X::NoEnderQuests(away).empty();
+    Check(rows && dry,
+          "part 4: a no_ender end names the hand-in whose ender the bot stands at and the one with no ender in the "
+          "field, not the one whose ender stands elsewhere there; with only such left the end is dry with no row "
+          "(mutant: NameEnd without the ender's place)");
+}
+
+// WQ18c (WQ.44 item 2): a planned take that ends without the accept is one give-up of its quest (cannot_take),
+// written by one rule at the order's own end where the bot stands at the giver
+void RefusedTakeCases()
+{
+    constexpr std::uint32_t QUEST_A = 80;
+    constexpr std::uint32_t QUEST_B = 81;
+    constexpr std::uint32_t QUEST_C = 82;  // a hand-in on the same order, its ender beside the givers
+    constexpr float GIVER_X = -8903.0f;
+    constexpr float GIVER_Y = -163.0f;
+    constexpr std::uint32_t HORIZON_MS = 20 * 60 * 1000;  // past every bound of the orders below
+    std::vector<X::NpcSpot> const spots = {{QUEST_A, TAKE, GIVER_X, GIVER_Y, 0.0f},
+                                           {QUEST_B, TAKE, GIVER_X + 4.0f, GIVER_Y, 0.0f},
+                                           {QUEST_C, HAND_IN, GIVER_X, GIVER_Y + 4.0f, 0.0f}};
+    std::set<std::uint32_t> taken;   // in the log
+    std::set<std::uint32_t> denied;  // the take test denies it now (a full log, grey, given up)
+    float botX = GIVER_X + 2.0f;     // beside the givers
+    float const botY = GIVER_Y;
+    auto const takeable = [&taken](std::uint32_t quest) { return taken.count(quest) == 0; };
+    auto const atGiver = [&spots, &botX, botY](std::uint32_t quest) { return X::AtGiver(spots, quest, botX, botY); };
+    auto const mayTake = [&taken, &denied](std::uint32_t quest)
+    { return taken.count(quest) == 0 && denied.count(quest) == 0; };
+    auto const orderOf = [](QuestOrderWord word, std::vector<QuestOrderNeed> expected)
+    {
+        QuestOrder order;
+        order.word = word;
+        order.end = QuestOrderEnd::Done;
+        order.mapId = MAP_A;
+        order.x = GIVER_X;
+        order.y = GIVER_Y;
+        order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+        order.expected = std::move(expected);
+        order.walkMinutes = 1.0f;
+        order.minutes = 5.0f;
+        return order;
+    };
+    // The order's run at its place, counted as the executor counts it: the log's needs (open), then the takes
+    auto const runOf = [&takeable](QuestOrder const& order, std::vector<QuestOrderOpen> open)
+    {
+        QuestOrderRun run;
+        run.order = order;
+        run.startedAt = run.lastCount = X::Stamp(1000);
+        run.arrivedAt = X::Stamp(2000);
+        run.open = std::move(open);
+        X::OpenTakes(run.open, run.order, takeable);
+        return run;
+    };
+    // Ticks every TICK_MS with nothing found, as the executor's, until the order's end
+    auto const endOf = [](QuestOrderRun const& run)
+    {
+        for (std::uint32_t now = 2000; now <= 2000 + HORIZON_MS; now += TICK_MS)
+            if (std::optional<QuestOrderEnd> const end = X::End(run, now, false))
+                return *end;
+        return QuestOrderEnd::Replaced;
+    };
+    using Quests = std::vector<std::uint32_t>;
+    auto const rows = [&atGiver, &mayTake](QuestOrderRun const& run, QuestOrderEnd end)
+    { return X::RefusedTakes(run, end, atGiver, mayTake); };
+
+    // C1: the giver reached, the quest not offered: the order ends dry after the look time, one row for the quest
+    std::size_t c1 = 0;
+    for (QuestOrderWord const word : {QuestOrderWord::HandIn, QuestOrderWord::Field})
+    {
+        QuestOrderRun const one = runOf(orderOf(word, {{QUEST_A, TAKE, 1}}), {});
+        QuestOrderRun const two = runOf(orderOf(word, {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}}), {});
+        QuestOrderRun twice = runOf(orderOf(word, {{QUEST_A, TAKE, 1}, {QUEST_A, TAKE, 1}}), {});
+        twice.open.push_back({QUEST_A, TAKE, 1});  // a count that listed it twice
+        c1 += endOf(one) == QuestOrderEnd::Dry && rows(one, QuestOrderEnd::Dry) == Quests{QUEST_A} &&
+              X::OutcomeOf(QuestOrderEnd::Dry) == StatusEnd::Outcome::TimedOut && endOf(two) == QuestOrderEnd::Dry &&
+              rows(two, QuestOrderEnd::Dry) == (Quests{QUEST_A, QUEST_B}) && endOf(twice) == QuestOrderEnd::Dry &&
+              rows(twice, QuestOrderEnd::Dry) == Quests{QUEST_A};
+    }
+    Check(c1 == 2,
+          "refused take: a planned take whose giver is reached and does not offer the quest ends dry (an order at "
+          "NPCs and a field order) with one cannot_take give-up per quest, two quests two, a quest listed twice one "
+          "(mutants: no de-duplication; dry gives up no take)");
+
+    // C2: a refused accept (the menu lists the quest, the game refuses it) leaves the take open, as a giver that does
+    // not offer it: the same run, the same end, the same row. No second writer exists (NoteRefusedTake is gone)
+    {
+        QuestOrderRun const refused = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}}), {});
+        Check(endOf(refused) == QuestOrderEnd::Dry && rows(refused, QuestOrderEnd::Dry) == Quests{QUEST_A},
+              "refused take: a refused accept and a giver that offers nothing end alike, one give-up at the order's "
+              "end");
+    }
+
+    // C3: no other end, and no other need, writes the row
+    {
+        QuestOrderRun const open = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}}), {});
+        std::size_t none = 0;
+        for (QuestOrderEnd const end :
+             {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Replaced, QuestOrderEnd::Bags})
+            none += rows(open, end).empty() && !X::GivesUpTakes(end);
+        QuestOrderRun walking = open;
+        walking.arrivedAt = 0;
+        bool const beforeArrival = rows(walking, QuestOrderEnd::Time).empty();
+        bool const timeAtGiver = rows(open, QuestOrderEnd::Time) == Quests{QUEST_A};
+        Check(none == 4 && beforeArrival && timeAtGiver,
+              "refused take: done, arrived, replaced and bags write no row; time writes one at the giver after the "
+              "arrival and none on the way (mutant: every end gives up its takes)");
+
+        botX = GIVER_X + 200.0f;  // the field's place, away from the giver
+        QuestOrderRun const field = runOf(orderOf(QuestOrderWord::Field, {{QUEST_A, TAKE, 1}}), {});
+        bool const away = endOf(field) == QuestOrderEnd::Dry && rows(field, QuestOrderEnd::Dry).empty() &&
+                          rows(field, QuestOrderEnd::Time).empty();
+        botX = GIVER_X + 2.0f;
+        taken = {QUEST_A};
+        QuestOrderRun const tookA =
+            runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}}), {});
+        bool const tookOne = rows(tookA, QuestOrderEnd::Dry) == Quests{QUEST_B};
+        QuestOrderRun stale = open;  // the take came in this tick, after the last count
+        bool const staleTaken = rows(stale, QuestOrderEnd::Dry).empty();
+        taken.clear();
+        stale.open.front().left = 0;
+        bool const closed = rows(stale, QuestOrderEnd::Dry).empty();
+        denied = {QUEST_A};
+        bool const deniedNow = rows(open, QuestOrderEnd::Dry).empty();
+        denied.clear();
+        Check(away && tookOne && staleTaken && closed && deniedNow,
+              "refused take: a field order that ends away from the giver writes none; a take that came, a need closed "
+              "and a take the take test now denies (a full log, grey, given up: no refusal of the giver) write none "
+              "(mutants: RefusedTakes takes closed needs; mayTake not asked)");
+
+        QuestOrderRun hub = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_C, HAND_IN, 1}, {QUEST_A, TAKE, 1}}),
+                                  {{QUEST_C, HAND_IN, 1}});
+        bool const noEnder =
+            X::NameEnd(hub, QuestOrderEnd::NoEnder, [](std::uint32_t) { return false; }) == QuestOrderEnd::NoEnder &&
+            X::NoEnderQuests(hub) == Quests{QUEST_C} && rows(hub, QuestOrderEnd::NoEnder) == Quests{QUEST_A};
+        QuestOrderRun const handIn =
+            runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_C, HAND_IN, 1}}), {{QUEST_C, HAND_IN, 1}});
+        bool const handInNone =
+            rows(handIn, QuestOrderEnd::NoEnder).empty() && rows(handIn, QuestOrderEnd::Dry).empty() &&
+            !X::AtGiver(spots, QUEST_C, GIVER_X, GIVER_Y + 4.0f) && X::AtGiver(spots, QUEST_A, GIVER_X, GIVER_Y);
+        Check(noEnder && handInNone,
+              "refused take: a no_ender end at the giver writes the take's row beside its hand-in's; a hand-in is "
+              "never a take row, and its ender is no giver (mutant: RefusedTakes takes hand-ins)");
+    }
+
+    // C4: the door writes once per end: the ticks before the end write nothing, the end its rows once
+    {
+        QuestOrderRun const run = runOf(orderOf(QuestOrderWord::HandIn, {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}}), {});
+        std::size_t written = 0;
+        std::size_t ends = 0;
+        for (std::uint32_t now = 2000; now <= 2000 + HORIZON_MS && !ends; now += TICK_MS)
+            if (std::optional<QuestOrderEnd> const end = X::End(run, now, false))
+            {
+                ++ends;
+                written += rows(run, *end).size();
+            }
+        Check(ends == 1 && written == 2 && rows(run, QuestOrderEnd::Dry) == rows(run, QuestOrderEnd::Dry),
+              "refused take: one end, one row per open take, the same rows however often the rule is asked");
+    }
+}
+
+// WQ38: the stall sum against the harness's own count. Per quest: the ordered milliseconds since its last credit, each
+// pause between two ordered ticks of the quest counted at most 5 s (a tick off the order counts nothing); a credit (its
+// progress rose) zeroes the count; a row when the count reaches 10 minutes, then 20, 40 ... after that credit, with the
+// count's whole minutes
+struct StallModel
+{
+    std::uint32_t progress{0};
+    std::uint32_t count{0};
+    std::uint32_t next{0};
+    std::uint32_t last{0};
+    bool seen{false};
+};
+
+std::optional<std::uint32_t> ModelTick(StallModel& m, std::uint32_t progress, std::uint32_t now, std::uint32_t limit)
+{
+    constexpr std::uint32_t GAP = 5000;
+    if (!m.next)
+        m.next = limit;
+    m.count += m.seen ? std::min(now - m.last, GAP) : 0;
+    m.seen = true;
+    m.last = now;
+    bool const credit = progress > m.progress;
+    m.progress = progress;
+    if (credit)
+    {
+        m.count = 0;
+        m.next = limit;
+        return std::nullopt;
+    }
+    if (m.count < m.next)
+        return std::nullopt;
+    m.next *= 2;
+    return m.count / Planner::QuestFailRows::MINUTE_MS;
+}
+
+void StallRows(std::uint32_t seed)
+{
+    namespace F = Planner::QuestFailRows;
+    constexpr std::uint32_t QUEST = 7;
+    constexpr std::uint32_t OTHER = 8;
+    constexpr std::uint32_t START = 1000;
+    std::uint32_t const limit = F::LimitMs(false);
+    Check(limit == 10 * Planner::QuestFailRows::MINUTE_MS && F::LimitMs(true) == 2 * Planner::QuestFailRows::MINUTE_MS,
+          "stall: the limit is 10 minutes, 2 under shortgiveup");
+    // Ordered 2 s ticks without a credit: the first row at 10 minutes and not a tick before, then at 20 and 40
+    {
+        F::Sums sums;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> rows;  // tick, minutes
+        for (std::uint32_t tick = 0; tick <= 45 * 30; ++tick)
+            if (std::optional<F::Row> const row = F::Tick(sums, QUEST, 3, START + tick * TICK_MS, limit))
+                rows.emplace_back(tick, row->minutes);
+        Check(rows.size() == 3 && rows[0] == std::make_pair(300u, 10u) && rows[1] == std::make_pair(600u, 20u) &&
+                  rows[2] == std::make_pair(1200u, 40u),
+              "stall: rows at 10, 20 and 40 ordered minutes without a credit, none between");
+    }
+    // A credit at 9 minutes: no row at 10; the next 10 minutes after the credit
+    {
+        F::Sums sums;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> rows;
+        for (std::uint32_t tick = 0; tick <= 30 * 30; ++tick)
+        {
+            std::uint32_t const progress = tick >= 270 ? 4 : 3;
+            if (std::optional<F::Row> const row = F::Tick(sums, QUEST, progress, START + tick * TICK_MS, limit))
+                rows.emplace_back(tick, row->minutes);
+        }
+        Check(rows.size() == 2 && rows[0] == std::make_pair(570u, 10u) && rows[1] == std::make_pair(870u, 20u),
+              "stall: a credit at 9 minutes zeroes the sum: the row 10 minutes after it, then 20");
+    }
+    // A credit after the first row: the next row 10 minutes after the credit, not at the doubling
+    {
+        F::Sums sums;
+        std::vector<std::uint32_t> ticks;
+        for (std::uint32_t tick = 0; tick <= 25 * 30; ++tick)
+            if (F::Tick(sums, QUEST, tick >= 400 ? 4 : 3, START + tick * TICK_MS, limit))
+                ticks.push_back(tick);
+        Check(ticks == std::vector<std::uint32_t>{300, 700}, "stall: a credit after a row starts the 10 minutes anew");
+    }
+    // Time off the order: 5 minutes ordered, 30 minutes on something else, then ordered again: the pause adds 5 s
+    {
+        F::Sums sums;
+        std::uint32_t rows = 0;
+        std::uint32_t now = START;
+        for (std::uint32_t tick = 0; tick < 150; ++tick, now += TICK_MS)
+            rows += F::Tick(sums, QUEST, 3, now, limit) ? 1 : 0;
+        now += 30 * Planner::QuestFailRows::MINUTE_MS;
+        std::uint32_t firstRow = 0;
+        for (std::uint32_t tick = 0; tick < 160 && !firstRow; ++tick, now += TICK_MS)
+            if (F::Tick(sums, QUEST, 3, now, limit))
+                firstRow = tick + 1;
+        // 149 x 2 s before the pause, 5 s for it, then 2 s a tick: 298 + 5 + 149 x 2 = 601 s at the 150th
+        Check(rows == 0 && firstRow == 150, "stall: time off the order adds at most 5 s, row after " +
+                                                std::to_string(firstRow) + " ticks back on it");
+    }
+    // Pauses over 5 s on the order (a fight, a rest): each adds 5 s
+    {
+        F::Sums sums;
+        std::uint32_t now = START;
+        std::uint32_t ticks = 0;
+        bool row = false;
+        for (; !row && ticks < 1000; now += 20 * 1000)
+        {
+            ++ticks;
+            row = F::Tick(sums, QUEST, 3, now, limit).has_value();
+        }
+        Check(row && ticks == 121,
+              "stall: 20 s pauses count 5 s each: the row at the 121st tick, it came at " + std::to_string(ticks));
+    }
+    // The shortened limit (shortgiveup): the row at 2 minutes
+    {
+        F::Sums sums;
+        std::uint32_t at = 0;
+        for (std::uint32_t tick = 0; tick <= 100 && !at; ++tick)
+            if (F::Tick(sums, QUEST, 0, START + tick * TICK_MS, F::LimitMs(true)))
+                at = tick;
+        Check(at == 60, "stall: under shortgiveup the row at 2 minutes");
+    }
+    // Two quests count apart; a quest gone from the log is forgotten and starts at zero when it is back
+    {
+        F::Sums sums;
+        for (std::uint32_t tick = 0; tick < 300; ++tick)
+        {
+            F::Tick(sums, QUEST, 0, START + tick * TICK_MS, limit);
+            F::Tick(sums, OTHER, 0, START + tick * TICK_MS, limit);
+        }
+        F::KeepLogged(sums, [](std::uint32_t quest) { return quest != OTHER; });
+        bool const kept = sums.quests.size() == 1 && sums.quests[0].quest == QUEST;
+        bool const row = F::Tick(sums, QUEST, 0, START + 600 * TICK_MS, limit).has_value();
+        bool const anew = !F::Tick(sums, OTHER, 0, START + 600 * TICK_MS, limit).has_value();
+        Check(kept && row && anew, "stall: quests count apart; a quest gone from the log is forgotten");
+    }
+    // Two ticks in one millisecond (two objectives of one quest) add nothing the second time
+    {
+        F::Sums sums;
+        std::uint32_t at = 0;
+        for (std::uint32_t tick = 0; tick <= 400 && !at; ++tick)
+        {
+            std::uint32_t const now = START + tick * TICK_MS;
+            bool const row = F::Tick(sums, QUEST, 0, now, limit).has_value();
+            if (F::Tick(sums, QUEST, 0, now, limit) || row)
+                at = tick;
+        }
+        Check(at == 300, "stall: a second tick in the same millisecond counts nothing");
+    }
+    // Generated timelines: ticks on and off orders, pauses, credits, quests leaving the log; the rule's rows are the
+    // model's rows
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> roll(0, 999);
+    std::size_t timelines = 0;
+    std::size_t rowsSeen = 0;
+    std::string firstBad;
+    constexpr std::size_t TIMELINES = 300;
+    for (std::size_t t = 0; t < TIMELINES && firstBad.empty(); ++t)
+    {
+        F::Sums sums;
+        std::map<std::uint32_t, StallModel> model;
+        std::map<std::uint32_t, std::uint32_t> progress;
+        std::uint32_t const lim = F::LimitMs(roll(rng) < 200);
+        std::uint32_t now = static_cast<std::uint32_t>(roll(rng)) * 1000u + 1u;
+        for (std::size_t step = 0; step < 4000 && firstBad.empty(); ++step)
+        {
+            int const r = roll(rng);
+            now += r < 900 ? TICK_MS : (r < 980 ? static_cast<std::uint32_t>(roll(rng)) * 60u : 600000u);
+            std::uint32_t const quest = 1 + static_cast<std::uint32_t>(roll(rng) % 3);
+            if (roll(rng) < 3)
+                progress[quest] += 1;
+            if (roll(rng) < 1)
+            {
+                progress.erase(quest);
+                model.erase(quest);
+                F::KeepLogged(sums, [quest](std::uint32_t q) { return q != quest; });
+                continue;
+            }
+            std::optional<std::uint32_t> const want = ModelTick(model[quest], progress[quest], now, lim);
+            std::optional<F::Row> const got = F::Tick(sums, quest, progress[quest], now, lim);
+            bool const same =
+                want.has_value() == got.has_value() && (!got || (got->quest == quest && got->minutes == *want));
+            rowsSeen += got ? 1 : 0;
+            if (!same)
+                firstBad = " first wrong: timeline " + std::to_string(t) + " step " + std::to_string(step);
+        }
+        timelines += firstBad.empty() ? 1 : 0;
+    }
+    Check(timelines == TIMELINES && rowsSeen > 100,
+          "stall: " + std::to_string(timelines) + " of 300 generated timelines give the model's rows (seed " +
+              std::to_string(seed) + ", " + std::to_string(rowsSeen) + " rows)" + firstBad);
+}
+
+// WQ38: the abandon's done share and the two rows' amounts
+void ShareAndAmounts()
+{
+    namespace F = Planner::QuestFailRows;
+    using C = F::Credit;
+    auto const share = [](std::vector<C> const& credits, bool complete)
+    { return F::DoneShare(std::span<C const>(credits), complete); };
+    Check(share({{3, 8}}, false) == 37 && share({{8, 8}, {0, 4}}, false) == 66 && share({{12, 8}, {0, 8}}, false) == 50,
+          "share: credits done over credits required, each capped at its requirement, rounded down");
+    Check(share({{8, 8}, {1, 1}}, true) == 100 && share({{0, 8}}, true) == 100 && share({}, true) == 0 &&
+              share({}, false) == 0 && share({{0, 0}, {5, 0}}, false) == 0,
+          "share: a complete quest with credits 100, a quest without any 0");
+    Check(share({{7, 8}}, false) < 100 && share({{8, 8}}, false) == 100, "share: 100 only with every credit done");
+    for (std::uint32_t const level : {0u, 1u, 12u, 83u})
+        for (std::uint32_t const done : {0u, 1u, 50u, 99u, 100u})
+        {
+            std::int64_t const amount = F::AbandonAmount(level, done);
+            Check(amount >= 1000 && amount / 1000 - 1 == done && amount % 1000 == level,
+                  "abandon amount: share " + std::to_string(done) + " level " + std::to_string(level) + " reads back");
+        }
+    Check(F::AbandonAmount(12, std::nullopt) == 12 && F::AbandonAmount(83, std::nullopt) < 1000 &&
+              F::AbandonAmount(12, 0) != F::AbandonAmount(12, std::nullopt) && F::AbandonAmount(12, 250) == 101012,
+          "abandon amount: no share is the bare level (under 1000, as the old rows), a share over 100 counts 100");
+    auto const signed10 = [](std::int64_t bits) { return bits >= 512 ? bits - 1024 : bits; };
+    for (std::int32_t const x : {-91, 0, 5, 511, -512})
+        for (std::uint32_t const minutes : {2u, 10u, 40u, 5000u})
+        {
+            std::uint64_t const cell = FieldCellKey(0, x, -x / 2);
+            std::int64_t const amount = X::StallRowAmount(minutes, cell);
+            bool const back = (amount & 0xFFF) == std::min<std::int64_t>(minutes, 0xFFF) &&
+                              signed10((amount >> 12) & 0x3FF) == x && signed10((amount >> 22) & 0x3FF) == -x / 2;
+            Check(amount >= 0 && back,
+                  "stall amount: minutes " + std::to_string(minutes) + " cell " + std::to_string(x) + " reads back");
+        }
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
@@ -1307,6 +2144,13 @@ int main(int argc, char** argv)
     HandIns();
     WayCases();
     Bounds();
+    SwitchRules();
+    NpcOrders();
+    EnderWalks(seed);
+    FieldEnder();
+    RefusedTakeCases();
+    StallRows(seed);
+    ShareAndAmounts();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

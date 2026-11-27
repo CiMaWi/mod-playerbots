@@ -27,9 +27,6 @@ struct ProfessionConfig
     // Craft.VisitDeadlineSeconds (60-3600): seconds a craft visit (the walk to a station included) may take before it
     // is given up
     std::uint32_t CraftVisitDeadlineSeconds = 900;
-    // Fish.TripDeadlineSeconds (60-3600): seconds a fishing trip (the walk to the water included) may take before it
-    // is given up
-    std::uint32_t FishTripDeadlineSeconds = 1200;
     // VisitStepSeconds (1-60): seconds one step of a profession visit (a trainer's answer, a cast's result) may wait
     std::uint32_t VisitStepSeconds = 10;
     // Share.<Craft> (0-100): the global share of each craft over the roster, in the order of ProfessionRules::CRAFTS
@@ -75,11 +72,14 @@ enum class Choice : std::uint8_t
     Fish,
     Keep,
     Skip,
-    Disenchant
+    Disenchant,
+    Estimate,  // WR25a: a circuit's or fishing trip's plan, written beside its start row
+    TimedOut   // WPC8: the trace of a stop written off timed_out at a live node, written beside its stop row
 };
-constexpr std::size_t CHOICE_COUNT = 10;
-constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"learn",  "rank", "recipe", "tool", "craft",
-                                                                     "gather", "fish", "keep",   "skip", "disenchant"};
+constexpr std::size_t CHOICE_COUNT = 12;
+constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"learn", "rank",       "recipe",   "tool",
+                                                                     "craft", "gather",     "fish",     "keep",
+                                                                     "skip",  "disenchant", "estimate", "timed_out"};
 
 enum class Reason : std::uint8_t
 {
@@ -98,13 +98,19 @@ enum class Reason : std::uint8_t
     NoStation,
     GoldShort,
     Locked,
-    Interest  // WR16b: a fishing trip for the fishing interest's pleasure
+    Interest,  // WR16b: a fishing trip for the fishing interest's pleasure
+    Trip,      // WR25a: the estimate row of a fishing trip
+    Yield,     // WR19c: what a harvest gave, one row per item looted from a node or a skinned corpse
+    Sale,      // auction house WA7b: a craft row of casts whose products the bot sells
+    BagsFull,  // WPC9: no gather circuit, the bags are above the gather status's limit (value: percent used)
+    Unarmed    // WPC10: no creature stop, no weapon in the main hand (value: stops refused)
 };
-constexpr std::size_t REASON_COUNT = 16;
+constexpr std::size_t REASON_COUNT = 21;
 constexpr std::array<std::string_view, REASON_COUNT> REASON_WORDS = {
     "use_soon",   "held_recipe", "access",       "income",          "cheapest_point", "supply",
     "on_the_way", "circuit",     "not_worth_it", "detour_too_long", "too_dangerous",  "no_source",
-    "no_station", "gold_short",  "locked",       "interest"};
+    "no_station", "gold_short",  "locked",       "interest",        "trip",           "yield",
+    "sale",       "bags_full",   "unarmed"};
 
 constexpr std::string_view ChoiceWord(Choice choice)
 {

@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "ProfessionConfig.h"
+#include "SkillPathLive.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 
@@ -53,22 +54,24 @@ Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
         gatherer.skills.push_back({skill, bot->GetSkillValue(skill), bot->GetMaxSkillValue(skill)});
     gatherer.rates = rates;
     gatherer.rates.runSpeed = bot->GetSpeed(MOVE_RUN);
+    gatherer.server = sGatherNodeMgr.Rates();
     return gatherer;
 }
 
-// The yields at the bot's prices: what its skill path pays, else a vendor's price
+// The yields at the bot's prices: what its skill path pays, a vendor's price and a listing's proceeds (WA7a)
 std::vector<Gather::Yield> YieldsOf(std::vector<GatherYield> const* yields, SkillPath::Path const* path)
 {
     std::vector<Gather::Yield> priced;
     if (!yields)
         return priced;
+    Market::View const market = Planner::MarketView();
     priced.reserve(yields->size());
     for (GatherYield const& yield : *yields)
     {
         SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(yield.item);
-        priced.push_back(
-            {yield.item, yield.perCast, material ? material->copperEach : 0u, proto ? proto->SellPrice : 0u, 0u});
+        priced.push_back({yield.item, yield.perCast, material ? material->copperEach : 0u,
+                          proto ? proto->SellPrice : 0u, Planner::MarketProceeds(market, yield.item)});
     }
     return priced;
 }
@@ -123,6 +126,15 @@ Gather::Verdict JudgeCorpse(PlayerbotAI* botAI, Player* bot, BotGoals const& goa
     hide.risk = LiveRisk(botAI, bot, creature);
     return Gather::JudgeHide(hide, GathererOf(bot, *goals.gatherRates), inCombat, bot->GetFreeInventorySpace());
 }
+
+// A corpse of the current creature stop's kind (WR20c) is the circuit's: taken without a judgement, written by the
+// stop's row, not as a take on the way
+bool CircuitCorpse(PlayerbotAI* botAI, Creature const* creature)
+{
+    auto const* gather = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
+    return gather && gather->creatureEntry && creature->GetEntry() == gather->creatureEntry &&
+           (gather->targetGuid.IsEmpty() || gather->targetGuid == creature->GetGUID());
+}
 }  // namespace
 
 bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach)
@@ -165,7 +177,7 @@ bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach)
     Creature* creature = botAI->GetCreature(guid);
     if (!creature || creature->IsAlive() || creature->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE) ||
         !creature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE) ||
-        creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING)
+        creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING || CircuitCorpse(botAI, creature))
         return true;
     Gather::Verdict const verdict = JudgeCorpse(botAI, bot, *goals, creature, bot->IsInCombat());
     goals->passes.Judge(guid.GetRawValue(), verdict, 0.0f);
@@ -201,6 +213,8 @@ bool LootsEmpty(PlayerbotAI* botAI, ObjectGuid corpse)
     if (!creature || !creature->GetCreatureTemplate()->SkinLootId ||
         creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING)
         return false;
+    if (CircuitCorpse(botAI, creature))
+        return botAI->HasSkill(SKILL_SKINNING);  // emptied, so the circuit's skinner can skin it
     // Judged as after the fight: a corpse looted in part can never be skinned, so a hide left here is passed
     Gather::Verdict const verdict = JudgeCorpse(botAI, botAI->GetBot(), *goals, creature, false);
     goals->passes.Judge(corpse.GetRawValue(), verdict, 0.0f);
@@ -211,7 +225,8 @@ bool Skins(PlayerbotAI* botAI, ObjectGuid corpse)
 {
     BotGoals* goals = RatedGoals(botAI);
     Creature* creature = goals ? botAI->GetCreature(corpse) : nullptr;
-    if (!creature || creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING)
+    if (!creature || creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING ||
+        CircuitCorpse(botAI, creature))
         return true;
     // A corpse kept on the stack from its loot reaches the cast unjudged: the rules decide here too
     Player* bot = botAI->GetBot();

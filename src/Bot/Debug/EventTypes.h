@@ -19,6 +19,14 @@ namespace EventLog
 enum class EventType : uint8_t
 {
     Aboard,
+    AuctionBid,  // the auction plan (WA1a): written from WA3b/WA4b
+    AuctionBuy,
+    AuctionExpire,
+    AuctionOutbid,
+    AuctionPost,
+    AuctionSale,
+    AuctionVisit,
+    AuctionWon,
     BankVisit,
     BridgeAct,
     BridgeOwnLine,
@@ -65,6 +73,7 @@ enum class EventType : uint8_t
     QuestFail,
     QuestOrder,
     QuestReady,
+    QuestStall,  // questing WQ38: a quest worked on orders 10 minutes without a credit
     Record,
     Resurrect,
     ResumeNotStarted,
@@ -142,6 +151,14 @@ constexpr ReaderMask RECORDER_ROW = READ_ROW | READ_RECORDER;
 // In enum order
 constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::Aboard, "Aboard", ROW_ONLY},
+    {EventType::AuctionBid, "AuctionBid", ROW_ONLY},
+    {EventType::AuctionBuy, "AuctionBuy", ROW_ONLY},
+    {EventType::AuctionExpire, "AuctionExpire", ROW_ONLY},
+    {EventType::AuctionOutbid, "AuctionOutbid", ROW_ONLY},
+    {EventType::AuctionPost, "AuctionPost", ROW_ONLY},
+    {EventType::AuctionSale, "AuctionSale", ROW_ONLY},
+    {EventType::AuctionVisit, "AuctionVisit", ROW_ONLY},
+    {EventType::AuctionWon, "AuctionWon", ROW_ONLY},
     {EventType::BankVisit, "BankVisit", ROW_ONLY},
     {EventType::BridgeAct, "BridgeAct", ROW_ONLY},
     {EventType::BridgeOwnLine, "BridgeOwnLine", ROW_ONLY},
@@ -188,6 +205,7 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::QuestFail, "QuestFail", ROW_ONLY},
     {EventType::QuestOrder, "QuestOrder", ROW_ONLY},
     {EventType::QuestReady, "QuestReady", ROW_ONLY},
+    {EventType::QuestStall, "QuestStall", ROW_ONLY},
     {EventType::Record, "Record", ROW_ONLY},
     {EventType::Resurrect, "Resurrect", RECORD_ROW},
     {EventType::ResumeNotStarted, "ResumeNotStarted", ROW_ONLY},

@@ -31,7 +31,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "StartingHistoryRules.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "Transport.h"
 #include "TravelCrossingTypes.h"
@@ -141,16 +143,43 @@ void ReadProgress(Transport* transport, uint32& periodMs, uint32& progressMs)
     }
 }
 
+// G414: a refused deck move the deck_path line does not show (the trip-less get-off, a trip without a GM order's place,
+// a follower) writes one deck_refused line, at most one per DECK_REFUSAL_GAP_MS per bot (debug log only): type -1, the
+// vessel has no mesh; else the path's type and how far short of the deck point it ends
+constexpr uint32 DECK_REFUSAL_GAP_MS = 30000;
+
+void TraceDeckRefusal(PlayerbotAI* botAI, Player const& bot, HeldTrip const* data, Transport const& ridden,
+                      TravelCrossing::Spot const& to, char const* what, int32 type, float shortYards)
+{
+    uint32& tracedMs = botAI->GetTravel().DeckRefusalTracedMs();
+    uint32 const now = getMSTime();
+    if (tracedMs && getMSTimeDiff(tracedMs, now) < DECK_REFUSAL_GAP_MS)
+        return;
+    tracedMs = std::max<uint32>(now, 1);
+    Point const from = OffsetOf(bot);
+    LOG_DEBUG("playerbots",
+              "[TravelLifecycle] deck_refused bot={} trip={} off_first={} entry={} what={} type={} short_yd={:.2f} "
+              "from={:.2f},{:.2f},{:.2f} to={:.2f},{:.2f},{:.2f}",
+              bot.GetGUID().GetCounter(), data ? data->tripId : 0, data && data->trip.offFirst.sinceMs ? 1 : 0,
+              ridden.GetEntry(), what, type, shortYards, from.X, from.Y, from.Z, to.x, to.y, to.z);
+}
+
 // A walk on the deck (PLAN 3.21 (6)): the core's vessel path finder from the bot to a deck point (an offset; asked in
 // world points at the vessel's pose of this call) and its answer issued at once as a spline, which rides in the
 // vessel's frame. Only a complete NORMAL path that ends within DECK_REACH_YARDS of the point is walked: no straight
 // line, no second try, no search. Counted as a `deck` move on the path's answer (MeshMoveRules.h). A traced bot's
-// path is logged point by point, in offsets. A follower's move (data null) is neither traced nor watched
+// path is logged point by point, in offsets. A follower's move (data null) is not watched; any untraced refusal writes
+// deck_refused (TraceDeckRefusal)
 bool DeckMove(PlayerbotAI* botAI, Player& bot, HeldTrip* data, Transport const& ridden, TravelCrossing::Spot const& to,
               char const* what)
 {
+    bool const traced = data && !data->place.empty() && DebugLogged();
     if (!ridden.GetVesselNavMesh())
+    {
+        if (DebugLogged())
+            TraceDeckRefusal(botAI, bot, data, ridden, to, what, -1, 0.0f);
         return false;
+    }
     Point const end = DeckWorld(ridden, to);
     PathGenerator path(&bot);
     bool const found = path.CalculatePath(end.X, end.Y, end.Z, false);
@@ -162,7 +191,7 @@ bool DeckMove(PlayerbotAI* botAI, Player& bot, HeldTrip* data, Transport const& 
     // short of it, and then it is refused as no path is (WT.55)
     float const shortYards = points.empty() ? 0.0f : (points.back() - G3D::Vector3(end.X, end.Y, end.Z)).length();
     bool const taken = TravelLegs::DeckPathTaken(normal, shortYards);
-    if (data && !data->place.empty() && DebugLogged())
+    if (traced)
     {
         std::string offsets;
         for (G3D::Vector3 const& point : points)
@@ -182,7 +211,11 @@ bool DeckMove(PlayerbotAI* botAI, Player& bot, HeldTrip* data, Transport const& 
             shortYards, from.X, from.Y, from.Z, to.x, to.y, to.z, offsets.empty() ? std::string("none") : offsets);
     }
     if (!taken)
+    {
+        if (!traced && DebugLogged())
+            TraceDeckRefusal(botAI, bot, data, ridden, to, what, static_cast<int32>(type), shortYards);
         return false;
+    }
     if (bot.IsSitState())
         bot.SetStandState(UNIT_STAND_STATE_STAND);
     bot.GetMotionMaster()->Clear();
@@ -329,7 +362,7 @@ CrossingPlan IssueCrossing(Player& bot, std::optional<PassengerMotion>& slot, Tr
 // `route aboard` (tests): the bot is stood on the first boarding row's deck point of the stop the vessel of that entry
 // nearest it stands at, a lift's or the tram's car as a ship. No explicit attach: PlayerbotAI's passenger check
 // attaches it to that vessel after the teleport (BeginAboard's intent). Refused: absent, away (at no stop), no_row
-void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
+void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry, TravelCrossing::Spot const* at)
 {
     Transport* transport = nullptr;
     float nearest = std::numeric_limits<float>::max();
@@ -372,13 +405,19 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     }
     // On the vessel's mesh nearest the first boarding row's deck point: the passenger check attaches a bot without a
     // move of its own only where it stands on the deck (TravelLifecycle::StandsOnDeck), and a row's deck point may lie
-    // off the mesh (G99: 0.61 yd at 164871)
-    TravelCrossing::Spot spot = stop->board[0].deck;
+    // off the mesh (G99: 0.61 yd at 164871). A named offset is taken only within that check's half yard of the mesh
+    TravelCrossing::Spot spot = at ? *at : stop->board[0].deck;
     TravelCrossing::Spot const rowSpot = spot;
     Position onMesh;
     bool const found = transport->GetNearestDeckPoint(Position(spot.x, spot.y, spot.z, 0.0f), onMesh);
     if (found)
         spot = {onMesh.GetPositionX(), onMesh.GetPositionY(), onMesh.GetPositionZ()};
+    if (at && (!found || TravelLegs::OffsetYards({at->x, at->y, at->z}, spot) > TravelLifecycle::DECK_MESH_YARDS))
+    {
+        LOG_INFO("playerbots", "[Route] {} aboard {} refused: off_mesh", bot->GetName(), entry);
+        EventLog::Emit(bot, EventLog::EventType::Aboard, "refused:off_mesh", entry);
+        return;
+    }
     Point const deck = DeckWorld(*transport, spot);
     LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck.X, deck.Y,
              deck.Z);
@@ -822,6 +861,40 @@ bool OffFirstBegins(Player* bot, HeldTrip& data, TravelLegs::OffFirstEnd end, ch
     return true;
 }
 
+namespace
+{
+// PA76 (G414): the bound of a rider that cannot get off (TravelLegs::StrandedStep), after a get-off tick: its
+// hearthstone, the stone's own spell (no bot teleport), cast at the stop right after its rows there were refused
+// again. The stone is looked at only then; boxed: OffFirst::boxed before the tick
+void LeaveStranded(PlayerbotAI* botAI, Player* bot, TravelLegs::Trip& trip, TravelLegs::Observation const& seen,
+                   TravelLegs::OffStep step, uint8 boxed)
+{
+    constexpr uint32 HEARTHSTONE_SPELL = 8690;  // the stone's spell (NewRpgRoute.cpp's HEARTHSTONE_SPELL)
+    using TravelLegs::OffStep;
+    using TravelLegs::Stone;
+    bool const ends = step == OffStep::Off || step == OffStep::Lost || step == OffStep::GiveUp;
+    if (!ends && trip.offFirst.boxed == boxed)
+        return;
+    Stone stone = Stone::Missing;
+    if (!ends && TestConstraints::HearthAllowed(botAI->testConstraints) &&
+        bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false))
+        stone =
+            bot->HasSpellCooldown(HEARTHSTONE_SPELL) || bot->IsNonMeleeSpellCast(false) ? Stone::Cooling : Stone::Ready;
+    TravelLegs::Stranded& stranded = botAI->GetTravel().StrandedRider();
+    TravelLegs::StrandedExit const exit =
+        TravelLegs::StrandedStep(stranded, trip.offFirst, step, boxed, seen.offset, stone);
+    if (exit == TravelLegs::StrandedExit::None)
+        return;
+    bool const hearth = exit == TravelLegs::StrandedExit::Hearth;
+    if (hearth && bot->IsMounted())
+        CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
+    bool const cast = hearth && botAI->DoSpecificAction("hearthstone", Event(), true);
+    TravelLegs::NoteStrandedExit(trip, stranded, cast);
+    LOG_DEBUG("playerbots", "[Route] {} stranded aboard {}: hearthstone {}", bot->GetName(), trip.offFirst.entry,
+              cast ? "cast" : "not cast");
+}
+}  // namespace
+
 // The get-off (TravelLegs::StepOffFirst) shares the leg's crossing and deck walk: it leaves by the leaving rows of the
 // stop the vessel stands at (StopStoodAt; a stop without rows is waited out), under the same stand test
 TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
@@ -851,6 +924,7 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
         if (rides)
             SeeTransport(bot, ridden, seen.transport);
     }
+    uint8 const boxed = trip.offFirst.boxed;
     TravelLegs::OffStep const step = TravelLegs::StepOffFirst(trip, seen);
     if (data.passengerMotion && !TravelLegs::CrossUnderWay(trip))
         TransportGeometry::DiscardMotion(*bot, data.passengerMotion);
@@ -858,6 +932,7 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
         WalkDeckToRow(botAI, bot, data, seen);
     else if (rides && step == TravelLegs::OffStep::Disembark)
         CrossByRow(bot, data, *ridden, seen);
+    LeaveStranded(botAI, bot, trip, seen, step, boxed);
     SendTransportNotes(bot, trip);
     return step;
 }
@@ -906,24 +981,28 @@ void TraceVesselLeave(PlayerbotAI* botAI, Player* bot, HeldTrip const& off, Trav
 // PA39b (G340): a bot that rides a vessel with no trip of its own (its status runs on the deck: rest, wander) gets off
 // at the vessel's next stop by that stop's leaving rows, as a trip's get-off does (GetOffFirst) on a trip without legs,
 // bounded by one period: `Transport off_first`, then `left` ashore or `stuck_aboard`, after which the next check begins
-// again. O(1): the bot's own membership and its master's transport
+// again. A lift's or the tram's car too where its stop records have leaving rows (G412). O(1): the bot's own
+// membership and its master's transport; a car's records by a binary search, only for a car's rider that would begin
 bool VesselLeaveStep(PlayerbotAI* botAI, Player* bot)
 {
     BotTravel& travel = botAI->GetTravel();
     HeldTrip& off = travel.VesselOff();
     uint32 const sinceMs = off.trip.offFirst.sinceMs;
     auto const membership = TransportGeometry::ReadMembership(*bot);
-    // Ships and zeppelins only: a lift's or the tram's car is a platform the bot's own moves leave (a car without stop
-    // records would give a stuck_aboard every period)
     Transport const* const ridden = bot->GetTransport();
-    uint64 const aboard = membership.Available && ridden && !ridden->IsStaticTransport() ? membership.Guid : 0;
+    uint64 const aboard = membership.Available && ridden ? membership.Guid : 0;
     Player* const master = botAI->GetMaster();
     bool const followed =
         master && master != bot &&
         (!GET_PLAYERBOT_AI(master) || (master->GetTransport() && master->GetTransport() == bot->GetTransport()));
     bool const owned = followed || (botAI->GetWork() & BotWork::Aboard) || bot->InBattleground();
-    TravelLegs::VesselLeave const act =
-        TravelLegs::DecideVesselLeave({aboard, travel.Trip() != nullptr, owned, sinceMs != 0});
+    TravelLegs::VesselLeaveFacts facts{aboard, travel.Trip() != nullptr, owned, sinceMs != 0};
+    facts.car = aboard && ridden->IsStaticTransport();
+    if (facts.car && !facts.tripHeld && !owned && !sinceMs)
+        for (TravelCrossing::Stop const& stop :
+             TravelGraph::Instance().Crossings().StopsOf(ridden->GetEntry(), ridden->GetSpawnId()))
+            facts.carLeaves = facts.carLeaves || stop.leaveCount != 0;
+    TravelLegs::VesselLeave const act = TravelLegs::DecideVesselLeave(facts);
     if (act == TravelLegs::VesselLeave::None)
     {
         if (sinceMs || off.passengerMotion)
@@ -1319,3 +1398,24 @@ bool PassengerOwnsTravel(Player const& bot, HeldTrip const& data)
     return TravelLegs::OwnerOf(data.trip, data.passengerMotion.has_value(), ride) == TravelLegs::TravelOwner::Passenger;
 }
 }  // namespace NewRpgInternal
+
+bool TravelHoldsUpkeep(PlayerbotAI* botAI)
+{
+    // The engine's facts for TravelLegs::HoldsUpkeep: the held trip and the docking its leg needs (the stop the scan's
+    // pace reads, PacedStop; two index lookups). O(1)
+    auto const* const data = botAI->GetTravel().Trip();
+    if (!data)
+        return false;
+    TravelLegs::Trip const& trip = data->trip;
+    std::int64_t docksInMs = TravelLegs::NO_DEADLINE;
+    if (AtTransportLeg(trip))
+    {
+        TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+        TravelCrossing::Stop const* const needs =
+            TravelLegs::PacedStop(trip, TravelGraph::Instance().Crossings().At(leg.crossFrom),
+                                  TravelGraph::Instance().Crossings().At(leg.crossTo));
+        if (needs)
+            docksInMs = TravelLegs::DocksInMs(trip, *needs, getMSTime());
+    }
+    return TravelLegs::HoldsUpkeep(&trip, docksInMs);
+}
