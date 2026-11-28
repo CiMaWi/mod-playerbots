@@ -937,6 +937,15 @@ public:
     bool IsActive() override;
 };
 
+// AW38b: a rise the leaving has not judged yet (awareness INTERFACE.md §3.6). Constant time: one flag of the store
+class LeavingTrigger : public Trigger
+{
+public:
+    LeavingTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leaving") {}
+
+    bool IsActive() override;
+};
+
 class IsFallingTrigger : public Trigger
 {
 public:

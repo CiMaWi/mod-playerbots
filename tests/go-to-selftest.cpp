@@ -770,6 +770,7 @@ void Causes(Counts& c)
         {"held", Outcome::Interrupted},
         {"stopped", Outcome::Ordered},
         {"sick", Outcome::Sick},
+        {"danger", Outcome::Danger},
     };
     for (Row const& row : INTERFACE)
     {

@@ -167,6 +167,7 @@ public:
         creators["corpse near"] = &TriggerContext::corpse_near;
         creators["recovering"] = &TriggerContext::recovering;
         creators["way danger"] = &TriggerContext::way_danger;
+        creators["leaving"] = &TriggerContext::leaving;
         creators["party member dead"] = &TriggerContext::PartyMemberDead;
         creators["combat party member dead"] = &TriggerContext::CombatPartyMemberDead;
         creators["no pet"] = &TriggerContext::no_pet;
@@ -444,6 +445,7 @@ private:
     static Trigger* corpse_near(PlayerbotAI* botAI) { return new CorpseNearTrigger(botAI); }
     static Trigger* recovering(PlayerbotAI* botAI) { return new RecoveringTrigger(botAI); }
     static Trigger* way_danger(PlayerbotAI* botAI) { return new WayDangerTrigger(botAI); }
+    static Trigger* leaving(PlayerbotAI* botAI) { return new LeavingTrigger(botAI); }
     static Trigger* PartyMemberDead(PlayerbotAI* botAI) { return new PartyMemberDeadTrigger(botAI); }
     static Trigger* CombatPartyMemberDead(PlayerbotAI* botAI) { return new CombatPartyMemberDeadTrigger(botAI); }
     static Trigger* PartyMemberLowHealth(PlayerbotAI* botAI) { return new PartyMemberLowHealthTrigger(botAI); }

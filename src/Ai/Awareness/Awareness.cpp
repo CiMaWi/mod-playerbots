@@ -1883,6 +1883,9 @@ namespace
 // The rule's last step names the rise when it is at most this old: a Rise is carried out by the next action of the
 // same tick or retried every tick, the healer's revive happens inside the step's own call
 constexpr std::uint32_t RISE_ORDER_MS = 5000;
+// AW38b: the nodes the leaving's place is chosen from, nearest first: enough to reach past LEAVE_AWAY_YARDS where the
+// graph is densest (a town), asked once per leaving
+constexpr std::size_t LEAVE_NODES = 256;
 
 DeadMemo const& AskAndKeep(DeadMemo& memo)
 {
@@ -2209,6 +2212,8 @@ void OnRise(Player* bot, std::string_view how)
     store.roseMap = bot->GetMapId();
     store.roseX = bot->GetPositionX();
     store.roseY = bot->GetPositionY();
+    // AW38b: the leaving judges the rise on the first tick alive, where the sickness is on (LeaveDue)
+    store.leaveDue = true;
 }
 
 void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
@@ -2231,6 +2236,8 @@ void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
         store.row = AwarenessRules::RowAfterDeath(store.row, death);
     }
     store.died = std::max<std::uint32_t>(static_cast<std::uint32_t>(time(nullptr)), 1);
+    store.leaveDue = false;
+    store.leaving = Leaving{};
     store.selfRiseAskMs = 0;
     store.selfRiseStartMs = 0;
     store.selfRiseOrderedMs = 0;
@@ -2758,8 +2765,9 @@ void JudgeTripWay(PlayerbotAI* botAI)
     std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
     DangerRules::DangerPart const part =
         WayOf(trip->trip.legs, trip->trip.legs.front().from, goal, bot->GetTeamId(), level);
-    // Spared: a GM's order (`route go` names its place); the leaving's trip joins it with AW38b
-    DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, !trip->place.empty());
+    // Spared: a GM's order (`route go` names its place) and the leaving's walk out (§4.5: out of deadly ground the
+    // search's price gives the least deadly way)
+    DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, !trip->place.empty() || LeaveWalks(botAI));
     char const* const choice = DangerRules::WayChoice(verdict);
     if (!choice)
         return;
@@ -2790,8 +2798,120 @@ void JudgeTripWay(PlayerbotAI* botAI)
                 break;
             case DangerRules::WayEffect::End:
                 // Last: the end releases the trip
-                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned,
+                RpgStatus::End(botAI, StatusEnd::Outcome::Danger,
                                {.source = DangerRules::END_SOURCE, .text = "no safe way"});
+                return;
+        }
+}
+
+bool LeaveDue(PlayerbotAI* botAI)
+{
+    Store const* const store = botAI->awareness.get();
+    return store && (store->leaveDue || store->leaving.active) && botAI->GetBot() && botAI->GetBot()->IsAlive();
+}
+
+bool LeaveWalks(PlayerbotAI* botAI)
+{
+    Store const* const store = botAI->awareness.get();
+    if (!store || !store->leaving.active)
+        return false;
+    Leaving const& leaving = store->leaving;
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    return trip &&
+           AwarenessRules::IsLeaveWalk(leaving.walkBegun, leaving.placeMap, leaving.placeX, leaving.placeY,
+                                       trip->dest.GetMapId(), trip->dest.GetPositionX(), trip->dest.GetPositionY());
+}
+
+void FindLeavePlace(PlayerbotAI* botAI)
+{
+    Store* const store = botAI->awareness.get();
+    Player* const bot = botAI->GetBot();
+    if (!store || !bot || store->leaving.searched)
+        return;
+    Leaving& leaving = store->leaving;
+    leaving.searched = true;
+    TravelGraph const& graph = TravelGraph::Instance();
+    if (!graph.IsReady() || bot->GetMapId() != store->roseMap)
+        return;
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    float const bx = bot->GetPositionX();
+    float const by = bot->GetPositionY();
+    float best = AwarenessRules::LEAVE_SEARCH_YARDS;
+    for (std::uint32_t const index : graph.NearestNodes(bot->GetMapId(), bx, by, bot->GetPositionZ(), LEAVE_NODES))
+    {
+        TravelGraphNode const& node = graph.GetNode(index);
+        float const yards = AwarenessRules::PlanarDistance(bx, by, node.x, node.y);
+        if (node.waitStop || yards > best ||
+            AwarenessRules::PlanarDistance(store->roseX, store->roseY, node.x, node.y) <
+                AwarenessRules::LEAVE_AWAY_YARDS ||
+            GroundAt(node.mapId, node.x, node.y, node.z, level, bot->GetTeamId()) == DangerRules::Ground::Deadly)
+            continue;
+        best = yards;
+        leaving.placeFound = true;
+        leaving.placeMap = node.mapId;
+        leaving.placeX = node.x;
+        leaving.placeY = node.y;
+        leaving.placeZ = node.z;
+    }
+}
+
+void JudgeLeave(PlayerbotAI* botAI)
+{
+    Store* const store = botAI->awareness.get();
+    Player* const bot = botAI->GetBot();
+    if (!store || !bot || !bot->IsAlive())
+        return;
+    store->leaveDue = false;
+    AwarenessRules::LeaveFacts facts;
+    facts.sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    facts.ground = GroundAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), level,
+                            bot->GetTeamId(), facts.sick ? DangerRules::SICK : DangerRules::HEALTHY);
+    facts.deathsInRow = DeathsInRow(botAI);
+    facts.ownedByPlayer = botAI->HasGameClientMaster();
+    facts.inBattleground = bot->InBattleground();
+    AwarenessRules::LeaveCause const cause = AwarenessRules::LeaveAtRise(facts);
+    if (cause == AwarenessRules::LeaveCause::Stay)
+        return;
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    TravelRoute::Point const spot{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    TravelRoute::Point goal = spot;
+    std::uint32_t tripId = 0;
+    bool sickEndRecords = false;
+    if (trip)
+    {
+        goal = {trip->dest.GetMapId(), trip->dest.GetPositionX(), trip->dest.GetPositionY(), trip->dest.GetPositionZ()};
+        tripId = trip->tripId;
+        // The sickness rule's end of this trip writes the goal itself after the trip's third death (AbortTrip)
+        sickEndRecords = facts.sick && TravelLegs::SickEndFailure(trip->trip, goal, spot).has_value();
+    }
+    AwarenessRules::LeaveEffects const effects =
+        AwarenessRules::LeaveEffectsOf(cause, facts.sick, trip != nullptr, sickEndRecords);
+    for (std::uint8_t i = 0; i < effects.count; ++i)
+        switch (effects.order[i])
+        {
+            case AwarenessRules::LeaveEffect::Record:
+            {
+                // Before the end, so the planner's next pick and the next search read the entry (V7)
+                FailedAttempts::Failure failure;
+                failure.goal = TravelLegs::FailurePoint(goal);
+                failure.spot = TravelLegs::FailurePoint(spot);
+                botAI->GetTravel().NoteFailure(DangerRules::RECORD_WORD, failure, tripId);
+                break;
+            }
+            case AwarenessRules::LeaveEffect::Row:
+                // The value is the row's deaths; the ground where the bot rose (0 quiet, 1 passable, 2 deadly)
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "leave", AwarenessRules::LeaveWord(cause),
+                                   static_cast<float>(facts.deathsInRow),
+                                   {{"ground", static_cast<float>(facts.ground)}, {"sick", facts.sick ? 1.0f : 0.0f}},
+                                   tripId);
+                break;
+            case AwarenessRules::LeaveEffect::End:
+                // Last: the goal is given up, the bot rests and recovers (the held trip's abort: abort:danger)
+                RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "leave", StatusEnd::Outcome::Danger);
+                // The leaving's steps follow from the next tick (LeaveStep, the action `leave danger`)
+                store->leaving = Leaving{};
+                store->leaving.active = true;
                 return;
         }
 }

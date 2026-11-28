@@ -16,10 +16,12 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "MapMgr.h"
+#include "NewRpgStatusEnd.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "Upkeep.h"
 #include "World.h"
@@ -641,4 +643,114 @@ bool WayDangerAction::Execute(Event /*event*/)
 {
     Awareness::JudgeTripWay(botAI);
     return true;
+}
+
+bool LeaveDangerAction::Execute(Event /*event*/)
+{
+    Awareness::Store const* const store = botAI->awareness.get();
+    if (!store || !store->leaveDue)
+        return Step();
+    Awareness::JudgeLeave(botAI);
+    // The tick goes on: `recover` and, for a sick bot, the sickness rule's end of its status follow at once
+    return false;
+}
+
+namespace
+{
+// The hearthstone's spell (NewRpgBaseAction.cpp's HEARTHSTONE_CAST_SPELL)
+constexpr uint32 LEAVE_HEARTH_SPELL = 8690;
+}  // namespace
+
+bool LeaveDangerAction::Step()
+{
+    Awareness::Store* const store = botAI->awareness.get();
+    if (!store || !store->leaving.active || !bot->IsAlive())
+        return false;
+    Awareness::Leaving& leaving = store->leaving;
+    uint8 const level = static_cast<uint8>(std::min<uint32>(bot->GetLevel(), 255));
+    TeamId const side = bot->GetTeamId();
+    Awareness::FindLeavePlace(botAI);
+
+    AwarenessRules::LeaveStepFacts facts;
+    facts.ground = Awareness::GroundAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                       level, side);
+    facts.sinceRiseSeconds = GetMSTimeDiffToNow(store->roseMs) / IN_MILLISECONDS;
+    facts.otherMap = bot->GetMapId() != store->roseMap;
+    facts.riseYards =
+        AwarenessRules::PlanarDistance(store->roseX, store->roseY, bot->GetPositionX(), bot->GetPositionY());
+    facts.hearthReady =
+        TestConstraints::HearthAllowed(botAI->testConstraints) &&
+        bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) && !bot->HasSpellCooldown(LEAVE_HEARTH_SPELL) &&
+        !bot->IsInCombat() && !bot->IsNonMeleeSpellCast(false) &&
+        Awareness::GroundAt(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, level, side) !=
+            DangerRules::Ground::Deadly;
+    facts.hearthCasts = leaving.hearthTries;
+    AwarenessRules::RecoverFacts recover;
+    bool const known = Awareness::RecoverFactsOf(botAI, recover);
+    facts.recovering = known && AwarenessRules::Recovering(recover);
+    facts.placeKnown = leaving.placeFound;
+    facts.walkFailed = leaving.walkBegun && botAI->rpgInfo.GetStatus() != RPG_TRAVEL;
+    facts.waitSeconds = leaving.waitStartMs ? GetMSTimeDiffToNow(leaving.waitStartMs) / IN_MILLISECONDS : 0;
+    facts.taken = botAI->HasGameClientMaster() || bot->InBattleground();
+    AwarenessRules::LeaveAnswer const answer = AwarenessRules::LeaveStep(facts);
+
+    // One row per change of step and one at the end; the value is the rise's age, the alternatives the ground where
+    // the bot stands (0 quiet, 1 passable, 2 deadly), its yards from the rise and the hearthstone's begun casts
+    WorldLogFormat::Alternatives const where = {{"ground", static_cast<float>(facts.ground)},
+                                                {"rise_yd", facts.riseYards},
+                                                {"casts", static_cast<float>(leaving.hearthTries)}};
+    float const since = static_cast<float>(facts.sinceRiseSeconds);
+    if (answer.act == AwarenessRules::LeaveAct::Done)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "done", AwarenessRules::LeaveEndWord(answer.end),
+                           since, where);
+        leaving = Awareness::Leaving{};
+        return false;
+    }
+    // A begun cast of the stone runs out (or is broken) before any other step
+    if (leaving.lastAct == AwarenessRules::LeaveAct::Hearth && bot->IsNonMeleeSpellCast(false))
+        return true;
+    bool const changed = answer.act != leaving.lastAct;
+    leaving.lastAct = answer.act;
+    switch (answer.act)
+    {
+        case AwarenessRules::LeaveAct::Hearth:
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "hearth", "deadly", since, where);
+            // A try is counted whether the core begins the cast or not, so a refused stone cannot hold the bot
+            ++leaving.hearthTries;
+            botAI->DoSpecificAction("hearthstone", Event(), true);
+            return true;
+        case AwarenessRules::LeaveAct::Walk:
+            if (leaving.walkBegun)
+                return false;  // the trip is held: the follower walks it
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "walk", "node", since, where);
+            leaving.walkBegun = true;
+            RpgStatus::Start(
+                botAI,
+                RpgStatus::TripTo(WorldPosition(leaving.placeMap, leaving.placeX, leaving.placeY, leaving.placeZ)),
+                "leave");
+            return true;
+        case AwarenessRules::LeaveAct::Wait:
+        {
+            if (changed)
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "wait",
+                                   leaving.walkBegun ? "walk_failed" : "no_place", since, where);
+            if (!leaving.waitStartMs)
+                leaving.waitStartMs = std::max<uint32>(getMSTime(), 1);
+            // At a clear point (recover's move); where the search finds none the bot waits where it is
+            AwarenessRules::PointAnswer const own =
+                AwarenessRules::JudgePoint(Awareness::Look(botAI), bot->GetPositionX(), bot->GetPositionY());
+            if (!own.clear)
+            {
+                AwarenessRules::SafePoint const safe =
+                    Awareness::FindSafePoint(botAI, *bot, AwarenessRules::RISE_YARDS);
+                if (safe.found && safe.clear && !IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) &&
+                    !IsDuplicateMove(safe.x, safe.y, safe.z))
+                    MoveTo(bot->GetMapId(), safe.x, safe.y, safe.z, false, false);
+            }
+            return true;
+        }
+        default:
+            return false;  // Yield: `recover` moves the bot to a clear point and feeds it
+    }
 }

@@ -165,6 +165,7 @@ inline constexpr CauseRow CAUSES[] = {
     {"held", Target::None, false},
     {"stopped", Target::None, false},
     {"sick", Target::None, false},
+    {"danger", Target::None, false},  // awareness AW37b, AW38b: they write the goal themselves (trip_deaths)
     {"order", Target::None, false},
     {"interrupted", Target::None, false},
     {"reset", Target::None, false},

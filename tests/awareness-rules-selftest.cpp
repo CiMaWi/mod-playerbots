@@ -27,6 +27,7 @@
 #include <queue>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -7136,6 +7137,269 @@ void TestWayTrigger()
     Check(!w3, "W3: a GM's order and a way out of deadly ground to a goal not deadly are never ended");
 }
 
+// AW38b: the leaving's judgement at the rise and its effects (INTERFACE.md §3.6, V1, V5 and V7 as far as the effects of
+// a Leave reach; LeaveStep's V2 to V7 follow with it)
+void TestLeave()
+{
+    struct Named
+    {
+        LeaveFacts facts;
+        LeaveCause cause;
+        char const* what;
+    };
+    Named const NAMED[] = {
+        {{Ground::Deadly, 1, false, false, false}, LeaveCause::Ground, "V1: deadly ground at the first death leaves"},
+        {{Ground::Deadly, 1, true, false, false}, LeaveCause::Ground, "V1: a sick bot in deadly ground leaves too"},
+        {{Ground::Quiet, 2, false, false, false}, LeaveCause::Row, "V1: the second death in a row leaves"},
+        {{Ground::Passable, 4, false, false, false}, LeaveCause::Row, "V1: a longer row leaves"},
+        {{Ground::Passable, 1, false, false, false}, LeaveCause::Stay, "V1: passable ground at the first death stays"},
+        {{Ground::Quiet, 1, true, false, false}, LeaveCause::Stay, "V1: quiet ground at the first death stays"},
+        {{Ground::Deadly, 3, false, true, false}, LeaveCause::Stay, "V1: a player's bot stays"},
+        {{Ground::Deadly, 3, false, false, true}, LeaveCause::Stay, "V1: a battleground stays"},
+    };
+    for (Named const& n : NAMED)
+        Check(LeaveAtRise(n.facts) == n.cause, n.what);
+
+    Generator g;
+    g.state = SEED ^ 0x38b;
+    int v1 = 0;
+    int why = 0;
+    int left = 0;
+    constexpr int CASES = 4000;
+    for (int i = 0; i < CASES; ++i)
+    {
+        LeaveFacts facts;
+        facts.ground = static_cast<Ground>(g.Next() % 3);
+        facts.deathsInRow = 1 + g.Next() % 5;
+        facts.sick = g.Next() % 2 != 0;
+        facts.ownedByPlayer = g.Next() % 6 == 0;
+        facts.inBattleground = g.Next() % 6 == 0;
+        LeaveCause const cause = LeaveAtRise(facts);
+        bool const leaves = !facts.ownedByPlayer && !facts.inBattleground &&
+                            (facts.ground == Ground::Deadly || facts.deathsInRow >= LEAVE_ROW_AT);
+        v1 += (cause != LeaveCause::Stay) != leaves;
+        why += cause == LeaveCause::Ground && facts.ground != Ground::Deadly;
+        why += cause == LeaveCause::Row && facts.ground == Ground::Deadly;
+        left += leaves;
+    }
+    Check(!v1, "V1: Leave exactly for a bot no player's, in no battleground, in deadly ground or in a row");
+    Check(!why, "V1: the reason is the ground where it is deadly, else the row");
+    Check(left > CASES / 4 && left < CASES - CASES / 4, "V1: the draws leave and stay both");
+
+    // Every combination of the effects' facts: the goal once, the row once, the end last and only for a bot not sick
+    int v5 = 0;
+    int v7 = 0;
+    int once = 0;
+    for (LeaveCause const cause : {LeaveCause::Stay, LeaveCause::Ground, LeaveCause::Row})
+        for (int bits = 0; bits < 8; ++bits)
+        {
+            bool const sick = (bits & 1) != 0;
+            bool const tripHeld = (bits & 2) != 0;
+            bool const sickEndRecords = (bits & 4) != 0;
+            LeaveEffects const effects = LeaveEffectsOf(cause, sick, tripHeld, sickEndRecords);
+            int records = 0;
+            int rows = 0;
+            int ends = 0;
+            int recordAt = -1;
+            int endAt = -1;
+            for (std::uint8_t e = 0; e < effects.count; ++e)
+            {
+                records += effects.order[e] == LeaveEffect::Record;
+                rows += effects.order[e] == LeaveEffect::Row;
+                if (effects.order[e] == LeaveEffect::Record)
+                    recordAt = e;
+                if (effects.order[e] == LeaveEffect::End)
+                {
+                    ++ends;
+                    endAt = e;
+                }
+            }
+            if (cause == LeaveCause::Stay)
+            {
+                once += effects.count != 0;
+                continue;
+            }
+            v5 += sick && ends;
+            v5 += !sick && ends != 1;
+            v7 += endAt >= 0 && endAt != effects.count - 1;
+            v7 += recordAt >= 0 && endAt >= 0 && recordAt > endAt;
+            int const sickEndWrites = sick && tripHeld && sickEndRecords;
+            once += records + sickEndWrites != (tripHeld ? 1 : 0);
+            once += rows != 1;
+        }
+    Check(!v5, "V5: a sick bot's leaving ends no status; any other's ends it once");
+    Check(!v7, "V7: the goal is in the record before the status ends, and the end comes last");
+    Check(!once, "the goal is recorded once with the sick end's own entry, one row per Leave, nothing at Stay");
+    Check(std::string_view(LeaveWord(LeaveCause::Ground)) == "ground" &&
+              std::string_view(LeaveWord(LeaveCause::Row)) == "row",
+          "the leave row's reasons");
+}
+
+// LeaveStep: V2 to V6 over generated leavings. Each run starts at the rise (the leaving's first step comes after it)
+// and steps one second at a time with every other fact drawn anew; the caller's counts follow the answers as the
+// action keeps them (a Hearth is a begun cast, a Wait a second of waiting, a Walk that ends without letting go a
+// failed walk)
+void TestLeaveStep()
+{
+    struct Named
+    {
+        LeaveStepFacts facts;
+        LeaveAct act;
+        LeaveEnd end;
+        char const* what;
+    };
+    auto facts = [](Ground ground, float yards, bool ready, std::uint32_t casts, bool recovering, bool place,
+                    bool failed, std::uint32_t wait, std::uint32_t since)
+    {
+        LeaveStepFacts f;
+        f.ground = ground;
+        f.riseYards = yards;
+        f.hearthReady = ready;
+        f.hearthCasts = casts;
+        f.recovering = recovering;
+        f.placeKnown = place;
+        f.walkFailed = failed;
+        f.waitSeconds = wait;
+        f.sinceRiseSeconds = since;
+        return f;
+    };
+    LeaveStepFacts taken = facts(Ground::Deadly, 0, true, 0, false, true, false, 0, 5);
+    taken.taken = true;
+    LeaveStepFacts otherMap = facts(Ground::Passable, 0, false, 0, false, true, false, 0, 30);
+    otherMap.otherMap = true;
+    Named const NAMED[] = {
+        {facts(Ground::Quiet, 0, true, 0, true, true, false, 0, 5), LeaveAct::Done, LeaveEnd::Quiet,
+         "V4: quiet ground lets go at once, by the rise too"},
+        {facts(Ground::Passable, 160, false, 0, true, true, false, 0, 40), LeaveAct::Done, LeaveEnd::Away,
+         "line 1: passable ground away from the rise lets go"},
+        {otherMap, LeaveAct::Done, LeaveEnd::Away, "line 1: another map (the hearth's end) lets go"},
+        {facts(Ground::Deadly, 400, true, 0, false, true, false, 0, 40), LeaveAct::Hearth, LeaveEnd::None,
+         "line 1: deadly ground far from the rise still holds"},
+        {facts(Ground::Passable, 20, true, 0, false, true, false, 0, LEAVE_BOUND_SECONDS), LeaveAct::Done,
+         LeaveEnd::Bound, "line 2: the bound"},
+        {facts(Ground::Deadly, 0, true, 1, true, true, false, 0, 8), LeaveAct::Hearth, LeaveEnd::None,
+         "line 3: the hearthstone out of deadly ground before the recovery"},
+        {facts(Ground::Deadly, 0, true, LEAVE_HEARTH_TRIES, true, true, false, 0, 30), LeaveAct::Yield, LeaveEnd::None,
+         "line 3: no third cast; the recovery"},
+        {facts(Ground::Passable, 0, true, 0, false, true, false, 0, 8), LeaveAct::Walk, LeaveEnd::None,
+         "line 3: no hearthstone out of passable ground: the walk"},
+        {facts(Ground::Deadly, 0, false, 0, true, true, false, 0, 8), LeaveAct::Yield, LeaveEnd::None,
+         "line 4: the stone on cooldown: the recovery first"},
+        {facts(Ground::Deadly, 0, false, 0, false, true, false, 0, 70), LeaveAct::Walk, LeaveEnd::None,
+         "line 5: recovered, the walk"},
+        {facts(Ground::Deadly, 0, false, 0, false, true, true, 0, 90), LeaveAct::Wait, LeaveEnd::None,
+         "line 6: the walk failed: the wait"},
+        {facts(Ground::Passable, 0, false, 0, false, false, false, 10, 90), LeaveAct::Wait, LeaveEnd::None,
+         "line 6: no place: the wait"},
+        {facts(Ground::Deadly, 0, false, 0, false, false, false, LEAVE_WAIT_SECONDS, 400), LeaveAct::Done,
+         LeaveEnd::WaitEnded, "line 6: the wait's end says so"},
+        {taken, LeaveAct::Done, LeaveEnd::Taken, "a player who takes the bot ends the leaving"},
+    };
+    for (Named const& n : NAMED)
+    {
+        LeaveAnswer const answer = LeaveStep(n.facts);
+        Check(answer.act == n.act && answer.end == n.end, n.what);
+    }
+
+    Generator g;
+    g.state = SEED ^ 0x38bb;
+    int v2 = 0;
+    int v3 = 0;
+    int v4 = 0;
+    int v6 = 0;
+    int ends[6] = {};
+    int acts[5] = {};
+    constexpr int RUNS = 3000;
+    for (int run = 0; run < RUNS; ++run)
+    {
+        // A run's world: how often the ground is each kind, how often the bot is taken, whether a place is known
+        std::uint32_t const deadlyShare = g.Next() % 101;
+        std::uint32_t const quietShare = g.Next() % 4;  // in hundreds of a percent per step: rare, so runs last
+        bool const place = g.Next() % 2 != 0;
+        std::uint32_t const startSeconds = g.Next() % 20;
+        std::uint32_t casts = 0;
+        std::uint32_t wait = 0;
+        bool failed = false;
+        bool done = false;
+        std::uint32_t steps = 0;
+        for (std::uint32_t since = startSeconds; since <= LEAVE_BOUND_SECONDS + 1; ++since)
+        {
+            ++steps;
+            LeaveStepFacts f;
+            std::uint32_t const draw = g.Next() % 10000;
+            f.ground = draw < quietShare              ? Ground::Quiet
+                       : g.Next() % 100 < deadlyShare ? Ground::Deadly
+                                                      : Ground::Passable;
+            f.sinceRiseSeconds = since;
+            f.riseYards = static_cast<float>(g.Next() % 100) * (g.Next() % 50 == 0 ? 4.0f : 1.0f);
+            f.otherMap = g.Next() % 500 == 0;
+            f.hearthReady = g.Next() % 3 != 0;
+            f.hearthCasts = casts;
+            f.recovering = since < 60 && g.Next() % 2 != 0;
+            f.placeKnown = place;
+            f.walkFailed = failed;
+            f.waitSeconds = wait;
+            f.taken = g.Next() % 20000 == 0;
+            LeaveAnswer const answer = LeaveStep(f);
+            ++acts[static_cast<int>(answer.act)];
+            v4 += f.ground == Ground::Quiet && answer.act != LeaveAct::Done;
+            v6 += answer.act == LeaveAct::Hearth && !(f.hearthReady && f.ground == Ground::Deadly);
+            v6 += answer.act == LeaveAct::Walk && !(f.placeKnown && !f.walkFailed);
+            if (answer.act == LeaveAct::Done)
+            {
+                ++ends[static_cast<int>(answer.end)];
+                bool const letGo = answer.end == LeaveEnd::Quiet || answer.end == LeaveEnd::Away;
+                v3 += letGo && f.ground == Ground::Deadly;
+                v3 += !letGo && answer.end != LeaveEnd::Bound && answer.end != LeaveEnd::WaitEnded &&
+                      answer.end != LeaveEnd::Taken;
+                done = true;
+                break;
+            }
+            if (answer.act == LeaveAct::Hearth)
+                ++casts;
+            else if (answer.act == LeaveAct::Wait)
+                ++wait;
+            else if (answer.act == LeaveAct::Walk)
+            {
+                // The trip ends some steps later without letting go (arrived or not: line 1 decides)
+                failed = g.Next() % 400 == 0;
+            }
+            v2 += casts > LEAVE_HEARTH_TRIES;
+            v2 += wait > LEAVE_WAIT_SECONDS;
+        }
+        v2 += !done;
+        v2 += steps > LEAVE_BOUND_SECONDS + 1;
+    }
+    Check(!v2, "V2: every leaving ends within the bound plus one step, at most two casts and the wait's seconds");
+    Check(!v3, "V3: let go as quiet or away only out of deadly ground; every other end is bound, wait_ended, taken");
+    Check(!v4, "V4: never held in quiet ground");
+    Check(!v6, "V6: Hearth only ready and in deadly ground, Walk only to a known place whose walk has not failed");
+    Check(ends[static_cast<int>(LeaveEnd::Quiet)] && ends[static_cast<int>(LeaveEnd::Away)] &&
+              ends[static_cast<int>(LeaveEnd::Bound)] && ends[static_cast<int>(LeaveEnd::WaitEnded)],
+          "the draws reach quiet, away, the bound and the wait's end");
+    Check(acts[static_cast<int>(LeaveAct::Hearth)] && acts[static_cast<int>(LeaveAct::Yield)] &&
+              acts[static_cast<int>(LeaveAct::Walk)] && acts[static_cast<int>(LeaveAct::Wait)],
+          "the draws reach every step");
+    // V5 holds by construction: LeaveEffectsOf starts no leaving for a sick bot (no End, so no state: TestLeave)
+    Check(std::string_view(LeaveEndWord(LeaveEnd::WaitEnded)) == "wait_ended" &&
+              std::string_view(LeaveActWord(LeaveAct::Hearth)) == "hearth",
+          "the step rows' words");
+}
+
+// The leaving's walk is the trip to its place, not any trip while the leaving lasts (AW38b review, N2: after a failed
+// walk a trip the planner starts is the bot's own, judged by the way and not named `leave`)
+void TestLeaveWalk()
+{
+    Check(IsLeaveWalk(true, 0, -400.0f, 120.0f, 0, -400.0f, 120.0f), "the walk begun, the trip to its place: leave");
+    Check(IsLeaveWalk(true, 0, -400.0f, 120.0f, 0, -400.5f, 120.5f), "within the reach of the place: leave");
+    Check(!IsLeaveWalk(false, 0, -400.0f, 120.0f, 0, -400.0f, 120.0f), "no walk begun: no leave trip");
+    Check(!IsLeaveWalk(true, 0, -400.0f, 120.0f, 0, -900.0f, -500.0f),
+          "a trip elsewhere after the walk: the bot's own");
+    Check(!IsLeaveWalk(true, 0, -400.0f, 120.0f, 1, -400.0f, 120.0f), "the same spot on another map: the bot's own");
+    Check(!IsLeaveWalk(true, 0, -400.0f, 120.0f, 0, -400.0f, 120.0f + 2.0f * LEAVE_TRIP_YARDS),
+          "just beyond the reach: the bot's own");
+}
+
 int main(int argc, char** argv)
 {
     TestValues();
@@ -7183,6 +7447,9 @@ int main(int argc, char** argv)
     TestWayTerm();
     TestShortcutGenerated();
     TestWayTrigger();
+    TestLeave();
+    TestLeaveStep();
+    TestLeaveWalk();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

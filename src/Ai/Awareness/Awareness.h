@@ -76,6 +76,23 @@ struct DeadMemo
     std::uint32_t boundGrave = 0;
 };
 
+// AW38b: a leaving under way (INTERFACE.md §3.6): begun by a Leave of a bot that is not sick, ended by its Done and
+// by a death. The walk's place is searched once (FindLeavePlace); the counts are the step's (LeaveStepFacts)
+struct Leaving
+{
+    bool active = false;
+    bool searched = false;
+    bool placeFound = false;
+    std::uint32_t placeMap = 0;
+    float placeX = 0.0f;
+    float placeY = 0.0f;
+    float placeZ = 0.0f;
+    bool walkBegun = false;
+    std::uint32_t hearthTries = 0;
+    std::uint32_t waitStartMs = 0;
+    AwarenessRules::LeaveAct lastAct = AwarenessRules::LeaveAct::Yield;
+};
+
 // The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
 // bot (NoteAttack, OnFightOpen, OnRise, OnDeath)
 struct Store
@@ -110,6 +127,9 @@ struct Store
     DeadMemo dead;
     // AW37b: the last route the trigger `way danger` judged (DangerRules::WayDue)
     DangerRules::JudgedPair judged;
+    // AW38b: a rise not judged by the leaving yet (LeaveDue): set by the rise, ended by the judgement and by a death
+    bool leaveDue = false;
+    Leaving leaving;
     // AW33b: the self-rise rule's last ask (one per tick), the first ask of a body whose death has no edge's stamp,
     // and the self-resurrection it ordered (the Rise row's `self`); all ended by the rise and by the next death
     std::uint32_t selfRiseAskMs = 0;
@@ -248,6 +268,20 @@ bool WayJudgeDue(PlayerbotAI* botAI);
 // refused way writes its goal to the record (DangerRules::RECORD_WORD), the `way` row and ends the status
 // (abort:danger); a least deadly one writes the row. A GM's order (`route go`: its place is named) is spared
 void JudgeTripWay(PlayerbotAI* botAI);
+// The trigger `leaving` (AW38b, INTERFACE.md §3.6): a rise the leaving has not judged yet, or a leaving under way. Two
+// flags of the store, set by OnRise and JudgeLeave, ended by the judgement, the leaving's Done and the next death
+bool LeaveDue(PlayerbotAI* botAI);
+// The leaving's walk is under way: its trip's goal word is `leave` (RpgStatus::TripGoal) and AW37b's refusal spares it
+bool LeaveWalks(PlayerbotAI* botAI);
+// The leaving's place, once per leaving: the nearest node of the travel graph (planar, within LEAVE_SEARCH_YARDS) that
+// is LEAVE_AWAY_YARDS or more from the rise, is no transport stop and whose ground is not deadly for the bot healthy
+void FindLeavePlace(PlayerbotAI* botAI);
+// Its action, on the bot's first tick alive in the non-combat engine (the core casts the sickness after the rise
+// hook): AwarenessRules::LeaveAtRise of the ground where the bot stands (judged for it healthy or sick), the row and
+// the bot. A Leave does AwarenessRules::LeaveEffectsOf in order: the held trip's goal to the record
+// (DangerRules::RECORD_WORD), the `leave` row, and for a bot that is not sick the end of its status with the outcome
+// danger (RpgStatus::Start of `rest`; the trip's abort abort:danger). A sick bot's status is the sickness rule's
+void JudgeLeave(PlayerbotAI* botAI);
 // `playerbots aw ways <alliance|horde> <level> | all`: from each capital of the side to every hub of the zones a bot
 // of that level plays, for a bot of the capital's race with the flight points the factory gives its level: the hubs
 // with no safe way (each deadly link with its yards, deadly yards and deciding facts), the zones cut off (one of the

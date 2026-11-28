@@ -11,6 +11,7 @@
 #include <utility>
 #include <variant>
 
+#include "Awareness.h"
 #include "BotTravel.h"
 #include "ErrandRules.h"
 #include "EventLog.h"
@@ -332,6 +333,9 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
 
 char const* RpgStatus::TripGoal(PlayerbotAI* botAI, bool inn)
 {
+    // Awareness AW38b: the walk out of ground the bot cannot survive (INTERFACE.md §3.6)
+    if (!inn && Awareness::LeaveWalks(botAI))
+        return "leave";
     uint32 const holder = botAI->GetTravel().TripHolder();
     if (inn || StatusEnd::TripEndsHolder(holder))
         return inn ? "inn" : "order";

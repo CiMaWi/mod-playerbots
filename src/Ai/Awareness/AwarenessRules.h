@@ -1985,6 +1985,212 @@ constexpr RecoverAct RecoverStep(RecoverFacts const& facts)
         return RecoverAct::Done;
     return facts.own.clear ? RecoverAct::Rest : RecoverAct::Move;
 }
+
+// AW38b: the leaving (INTERFACE.md §3.6, Phase K). A risen bot leaves at LEAVE_ROW_AT deaths in a row (AW.24's number)
+// or where it stands in ground it cannot survive
+constexpr std::uint32_t LEAVE_ROW_AT = 2;
+
+// The facts of the judgement, asked once per rise on the bot's first tick alive (the core casts the sickness after its
+// resurrect hook, so the rise hook cannot read it): the ground where the bot stands judged for it as it is (healthy, or
+// sick: DangerRules::SICK), the row (§3.5) and the bot
+struct LeaveFacts
+{
+    Ground ground = Ground::Quiet;
+    std::uint32_t deathsInRow = 1;
+    bool sick = false;
+    bool ownedByPlayer = false;
+    bool inBattleground = false;
+};
+
+// Stay, or Leave and why (the `leave` row's reason)
+enum class LeaveCause : std::uint8_t
+{
+    Stay,
+    Ground,
+    Row
+};
+
+// V1: Leave exactly for a bot that is no player's and in no battleground, in deadly ground or at its LEAVE_ROW_AT-th
+// death in a row; a sick bot too (its leaving moves it nowhere: LeaveEffectsOf)
+constexpr LeaveCause LeaveAtRise(LeaveFacts const& facts)
+{
+    if (facts.inBattleground || facts.ownedByPlayer)
+        return LeaveCause::Stay;
+    if (facts.ground == Ground::Deadly)
+        return LeaveCause::Ground;
+    return facts.deathsInRow >= LEAVE_ROW_AT ? LeaveCause::Row : LeaveCause::Stay;
+}
+
+constexpr char const* LeaveWord(LeaveCause cause)
+{
+    switch (cause)
+    {
+        case LeaveCause::Ground:
+            return "ground";
+        case LeaveCause::Row:
+            return "row";
+        default:
+            return "stay";
+    }
+}
+
+// What a Leave does at once, in this order (V7: the goal is given up first): the held trip's goal to the record of
+// failed attempts (DangerRules::RECORD_WORD, by the record's own call), the `leave` row, then the end of the status
+// with the outcome danger (the trip's abort abort:danger). A sick bot's status is upkeep's sickness rule's (the outcome
+// sick, one owner), so its leaving records and writes the row only (V5: it is never moved); and where that sick end
+// records the goal itself (TravelLegs::SickEndFailure, at the trip's third death) the leaving does not, so the record
+// sees the goal once (its expiry doubles per repeat)
+enum class LeaveEffect : std::uint8_t
+{
+    Record,
+    Row,
+    End
+};
+
+struct LeaveEffects
+{
+    std::array<LeaveEffect, 3> order{};
+    std::uint8_t count = 0;
+};
+
+constexpr LeaveEffects LeaveEffectsOf(LeaveCause cause, bool sick, bool tripHeld, bool sickEndRecords)
+{
+    LeaveEffects effects;
+    if (cause == LeaveCause::Stay)
+        return effects;
+    if (tripHeld && !(sick && sickEndRecords))
+        effects.order[effects.count++] = LeaveEffect::Record;
+    effects.order[effects.count++] = LeaveEffect::Row;
+    if (!sick)
+        effects.order[effects.count++] = LeaveEffect::End;
+    return effects;
+}
+
+// The leaving's steps, for a bot that is not sick (V5: a sick one has none). Tuning values: the distance from the rise
+// that is away (the nights' "near its rise" reads 150 yd), the reach of the walk's place, the hearthstone's tries, the
+// wait at a clear point and the bound of the whole leaving, from the rise
+constexpr float LEAVE_AWAY_YARDS = 150.0f;
+constexpr float LEAVE_SEARCH_YARDS = 1000.0f;
+constexpr std::uint32_t LEAVE_HEARTH_TRIES = 2;
+constexpr std::uint32_t LEAVE_WAIT_SECONDS = 300;
+constexpr std::uint32_t LEAVE_BOUND_SECONDS = 600;
+
+// The held trip is the leaving's walk out (spared by the way's judgement, its goal word `leave`): a walk was begun and
+// the trip goes to the walk's place. Any other trip while a leaving lasts (one the planner starts while `recover` holds
+// the step after a failed walk) is the bot's own, judged and named as every trip is
+constexpr float LEAVE_TRIP_YARDS = 1.0f;
+inline bool IsLeaveWalk(bool walkBegun, std::uint32_t placeMap, float placeX, float placeY, std::uint32_t tripMap,
+                        float tripX, float tripY)
+{
+    return walkBegun && placeMap == tripMap && PlanarDistance(placeX, placeY, tripX, tripY) <= LEAVE_TRIP_YARDS;
+}
+
+// The facts of one step, asked each tick of the leaving: the ground where the bot stands (judged for it healthy), the
+// rise's age and distance, the hearthstone (hearthReady: the stone, no cooldown, no fight, no cast, its bind point's
+// ground not deadly for the bot) and its begun casts, the recovery (Recovering), the walk's place and whether the walk
+// ended without letting go, the wait's seconds; a player who takes the bot or a battleground ends the leaving
+struct LeaveStepFacts
+{
+    Ground ground = Ground::Quiet;
+    std::uint32_t sinceRiseSeconds = 0;
+    float riseYards = 0.0f;  // planar, from where the bot rose
+    bool otherMap = false;
+    bool hearthReady = false;
+    std::uint32_t hearthCasts = 0;
+    bool recovering = false;
+    bool placeKnown = false;
+    bool walkFailed = false;
+    std::uint32_t waitSeconds = 0;
+    bool taken = false;  // a player's bot now, or in a battleground
+};
+
+enum class LeaveAct : std::uint8_t
+{
+    Done,
+    Hearth,
+    Yield,
+    Walk,
+    Wait
+};
+
+// Why a leaving lets go (the `done` row's reason): quiet and away in ground it survives, the bound and the wait's end
+// (it says so), taken by a player or a battleground (LeaveAtRise's Stay, met during the leaving)
+enum class LeaveEnd : std::uint8_t
+{
+    None,
+    Quiet,
+    Away,
+    Bound,
+    WaitEnded,
+    Taken
+};
+
+struct LeaveAnswer
+{
+    LeaveAct act = LeaveAct::Done;
+    LeaveEnd end = LeaveEnd::None;
+};
+
+constexpr char const* LeaveEndWord(LeaveEnd end)
+{
+    switch (end)
+    {
+        case LeaveEnd::Quiet:
+            return "quiet";
+        case LeaveEnd::Away:
+            return "away";
+        case LeaveEnd::Bound:
+            return "bound";
+        case LeaveEnd::WaitEnded:
+            return "wait_ended";
+        case LeaveEnd::Taken:
+            return "taken";
+        default:
+            return "none";
+    }
+}
+
+constexpr char const* LeaveActWord(LeaveAct act)
+{
+    switch (act)
+    {
+        case LeaveAct::Hearth:
+            return "hearth";
+        case LeaveAct::Yield:
+            return "yield";
+        case LeaveAct::Walk:
+            return "walk";
+        case LeaveAct::Wait:
+            return "wait";
+        default:
+            return "done";
+    }
+}
+
+// The first line that matches (INTERFACE.md §3.6): let go where the ground is quiet, or away from the rise in ground
+// the bot survives; the bound; the hearthstone out of deadly ground; the recovery first (recover moves the bot to a
+// clear point); the walk to the known place (a trip with the goal word leave; while it is held the caller yields to
+// it, its end comes back here); else the bounded wait at a clear point
+constexpr LeaveAnswer LeaveStep(LeaveStepFacts const& facts)
+{
+    if (facts.taken)
+        return {LeaveAct::Done, LeaveEnd::Taken};
+    if (facts.ground == Ground::Quiet)
+        return {LeaveAct::Done, LeaveEnd::Quiet};
+    if (facts.ground != Ground::Deadly && (facts.otherMap || facts.riseYards >= LEAVE_AWAY_YARDS))
+        return {LeaveAct::Done, LeaveEnd::Away};
+    if (facts.sinceRiseSeconds >= LEAVE_BOUND_SECONDS)
+        return {LeaveAct::Done, LeaveEnd::Bound};
+    if (facts.ground == Ground::Deadly && facts.hearthReady && facts.hearthCasts < LEAVE_HEARTH_TRIES)
+        return {LeaveAct::Hearth, LeaveEnd::None};
+    if (facts.recovering)
+        return {LeaveAct::Yield, LeaveEnd::None};
+    if (facts.placeKnown && !facts.walkFailed)
+        return {LeaveAct::Walk, LeaveEnd::None};
+    if (facts.waitSeconds >= LEAVE_WAIT_SECONDS)
+        return {LeaveAct::Done, LeaveEnd::WaitEnded};
+    return {LeaveAct::Wait, LeaveEnd::None};
+}
 }  // namespace AwarenessRules
 
 #endif
