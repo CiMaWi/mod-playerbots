@@ -368,6 +368,12 @@ bool RowWorks(Row const& row)
         return untouched && !ProfessionErrandsOffered(NOPROFESSION) && !ProfessionErrandsOffered(HOLD | NOPROFESSION) &&
                ProfessionErrandsOffered(0) && ProfessionErrandsOffered(STATES & ~NOPROFESSION) &&
                ProfessionErrandsOffered(HOLD) && (NOPROFESSION & HOLD) == 0 && !EndsStatus(0, NOPROFESSION);
+    // Only ghoststall stands a ghost's walks of the dead (awareness AW33b); nothing on the bot changes, the hold never
+    // sets it, it ends no status
+    if (name == "ghoststall")
+        return untouched && GhostWalksStand(GHOSTSTALL) && GhostWalksStand(HOLD | GHOSTSTALL) && !GhostWalksStand(0) &&
+               !GhostWalksStand(STATES & ~GHOSTSTALL) && !GhostWalksStand(HOLD) && (GHOSTSTALL & HOLD) == 0 &&
+               !EndsStatus(0, GHOSTSTALL);
     // Only casttrace traces the combat engine; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "casttrace")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.traced && !units.traced &&
@@ -448,7 +454,7 @@ void TestTable()
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
               "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory, circuit, "
-              "freewalk, often, noprofession",
+              "freewalk, often, noprofession, ghoststall",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

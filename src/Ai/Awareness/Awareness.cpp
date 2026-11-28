@@ -14,6 +14,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "BotTravel.h"
@@ -24,9 +25,11 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "DangerFold.h"
+#include "DatabaseEnv.h"
 #include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventWanted.h"
+#include "GameGraveyard.h"
 #include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -56,6 +59,7 @@
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "TravelPlaces.h"
+#include "Upkeep.h"
 #include "UpkeepRules.h"
 #include "Util.h"
 #include "WaypointMgr.h"
@@ -1879,6 +1883,9 @@ namespace
 // The rule's last step names the rise when it is at most this old: a Rise is carried out by the next action of the
 // same tick or retried every tick, the healer's revive happens inside the step's own call
 constexpr std::uint32_t RISE_ORDER_MS = 5000;
+// AW38b: the nodes the leaving's place is chosen from, nearest first: enough to reach past LEAVE_AWAY_YARDS where the
+// graph is densest (a town), asked once per leaving
+constexpr std::size_t LEAVE_NODES = 256;
 
 DeadMemo const& AskAndKeep(DeadMemo& memo)
 {
@@ -1889,6 +1896,9 @@ DeadMemo const& AskAndKeep(DeadMemo& memo)
         memo.healerReason = memo.last.reason;
     }
     memo.lastMs = std::max<std::uint32_t>(getMSTime(), 1);
+    // AW33b: a step that does not walk ends the walk's window, unless the walk stalled
+    if (!AwarenessRules::WalkOfDead(memo.last.act))
+        memo.walk = AwarenessRules::WatchPause(memo.walk, memo.lastMs);
     return memo;
 }
 }  // namespace
@@ -1935,9 +1945,17 @@ DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
     if (!corpse)
         return AskAndKeep(memo);
 
+    // AW38a: the corpse's ground for the bot healthy; the grave's as its revive leaves the bot, for a persistent bot
+    // (the others keep upstream's choice of grave, GetGrave, and a quiet one)
+    facts.corpseGround = GroundAt(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(),
+                                  corpse->GetPositionZ(), bot->GetLevel(), bot->GetTeamId());
+    if (botAI->KeepsPossessions())
+        facts.graveGround = GraveGround(botAI, GraveOf(botAI));
     facts.corpseYards = bot->GetExactDist2d(corpse);
     facts.reclaimHere = corpse->IsWithinDistInMap(bot, CORPSE_RECLAIM_RADIUS, true);
-    if (!facts.ownedByPlayer)
+    // AW33b: world PvP's hold of the ghost is a fact only on a PvP realm (where its fight rules ask it, AW44); on a
+    // normal realm no enemy player's wait holds a ghost, and no hold's recheck sleeps past the bound
+    if (!facts.ownedByPlayer && sWorld->IsPvPRealm())
     {
         WorldPvp::GhostPlan const plan = WorldPvp::PlanGhostFor(botAI, corpse);
         facts.playerHold = plan.step == WorldPvp::GhostStep::Corpse         ? AwarenessRules::PlayerHold::None
@@ -1975,11 +1993,24 @@ DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI)
     return AskAndKeep(memo);
 }
 
+bool WalkStalled(PlayerbotAI* botAI, AwarenessRules::WalkKind kind, float x, float y)
+{
+    DeadMemo& memo = OwnStore(botAI).dead;
+    Player const* bot = botAI->GetBot();
+    std::uint32_t const nowMs = std::max<std::uint32_t>(getMSTime(), 1);
+    memo.walk = AwarenessRules::WatchWalk(memo.walk, kind, x, y, bot->GetExactDist2d(x, y), nowMs);
+    return AwarenessRules::WalkStalled(memo.walk, nowMs);
+}
+
 DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
 {
     DeadMemo& memo = OwnStore(botAI).dead;
+    // AW33b: the searches at the grave, for the healer_wait row
+    if (grave.looked)
+        memo.healerFound = grave.healerInRange ? 1 : 0;
+    memo.healerSearched = memo.healerSearched || grave.searched;
     memo.facts.graveKnown = grave.known;
-    memo.facts.atGrave = grave.atGrave;
+    memo.facts.atGravePoint = grave.atGravePoint;
     memo.facts.healerInRange = grave.healerInRange;
     memo.facts.graveWalkFailed = grave.walkFailed;
     memo.facts.teleportSeen = grave.seen;
@@ -1993,6 +2024,133 @@ DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
 }
 
 DeadMemo const* LastOfDead(PlayerbotAI* botAI) { return botAI->awareness ? &botAI->awareness->dead : nullptr; }
+
+namespace
+{
+// AW38a: the sides each grave serves (bit 0 the Alliance, bit 1 the Horde), written once by LoadGraveSides before the
+// world runs and only read afterwards
+std::unordered_map<std::uint32_t, std::uint8_t> graveSides;
+
+bool SideMayUse(std::uint32_t graveId, TeamId side)
+{
+    auto const it = graveSides.find(graveId);
+    return side < TEAM_NEUTRAL && it != graveSides.end() && ((it->second >> side) & 1u) != 0;
+}
+
+// As the spirit healer's revive leaves the bot (ReviveAtGrave): half its health, sick where it pays for the revive at a
+// level the sickness reaches (Player::ResurrectPlayer)
+DangerRules::Condition ReviveCondition(Player* bot)
+{
+    bool const pays = !Upkeep::Granted(bot, UpkeepKind::Resurrect);
+    std::int32_t const sickFrom = sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL);
+    return {static_cast<std::uint8_t>(AwarenessRules::RISE_HEALTH_PCT),
+            pays && static_cast<std::int32_t>(bot->GetLevel()) >= sickFrom};
+}
+
+// The nearest grave of the ghost's map its side may use whose ground is not deadly as the revive leaves it; 0 for none
+std::uint32_t SurvivableGrave(Player* bot)
+{
+    DangerRules::Condition const condition = ReviveCondition(bot);
+    std::uint32_t best = 0;
+    float bestYards = 0.0f;
+    for (auto const& [id, grave] : sGraveyard->GetGraveyardData())
+    {
+        if (grave.Map != bot->GetMapId() || !SideMayUse(id, bot->GetTeamId()))
+            continue;
+        float const yards = bot->GetExactDist2d(grave.x, grave.y);
+        if ((best && yards >= bestYards) || GroundAt(grave.Map, grave.x, grave.y, grave.z, bot->GetLevel(),
+                                                     bot->GetTeamId(), condition) == AwarenessRules::Ground::Deadly)
+            continue;
+        best = id;
+        bestYards = yards;
+    }
+    return best;
+}
+}  // namespace
+
+GraveyardStruct const* GraveOf(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    GraveyardStruct const* game = sGraveyard->GetClosestGraveyard(bot, bot->GetTeamId());
+    DeadMemo& memo = OwnStore(botAI).dead;
+    if (memo.facts.ghostSeconds < AwarenessRules::GHOST_BOUND_SECONDS)
+        return game;
+    if (!memo.boundGraveChosen)
+    {
+        memo.boundGraveChosen = true;
+        memo.boundGrave = SurvivableGrave(bot);
+    }
+    GraveyardStruct const* bound = memo.boundGrave ? sGraveyard->GetGraveyard(memo.boundGrave) : nullptr;
+    return bound ? bound : game;
+}
+
+AwarenessRules::Ground GraveGround(PlayerbotAI* botAI, GraveyardStruct const* grave)
+{
+    if (!grave)
+        return AwarenessRules::Ground::Quiet;
+    DeadMemo& memo = OwnStore(botAI).dead;
+    if (memo.groundGrave != grave->ID)
+    {
+        Player* bot = botAI->GetBot();
+        memo.groundGrave = grave->ID;
+        memo.graveGround =
+            GroundAt(grave->Map, grave->x, grave->y, grave->z, bot->GetLevel(), bot->GetTeamId(), ReviveCondition(bot));
+    }
+    return memo.graveGround;
+}
+
+void LoadGraveSides()
+{
+    std::uint32_t const started = getMSTime();
+    graveSides.clear();
+    std::size_t links = 0;
+    if (QueryResult result = WorldDatabase.Query("SELECT ID, Faction FROM graveyard_zone"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            std::uint32_t const faction = fields[1].Get<uint16>();
+            // The core's links (Graveyard::LoadGraveyardZones): 0 serves both sides, a player faction its own
+            std::uint8_t const sides = faction == 0          ? 3
+                                       : faction == ALLIANCE ? 1u << TEAM_ALLIANCE
+                                       : faction == HORDE    ? 1u << TEAM_HORDE
+                                                             : 0;
+            if (!sides)
+                continue;
+            graveSides[fields[0].Get<uint32>()] |= sides;
+            ++links;
+        } while (result->NextRow());
+    }
+    LOG_INFO("server.loading", ">> Loaded the sides of {} graves from {} graveyard links (awareness) in {} ms",
+             graveSides.size(), links, GetMSTimeDiffToNow(started));
+}
+
+AwarenessRules::SelfRiseAct SelfRise(PlayerbotAI* botAI, std::uint32_t* bodySeconds)
+{
+    Store& store = OwnStore(botAI);
+    Player* bot = botAI->GetBot();
+    std::uint32_t const nowMs = std::max<std::uint32_t>(getMSTime(), 1);
+    if (store.selfRiseAskMs != nowMs)
+    {
+        // The seconds since the death edge; a death without its stamp counts from the body's first ask
+        if (!store.died && !store.selfRiseStartMs)
+            store.selfRiseStartMs = nowMs;
+        std::uint32_t const wall = static_cast<std::uint32_t>(time(nullptr));
+        AwarenessRules::SelfRiseFacts& facts = store.selfRiseFacts;
+        facts.inBattleground = bot->InBattleground() || bot->InArena();
+        facts.ownedByPlayer = botAI->HasGameClientMaster();
+        facts.bodySeconds =
+            store.died ? wall - std::min(wall, store.died) : getMSTimeDiff(store.selfRiseStartMs, nowMs) / 1000;
+        facts.own = JudgePoint(botAI, *bot);
+        store.selfRiseAct = AwarenessRules::SelfRiseStep(facts);
+        store.selfRiseAskMs = nowMs;
+    }
+    if (bodySeconds)
+        *bodySeconds = store.selfRiseFacts.bodySeconds;
+    return store.selfRiseAct;
+}
+
+void OrderSelfRise(PlayerbotAI* botAI) { OwnStore(botAI).selfRiseOrderedMs = std::max<std::uint32_t>(getMSTime(), 1); }
 
 void ChooseHealer(PlayerbotAI* botAI) { OwnStore(botAI).dead.healerChosen = true; }
 
@@ -2029,6 +2187,8 @@ void OnRise(Player* bot, std::string_view how)
         if (EventLog::Wanted(EventLog::EventType::Rise))
         {
             bool const ordered = memo.lastMs && GetMSTimeDiffToNow(memo.lastMs) <= RISE_ORDER_MS;
+            // AW33b: a self-resurrection the self-rise rule ordered
+            bool const self = store.selfRiseOrderedMs && GetMSTimeDiffToNow(store.selfRiseOrderedMs) <= RISE_ORDER_MS;
             AwarenessRules::RiseRow row;
             row.ghostSeconds = memo.lastMs ? memo.facts.ghostSeconds : 0;
             row.corpseYards = memo.lastMs && memo.facts.corpseHere
@@ -2037,11 +2197,14 @@ void OnRise(Player* bot, std::string_view how)
             row.deathsInRow = std::max<std::uint32_t>(1, store.row);
             row.reaching = JudgePoint(botAI, *bot).reaching;
             EventLog::Emit(bot, EventLog::EventType::Rise,
-                           AwarenessRules::RiseWord(memo.last, ordered, how == EventLog::RESURRECT_CORPSE), 0,
+                           AwarenessRules::RiseWord(memo.last, ordered, how == EventLog::RESURRECT_CORPSE, self), 0,
                            static_cast<int64>(AwarenessRules::RiseAmount(row)));
         }
         memo = DeadMemo{};
     }
+    store.selfRiseAskMs = 0;
+    store.selfRiseStartMs = 0;
+    store.selfRiseOrderedMs = 0;
     store.row = AwarenessRules::RowAtRise(store.row);
     store.died = 0;
     store.rose = true;
@@ -2049,6 +2212,8 @@ void OnRise(Player* bot, std::string_view how)
     store.roseMap = bot->GetMapId();
     store.roseX = bot->GetPositionX();
     store.roseY = bot->GetPositionY();
+    // AW38b: the leaving judges the rise on the first tick alive, where the sickness is on (LeaveDue)
+    store.leaveDue = true;
 }
 
 void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
@@ -2071,6 +2236,11 @@ void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
         store.row = AwarenessRules::RowAfterDeath(store.row, death);
     }
     store.died = std::max<std::uint32_t>(static_cast<std::uint32_t>(time(nullptr)), 1);
+    store.leaveDue = false;
+    store.leaving = Leaving{};
+    store.selfRiseAskMs = 0;
+    store.selfRiseStartMs = 0;
+    store.selfRiseOrderedMs = 0;
     if (!EventLog::Wanted(EventLog::EventType::DeathScene))
         return;
     Picture const& picture = Look(botAI);
@@ -2111,7 +2281,8 @@ void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
 namespace
 {
 constexpr char const* WAY_USAGE =
-    "Usage: .playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe,..>]";
+    "Usage: .playerbots aw way <bot> <map> <x> <y> <z> "
+    "[expect=<clear|least|routed|safe|nosafe|quietwalk|noquietwalk,..>]";
 constexpr char const* WAYS_USAGE = "Usage: .playerbots aw ways <alliance|horde> <level 1..80> | all";
 constexpr char const* TERM_USAGE = "Usage: .playerbots aw term <off|on>";
 // `aw ways`: each band's lines in the reply (Playerbots.log has every line); `all` asks these levels for both sides
@@ -2567,6 +2738,67 @@ DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRout
     return DangerRules::WayDanger(*known, walks, PlaceOf(start), PlaceOf(goal), SideIndex(side), level);
 }
 
+namespace
+{
+// AW38c (INTERFACE.md §3.6): the walk on foot the search answers now, from the bot to a place. None: no store with
+// folded links, the term off, the graph not ready, no answer, or a leg that is no walk; Unquiet: the bot's ground or
+// the way is not quiet; Quiet: QuietWay
+enum class FootWay : std::uint8_t
+{
+    None,
+    Unquiet,
+    Quiet
+};
+
+char const* FootWord(FootWay way)
+{
+    return way == FootWay::Quiet ? "quiet" : way == FootWay::Unquiet ? "unquiet" : "none";
+}
+
+// QuietWalk's lines in their order, the first that fails answers. The search is asked as the bot's trip asks it
+// (NewRpgTravelAction::RequestRoute: its snapshot, the live entries of its record, the stuck edges, the configured
+// params) but on foot: no stone, no taxi, no transport, no own flying and no flight maps (contract C3). Map thread
+FootWay FootWayOf(PlayerbotAI* botAI, TravelRoute::Point const& goal)
+{
+    DangerRules::Known const* const known = DangerRules::Published();
+    TravelGraph const& graph = TravelGraph::Instance();
+    // Without links no link counts, and every way would read quiet
+    if (!known || known->links.empty() || !DangerRules::TermOn() || !graph.IsReady())
+        return FootWay::None;
+    Player* bot = botAI->GetBot();
+    TeamId const side = bot->GetTeamId();
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    // Quiet ground is the same for a sick bot (Q2): one lookup, and a bot on other ground asks no search (AW.29)
+    if (GroundAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), level, side) !=
+        DangerRules::Ground::Quiet)
+        return FootWay::Unquiet;
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness quiet walk", nullptr) : nullptr;
+    TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, 0);
+    snapshot.hasHearthstone = false;
+    snapshot.allowTransport = false;
+    snapshot.knownTaxi.fill(0);
+    snapshot.flyOutland = snapshot.flyNorthrend = false;
+    snapshot.flySpeed = 0.0f;
+    TravelRoute::Request request{snapshot, goal};
+    request.refused = FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime());
+    static TravelRoute::StuckEdges const noStuck{};
+    std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
+    TravelRoute::Params params = TravelRoute::ConfiguredParams();
+    params.flightMaps = nullptr;
+    TravelRoute::Result const result = TravelRoute::Search(graph, request, stuck ? *stuck : noStuck, params);
+    if (pmo)
+        pmo->finish();
+    if (!result.ok || std::any_of(result.legs.begin(), result.legs.end(),
+                                  [](TravelRoute::Leg const& leg) { return leg.type != TravelRoute::LegType::Walk; }))
+        return FootWay::None;
+    return DangerRules::QuietWay(WayOf(result.legs, snapshot.position, goal, side, level)) ? FootWay::Quiet
+                                                                                           : FootWay::Unquiet;
+}
+}  // namespace
+
+bool QuietWalk(PlayerbotAI* botAI, TravelRoute::Point const& goal) { return FootWayOf(botAI, goal) == FootWay::Quiet; }
+
 bool WayJudgeDue(PlayerbotAI* botAI)
 {
     HeldTrip const* const trip = botAI->GetTravel().Trip();
@@ -2595,8 +2827,9 @@ void JudgeTripWay(PlayerbotAI* botAI)
     std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
     DangerRules::DangerPart const part =
         WayOf(trip->trip.legs, trip->trip.legs.front().from, goal, bot->GetTeamId(), level);
-    // Spared: a GM's order (`route go` names its place); the leaving's trip joins it with AW38b
-    DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, !trip->place.empty());
+    // Spared: a GM's order (`route go` names its place) and the leaving's walk out (§4.5: out of deadly ground the
+    // search's price gives the least deadly way)
+    DangerRules::WayVerdict const verdict = DangerRules::JudgeWay(part, !trip->place.empty() || LeaveWalks(botAI));
     char const* const choice = DangerRules::WayChoice(verdict);
     if (!choice)
         return;
@@ -2627,8 +2860,120 @@ void JudgeTripWay(PlayerbotAI* botAI)
                 break;
             case DangerRules::WayEffect::End:
                 // Last: the end releases the trip
-                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned,
+                RpgStatus::End(botAI, StatusEnd::Outcome::Danger,
                                {.source = DangerRules::END_SOURCE, .text = "no safe way"});
+                return;
+        }
+}
+
+bool LeaveDue(PlayerbotAI* botAI)
+{
+    Store const* const store = botAI->awareness.get();
+    return store && (store->leaveDue || store->leaving.active) && botAI->GetBot() && botAI->GetBot()->IsAlive();
+}
+
+bool LeaveWalks(PlayerbotAI* botAI)
+{
+    Store const* const store = botAI->awareness.get();
+    if (!store || !store->leaving.active)
+        return false;
+    Leaving const& leaving = store->leaving;
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    return trip &&
+           AwarenessRules::IsLeaveWalk(leaving.walkBegun, leaving.placeMap, leaving.placeX, leaving.placeY,
+                                       trip->dest.GetMapId(), trip->dest.GetPositionX(), trip->dest.GetPositionY());
+}
+
+void FindLeavePlace(PlayerbotAI* botAI)
+{
+    Store* const store = botAI->awareness.get();
+    Player* const bot = botAI->GetBot();
+    if (!store || !bot || store->leaving.searched)
+        return;
+    Leaving& leaving = store->leaving;
+    leaving.searched = true;
+    TravelGraph const& graph = TravelGraph::Instance();
+    if (!graph.IsReady() || bot->GetMapId() != store->roseMap)
+        return;
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    float const bx = bot->GetPositionX();
+    float const by = bot->GetPositionY();
+    float best = AwarenessRules::LEAVE_SEARCH_YARDS;
+    for (std::uint32_t const index : graph.NearestNodes(bot->GetMapId(), bx, by, bot->GetPositionZ(), LEAVE_NODES))
+    {
+        TravelGraphNode const& node = graph.GetNode(index);
+        float const yards = AwarenessRules::PlanarDistance(bx, by, node.x, node.y);
+        if (node.waitStop || yards > best ||
+            AwarenessRules::PlanarDistance(store->roseX, store->roseY, node.x, node.y) <
+                AwarenessRules::LEAVE_AWAY_YARDS ||
+            GroundAt(node.mapId, node.x, node.y, node.z, level, bot->GetTeamId()) == DangerRules::Ground::Deadly)
+            continue;
+        best = yards;
+        leaving.placeFound = true;
+        leaving.placeMap = node.mapId;
+        leaving.placeX = node.x;
+        leaving.placeY = node.y;
+        leaving.placeZ = node.z;
+    }
+}
+
+void JudgeLeave(PlayerbotAI* botAI)
+{
+    Store* const store = botAI->awareness.get();
+    Player* const bot = botAI->GetBot();
+    if (!store || !bot || !bot->IsAlive())
+        return;
+    store->leaveDue = false;
+    AwarenessRules::LeaveFacts facts;
+    facts.sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    facts.ground = GroundAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), level,
+                            bot->GetTeamId(), facts.sick ? DangerRules::SICK : DangerRules::HEALTHY);
+    facts.deathsInRow = DeathsInRow(botAI);
+    facts.ownedByPlayer = botAI->HasGameClientMaster();
+    facts.inBattleground = bot->InBattleground();
+    AwarenessRules::LeaveCause const cause = AwarenessRules::LeaveAtRise(facts);
+    if (cause == AwarenessRules::LeaveCause::Stay)
+        return;
+    HeldTrip const* const trip = botAI->GetTravel().Trip();
+    TravelRoute::Point const spot{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    TravelRoute::Point goal = spot;
+    std::uint32_t tripId = 0;
+    bool sickEndRecords = false;
+    if (trip)
+    {
+        goal = {trip->dest.GetMapId(), trip->dest.GetPositionX(), trip->dest.GetPositionY(), trip->dest.GetPositionZ()};
+        tripId = trip->tripId;
+        // The sickness rule's end of this trip writes the goal itself after the trip's third death (AbortTrip)
+        sickEndRecords = facts.sick && TravelLegs::SickEndFailure(trip->trip, goal, spot).has_value();
+    }
+    AwarenessRules::LeaveEffects const effects =
+        AwarenessRules::LeaveEffectsOf(cause, facts.sick, trip != nullptr, sickEndRecords);
+    for (std::uint8_t i = 0; i < effects.count; ++i)
+        switch (effects.order[i])
+        {
+            case AwarenessRules::LeaveEffect::Record:
+            {
+                // Before the end, so the planner's next pick and the next search read the entry (V7)
+                FailedAttempts::Failure failure;
+                failure.goal = TravelLegs::FailurePoint(goal);
+                failure.spot = TravelLegs::FailurePoint(spot);
+                botAI->GetTravel().NoteFailure(DangerRules::RECORD_WORD, failure, tripId);
+                break;
+            }
+            case AwarenessRules::LeaveEffect::Row:
+                // The value is the row's deaths; the ground where the bot rose (0 quiet, 1 passable, 2 deadly)
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "leave", AwarenessRules::LeaveWord(cause),
+                                   static_cast<float>(facts.deathsInRow),
+                                   {{"ground", static_cast<float>(facts.ground)}, {"sick", facts.sick ? 1.0f : 0.0f}},
+                                   tripId);
+                break;
+            case AwarenessRules::LeaveEffect::End:
+                // Last: the goal is given up, the bot rests and recovers (the held trip's abort: abort:danger)
+                RpgStatus::Start(botAI, NewRpgInfo::Rest{}, "leave", StatusEnd::Outcome::Danger);
+                // The leaving's steps follow from the next tick (LeaveStep, the action `leave danger`)
+                store->leaving = Leaving{};
+                store->leaving.active = true;
                 return;
         }
 }
@@ -2639,7 +2984,8 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     std::vector<std::string_view> expect;
     if (!words.empty() && words.back().substr(0, 7) == "expect=")
     {
-        if (!ParseExpect(words.back().substr(7), expect, {"clear", "least", "routed", "safe", "nosafe"}))
+        if (!ParseExpect(words.back().substr(7), expect,
+                         {"clear", "least", "routed", "safe", "nosafe", "quietwalk", "noquietwalk"}))
         {
             handler->SendErrorMessage(WAY_USAGE);
             return false;
@@ -2686,6 +3032,9 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     DangerRules::WayVerdict const own = DangerRules::JudgeWay(part, false);
     DangerRules::WayVerdict const order = DangerRules::JudgeWay(part, true);
     bool const refuses = DangerRules::Refuses(part);
+    // AW38c: the answer on foot, as a sick bot's safe areas ask it (QuietWalk); `quietwalk` and `noquietwalk` (unquiet
+    // or none: no road) are the fixture's words
+    FootWay const foot = FootWayOf(botAI, request.goal);
     std::size_t walks = 0;
     DangerRules::Known const* const known = DangerRules::Published();
     for (std::size_t i = 0; i < legs.size(); ++i)
@@ -2723,13 +3072,13 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     std::string const line = Acore::StringFormat(
         "AW way {}: {} level {} map {} {:.0f} {:.0f} {:.0f} -> map {} {:.0f} {:.0f} {:.0f}: {}, {} legs, {:.0f} s "
         "(penalty {:.0f} s), {} walk links | deadly {} links {:.0f} yd, fights {}, unquiet {}, start {} goal {} | "
-        "safe {}, own {}, order {} | term {} | search {} us",
+        "safe {}, own {}, order {} | walk {} | term {} | search {} us",
         bot->GetName(), SideWord(SideIndex(side)), level, snapshot.position.mapId, snapshot.position.x,
         snapshot.position.y, snapshot.position.z, *map, *gx, *gy, *gz,
         result.ok ? "ok" : TravelRoute::FailureWord(result.failure), result.legs.size(), result.totalSeconds,
         part.penaltySeconds, walks, part.deadlyLinks, part.deadlyYards, part.fights, part.unquietLinks,
         GroundWord(part.start), GroundWord(part.goal), refuses ? "no" : "yes", VerdictWord(own), VerdictWord(order),
-        DangerRules::TermOn() ? "on" : "off", micros);
+        FootWord(foot), DangerRules::TermOn() ? "on" : "off", micros);
     LOG_INFO("playerbots", "{}", line);
     if (expect.empty())
     {
@@ -2739,12 +3088,14 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     std::string missed;
     for (std::string_view const word : expect)
     {
-        bool const holds = !result.ok         ? false
-                           : word == "clear"  ? own == DangerRules::WayVerdict::Clear
-                           : word == "least"  ? own == DangerRules::WayVerdict::LeastDeadly
-                           : word == "safe"   ? !refuses
-                           : word == "nosafe" ? refuses
-                                              : true;  // routed
+        bool const holds = word == "quietwalk"     ? foot == FootWay::Quiet
+                           : word == "noquietwalk" ? foot != FootWay::Quiet
+                           : !result.ok            ? false
+                           : word == "clear"       ? own == DangerRules::WayVerdict::Clear
+                           : word == "least"       ? own == DangerRules::WayVerdict::LeastDeadly
+                           : word == "safe"        ? !refuses
+                           : word == "nosafe"      ? refuses
+                                                   : true;  // routed
         if (!holds)
             missed += Acore::StringFormat("{}{}", missed.empty() ? "" : ",", word);
     }

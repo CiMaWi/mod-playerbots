@@ -937,6 +937,15 @@ public:
     bool IsActive() override;
 };
 
+// AW38b: a rise the leaving has not judged yet (awareness INTERFACE.md §3.6). Constant time: one flag of the store
+class LeavingTrigger : public Trigger
+{
+public:
+    LeavingTrigger(PlayerbotAI* botAI) : Trigger(botAI, "leaving") {}
+
+    bool IsActive() override;
+};
+
 class IsFallingTrigger : public Trigger
 {
 public:
@@ -976,7 +985,11 @@ class SelfResurrectTrigger : public Trigger
 public:
     SelfResurrectTrigger(PlayerbotAI* botAI) : Trigger(botAI, "can self resurrect") {}
 
-    bool IsActive() override { return !bot->IsAlive() && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL); }
+    // AW33b: a body only; a ghost keeps the field after it gave its self-resurrection up
+    bool IsActive() override
+    {
+        return !bot->IsAlive() && !bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL);
+    }
 };
 
 class NewPetTrigger : public Trigger

@@ -46,8 +46,8 @@ namespace WorldTravel
 // A persistent bot alone in the open world, alive, out of combat and not sick, in an RPG status an errand may interrupt
 // (UpkeepRules.h ErrandMayStart). The triggers and the destroy rule share it
 bool ErrandMayStart(PlayerbotAI* botAI);
-// Map thread, NR3: sick and awareness's recover done with the bot, on a clear point with health and mana restored
-// (Upkeep::SickErrandOpen). The bot's point is judged only for a sick, restored bot
+// Map thread, NR3: sick, awareness's recovery over (restored, or its bound passed, AW41) and on a clear point
+// (Upkeep::SickErrandOpen). The bot's point is judged only for a sick bot whose recovery is over
 bool SickErrandOpen(PlayerbotAI* botAI);
 // NR3 (NR.4): the status of a goal recover hands a sick bot over to runs: its errand, or its walk to the inn it binds
 // at (StartBind's trip). The status update keeps it (Upkeep::SickEndsStatus), recover moves the bot no more

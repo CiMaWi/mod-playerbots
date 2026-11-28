@@ -736,6 +736,7 @@ struct Run
     char const* lastNote{""};    // a literal (StatusEnd::Note)
     std::uint64_t startGain{0};  // the bot's copper plus its bag items' count at the start (Planner GainNow)
     bool gainCounts{false};      // GainIsProgress(kind): a gain of them is progress
+    bool danger{false};          // its judged last outcome is Danger (NoteStatusEnd, AW38b): kept until the run ends
 };
 
 // A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
@@ -1044,12 +1045,13 @@ constexpr bool ClosesCell(QuestOrderEnd end, bool reached)
 }
 
 // The same rule for a status end that is not the order's own: a judged failure of the order's walk or work (stuck,
-// abandoned by the walk's word, timed out by a walk) is a place that could not be reached. Any other end took the bot
-// over (an interlude, a switch, a hold, sickness), and the order is given again (NextOrder)
+// abandoned by the walk's word, timed out by a walk) is a place that could not be reached, and so is one given up for
+// danger (AW38b: a risen bot left it). Any other end took the bot over (an interlude, a switch, a hold, sickness), and
+// the order is given again (NextOrder)
 constexpr bool FailsOrder(StatusEnd::Outcome outcome)
 {
     return outcome == StatusEnd::Outcome::Stuck || outcome == StatusEnd::Outcome::Abandoned ||
-           outcome == StatusEnd::Outcome::TimedOut;
+           outcome == StatusEnd::Outcome::TimedOut || outcome == StatusEnd::Outcome::Danger;
 }
 
 // An order's cell closes, and with it the cell's neighbours (CellClosed), for the block time: a route's whole memory
@@ -1217,7 +1219,8 @@ inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std:
 // the goal's executor starting again does (ContinueRun), and a new goal's run starts without it. An end to idle also
 // ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind.
 // Any end ends a fallback status. A judged end of the running goal's executor (not an interlude's) is the run's last
-// outcome, with its note (`note`: a literal; null: the outcome's word): a stall's row carries it (EndRun)
+// outcome, with its note (`note`: a literal; null: the outcome's word): a stall's row carries it (EndRun). Danger
+// (AW38b: the bot gave the goal up and left) marks the run, and no later end replaces that outcome
 inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr)
 {
     goals.inFallback = false;
@@ -1228,11 +1231,12 @@ inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toId
     }
     if (goals.run.running && !StatusEnd::Judged(outcome))
         goals.run.outside = true;
-    else if (goals.run.running && !Goals::IsInterlude(goals.slot.Query().kind))
+    else if (goals.run.running && !goals.run.danger && !Goals::IsInterlude(goals.slot.Query().kind))
     {
         goals.run.judged = true;
         goals.run.lastOutcome = outcome;
         goals.run.lastNote = note ? note : StatusEnd::Word(outcome);
+        goals.run.danger = outcome == StatusEnd::Outcome::Danger;
     }
 }
 
@@ -1403,8 +1407,10 @@ inline bool MissedWaits(BotGoals const& goals, Active const& goal, std::uint8_t 
 // goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress, and so
 // did a gather or money goal that gained items or copper (gain: GainNow, WR20c): it does not stall, and the others
 // stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall; a
-// changed log still lifts every stall (LiftStalls). A route's run does not stall here: its dry orders close their
-// cells (EndOrder), and its orders' ends in place fail it (EndInPlace)
+// changed log still lifts every stall (LiftStalls). A run marked by Danger (AW38b) stalls whatever it gained and
+// whatever ended its later statuses, at the log of its end. A route's run never stalls here: its dry orders close
+// their cells (EndOrder), as an order ended by danger does (FailsOrder), and its orders' ends in place fail it
+// (EndInPlace)
 inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs,
                    std::uint64_t gain = 0)
 {
@@ -1412,16 +1418,17 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
         return;
     goals.run.running = false;
     bool const outside = std::exchange(goals.run.outside, false);
+    bool const danger = std::exchange(goals.run.danger, false);
     if (log != goals.run.startLog)
     {
         LiftStalls(goals, log);
-        return;
+        if (!danger)
+            return;
     }
-    if (outside || IsRouteKey(goals.run.key))
+    if (IsRouteKey(goals.run.key))
         return;
-    if (goals.run.xpCounts && xp > goals.run.startXp)
-        return;
-    if (goals.run.gainCounts && gain > goals.run.startGain)
+    if (!danger && (outside || (goals.run.xpCounts && xp > goals.run.startXp) ||
+                    (goals.run.gainCounts && gain > goals.run.startGain)))
         return;
     if (BlockKey(goals, goals.run.key, log, nowMs, blockMs))
         goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};

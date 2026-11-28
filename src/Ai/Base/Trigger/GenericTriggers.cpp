@@ -791,6 +791,8 @@ bool RecoveringTrigger::IsActive()
 
 bool WayDangerTrigger::IsActive() { return Awareness::WayJudgeDue(botAI); }
 
+bool LeavingTrigger::IsActive() { return Awareness::LeaveDue(botAI); }
+
 bool IsFallingTrigger::IsActive() { return bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING); }
 
 bool IsFallingFarTrigger::IsActive() { return bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING_FAR); }

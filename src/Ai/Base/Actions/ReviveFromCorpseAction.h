@@ -61,4 +61,18 @@ public:
     bool Execute(Event event) override;
 };
 
+// AW38b: a risen bot in ground it cannot survive, or at its deaths in a row, gives up its goal and leaves (awareness
+// INTERFACE.md §3.6): judged once per rise, on its first tick alive, then one step of AwarenessRules::LeaveStep per
+// tick until it lets go. Asked by the trigger `leaving`; named `leave danger` because the chat's `leave` is the group's
+class LeaveDangerAction : public MovementAction
+{
+public:
+    LeaveDangerAction(PlayerbotAI* botAI) : MovementAction(botAI, "leave danger") {}
+
+    bool Execute(Event event) override;
+
+private:
+    bool Step();
+};
+
 #endif

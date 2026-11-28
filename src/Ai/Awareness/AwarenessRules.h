@@ -1376,6 +1376,23 @@ constexpr float GRAVE_SEARCH_YARDS = 20.0f;
 constexpr std::uint32_t UNCLEAR_WAIT_SECONDS = 30;
 constexpr std::uint32_t GHOST_BOUND_SECONDS = 600;
 constexpr std::uint32_t ROW_HEALER_AT = 3;
+// AW33b: a walk of the dead that comes less than WALK_PROGRESS_YARDS nearer its target within WALK_PROGRESS_SECONDS
+// counts as one that cannot start (walkStalled; tuning: a ghost runs about 630 yd in a minute)
+constexpr std::uint32_t WALK_PROGRESS_SECONDS = 60;
+constexpr float WALK_PROGRESS_YARDS = 30.0f;
+// AW38a: the death in a row at a corpse in deadly ground that takes the healer where its grave's ground is not deadly;
+// the health the core's reclaim gives (ResurrectPlayer(0.5f)), at which a bot holds a point on a closed healer's way
+constexpr std::uint32_t ROW_DEADLY_AT = 2;
+constexpr float RISE_HEALTH_PCT = 50.0f;
+
+// Known danger's judgement of a place for a bot (INTERFACE.md §4.2; DangerRules::JudgeGround), ordered: a larger value
+// is more dangerous. Here so the rule of the dead reads it game-free; DangerRules::Ground names this type
+enum class Ground : std::uint8_t
+{
+    Quiet,
+    Passable,
+    Deadly
+};
 
 // World PvP's answer for a corpse an enemy player stands at (a fact here, AW.12)
 enum class PlayerHold : std::uint8_t
@@ -1407,11 +1424,15 @@ struct DeadFacts
     bool corpseWalkFailed = false;     // the walk to the corpse or the point could not start this tick
     bool healerChosen = false;         // this death already took the healer's way
     bool graveKnown = true;
-    bool atGrave = false;
+    bool atGravePoint = false;  // AW33b: within GRAVE_SEARCH_YARDS of the grave's point (planar), where it revives
     bool healerInRange = false;
     bool graveWithoutHealer = false;  // this death's ghost stood at its grave and a search there found no healer
     bool graveWalkFailed = false;
     bool teleportSeen = false;  // a real player would see a teleport to the grave
+    // AW38a: the corpse's ground for the bot healthy (Quiet without a corpse here) and the ground of the grave the
+    // facts describe for the bot as that revive leaves it (sick, or at half health where the resurrection is granted)
+    Ground corpseGround = Ground::Quiet;
+    Ground graveGround = Ground::Quiet;
 };
 
 // The steps: none; the corpse's way; the healer's way; the bound's
@@ -1448,6 +1469,9 @@ enum class DeadReason : std::uint8_t
     NoHealer,
     Seen,
     WaitEnded,
+    DeadlyGround,  // AW38a: a second death in a row at a corpse in deadly ground takes the healer
+    GraveDanger,   // AW38a: the wait of a healer's way closed by the grave's deadly ground
+    ReachedHolds,  // AW38a: the rise on a closed healer's way where the bot holds what reaches the point
     Count
 };
 
@@ -1524,9 +1548,23 @@ constexpr char const* Word(DeadReason reason)
             return "seen";
         case DeadReason::WaitEnded:
             return "wait_ended";
+        case DeadReason::DeadlyGround:
+            return "deadly_ground";
+        case DeadReason::GraveDanger:
+            return "grave_danger";
+        case DeadReason::ReachedHolds:
+            return "reached_holds";
         default:
             return "?";
     }
+}
+
+// AW38a: in view, at least one unit reaches the point and their weight does not outweigh the bot as it rises (half
+// health, RISE_HEALTH_PCT): one creature up to three levels above it or two two levels below; never an elite of its
+// level. The closed healer's way's rise after the wait (INTERFACE.md §3.4, line 8)
+inline bool HoldsAtRise(PointAnswer const& answer)
+{
+    return answer.inView && answer.reaching > 0 && answer.weight <= Strength(STRENGTH.player, 0, RISE_HEALTH_PCT);
 }
 
 // A step of the corpse's way; of the healer's way (a step of the bound has the reason wait_ended); a revive
@@ -1552,13 +1590,14 @@ constexpr bool ChoosesHealer(DeadStep const& step)
     return HealerWay(step.act) && step.reason != DeadReason::WaitEnded;
 }
 
-// The healer's way (rule line 3): wait without a grave; at the grave the healer's revive or a wait for one; else the
-// walk there, the teleport when the walk cannot start, a wait while a player would see the teleport
+// The healer's way (rule line 3): wait without a grave; at the grave's point the healer's revive or a wait for one;
+// else (AW33b: also in sight of the grave) the walk to the point, the teleport when the walk cannot start, a wait
+// while a player would see the teleport
 inline DeadStep HealerWayStep(DeadFacts const& facts, DeadReason why)
 {
     if (!facts.graveKnown)
         return {DeadAct::WaitGrave, DeadReason::NoGrave};
-    if (facts.atGrave)
+    if (facts.atGravePoint)
         return facts.healerInRange ? DeadStep{DeadAct::HealerRevive, why}
                                    : DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer};
     if (!facts.graveWalkFailed)
@@ -1568,13 +1607,13 @@ inline DeadStep HealerWayStep(DeadFacts const& facts, DeadReason why)
     return {DeadAct::WaitGrave, DeadReason::Seen};
 }
 
-// The bound (rule line 2): a revive here without a grave, at the grave the healer's or the grave's, else the teleport
-// there, seen or not
+// The bound (rule line 2): a revive here without a grave, at the grave's point the healer's or the grave's, else the
+// teleport there, seen or not
 inline DeadStep BoundStep(DeadFacts const& facts)
 {
     if (!facts.graveKnown)
         return {DeadAct::ReviveHere, DeadReason::WaitEnded};
-    if (facts.atGrave)
+    if (facts.atGravePoint)
         return {facts.healerInRange ? DeadAct::HealerRevive : DeadAct::ReviveGrave, DeadReason::WaitEnded};
     return {DeadAct::TeleportGrave, DeadReason::WaitEnded};
 }
@@ -1594,15 +1633,20 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
     // 2. The bound
     if (facts.ghostSeconds >= GHOST_BOUND_SECONDS)
         return BoundStep(facts);
-    // 3. The healer's way, kept once chosen. Closed for this death when its grave had no healer and the corpse lies
-    // here (AW30b): an enemy player's hold that asks for the healer waits as line 4 does, a walk that cannot start
-    // waits at the grave, and the corpse's way follows
-    if (facts.graveWithoutHealer && facts.corpseHere)
+    // 3. The healer's way, kept once chosen. Closed for this death while the corpse lies here and its grave had no
+    // healer (AW30b) or (AW38a) lies in ground deadly for the bot as that revive leaves it. On either closure an enemy
+    // player's hold that asks for the healer waits as line 4 does; a walk that cannot start waits at the grave
+    // without a healer, on the danger closure alone where the ghost stands (tried again next tick); the corpse's way
+    // follows. AW38a: a second death in a row at a corpse in deadly ground takes an open way (a player would)
+    bool const healerClosed = facts.graveWithoutHealer && facts.corpseHere;
+    bool const dangerClosed = facts.graveGround == Ground::Deadly && facts.corpseHere;
+    if (healerClosed || dangerClosed)
     {
         if (facts.playerHold == PlayerHold::Healer)
             return {DeadAct::Wait, DeadReason::Player};
         if (facts.corpseWalkFailed)
-            return {DeadAct::WaitGrave, DeadReason::NoHealer};
+            return healerClosed ? DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer}
+                                : DeadStep{DeadAct::Wait, DeadReason::NoPath};
     }
     else
     {
@@ -1611,6 +1655,8 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
             healer = DeadReason::CorpseAway;
         else if (facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer)
             healer = DeadReason::CorpseRunsExhausted;
+        else if (facts.deathsInRow >= ROW_DEADLY_AT && facts.corpseGround == Ground::Deadly && !facts.ownedByPlayer)
+            healer = DeadReason::DeadlyGround;
         else if (facts.playerHold == PlayerHold::Healer)
             healer = DeadReason::CorpseCamped;
         else if (facts.corpseWalkFailed)
@@ -1635,24 +1681,124 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
                            (facts.own.clearance >= COMFORT_YARDS || facts.atBest);
         return rises ? RiseUnlessLeaderDown(facts, DeadReason::Clear) : DeadStep{DeadAct::WalkPoint, DeadReason::Clear};
     }
-    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer (a
-    // closed healer's way: wait there and look again; the corpse lies here past line 3)
+    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer. On a
+    // closed healer's way (the corpse lies here past line 3; not a player's bot) there is no healer to prefer: the
+    // rise where the bot holds what reaches the point at the health it rises with (AW38a), else the wait there,
+    // looking again
     if (facts.best.unseen > 0 && facts.corpseYards > ARRIVE_YARDS)
         return {DeadAct::WalkCorpse, DeadReason::NoClearPoint};
     if (facts.unclearSeconds < UNCLEAR_WAIT_SECONDS)
         return facts.best.found && !facts.atBest ? DeadStep{DeadAct::WalkPoint, DeadReason::NoClearPoint}
                                                  : DeadStep{DeadAct::Wait, DeadReason::NoClearPoint};
-    if (facts.best.found && Takeable(facts.best.answer))
+    bool const closedRise = (healerClosed || dangerClosed) && !facts.ownedByPlayer;
+    bool (*const holds)(PointAnswer const&) = closedRise ? HoldsAtRise : Takeable;
+    if (facts.best.found && holds(facts.best.answer))
     {
-        bool const ownTaken = (facts.own.clear && facts.own.inView) || Takeable(facts.own);
-        return facts.atBest && facts.reclaimHere && ownTaken ? RiseUnlessLeaderDown(facts, DeadReason::ReachedOne)
-                                                             : DeadStep{DeadAct::WalkPoint, DeadReason::ReachedOne};
+        DeadReason const why = closedRise ? DeadReason::ReachedHolds : DeadReason::ReachedOne;
+        bool const ownHeld = (facts.own.clear && facts.own.inView) || holds(facts.own);
+        return facts.atBest && facts.reclaimHere && ownHeld ? RiseUnlessLeaderDown(facts, why)
+                                                            : DeadStep{DeadAct::WalkPoint, why};
     }
     if (facts.ownedByPlayer)
         return {DeadAct::Wait, DeadReason::NoClearPoint};
-    if (facts.graveWithoutHealer)
+    if (healerClosed)
         return {DeadAct::Wait, DeadReason::NoHealer};
+    if (dangerClosed)
+        return {DeadAct::Wait, DeadReason::GraveDanger};
     return HealerWayStep(facts, DeadReason::NoClearPoint);
+}
+
+// AW33b: the delay a step of the dead hands the AI: the step's own (world PvP's hold asks up to an hour), never longer
+// than the time left to the bound, 1 ms at least (the AI's next update), so the bound's step is asked when it falls due
+constexpr std::uint32_t DeadDelayMs(std::uint32_t stepDelayMs, std::uint32_t ghostSeconds)
+{
+    std::uint32_t const leftMs = ghostSeconds < GHOST_BOUND_SECONDS ? (GHOST_BOUND_SECONDS - ghostSeconds) * 1000 : 0;
+    return std::max<std::uint32_t>(1, std::min(stepDelayMs, leftMs));
+}
+
+// AW33b: the steps that walk, each with a progress test (walkStalled)
+constexpr bool WalkOfDead(DeadAct act)
+{
+    return act == DeadAct::WalkCorpse || act == DeadAct::WalkPoint || act == DeadAct::WalkGrave;
+}
+
+// The walk a progress test watches: to the corpse, a point or the leader (reported as corpseWalkFailed), or to the
+// grave (graveWalkFailed)
+enum class WalkKind : std::uint8_t
+{
+    None,
+    Corpse,
+    Grave
+};
+
+// AW33b, the progress test of a walk of the dead (INTERFACE.md §3.4, walkStalled), kept in the return's memo: the
+// window's walk, its target and the ghost's distance to it when the window began
+struct WalkWatch
+{
+    WalkKind kind = WalkKind::None;
+    float x = 0.0f;
+    float y = 0.0f;
+    float yards = 0.0f;
+    std::uint32_t startMs = 0;
+};
+
+// The watch after a tick of a walk, `yards` the ghost's planar distance to the target now. A new window begins with
+// another kind of walk, a target more than WALK_PROGRESS_YARDS from the window's, the ghost that much nearer than at
+// the window's start, or the ghost at the target (within ARRIVE_YARDS: a point closer than the progress asks). AW38a:
+// that much nearer the window's own target too (the target's shift added: a point beside the corpse that the walk
+// turns to is no progress of a ghost that stands)
+inline WalkWatch WatchWalk(WalkWatch watch, WalkKind kind, float x, float y, float yards, std::uint32_t nowMs)
+{
+    float const shift = PlanarDistance(watch.x, watch.y, x, y);
+    bool const fresh = watch.kind != kind || shift > WALK_PROGRESS_YARDS;
+    if (fresh || yards <= ARRIVE_YARDS || yards + shift + WALK_PROGRESS_YARDS <= watch.yards)
+        return {kind, x, y, yards, nowMs};
+    return watch;
+}
+
+// walkStalled: the window is WALK_PROGRESS_SECONDS old (it began anew at every progress)
+constexpr bool WalkStalled(WalkWatch const& watch, std::uint32_t nowMs)
+{
+    return watch.kind != WalkKind::None && nowMs - watch.startMs >= WALK_PROGRESS_SECONDS * 1000;
+}
+
+// A step that does not walk ends the window, except a stalled one: the walk's failure stands while the rule waits
+// (a wait while a player would see the teleport, the wait of a closed healer's way)
+constexpr WalkWatch WatchPause(WalkWatch const& watch, std::uint32_t nowMs)
+{
+    return WalkStalled(watch, nowMs) ? watch : WalkWatch{};
+}
+
+// AW33b: a body that holds a self-resurrection (a soulstone, Reincarnation) before its release. It rises by itself
+// where its place is clear and in view on its own picture, at once in a battleground or as a player's bot; on a place
+// that is not it waits SELF_RISE_WAIT_SECONDS from the death for the place to clear, then releases (the ghost's rule
+// takes over and the self-resurrection is given up)
+constexpr std::uint32_t SELF_RISE_WAIT_SECONDS = 30;
+
+enum class SelfRiseAct : std::uint8_t
+{
+    Rise,
+    Wait,
+    Release
+};
+
+struct SelfRiseFacts
+{
+    bool ownedByPlayer = false;     // the bot's master is a real player
+    bool inBattleground = false;    // a battleground or an arena
+    std::uint32_t bodySeconds = 0;  // since the death edge
+    PointAnswer own;                // the body's place on its own picture
+};
+
+constexpr SelfRiseAct SelfRiseStep(SelfRiseFacts const& facts)
+{
+    if (facts.inBattleground || facts.ownedByPlayer)
+        return SelfRiseAct::Rise;
+    if (facts.own.clear && facts.own.inView)
+        return SelfRiseAct::Rise;
+    if (facts.bodySeconds < SELF_RISE_WAIT_SECONDS)
+        return SelfRiseAct::Wait;
+    return SelfRiseAct::Release;
 }
 
 // A rise on record: the seconds as a ghost, how many reach the place, the yards from the corpse, the death's number
@@ -1674,9 +1820,12 @@ constexpr std::uint64_t RiseAmount(RiseRow const& row)
 
 // The Rise row's word: for a rise at the corpse the reason of the rule's Rise (clear, reached_one, leader), for one by
 // the spirit healer `healer` or `bound` (a step of the bound); `other` for a rise the rule did not order (a spell, a
-// step older than the caller's limit, a rise at the corpse after a healer's step)
-constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse)
+// step older than the caller's limit, a rise at the corpse after a healer's step). AW33b: `self` for a body's
+// self-resurrection the self-rise rule ordered (SelfRiseStep's Rise, within the caller's limit)
+constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse, bool selfOrdered = false)
 {
+    if (selfOrdered)
+        return "self";
     if (!ordered)
         return "other";
     if (last.act == DeadAct::Rise)
@@ -1813,11 +1962,15 @@ constexpr bool Restored(RecoverFacts const& facts)
     return facts.healthPct >= RECOVER_HEALTH_PCT && (!facts.usesMana || facts.powerPct >= RECOVER_POWER_PCT);
 }
 
-// Recovering: sick, or within the bound of the rise and not restored. The trigger asks only this (no judgement)
-constexpr bool Recovering(RecoverFacts const& facts)
+// AW41: the end of the one recovery every risen bot has, sick or not: restored, or the bound of the rise passed. A sick
+// bot's hand-over reads it (WorldTravel::SickErrandOpen)
+constexpr bool RecoveryOver(RecoverFacts const& facts)
 {
-    return facts.sick || (facts.sinceRiseSeconds < RECOVER_BOUND_SECONDS && !Restored(facts));
+    return Restored(facts) || facts.sinceRiseSeconds >= RECOVER_BOUND_SECONDS;
 }
+
+// Recovering: sick, or the recovery not over. The trigger asks only this (no judgement)
+constexpr bool Recovering(RecoverFacts const& facts) { return facts.sick || !RecoveryOver(facts); }
 
 // A bot the recovery holds keeps on foot (the mount policy's on-foot fact): mounted it can neither eat nor drink, and
 // the rise's speed change asks for a mount at once (AWL2: every risen bot with a mount rode the recovery's minute out
@@ -1831,6 +1984,212 @@ constexpr RecoverAct RecoverStep(RecoverFacts const& facts)
     if (!Recovering(facts))
         return RecoverAct::Done;
     return facts.own.clear ? RecoverAct::Rest : RecoverAct::Move;
+}
+
+// AW38b: the leaving (INTERFACE.md §3.6, Phase K). A risen bot leaves at LEAVE_ROW_AT deaths in a row (AW.24's number)
+// or where it stands in ground it cannot survive
+constexpr std::uint32_t LEAVE_ROW_AT = 2;
+
+// The facts of the judgement, asked once per rise on the bot's first tick alive (the core casts the sickness after its
+// resurrect hook, so the rise hook cannot read it): the ground where the bot stands judged for it as it is (healthy, or
+// sick: DangerRules::SICK), the row (§3.5) and the bot
+struct LeaveFacts
+{
+    Ground ground = Ground::Quiet;
+    std::uint32_t deathsInRow = 1;
+    bool sick = false;
+    bool ownedByPlayer = false;
+    bool inBattleground = false;
+};
+
+// Stay, or Leave and why (the `leave` row's reason)
+enum class LeaveCause : std::uint8_t
+{
+    Stay,
+    Ground,
+    Row
+};
+
+// V1: Leave exactly for a bot that is no player's and in no battleground, in deadly ground or at its LEAVE_ROW_AT-th
+// death in a row; a sick bot too (its leaving moves it nowhere: LeaveEffectsOf)
+constexpr LeaveCause LeaveAtRise(LeaveFacts const& facts)
+{
+    if (facts.inBattleground || facts.ownedByPlayer)
+        return LeaveCause::Stay;
+    if (facts.ground == Ground::Deadly)
+        return LeaveCause::Ground;
+    return facts.deathsInRow >= LEAVE_ROW_AT ? LeaveCause::Row : LeaveCause::Stay;
+}
+
+constexpr char const* LeaveWord(LeaveCause cause)
+{
+    switch (cause)
+    {
+        case LeaveCause::Ground:
+            return "ground";
+        case LeaveCause::Row:
+            return "row";
+        default:
+            return "stay";
+    }
+}
+
+// What a Leave does at once, in this order (V7: the goal is given up first): the held trip's goal to the record of
+// failed attempts (DangerRules::RECORD_WORD, by the record's own call), the `leave` row, then the end of the status
+// with the outcome danger (the trip's abort abort:danger). A sick bot's status is upkeep's sickness rule's (the outcome
+// sick, one owner), so its leaving records and writes the row only (V5: it is never moved); and where that sick end
+// records the goal itself (TravelLegs::SickEndFailure, at the trip's third death) the leaving does not, so the record
+// sees the goal once (its expiry doubles per repeat)
+enum class LeaveEffect : std::uint8_t
+{
+    Record,
+    Row,
+    End
+};
+
+struct LeaveEffects
+{
+    std::array<LeaveEffect, 3> order{};
+    std::uint8_t count = 0;
+};
+
+constexpr LeaveEffects LeaveEffectsOf(LeaveCause cause, bool sick, bool tripHeld, bool sickEndRecords)
+{
+    LeaveEffects effects;
+    if (cause == LeaveCause::Stay)
+        return effects;
+    if (tripHeld && !(sick && sickEndRecords))
+        effects.order[effects.count++] = LeaveEffect::Record;
+    effects.order[effects.count++] = LeaveEffect::Row;
+    if (!sick)
+        effects.order[effects.count++] = LeaveEffect::End;
+    return effects;
+}
+
+// The leaving's steps, for a bot that is not sick (V5: a sick one has none). Tuning values: the distance from the rise
+// that is away (the nights' "near its rise" reads 150 yd), the reach of the walk's place, the hearthstone's tries, the
+// wait at a clear point and the bound of the whole leaving, from the rise
+constexpr float LEAVE_AWAY_YARDS = 150.0f;
+constexpr float LEAVE_SEARCH_YARDS = 1000.0f;
+constexpr std::uint32_t LEAVE_HEARTH_TRIES = 2;
+constexpr std::uint32_t LEAVE_WAIT_SECONDS = 300;
+constexpr std::uint32_t LEAVE_BOUND_SECONDS = 600;
+
+// The held trip is the leaving's walk out (spared by the way's judgement, its goal word `leave`): a walk was begun and
+// the trip goes to the walk's place. Any other trip while a leaving lasts (one the planner starts while `recover` holds
+// the step after a failed walk) is the bot's own, judged and named as every trip is
+constexpr float LEAVE_TRIP_YARDS = 1.0f;
+inline bool IsLeaveWalk(bool walkBegun, std::uint32_t placeMap, float placeX, float placeY, std::uint32_t tripMap,
+                        float tripX, float tripY)
+{
+    return walkBegun && placeMap == tripMap && PlanarDistance(placeX, placeY, tripX, tripY) <= LEAVE_TRIP_YARDS;
+}
+
+// The facts of one step, asked each tick of the leaving: the ground where the bot stands (judged for it healthy), the
+// rise's age and distance, the hearthstone (hearthReady: the stone, no cooldown, no fight, no cast, its bind point's
+// ground not deadly for the bot) and its begun casts, the recovery (Recovering), the walk's place and whether the walk
+// ended without letting go, the wait's seconds; a player who takes the bot or a battleground ends the leaving
+struct LeaveStepFacts
+{
+    Ground ground = Ground::Quiet;
+    std::uint32_t sinceRiseSeconds = 0;
+    float riseYards = 0.0f;  // planar, from where the bot rose
+    bool otherMap = false;
+    bool hearthReady = false;
+    std::uint32_t hearthCasts = 0;
+    bool recovering = false;
+    bool placeKnown = false;
+    bool walkFailed = false;
+    std::uint32_t waitSeconds = 0;
+    bool taken = false;  // a player's bot now, or in a battleground
+};
+
+enum class LeaveAct : std::uint8_t
+{
+    Done,
+    Hearth,
+    Yield,
+    Walk,
+    Wait
+};
+
+// Why a leaving lets go (the `done` row's reason): quiet and away in ground it survives, the bound and the wait's end
+// (it says so), taken by a player or a battleground (LeaveAtRise's Stay, met during the leaving)
+enum class LeaveEnd : std::uint8_t
+{
+    None,
+    Quiet,
+    Away,
+    Bound,
+    WaitEnded,
+    Taken
+};
+
+struct LeaveAnswer
+{
+    LeaveAct act = LeaveAct::Done;
+    LeaveEnd end = LeaveEnd::None;
+};
+
+constexpr char const* LeaveEndWord(LeaveEnd end)
+{
+    switch (end)
+    {
+        case LeaveEnd::Quiet:
+            return "quiet";
+        case LeaveEnd::Away:
+            return "away";
+        case LeaveEnd::Bound:
+            return "bound";
+        case LeaveEnd::WaitEnded:
+            return "wait_ended";
+        case LeaveEnd::Taken:
+            return "taken";
+        default:
+            return "none";
+    }
+}
+
+constexpr char const* LeaveActWord(LeaveAct act)
+{
+    switch (act)
+    {
+        case LeaveAct::Hearth:
+            return "hearth";
+        case LeaveAct::Yield:
+            return "yield";
+        case LeaveAct::Walk:
+            return "walk";
+        case LeaveAct::Wait:
+            return "wait";
+        default:
+            return "done";
+    }
+}
+
+// The first line that matches (INTERFACE.md §3.6): let go where the ground is quiet, or away from the rise in ground
+// the bot survives; the bound; the hearthstone out of deadly ground; the recovery first (recover moves the bot to a
+// clear point); the walk to the known place (a trip with the goal word leave; while it is held the caller yields to
+// it, its end comes back here); else the bounded wait at a clear point
+constexpr LeaveAnswer LeaveStep(LeaveStepFacts const& facts)
+{
+    if (facts.taken)
+        return {LeaveAct::Done, LeaveEnd::Taken};
+    if (facts.ground == Ground::Quiet)
+        return {LeaveAct::Done, LeaveEnd::Quiet};
+    if (facts.ground != Ground::Deadly && (facts.otherMap || facts.riseYards >= LEAVE_AWAY_YARDS))
+        return {LeaveAct::Done, LeaveEnd::Away};
+    if (facts.sinceRiseSeconds >= LEAVE_BOUND_SECONDS)
+        return {LeaveAct::Done, LeaveEnd::Bound};
+    if (facts.ground == Ground::Deadly && facts.hearthReady && facts.hearthCasts < LEAVE_HEARTH_TRIES)
+        return {LeaveAct::Hearth, LeaveEnd::None};
+    if (facts.recovering)
+        return {LeaveAct::Yield, LeaveEnd::None};
+    if (facts.placeKnown && !facts.walkFailed)
+        return {LeaveAct::Walk, LeaveEnd::None};
+    if (facts.waitSeconds >= LEAVE_WAIT_SECONDS)
+        return {LeaveAct::Done, LeaveEnd::WaitEnded};
+    return {LeaveAct::Wait, LeaveEnd::None};
 }
 }  // namespace AwarenessRules
 

@@ -851,8 +851,8 @@ void RouteSwitch()
                                std::string(late.stallRow->note) == "time" &&
                                ClosedCells(late, LOG0, 2000, BLOCK_MS) == std::vector<std::uint64_t>{a.cell};
         std::size_t failed = 0;
-        for (StatusEnd::Outcome const outcome :
-             {StatusEnd::Outcome::Stuck, StatusEnd::Outcome::Abandoned, StatusEnd::Outcome::TimedOut})
+        for (StatusEnd::Outcome const outcome : {StatusEnd::Outcome::Stuck, StatusEnd::Outcome::Abandoned,
+                                                 StatusEnd::Outcome::TimedOut, StatusEnd::Outcome::Danger})
         {
             BotGoals goals = running({a});
             bool const closed = FailsOrder(outcome) &&
@@ -889,9 +889,10 @@ void RouteSwitch()
         BotGoals stayed = running({a, b});
         bool const stayPassed = !EndRouteOrder(stayed, a, QuestOrderEnd::Time, LOG0, 2000, BLOCK_MS, true) &&
                                 !stayed.stalled && sameAs(NextOrder(stayed, anyOpen, none), b);
-        Check(unreached && failed == 3 && takenOver == 5 && notItsOrder && stayPassed,
+        Check(unreached && failed == 4 && takenOver == 5 && notItsOrder && stayPassed,
               "switch: an order whose place could not be reached (time before the arrival; its status stuck, "
-              "abandoned or timed out by a walk) closes its cell with one row and is over: a route of that order "
+              "abandoned, timed out by a walk or given up for danger, AW38b) closes its cell with one row and is "
+              "over: a route of that order "
               "alone is done, 119 further plans naming it start none, and it is tried again after the block time; a "
               "stay that passed at the place and a take-over close nothing (mutants: FailOrder without the block, "
               "ClosesCell for dry only)");
@@ -3148,6 +3149,159 @@ int main()
         EndRun(unjudged, LOG);
         Check(!progressed.stallRow && unjudged.stallRow && !unjudged.stallRow->judged,
               "XP gained writes no stall; a run that ended with no judged end stalls with no outcome");
+    }
+
+    // AW38b (awareness, Batch K3): a run whose status ended with Danger (a risen bot gave up its goal and left) blocks
+    // its goal for the block time, whatever it gained and whatever ended its later statuses; the mark ends with the run
+    {
+        using Goals::GoalKind;
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t KEY = 9;
+        constexpr std::uint64_t NEXT = 10;
+        constexpr std::uint64_t LOG = 7;
+        auto const start = [](BotGoals& goals, GoalKind kind, std::uint64_t key, std::uint64_t gain = 0)
+        {
+            goals.slot.Set(GoalOf(kind, static_cast<std::uint32_t>(key), Source::Planner));
+            StartFacts facts{key, LOG, 100};
+            facts.blockMs = BLOCK;
+            facts.gain = gain;
+            return StartActive(goals, kind, Executor::Grind, facts, [] { return true; });
+        };
+        // The leaving as live (Jaidan, lab10): the work ends with danger, the walk out's start interrupts the next
+        // status, the walk arrives; on the way the bot gained XP
+        auto const left = [](BotGoals& goals)
+        {
+            NoteStatusEnd(goals, Outcome::Danger, false, "danger");
+            NoteStatusEnd(goals, Outcome::Interrupted, false);
+            NoteStatusEnd(goals, Outcome::Arrived, true);
+        };
+        BotGoals grind;
+        start(grind, GoalKind::Grind, KEY);
+        left(grind);
+        EndRun(grind, LOG, 150);
+        bool const grindBlocked = !MayStart(grind, KEY, LOG) && grind.stallRow && grind.stallRow->judged &&
+                                  grind.stallRow->outcome == Outcome::Danger &&
+                                  std::string(grind.stallRow->note) == "danger";
+        BotGoals gather;
+        start(gather, GoalKind::Gather, KEY, 20);
+        left(gather);
+        GoalApply::EndRun(gather, LOG, 150, 0, BLOCK, 25);
+        Check(grindBlocked && !MayStart(gather, KEY, LOG),
+              "a run ended by danger blocks its goal despite XP and loot gained and a later interrupted and arrived "
+              "end; its row carries danger and its note (mutants: outside or progress read first, the later end "
+              "overwrites the outcome)");
+        BotGoals later;
+        start(later, GoalKind::Grind, KEY);
+        NoteStatusEnd(later, Outcome::Danger, false, "abort:danger");
+        NoteStatusEnd(later, Outcome::TimedOut, true, "timeout");
+        EndRun(later, LOG, 150);
+        BotGoals resumed;
+        start(resumed, GoalKind::Grind, KEY);
+        NoteStatusEnd(resumed, Outcome::Danger, false);
+        ContinueRun(resumed);
+        NoteStatusEnd(resumed, Outcome::Finished, true);
+        EndRun(resumed, LOG, 150);
+        BotGoals relogged;
+        start(relogged, GoalKind::Grind, KEY);
+        NoteStatusEnd(relogged, Outcome::Danger, true);
+        EndRun(relogged, LOG + 1, 150);
+        Check(!MayStart(later, KEY, LOG) && later.stallRow && std::string(later.stallRow->note) == "abort:danger" &&
+                  !MayStart(resumed, KEY, LOG) && !MayStart(relogged, KEY, LOG + 1),
+              "the danger mark holds through a later judged end and a resumed executor (ContinueRun), and a "
+              "changed log still blocks the goal at the new log (mutant: ContinueRun clears it)");
+        BotGoals plain;
+        start(plain, GoalKind::Grind, KEY);
+        NoteStatusEnd(plain, Outcome::Interrupted, false);
+        NoteStatusEnd(plain, Outcome::Arrived, true);
+        EndRun(plain, LOG, 150);
+        BotGoals interlude;
+        start(interlude, GoalKind::Grind, KEY);
+        interlude.slot.Set(GoalOf(GoalKind::Errand, 2, Source::Planner));
+        NoteStatusEnd(interlude, Outcome::Danger, true);
+        Check(!plain.stalled && !plain.stallRow && !interlude.run.danger,
+              "without a danger end of its own a run ends as before: XP gained, no stall; an interlude's danger "
+              "end marks nothing");
+        BotGoals next;
+        start(next, GoalKind::Grind, KEY);
+        left(next);
+        start(next, GoalKind::Grind, NEXT);
+        bool const fresh = next.run.running && next.run.key == NEXT && !next.run.danger && !MayStart(next, KEY, LOG);
+        next.stallRow.reset();
+        NoteStatusEnd(next, Outcome::Arrived, true);
+        EndRun(next, LOG, 150);
+        bool const nextFree = MayStart(next, NEXT, LOG) && !next.stallRow;
+        BotGoals route;
+        std::uint64_t const routeKey = (static_cast<std::uint64_t>(Executor::Route) << 56) | 1;
+        start(route, GoalKind::Quest, routeKey);
+        NoteStatusEnd(route, Outcome::Danger, true);
+        EndRun(route, LOG);
+        Check(fresh && nextFree && MayStart(route, routeKey, LOG),
+              "the mark does not carry into the next run (blocked goal stays blocked, the next one gains and is "
+              "free); a route's run never stalls, its order fails instead (FailsOrder)");
+
+        // Landing K beside questing WQ42 (EndInPlace): an order ended by danger is an end as any other for the route's
+        // count. A bot that gives up three orders in a row within IN_PLACE_YD of where the first began (it rose there
+        // each time, or three ways from one spot were refused) closes three cells with the outcome danger, and the
+        // third end fails the route's goal with questing's row abandoned/in_place; an end elsewhere counts anew. The
+        // calls in the order of RpgStatus::End: Planner::OnOrderFailed (the cell, then the count), then OnStatusEnd
+        constexpr std::uint32_t NOW = 2000;
+        std::vector<QuestOrder> orders;
+        for (std::int32_t cell = 0; cell < 8; ++cell)
+            orders.push_back(
+                OrderAt(cell * 3, 0, QuestOrderWord::Field, {{static_cast<std::uint32_t>(cell + 1), 0, 3}}));
+        std::uint64_t const hubRoute =
+            GoalKey(Typed(GoalKind::Quest, Goals::TargetType::Route, Goals::ROUTE_REASON, 0), Executor::Route, 40);
+        BotSpot const rise{0, 100.0f, 100.0f};
+        BotSpot const elsewhere{0, 130.0f, 100.0f};
+        auto const onRoute = [&orders, hubRoute]()
+        {
+            BotGoals goals;
+            goals.slot.Set(GoalOf(GoalKind::Quest, 1, Source::Planner));
+            TakePlan(goals, RouteOf(orders), 1000);
+            BeginRun(goals, hubRoute, LOG);
+            return goals;
+        };
+        auto const leaves = [](BotGoals& goals, BotSpot const& begun, BotSpot const& ended, std::vector<StallRow>& rows)
+        {
+            std::vector<std::uint64_t> const closed = ClosedCells(goals, LOG, NOW, BLOCK);
+            RouteNext const next = NextOrder(goals, [](QuestOrderNeed const&) { return true; }, closed);
+            if (next.step != RouteStep::Order)
+                return;
+            QuestOrder const order = *next.order;
+            NoteRouteStart(goals, begun, LOG);
+            bool const route = IsRouteOrder(goals, order);
+            if (FailsOrder(Outcome::Danger) && FailRouteOrder(goals, order, Outcome::Danger, "danger", LOG, NOW, BLOCK))
+                rows.push_back(*std::exchange(goals.stallRow, std::nullopt));
+            if (route && EndInPlace(goals, ended, LOG, NOW, BLOCK))
+                rows.push_back(*std::exchange(goals.stallRow, std::nullopt));
+            NoteStatusEnd(goals, Outcome::Danger, false, "danger");
+        };
+        BotGoals looped = onRoute();
+        std::vector<StallRow> rows;
+        leaves(looped, rise, rise, rows);
+        leaves(looped, rise, rise, rows);
+        bool const afterTwo = looped.run.running && looped.run.danger && rows.size() == 2 &&
+                              GoalApply::MayStart(looped, hubRoute, LOG, NOW, BLOCK);
+        leaves(looped, rise, rise, rows);
+        bool const failed = !looped.run.running && !GoalApply::MayStart(looped, hubRoute, LOG, NOW, BLOCK) &&
+                            rows.size() == 4 && rows[0].outcome == Outcome::Danger &&
+                            rows[1].outcome == Outcome::Danger && rows[2].outcome == Outcome::Danger &&
+                            std::string(rows[2].note) == "danger" && rows[3].outcome == Outcome::Abandoned &&
+                            std::string(rows[3].note) == IN_PLACE_WORD;
+        start(looped, GoalKind::Grind, NEXT);
+        bool const clean = looped.run.running && looped.run.key == NEXT && !looped.run.danger;
+        BotGoals moved = onRoute();
+        std::vector<StallRow> movedRows;
+        leaves(moved, rise, rise, movedRows);
+        leaves(moved, rise, rise, movedRows);
+        leaves(moved, rise, elsewhere, movedRows);
+        bool const anew = moved.run.running && movedRows.size() == 3 && moved.inPlace.count == 0 &&
+                          GoalApply::MayStart(moved, hubRoute, LOG, NOW, BLOCK);
+        Check(afterTwo && failed && clean && anew,
+              "a route's orders ended by danger count as ends in place (WQ42): two leave the route going, the third "
+              "within 10 yd of where the first began fails its goal with the row abandoned/in_place after three cell "
+              "rows danger, and the next run starts without the mark; a third end 30 yd away counts anew (mutants: "
+              "Danger out of FailsOrder, the mark kept by EndInPlace's end)");
     }
 
     // WT63e: the planner's bag order buys once (WT63c review: an order bought at every stop) and alone

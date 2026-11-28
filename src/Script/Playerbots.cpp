@@ -29,6 +29,7 @@
 #include "Config.h"
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
+#include "Awareness.h"
 #include "DangerRules.h"
 #include "DatabaseEnv.h"
 #include "DefensiveTacticStrategy.h"
@@ -723,6 +724,7 @@ public:
         BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });
         PvpGearMgr::Instance().Load();  // Catalogue from the PvP vendors, one query for all loadouts
         BotStores::RegisterForget("pvp gear", [](uint32 guid) { PvpGearMgr::Instance().ForgetBot(guid); });
+        Awareness::LoadGraveSides();  // AW38a: which side may use each grave, one query before any bot dies
         BotProfessionMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready

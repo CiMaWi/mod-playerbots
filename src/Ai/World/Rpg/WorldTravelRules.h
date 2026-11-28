@@ -101,7 +101,11 @@ enum class GhostReason : uint8_t
     Seen,           // a teleport would be seen
     CorpseAway,     // the corpse is on another map (an instance, or the game's repop moved the ghost)
     WaitEnded,      // the bound of one return from death (awareness AW8)
-    NoClearPoint    // no clear point near the corpse (awareness AW8): the wait, then the healer
+    NoClearPoint,   // no clear point near the corpse (awareness AW8): the wait, then the healer
+    Player,         // an enemy player at the corpse holds the ghost (world PvP's hold; awareness AW33b)
+    DeadlyGround,   // a second death in a row at a corpse in deadly ground (awareness AW38a)
+    GraveDanger,    // the grave's ground is deadly: the healer's way is closed (awareness AW38a)
+    ReachedHolds    // on a closed healer's way, to a point the bot holds at its rise (awareness AW38a)
 };
 
 constexpr char const* GhostWayWord(GhostWay way)
@@ -147,6 +151,14 @@ constexpr char const* GhostReasonWord(GhostReason reason)
             return "wait_ended";
         case GhostReason::NoClearPoint:
             return "no_clear_point";
+        case GhostReason::Player:
+            return "player";
+        case GhostReason::DeadlyGround:
+            return "deadly_ground";
+        case GhostReason::GraveDanger:
+            return "grave_danger";
+        case GhostReason::ReachedHolds:
+            return "reached_holds";
         default:
             return "none";
     }
