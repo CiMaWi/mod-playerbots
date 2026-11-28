@@ -20,6 +20,7 @@
 #include "BotStores.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
+#include "BotWatch.h"
 #include "BridgeNameIndex.h"
 #include "CcTacticStrategy.h"
 #include "CombatRecord.h"
@@ -760,6 +761,8 @@ public:
             TimeHookCall("WorldHook UpdateSessions", [] { sRandomPlayerbotMgr.UpdateSessions(); });
             // Headless test player; returns at once when there is none
             TimeHookCall("WorldHook TestPlayer", [diff] { TestPlayerMgr::Instance().Update(diff); });
+            // The watch (questing WQ53); returns at once while no bot is watched
+            TimeHookCall("WorldHook BotWatch", [diff] { BotWatch::Update(diff); });
             // The world log's state pass and writer start; returns at once when the world log is off
             TimeHookCall("WorldHook WorldLog", [diff] { WorldLogWriter::Instance().Update(diff); });
             // Bots and players per area for the planner; a timer add between refreshes
@@ -914,6 +917,7 @@ void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
 void AddSC_randombot_level_mgr();
 void AddSC_world_log();
+void AddSC_bot_watch();
 void AddSC_acquaintance();
 void AddSC_match_log();
 void AddSC_match_trace();
@@ -961,6 +965,7 @@ void AddPlayerbotsScripts()
     AddSC_TempestKeepBotScripts();
     AddSC_randombot_level_mgr();
     AddSC_world_log();
+    AddSC_bot_watch();
     AddSC_acquaintance();
     AddSC_match_log();
     AddSC_match_trace();
