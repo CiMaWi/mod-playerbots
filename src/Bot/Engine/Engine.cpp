@@ -348,6 +348,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 if (actionExecuted)
                 {
                     LogAction("A:%s - OK", action->getName().c_str());
+                    botAI->NoteExecuted(action);
                     if (idleTrip)
                     {
                         idleAction = action->getName();

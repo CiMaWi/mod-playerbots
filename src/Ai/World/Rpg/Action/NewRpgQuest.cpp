@@ -1096,25 +1096,6 @@ bool NewRpgBaseAction::HasQuestPlace(uint32 questId)
            bot->GetDistance2d(places.front().pos.GetPositionX(), places.front().pos.GetPositionY()) < QUEST_PICK_YARDS;
 }
 
-bool NewRpgBaseAction::RoamInPlace(WorldPosition const& centre, float roam)
-{
-    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
-        return false;
-
-    // As MoveRandomNear, but the point is spread evenly over the area's disc around its centre, at the place's height
-    // (a building's floor), so the bot stays in the area however long it roams
-    for (int attempt = 0; attempt < ROAM_SAMPLES; ++attempt)
-    {
-        float const distance = roam * std::sqrt(static_cast<float>(rand_norm()));
-        float const angle = static_cast<float>(rand_norm()) * 2.0f * static_cast<float>(M_PI);
-        if (OrderRoamSample(centre.GetPositionX() + distance * std::cos(angle),
-                            centre.GetPositionY() + distance * std::sin(angle), centre.GetPositionZ(),
-                            MovementPriority::MOVEMENT_NORMAL))
-            return true;
-    }
-    return false;
-}
-
 bool NewRpgInternal::StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId)
 {
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);

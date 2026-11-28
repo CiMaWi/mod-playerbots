@@ -99,9 +99,6 @@ protected:
     // not carry, in water or behind a wall is dropped and the next drawn. Counted as kind other: a roam adds no miss
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL,
                         WorldObject* center = nullptr);
-    // WT33b: a walk to a random point within `roam` yards of `centre` (a quest place's area), so a bot at its place
-    // meets the area's targets without drifting off
-    bool RoamInPlace(WorldPosition const& centre, float roam);
     static constexpr int ROAM_SAMPLES = 8;
     bool ForceToWait(uint32 duration, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
 

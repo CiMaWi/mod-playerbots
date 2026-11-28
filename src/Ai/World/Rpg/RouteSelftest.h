@@ -244,17 +244,28 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     check(legCount(Search(graph, horde, StuckEdges{}, aStar), LegType::Flight) == 0,
           "b) a Horde bot flies from an Alliance flight master");
 
-    // c) At the Ironforge flight master, home in Stormwind: a ready hearth (10 s) beats the flight; with 20 minutes
-    //    of cooldown the flight wins
+    // c) At the Ironforge flight master, home in Stormwind. The stone is priced at what it could save later
+    //    (HEARTH_WORTH_SECONDS): with the flight known (200 s) the stone is kept; a bot without flight points, whose
+    //    walk home is far longer than the worth, uses it; with 20 minutes of cooldown nobody does
     Request home{flyer, stormwindInn};
     home.snapshot.position = ironforgeFlight;
-    Result const hearthed = Search(graph, home, StuckEdges{}, aStar);
-    if (sound(hearthed, home, "c) Ironforge -> Stormwind inn, hearth ready"))
+    Result const kept = Search(graph, home, homeMap, aStar);
+    if (sound(kept, home, "c) Ironforge -> Stormwind inn, hearth ready, the flight known"))
     {
-        optimal(hearthed, home, StuckEdges{}, "c) ready");
+        optimal(kept, home, homeMap, "c) kept");
+        check(legCount(kept, LegType::Hearth) == 0, "c) the stone is used where a flight takes 200 s");
+        check(legCount(kept, LegType::Flight) == 1, "c) no flight home");
+    }
+    Request walkHome{human, stormwindInn};
+    walkHome.snapshot.position = ironforgeFlight;
+    Result const hearthed = Search(graph, walkHome, homeMap, aStar);
+    if (sound(hearthed, walkHome, "c) Ironforge -> Stormwind inn, hearth ready, no flight points"))
+    {
+        optimal(hearthed, walkHome, homeMap, "c) ready");
         check(!hearthed.legs.empty() && hearthed.legs.front().type == LegType::Hearth,
               "c) the ready hearth is not the first leg");
-        check(hearthed.totalSeconds < 60.0f, "c) " + num(hearthed.totalSeconds) + " s with a ready hearth");
+        check(hearthed.totalSeconds < HEARTH_WORTH_SECONDS + 60.0f,
+              "c) " + num(hearthed.totalSeconds) + " s with a ready hearth");
     }
     Request cooling = home;
     cooling.snapshot.hearthCooldownMs = 20 * 60 * 1000;
@@ -264,14 +275,14 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         optimal(flownHome, cooling, homeMap, "c) cooling");
         check(legCount(flownHome, LegType::Hearth) == 0, "c) the cooling hearth is used");
         check(legCount(flownHome, LegType::Flight) == 1, "c) no flight home");
-        check(flownHome.totalSeconds > hearthed.totalSeconds, "c) the cooling hearth's route is not dearer");
     }
-    // A short cooldown is waited for (60 s + 10 s beats the 200 s flight); one past the cap is no edge at all
-    Request shortWait = home;
+    // A short cooldown is waited for by the bot on foot (60 s + 10 s + the worth beats its walk); one past the cap is
+    // no edge at all
+    Request shortWait = walkHome;
     shortWait.snapshot.hearthCooldownMs = 60 * 1000;
-    Result const waited = Search(graph, shortWait, StuckEdges{}, aStar);
+    Result const waited = Search(graph, shortWait, homeMap, aStar);
     if (sound(waited, shortWait, "c) Ironforge -> Stormwind inn, hearth in 60 s"))
-        check(legCount(waited, LegType::Hearth) == 1 && waited.totalSeconds < 120.0f,
+        check(legCount(waited, LegType::Hearth) == 1 && waited.totalSeconds < HEARTH_WORTH_SECONDS + 120.0f,
               "c) a 60 s cooldown is not waited for (" + num(waited.totalSeconds) + " s)");
     Request pastCap = home;
     pastCap.snapshot.hearthCooldownMs = HEARTH_WAIT_CAP_MS + 1000;

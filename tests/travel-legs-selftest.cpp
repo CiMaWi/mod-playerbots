@@ -532,7 +532,8 @@ void CheckStuckAvoid()
           "stuck on the goal hop: the walk from node 1 to the goal is refused to the next route");
 
     // A hearth leg walks nowhere: no stuck waypoint
-    Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, START, NODES[3], {}, 10.0f)});
+    Trip hearth =
+        StartedTrip({MakeLeg(LegType::Hearth, START, NODES[3], {}, 10.0f + TravelRoute::HEARTH_WORTH_SECONDS)});
     Check(!TravelLegs::StuckAgain(hearth) && !hearth.stuckSeen, "a hearth leg keeps no stuck waypoint");
 
     // WT58: a walk link refused for no path: the record refuses the link (either way), no walk; a new leg walks no
@@ -728,7 +729,8 @@ void CheckPredicates()
     // The hearthstone leg: cast it where the bot stands, done within 40 yd of the bind (its map), the cast and a
     // cooldown wait are inside the timeout
     Point const bind{1, 1300.0f, 1300.0f, 0.0f};
-    Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f)});
+    Trip hearth =
+        StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f + TravelRoute::HEARTH_WORTH_SECONDS)});
     Check(Step(hearth, At(NODES[0], 2000)).act == Act::UseHearth, "hearth: casts at the start");
     Check(Step(hearth, At({1, 1330.0f, 1300.0f, 0.0f}, 12000)).act == Act::Done,
           "hearth: done within 40 yd of the bind");
@@ -737,13 +739,15 @@ void CheckPredicates()
     Check(Step(hearth, At(NODES[0], 1000 + 40000)).act == Act::UseHearth, "hearth: 40 s are allowed");
     Decision const lateHearth = Step(hearth, At(NODES[0], 1000 + 40001));
     Check(lateHearth.act == Act::Fail && lateHearth.reason == FailReason::Timeout, "hearth: past 40 s fails");
-    Trip cooling = StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 130.0f)});
+    Trip cooling =
+        StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 130.0f + TravelRoute::HEARTH_WORTH_SECONDS)});
     Check(Step(cooling, At(NODES[0], 1000 + 150000)).act == Act::UseHearth,
           "hearth: a 2 minute cooldown wait is inside the timeout");
     Check(Step(cooling, At(NODES[0], 1000 + 160001)).reason == FailReason::Timeout,
           "hearth: the timeout is the leg's seconds plus 30 s");
-    Trip hearthThenWalk = StartedTrip(
-        {MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f), MakeLeg(LegType::Walk, bind, GOAL, {}, 50.0f)});
+    Trip hearthThenWalk =
+        StartedTrip({MakeLeg(LegType::Hearth, NODES[0], bind, {}, 10.0f + TravelRoute::HEARTH_WORTH_SECONDS),
+                     MakeLeg(LegType::Walk, bind, GOAL, {}, 50.0f)});
     Check(Go(hearthThenWalk, At(bind, 12000), NodeAt).act == Act::Walk && hearthThenWalk.legIdx == 1,
           "hearth: the walk after it starts on the bind's map");
 
@@ -3664,7 +3668,7 @@ void CheckNextDeadline()
         {MakeLeg(LegType::StaticPortal, NODES[2], NODES[3], {2, 3}, 3.0f), 20000},
         {MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE), 460000},
         {MakeLeg(LegType::Fly, NODES[0], NODES[1], {0, 1}, 40.0f), 140000},
-        {MakeLeg(LegType::Hearth, NODES[0], NODES[3], {}, 10.0f), 40000},
+        {MakeLeg(LegType::Hearth, NODES[0], NODES[3], {}, 10.0f + TravelRoute::HEARTH_WORTH_SECONDS), 40000},
     };
     for (auto const& [leg, bound] : legs)
     {

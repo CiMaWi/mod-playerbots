@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "AcquaintanceMgr.h"
+#include "BotWatch.h"
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
@@ -432,6 +433,7 @@ public:
             {"aw", playerbotsAwCommandTable},
             {"combat", playerbotsCombatCommandTable},
             {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
+            {"watch", BotWatch::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
             {"auction", playerbotsAuctionCommandTable},

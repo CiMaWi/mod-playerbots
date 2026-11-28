@@ -6,6 +6,7 @@
 
 #include "Awareness.h"
 #include "BotRecordMgr.h"
+#include "BotWatch.h"
 #include "CombatTrace.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -656,6 +657,7 @@ void WorldLog::Decision(uint32 botKey, WorldLogFormat::DecisionKind kind, std::s
     row.ref = ref;
     WorldLogWriter::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Decision, WorldLogFormat::FormatDecisionRow(row),
                                                1, row.t);
+    BotWatch::NoteDecision(row);
 
     if (pmo)
         pmo->finish();

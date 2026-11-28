@@ -59,6 +59,13 @@
             "success": "BANK selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
+            "file": "bot-events-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "bot-events selftest: (\\d+)/\\1 checks passed"
+        },
+        {
             "file": "bot-kind-selftest.cpp",
             "includes": [
                 "src/Bot"

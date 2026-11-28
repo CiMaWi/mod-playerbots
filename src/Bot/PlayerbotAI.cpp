@@ -16,6 +16,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <utility>
 
 #include "AiFactory.h"
 #include "Awareness.h"
@@ -508,10 +509,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
     LightweightPerf::AiScope perf;
     // Handle the AI check delay
-    if (nextAICheckDelay > elapsed)
-        nextAICheckDelay -= elapsed;
-    else
-        nextAICheckDelay = 0;
+    TickDelay(elapsed);
 
     // A test-constrained bot's probe (TestProbe.h, planning WT63c): counts and its 30 s line
     if (TestProbe::On(testConstraints))
@@ -542,7 +540,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // A test's order (TravelOrders) ahead of the reaction and the AI's delays, the engine then runs in this
         // update; so does it for a bot placed aboard until its placement is decided (below)
         if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
-            nextAICheckDelay = 0;
+            ResetActionDuration();
 
         // A timed item use is followed to its end (its row), before a new order may meet the bot busy
         if (GetWork() & BotWork::ItemTimed)
@@ -655,27 +653,23 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     perf.MarkPregate();
 
-    // Wake up if combat state changed (unless casting).
+    // The scheduler's events (BotEvents.h): what the server's hooks noted since the last update and the edges this
+    // update sees wake the bot. A combat edge ends a wait an action asked for too (unless the bot casts)
     bool isCasting = bot->IsNonMeleeSpellCast(true);
-    if (bot->IsInCombat())
+    TakeEvents(isCasting);
+
+    // A bot that eats or drinks stands up once what its meal restores is full (the user, 2026-11-28): the meal's wait
+    // is its longest time. Standing up ends the meal's aura
+    if (holdDelay && !inCombat && bot->IsSitState())
     {
-        if (!inCombat)
+        bool const eats = bot->HasAuraType(SPELL_AURA_MOD_REGEN) || bot->HasAuraType(SPELL_AURA_OBS_MOD_HEALTH);
+        bool const drinks = bot->HasAuraType(SPELL_AURA_MOD_POWER_REGEN) || bot->HasAuraType(SPELL_AURA_OBS_MOD_POWER);
+        if ((eats || drinks) && (!eats || bot->IsFullHealth()) &&
+            (!drinks || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA)))
         {
-            // "attackers" is cached for 1 s; refresh it so the assist actions see the new attacker
-            // this tick.
-            aiObjectContext->GetValue<GuidVector>("attackers")->Reset();
-            if (!isCasting)
-                ResetActionDuration();
-        }
-
-        inCombat = true;
-    }
-    else
-    {
-        if (inCombat && !isCasting)
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
             ResetActionDuration();
-
-        inCombat = false;
+        }
     }
 
     bool doMinimalReaction = minimal || !AllowActivity(REACT_ACTIVITY);
@@ -696,6 +690,13 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     if (traceTravel)
         LogTravelGate(*bot, *traceTravel, maintenanceMs, "pre_action");
+
+    // The scheduler's record of this check: what brought it (the idle line, the counts by cause)
+    lastCause = std::exchange(sleepCause, BotEvents::Cause::Fallback);
+    lastWokenBy = std::exchange(wokenBy, 0);
+    if (PerfMonitor::IsEnabled())
+        PerfMonitor::CountBlock(
+            sPerfMonitor.acquire(PERF_MON_TOTAL, std::string("Scheduler check: ") + BotEvents::CauseName(lastCause)));
 
     // The check's one context probe: the timing refresh, the live test and UpdateAIInternal's store read it
     TacticContext const probed = ProbeTacticContext(bot);
@@ -826,11 +827,13 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 }
                 else
                 {
-                    // Wait for spell cast
+                    // Wait for spell cast: to its end (the scheduler's timer), an event looks at it before
                     if (busyModel)
                         yieldQueued(ownLeft);
-                    else
+                    else if (tactics->cadenceCombat)
                         YieldThread(bot, GetReactDelay());
+                    else
+                        SleepUntil(ownLeft);
 
                     return;
                 }
@@ -896,6 +899,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     else
         UpdateAIInternal(elapsed, minimal);
 
+    RunWorkChain(minimal);
+
     // A stop the engine's kick did not follow (its trigger or target picked another action): no stop for a while
     if (stoppedForKick)
         tactics->NoteUnfollowedStop(nowMs);
@@ -915,7 +920,176 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
     }
 
-    YieldThread(bot, GetReactDelay());
+    Sleep();
+}
+
+// The scheduler's events of this update (BotEvents.h): the bits the server's hooks set, and the edges of the bot's
+// own state (combat, a move's end, a cast's end, a victim gone). They bring the next check: at once for what the bot
+// foresaw, one reaction time later for a surprise, and through a wait an action asked for only for a combat edge
+void PlayerbotAI::TakeEvents(bool isCasting)
+{
+    uint32 seen = events.exchange(0, std::memory_order_relaxed);
+
+    if (bot->IsInCombat() != inCombat)
+    {
+        inCombat = !inCombat;
+        // "attackers" is cached for 1 s; refresh it so the assist actions see the new attacker this tick
+        if (inCombat)
+            aiObjectContext->GetValue<GuidVector>("attackers")->Reset();
+        seen |= inCombat ? BotEvents::CombatBegin : BotEvents::CombatEnd;
+    }
+
+    bool const moving = bot->isMoving();
+    if (wasMoving && !moving)
+        seen |= BotEvents::MoveEnd;
+    wasMoving = moving;
+
+    bool const casting = bot->IsNonMeleeSpellCast(false);
+    if (wasCasting && !casting)
+        seen |= BotEvents::CastEnd;
+    wasCasting = casting;
+
+    Unit const* const victim = bot->GetVictim();
+    ObjectGuid const victimGuid = victim ? victim->GetGUID() : ObjectGuid::Empty;
+    if (lastVictim && victimGuid != lastVictim)
+        seen |= BotEvents::VictimGone;
+    lastVictim = victimGuid;
+
+    if (!seen)
+        return;
+
+    wokenBy |= seen;
+    BotEvents::Wake const wake = BotEvents::WakeFor(seen, (seen & ~BotEvents::SURPRISE) ? 0 : EventReactMs());
+    if (wake.urgent && !isCasting)
+    {
+        ResetActionDuration();
+        sleepCause = BotEvents::Cause::Event;
+    }
+    else if (WakeIn(wake.inMs))
+        sleepCause = BotEvents::Cause::Event;
+}
+
+uint32 PlayerbotAI::EventReactMs()
+{
+    // The natural cadence's contexts time each reaction themselves (NaturalReaction.h); a real player's bot keeps
+    // its player's pace
+    if (tactics->cadenceCombat || HasGameClientMaster())
+        return 0;
+    float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
+    return static_cast<uint32>(urand(BotEvents::REACT_MIN_MS, BotEvents::REACT_MAX_MS) * factor);
+}
+
+bool PlayerbotAI::GcdRunning(uint32* leftMs)
+{
+    LastSpellCast const& last = aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get();
+    SpellInfo const* const info = last.id ? sSpellMgr->GetSpellInfo(last.id) : nullptr;
+    if (!info || !info->StartRecoveryCategory || !bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+        return false;
+    if (leftMs)
+        *leftMs = bot->GetGlobalCooldownMgr().GetGlobalCooldown(info);
+    return true;
+}
+
+// The first thing the bot waits for and can foresee: its cast's end, and in combat the end of its global cooldown,
+// the next cooldown to end, the energy a trigger found missing, a short wait an action asked for (a turn before a
+// cast). UINT32_MAX for none
+uint32 PlayerbotAI::NextTimerMs()
+{
+    uint32 next = std::numeric_limits<uint32>::max();
+    if (!bot->IsAlive())
+        return next;
+
+    if (Spell* const spell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        spell && spell->getState() == SPELL_STATE_PREPARING)
+        return static_cast<uint32>(std::max(0, spell->GetCastTimeRemaining()));
+
+    if (!bot->IsInCombat())
+        return next;
+
+    if (uint32 left = 0; GcdRunning(&left))
+        next = std::min(next, left);
+
+    // The cooldowns' ends are on the game time's clock
+    uint32 const gameMs = static_cast<uint32>(GameTime::GetGameTimeMS().count());
+    for (auto const& [spellId, cooldown] : bot->GetSpellCooldownMap())
+        if (cooldown.end > gameMs)
+            next = std::min(next, cooldown.end - gameMs);
+
+    if (bot->getPowerType() == POWER_ENERGY && powerGate.NotedThisTick())
+    {
+        float const perSecond =
+            (10.0f + bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + AsUnderlyingType(POWER_ENERGY))) *
+            sWorld->getRate(RATE_POWER_ENERGY);
+        if (uint32 const wait = BotEvents::PowerWaitMs(bot->GetPower(POWER_ENERGY), powerGate.Amount(), perSecond))
+            next = std::min(next, wait);
+    }
+
+    if (holdDelay && !thinkDelay)
+        next = std::min(next, std::max(holdDelay, BotEvents::STEP_CHECK_MS));
+
+    return next;
+}
+
+void PlayerbotAI::Sleep()
+{
+    // Where the natural cadence sets the check its interval is the sleep (the tactics' timing is built on it)
+    SleepUntil(tactics->cadenceCombat ? std::numeric_limits<uint32>::max() : NextTimerMs());
+}
+
+void PlayerbotAI::SleepUntil(uint32 timerMs)
+{
+    uint32 const fallbackMs = GetReactDelay();
+    bool byTimer = false;
+    uint32 const sleepMs = BotEvents::SleepMs(fallbackMs, timerMs, byTimer);
+    if (!byTimer)
+    {
+        YieldThread(bot, fallbackMs);
+        if (holdDelay >= fallbackMs)
+            sleepCause = BotEvents::Cause::Hold;
+        else
+            sleepCause = fallbackMs <= BotEvents::STEP_CHECK_MS ? BotEvents::Cause::Step : BotEvents::Cause::Fallback;
+        return;
+    }
+
+    if (nextAICheckDelay < sleepMs && !thinkDelay)
+        nextAICheckDelay = sleepMs;
+    sleepCause = holdDelay >= sleepMs ? BotEvents::Cause::Hold : BotEvents::Cause::Timer;
+}
+
+bool PlayerbotAI::TookTime()
+{
+    if (nextAICheckDelay || !bot->IsInWorld() || !bot->IsAlive() || bot->IsBeingTeleported() || bot->IsInFlight() ||
+        bot->IsNonMeleeSpellCast(false))
+        return true;
+    // The tactics' own timing: one decision a check
+    if (bot->InBattleground() || tactics->cadenceCombat)
+        return true;
+    // Out of combat the move is the work; in combat a bot runs and strikes, and waits for its global cooldown
+    return bot->IsInCombat() ? GcdRunning() : bot->isMoving();
+}
+
+// The check goes on while its steps take no time (BotEvents::ChainGoesOn), in combat too: a piece of work (drop the
+// dead target, pick the loot, walk to it; an ability off the global cooldown, then the strike) is one check and not
+// one regular check per step. A pass goes on after an action other than the last one run, or after a step that asked
+// for it (ChainOn); it ends at an action that takes time and after BotEvents::CHAIN_PASSES.
+void PlayerbotAI::RunWorkChain(bool minimal)
+{
+    for (uint32 pass = 1; pass <= BotEvents::CHAIN_PASSES; ++pass)
+    {
+        Action* const ran = std::exchange(chainRan, nullptr);
+        bool const asked = std::exchange(chainOn, false);
+        bool const fresh = ran && (ran != chainLast || asked);
+        if (ran)
+        {
+            chainLast = ran;
+            chainLastMs = getMSTime();
+        }
+        if (minimal || HasGameClientMaster() || !BotEvents::ChainGoesOn(pass, fresh, TookTime()))
+            return;
+        if (PerfMonitor::IsEnabled())
+            PerfMonitor::CountBlock(sPerfMonitor.acquire(PERF_MON_TOTAL, "Scheduler chain pass"));
+        UpdateAIInternal(0, minimal);
+    }
 }
 
 bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool canControlSelf)
@@ -1480,7 +1654,7 @@ void PlayerbotAI::Reset(bool full, bool farTeleport)
 
     currentEngine = engines[BOT_STATE_NON_COMBAT];
     currentState = BOT_STATE_NON_COMBAT;
-    nextAICheckDelay = 0;
+    ResetActionDuration();
     if (reactionEngine)
         reactionEngine->ResetReactions();
     whispers.clear();
@@ -1749,6 +1923,10 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
     if (pvpTestCounting && packet.GetOpcode() == SMSG_CAST_FAILED && packet.size() > 5 &&
         packet.read<uint8>(5) == SPELL_FAILED_UNIT_NOT_INFRONT)
         CountTactic(TacticCounter::FaceFails);
+
+    // The work chain (questing WQ55): the loot window the bot asked for is open, its next check takes the loot
+    if (packet.GetOpcode() == SMSG_LOOT_RESPONSE)
+        Notify(BotEvents::Packet);
 
     switch (packet.GetOpcode())
     {
@@ -7351,12 +7529,23 @@ uint32 PlayerbotAI::GetReactDelay()
     // Out of combat travel sets its own pace (BotTravel::PaceMs: a transport leg's scan, the loot's pace)
     if (std::optional<uint32> const paceMs = bot->IsInCombat() ? std::nullopt : botTravel->PaceMs())
         return *paceMs;
+    // A standing bot with work looks again soon (questing WQ55): the regular check's seconds are for a bot on its
+    // way, which the end of its move wakes, and for one without work. Work is a quest, an errand trip, or a plan
+    // asked for by a bot without a status. A wait an action asked for is longer and stays (YieldThread only raises)
+    NewRpgStatus const status = rpgInfo.GetStatus();
+    if (bot->IsAlive() && !bot->IsInCombat() && !bot->isMoving() && !bot->IsNonMeleeSpellCast(false) &&
+        (status == RPG_DO_QUEST || status == RPG_ERRANDS || (planner.pending && status == RPG_IDLE)))
+        return BotEvents::STEP_CHECK_MS;
+    // In combat the regular check is the scheduler's fallback (BotEvents.h): events and timers wake the bot before
+    // it. Not where the natural cadence sets the check, in a battleground, or for a real player's bot
+    uint32 delayMs = ComputeReactDelay();
+    if (bot->IsInCombat() && !tactics->cadenceCombat && !bot->InBattleground() && !HasGameClientMaster())
+        delayMs = std::max(delayMs, BotEvents::FALLBACK_COMBAT_MS);
     // The natural cadence's faster check in combat in a started match, never slower than before, then the skill's
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
     float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadence.CheckMs,
-                                 factor);
+    return StretchedReactDelayMs(delayMs, tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadence.CheckMs, factor);
 }
 
 uint32 PlayerbotAI::ComputeReactDelay()

@@ -36,6 +36,10 @@ bool CastStealthAction::isPossible()
 
 bool UnstealthAction::Execute(Event /*event*/)
 {
+    // Nothing to end: no turn taken from the bot's work (questing WQ55)
+    if (!botAI->HasAura("stealth", bot))
+        return false;
+
     botAI->RemoveAura("stealth");
     // botAI->ChangeStrategy("+combat,-stealthed", BOT_STATE_COMBAT);
 

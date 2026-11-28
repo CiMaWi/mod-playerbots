@@ -30,8 +30,14 @@ namespace
 // nofight: immune to NPCs, no creature fights the unit (Unit::_IsValidAttackTarget); the flag ends its PvE combat
 void SetNoFight(Unit* unit, bool on)
 {
-    if (unit && unit->IsImmuneToNPC() != on)
+    if (!unit)
+        return;
+    if (unit->IsImmuneToNPC() != on)
         unit->SetImmuneToNPC(on);
+    // A hit of the unit's own that lands after the flag (a spell in flight, a swing) begins a fight no creature can
+    // answer and nothing ends: the unit would stay in combat, and an order with a trip waits for combat's end
+    else if (on && unit->IsInCombat())
+        unit->GetCombatManager().EndAllPvECombat();
 }
 
 void NoFight(Player& bot, bool on)
@@ -127,6 +133,11 @@ void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder
     uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
     LOG_INFO("playerbots", "[Route] {} constraints: {} (taken after {} ms)", bot->GetName(), set, latencyMs);
     EventLog::Emit(bot, EventLog::EventType::Constraint, set.c_str(), 0, latencyMs);
+    // The planner row released while the bot holds a status the weighted pick gave it under the hold: that status
+    // ends, so the planner's first goal follows the release. A risen sick bot picks its rest in the check it rises
+    // in, before a test's release can reach it, and the rest would keep the planner out for minutes
+    if ((before & ~after & TestConstraints::PLANNER) && !tripFollows && botAI->rpgInfo.picked)
+        RpgStatus::End(botAI, StatusEnd::Outcome::Ordered, {.word = "release"});
     if (!TestConstraints::EndsStatus(before, after) || tripFollows)
         return;
     // An ordered end: a trip writes its abort rows with the source abort:held (the status core's trip arm)

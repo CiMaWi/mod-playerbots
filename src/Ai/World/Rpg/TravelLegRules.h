@@ -601,8 +601,10 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
         case LegType::Fly:
             return static_cast<std::uint32_t>(leg.seconds * FLIGHT_TIMEOUT_FACTOR * 1000.0f) + LEG_SLACK_MS;
         case LegType::Hearth:
-            // The route's seconds hold the cooldown wait and the cast
-            return static_cast<std::uint32_t>(leg.seconds * 1000.0f) + HEARTH_SLACK_MS;
+            // The route's seconds hold the cooldown wait, the cast and the stone's worth, which is no time
+            return static_cast<std::uint32_t>(std::max(0.0f, leg.seconds - TravelRoute::HEARTH_WORTH_SECONDS) *
+                                              1000.0f) +
+                   HEARTH_SLACK_MS;
         default:  // a transport leg runs on its vessel's bounds (NextDeadlineMs)
             return LEG_SLACK_MS;
     }
