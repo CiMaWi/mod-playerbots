@@ -20,7 +20,7 @@ using StatusEnd::Outcome;
 
 static_assert(StatusEnd::STATUS_COUNT == 13, "thirteen RPG statuses (RPG_STATUS_END)");
 static_assert(StatusEnd::STATUS_DO_FISH + 1 == StatusEnd::STATUS_COUNT, "do fish is the last status");
-static_assert(StatusEnd::OUTCOME_COUNT == static_cast<unsigned>(Outcome::Sick) + 1, "eight outcomes");
+static_assert(StatusEnd::OUTCOME_COUNT == static_cast<unsigned>(Outcome::Danger) + 1, "nine outcomes");
 static_assert(!StatusEnd::CleansUp(StatusEnd::STATUS_COUNT, Outcome::Finished), "no row past the last status");
 
 char const* const STATUS_NAMES[StatusEnd::STATUS_COUNT] = {
@@ -28,28 +28,29 @@ char const* const STATUS_NAMES[StatusEnd::STATUS_COUNT] = {
     "rest", "outdoor_pvp", "do_gather", "travel",        "errands",    "do_fish",
 };
 
-// Design 2.3, written out: the columns are Arrived Finished TimedOut Stuck Abandoned Interrupted Ordered Sick. The
-// cells without a site (errands Arrived, travel Finished) follow the rule "the clean-up runs at every end".
+// Design 2.3, written out: the columns are Arrived Finished TimedOut Stuck Abandoned Interrupted Ordered Sick Danger
+// (awareness AW38b: a judged end, cleaned up as every end is). The cells without a site (errands Arrived, travel
+// Finished) follow the rule "the clean-up runs at every end".
 constexpr bool EXPECTED_CLEAN_UP[StatusEnd::STATUS_COUNT][StatusEnd::OUTCOME_COUNT] = {
-    {false, false, false, false, false, false, false, false},  // idle
-    {false, false, false, false, false, false, false, false},  // go grind
-    {false, false, false, false, false, false, false, false},  // go camp
-    {false, false, false, false, false, false, false, false},  // wander random
-    {false, false, false, false, false, false, false, false},  // wander npc
-    {false, false, false, false, false, false, false, false},  // do quest
-    {false, false, false, false, false, false, false, false},  // travel flight
-    {false, false, false, false, false, false, false, false},  // rest
-    {false, false, false, false, false, false, false, false},  // outdoor PvP
-    {false, false, false, false, false, false, false, false},  // do gather
-    {true, true, true, true, true, false, true, true},         // travel: gap T1 (Interrupted)
-    {true, true, true, true, true, false, false, true},        // errands: gaps E1, E2 (Stuck cleans up: CS14d)
-    {true, true, true, true, true, true, true, true},          // do fish: the weapon back at every end (WR16b)
+    {false, false, false, false, false, false, false, false, false},  // idle
+    {false, false, false, false, false, false, false, false, false},  // go grind
+    {false, false, false, false, false, false, false, false, false},  // go camp
+    {false, false, false, false, false, false, false, false, false},  // wander random
+    {false, false, false, false, false, false, false, false, false},  // wander npc
+    {false, false, false, false, false, false, false, false, false},  // do quest
+    {false, false, false, false, false, false, false, false, false},  // travel flight
+    {false, false, false, false, false, false, false, false, false},  // rest
+    {false, false, false, false, false, false, false, false, false},  // outdoor PvP
+    {false, false, false, false, false, false, false, false, false},  // do gather
+    {true, true, true, true, true, false, true, true, true},          // travel: gap T1 (Interrupted)
+    {true, true, true, true, true, false, false, true, true},         // errands: gaps E1, E2 (Stuck cleans up: CS14d)
+    {true, true, true, true, true, true, true, true, true},           // do fish: the weapon back at every end (WR16b)
 };
 
-constexpr bool EXPECTED_JUDGED[StatusEnd::OUTCOME_COUNT] = {true, true, true, true, true, false, false, false};
+constexpr bool EXPECTED_JUDGED[StatusEnd::OUTCOME_COUNT] = {true, true, true, true, true, false, false, false, true};
 
-char const* const EXPECTED_WORDS[StatusEnd::OUTCOME_COUNT] = {"arrived",   "finished",    "timeout", "stuck",
-                                                              "abandoned", "interrupted", "order",   "sick"};
+char const* const EXPECTED_WORDS[StatusEnd::OUTCOME_COUNT] = {
+    "arrived", "finished", "timeout", "stuck", "abandoned", "interrupted", "order", "sick", "danger"};
 
 constexpr bool EXPECTED_DURATION_NORMAL[StatusEnd::STATUS_COUNT] = {false, false, false, true,  true,  false, false,
                                                                     true,  true,  false, false, false, false};

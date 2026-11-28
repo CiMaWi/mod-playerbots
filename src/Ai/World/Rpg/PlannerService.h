@@ -127,7 +127,9 @@ void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // names the safe area the bot stands in (Upkeep::SafeAreaWord). O(1) but at the edge
 void NoteSickOpen(PlayerbotAI* botAI, bool open);
 // NR3 (NR.4), map thread: the safe areas a sick bot stands in, and whether its walk to a place stays in one of them
-// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start
+// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start.
+// The bot's own areas carry its roads (awareness AW38c): at most Upkeep::SICK_ROAD_HUBS route searches a call
+// (Awareness::QuietWalk), so only a sick bot's code calls it: the fill, the errand start and the sick_area row
 Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes);
 bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,
                 float y, float z);
@@ -162,9 +164,9 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
 // for a bot the planner does not own or for an order that is not its route's. O(1)
 void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached);
 // The same door, when an order's status ended by anything else (part 3). A failure of its walk or work
-// (GoalApply::FailsOrder: stuck, abandoned, timed out; `note`: the end's word, a literal) ends the route's running
-// order and closes its cell as a dry end does, so the route does not give it again, and counts as an end in place
-// does above; any other end (a take-over) leaves the order to be given again and counts nothing. O(1)
+// (GoalApply::FailsOrder: stuck, abandoned, timed out, danger; `note`: the end's word, a literal) ends the route's
+// running order and closes its cell as a dry end does, so the route does not give it again, and counts as an end in
+// place does above; any other end (a take-over) leaves the order to be given again and counts nothing. O(1)
 void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the

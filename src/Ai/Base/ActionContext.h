@@ -133,6 +133,7 @@ public:
         creators["drink"] = &ActionContext::drink;
         creators["recover"] = &ActionContext::recover;
         creators["way danger"] = &ActionContext::way_danger;
+        creators["leave danger"] = &ActionContext::leave_danger;
         creators["tank assist"] = &ActionContext::tank_assist;
         creators["dps assist"] = &ActionContext::dps_assist;
         creators["arena plan"] = &ActionContext::arena_plan;
@@ -407,6 +408,7 @@ private:
     static Action* eat(PlayerbotAI* botAI) { return new EatAction(botAI); }
     static Action* recover(PlayerbotAI* botAI) { return new RecoverAction(botAI); }
     static Action* way_danger(PlayerbotAI* botAI) { return new WayDangerAction(botAI); }
+    static Action* leave_danger(PlayerbotAI* botAI) { return new LeaveDangerAction(botAI); }
     static Action* use_buff_items(PlayerbotAI* botAI) { return new UseBuffItemsAction(botAI); }
     static Action* mana_potion(PlayerbotAI* botAI) { return new UseManaPotion(botAI); }
     static Action* healing_potion(PlayerbotAI* botAI) { return new UseHealingPotion(botAI); }

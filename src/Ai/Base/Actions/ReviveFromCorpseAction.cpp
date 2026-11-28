@@ -8,6 +8,7 @@
 
 #include "Awareness.h"
 #include "CellImpl.h"
+#include "CheckMountStateAction.h"
 #include "Corpse.h"
 #include "DeathRowRules.h"
 #include "Event.h"
@@ -16,10 +17,13 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "MapMgr.h"
+#include "NewRpgHelpers.h"
+#include "NewRpgStatusEnd.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "Upkeep.h"
 #include "World.h"
@@ -71,7 +75,9 @@ bool GhostWithoutCorpse(PlayerbotAI* botAI, Player* bot)
 // WU33a: the ghost's way back on record. One `death` row when the step or its reason differs from the last row's of
 // this death, and a repeat row every GHOST_ROW_REPEAT_MS; never a row per tick. Only persistent bots. The row's words
 // come from the rule's step (AwarenessRules::DeathRowOf, AW9). `corpse` is null when it lies on another map (value -1
-// then).
+// then). The alternatives: corpse_yards, grave_yards and login_seconds; for the wait at a grave without a healer
+// (healer_wait/no_healer, AW33b) grave_yards, searched (a search ran near the grave's point) and found (the last
+// search's healer: -1 none yet, 0 none, 1 one).
 void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, Awareness::DeadMemo const& dead,
                  GraveyardStruct const* grave)
 {
@@ -95,11 +101,20 @@ void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, Awarenes
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
     {
-        weighed.Add(
-            {"corpse_yards", corpse && corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
+        bool const healerWait =
+            now.Way == WorldTravel::GhostWay::HealerWait && now.Reason == WorldTravel::GhostReason::NoHealer;
+        if (!healerWait)
+            weighed.Add(
+                {"corpse_yards", corpse && corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
         weighed.Add(
             {"grave_yards", grave && grave->Map == bot->GetMapId() ? bot->GetDistance2d(grave->x, grave->y) : -1.0f});
-        weighed.Add({"login_seconds", static_cast<float>(GetMSTimeDiffToNow(memo.loginMs) / 1000)});
+        if (healerWait)
+        {
+            weighed.Add({"searched", dead.healerSearched ? 1.0f : 0.0f});
+            weighed.Add({"found", static_cast<float>(dead.healerFound)});
+        }
+        else
+            weighed.Add({"login_seconds", static_cast<float>(GetMSTimeDiffToNow(memo.loginMs) / 1000)});
     }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, WorldTravel::GhostWayWord(now.Way),
                        WorldTravel::GhostReasonWord(now.Reason), deadSeconds, weighed, grave ? grave->ID : 0);
@@ -197,18 +212,23 @@ bool FindCorpseAction::Execute(Event /*event*/)
         float const pointMoved =
             toBest ? AwarenessRules::PlanarDistance(beforeBest.x, beforeBest.y, dead->facts.best.x, dead->facts.best.y)
                    : 0.0f;
-        bool moved = AwarenessRules::WalkGoesOn(bot->isMoving(), before, dead->last, pointMoved);
-        if (!moved)
+        Player* leader = botAI->GetGroupLeader();
+        WorldObject const* to = nullptr;
+        if (act == DeadAct::WalkCorpse)
+            to = corpse;
+        else if (dead->last.reason == AwarenessRules::DeadReason::Leader)
+            to = leader && leader != bot ? leader : nullptr;
+        float const x = to ? to->GetPositionX() : dead->facts.best.x;
+        float const y = to ? to->GetPositionY() : dead->facts.best.y;
+        float const z = to ? to->GetPositionZ() : dead->facts.best.z;
+        // AW33b: a walk that came less than WALK_PROGRESS_YARDS nearer its target over the last minute is one that
+        // cannot start (walkStalled), also while it goes on
+        // A test's ghoststall stands the ghost and takes the walk as under way
+        bool moved = !Awareness::WalkStalled(botAI, AwarenessRules::WalkKind::Corpse, x, y);
+        if (moved && TestConstraints::GhostWalksStand(botAI->testConstraints))
+            StopGhost(bot);
+        else if (moved && !AwarenessRules::WalkGoesOn(bot->isMoving(), before, dead->last, pointMoved))
         {
-            Player* leader = botAI->GetGroupLeader();
-            WorldObject const* to = nullptr;
-            if (act == DeadAct::WalkCorpse)
-                to = corpse;
-            else if (dead->last.reason == AwarenessRules::DeadReason::Leader)
-                to = leader && leader != bot ? leader : nullptr;
-            float const x = to ? to->GetPositionX() : dead->facts.best.x;
-            float const y = to ? to->GetPositionY() : dead->facts.best.y;
-            float const z = to ? to->GetPositionZ() : dead->facts.best.z;
             // A move refused only because the last order's delay still runs (at most MaxWaitForMove) or repeats it is
             // a walk under way, not a failed one: a teleported or stopped ghost walks once the delay has passed
             if (act == DeadAct::WalkPoint && dead->last.reason == AwarenessRules::DeadReason::Leader && !to)
@@ -223,7 +243,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
             LogGhostWay(botAI, bot, corpse, *dead, nullptr);
             return true;
         }
-        // The walk could not start: the rule once more, which takes the healer's way (no_path)
+        // The walk could not start or stalled: the rule once more, which takes the healer's way (no_path)
         dead = &Awareness::NextOfDeadWalkFailed(botAI);
     }
 
@@ -237,9 +257,11 @@ bool FindCorpseAction::Execute(Event /*event*/)
         case DeadAct::Wait:
             StopGhost(bot);
             LogGhostWay(botAI, bot, corpse, *dead, nullptr);
-            botAI->SetNextCheckDelay(dead->last.reason == AwarenessRules::DeadReason::Player && dead->holdRecheckMs
-                                         ? dead->holdRecheckMs
-                                         : DEAD_WAIT_RECHECK_MS);
+            // AW33b: never past the bound (AwarenessRules::DeadDelayMs)
+            botAI->SetNextCheckDelay(AwarenessRules::DeadDelayMs(
+                dead->last.reason == AwarenessRules::DeadReason::Player && dead->holdRecheckMs ? dead->holdRecheckMs
+                                                                                               : DEAD_WAIT_RECHECK_MS,
+                dead->facts.ghostSeconds));
             return true;
         case DeadAct::Rise:
             // `revive from corpse` sends the reclaim: `corpse near` (the core's own 39 yd test, as reclaimHere) queues
@@ -391,13 +413,15 @@ Creature* FindSpiritHealer(Player* bot, float range)
 
 // The spirit healer's revive at the grave: free when granted, else what a player pays
 // (WorldSession::SendSpiritResurrect), with the death row of a persistent bot (its value the deaths in a row). The
-// healer's revive and the bound's (reason wait_ended) share it.
+// healer's revive and the bound's (reason wait_ended) share it. AW38a: the row's grave_ground is the ground of the
+// grave as the revive leaves the bot (Awareness::GraveGround: 0 quiet, 1 passable, 2 deadly; -1 without a grave)
 bool ReviveAtGrave(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, char const* reason, uint32 deathsInRow,
-                   int64 deadTime)
+                   int64 deadTime, GraveyardStruct const* grave)
 {
     LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer ({})", bot->GetGUID().ToString().c_str(),
               bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName(), reason);
     PlayerbotChatHandler ch(bot);
+    float const graveGround = grave ? static_cast<float>(Awareness::GraveGround(botAI, grave)) : -1.0f;
     bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
     bot->ResurrectPlayer(0.5f, !granted);
     if (granted)
@@ -414,7 +438,7 @@ bool ReviveAtGrave(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, ch
     {
         WorldLogFormat::Alternatives weighed;
         if (WorldLog::Active())
-            weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
+            weighed = {{"dead_seconds", static_cast<float>(deadTime)}, {"grave_ground", graveGround}};
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
                            static_cast<float>(deathsInRow), weighed);
     }
@@ -463,12 +487,14 @@ bool SpiritHealerAction::Execute(Event event)
     if (!dead || !dead->lastMs)
         return false;
 
-    // A persistent ghost's grave is the game's: the one nearest to where it stands, where the release sent it (WU34);
-    // a bot that does not keep its possessions keeps upstream's choice by its travel target or a starting zone
+    // A persistent ghost's grave is the rule's (Awareness::GraveOf, AW38a): the game's, the one nearest to where it
+    // stands, where the release sent it (WU34), and past the bound one whose ground it survives; a bot that does not
+    // keep its possessions keeps upstream's choice by its travel target or a starting zone
     bool const keeps = botAI->KeepsPossessions();
     int64 const deadTime = corpse ? DeadSeconds(botAI, corpse) : 0;
-    GraveyardStruct const* grave = GetGrave(!keeps && (AI_VALUE(uint32, "death count") > 10 || deadTime > 15 * MINUTE ||
-                                                       AI_VALUE(uint8, "durability") < 10));
+    GraveyardStruct const* grave = keeps ? Awareness::GraveOf(botAI)
+                                         : GetGrave(AI_VALUE(uint32, "death count") > 10 || deadTime > 15 * MINUTE ||
+                                                    AI_VALUE(uint8, "durability") < 10);
     Awareness::GraveFacts facts;
     facts.known = grave != nullptr;
     WorldPosition const gravePos = grave ? WorldPosition(grave->Map, grave->x, grave->y, grave->z) : WorldPosition();
@@ -476,11 +502,17 @@ bool SpiritHealerAction::Execute(Event event)
     {
         facts.atGrave =
             grave->Map == bot->GetMapId() && bot->GetDistance2d(grave->x, grave->y) < sPlayerbotAIConfig.SightDistance;
+        // AW33b: the revive happens at the grave's point; the first tick there searches again, so a healer seen from
+        // afar is found on arrival
+        facts.atGravePoint =
+            facts.atGrave && AwarenessRules::GraveSearchCounts(bot->GetExactDist2d(grave->x, grave->y));
         RpgMemos& memo = botAI->rpgMemos;
-        if (facts.atGrave && WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
-                                                   WorldTravel::GHOST_HEALER_RETRY_MS))
+        if (facts.atGrave && ((facts.atGravePoint && !dead->healerSearched) ||
+                              WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
+                                                    WorldTravel::GHOST_HEALER_RETRY_MS)))
         {
             memo.ghostHealerTs = getMSTime();
+            facts.looked = true;
             facts.healerInRange = FindSpiritHealer(bot, sPlayerbotAIConfig.SightDistance) != nullptr;
             // AW30b: a search that finds none counts for the grave only near its point (the healer stands there)
             facts.searched = AwarenessRules::GraveSearchCounts(bot->GetExactDist2d(grave->x, grave->y));
@@ -494,9 +526,14 @@ bool SpiritHealerAction::Execute(Event event)
 
     using AwarenessRules::DeadAct;
     // The walk to the grave's point. A move refused only because the last order's delay still runs or repeats it is a
-    // walk under way
+    // walk under way; so is one under a test's ghoststall, which stands the ghost
     auto const walkToGrave = [&]
     {
+        if (TestConstraints::GhostWalksStand(botAI->testConstraints))
+        {
+            StopGhost(bot);
+            return true;
+        }
         if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || IsDuplicateMove(grave->x, grave->y, grave->z))
             return true;
         if (bot->IsWithinLOS(grave->x, grave->y, grave->z))
@@ -505,12 +542,14 @@ bool SpiritHealerAction::Execute(Event event)
     };
     if (dead->last.act == DeadAct::WalkGrave && grave)
     {
-        if (walkToGrave())
+        // AW33b: a walk that came less than WALK_PROGRESS_YARDS nearer the grave over the last minute is one that
+        // cannot start (walkStalled)
+        if (!Awareness::WalkStalled(botAI, AwarenessRules::WalkKind::Grave, grave->x, grave->y) && walkToGrave())
         {
             LogGhostWay(botAI, bot, corpse, *dead, grave);
             return true;
         }
-        // The walk could not start: the rule once more, which names the teleport or, seen, the wait
+        // The walk could not start or stalled: the rule once more, which names the teleport or, seen, the wait
         facts.walkFailed = true;
         facts.seen = sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos);
         dead = &Awareness::NextOfDeadAtGrave(botAI, facts);
@@ -521,25 +560,21 @@ bool SpiritHealerAction::Execute(Event event)
     switch (dead->last.act)
     {
         case DeadAct::WaitGrave:
-            // The wait for a healer is at the grave's own point. `atGrave` begins where the grave comes into sight,
-            // and the healer is searched around the ghost: a ghost that stopped there stood out of the healer's range
-            // until the bound (AWL2's review, lab10 scn-261124174623: 12 of 73 ghosts that walked to a grave with a
-            // healer). So it walks the rest of the way, as before AW9, and the next search is made from there
-            if (dead->last.reason == AwarenessRules::DeadReason::NoHealer && grave &&
-                bot->GetExactDist2d(grave->x, grave->y) > AwarenessRules::ARRIVE_YARDS && walkToGrave())
-                return true;
+            // The wait for a healer is at the grave's own point (AW33b: the rule's atGravePoint walks a ghost in
+            // sight of the grave on to the point, which replaced the walk of the rest of the way here)
             StopGhost(bot);
             return true;
         case DeadAct::HealerRevive:
             return ReviveAtGrave(botAI, bot, context,
                                  AwarenessRules::Word(AwarenessRules::HealerCause(dead->last, dead->healerReason)), row,
-                                 deadTime);
+                                 deadTime, grave);
         case DeadAct::ReviveGrave:
         case DeadAct::ReviveHere:
             // The bound's revive at the grave without a healer in range, or where the ghost stands without a grave
             EventLog::Honesty(bot, EventLog::HonestyKind::Resurrect, "wait_ended",
                               dead->last.act == DeadAct::ReviveGrave && grave ? grave->ID : 0);
-            return ReviveAtGrave(botAI, bot, context, "wait_ended", row, deadTime);
+            return ReviveAtGrave(botAI, bot, context, "wait_ended", row, deadTime,
+                                 dead->last.act == DeadAct::ReviveGrave ? grave : nullptr);
         case DeadAct::TeleportGrave:
         {
             if (!grave)
@@ -579,11 +614,11 @@ bool RecoverAction::Execute(Event /*event*/)
         }
     }
 
-    // A sick bot is not held: upkeep's sickness rule makes its status `rest`, and only the move above acts
-    if (facts.sick)
+    // AW41: a sick bot has the same recovery and the same end of it; past that end only the move above acts on it
+    if (facts.sick && AwarenessRules::RecoveryOver(facts))
         return false;
 
-    // The rest: it stops, eats and drinks what it has, and sits; the tick is held so its status resumes unchanged
+    // The rest: it stops, eats and drinks what it has, and sits
     if (bot->isMoving())
     {
         bot->GetMotionMaster()->Clear();
@@ -600,7 +635,8 @@ bool RecoverAction::Execute(Event /*event*/)
         if (bot->getStandState() == UNIT_STAND_STATE_STAND)
             bot->SetStandState(UNIT_STAND_STATE_SIT);
     }
-    return true;
+    // The tick is held so the status resumes unchanged; a sick bot is not held (upkeep's sickness rule rests it)
+    return !facts.sick;
 }
 
 bool RecoverAction::isUseful() { return bot->IsAlive(); }
@@ -609,4 +645,123 @@ bool WayDangerAction::Execute(Event /*event*/)
 {
     Awareness::JudgeTripWay(botAI);
     return true;
+}
+
+bool LeaveDangerAction::Execute(Event /*event*/)
+{
+    Awareness::Store const* const store = botAI->awareness.get();
+    if (!store || !store->leaveDue)
+        return Step();
+    Awareness::JudgeLeave(botAI);
+    // The tick goes on: `recover` and, for a sick bot, the sickness rule's end of its status follow at once
+    return false;
+}
+
+namespace
+{
+// The hearthstone's spell (NewRpgBaseAction.cpp's HEARTHSTONE_CAST_SPELL)
+constexpr uint32 LEAVE_HEARTH_SPELL = 8690;
+}  // namespace
+
+bool LeaveDangerAction::Step()
+{
+    Awareness::Store* const store = botAI->awareness.get();
+    if (!store || !store->leaving.active || !bot->IsAlive())
+        return false;
+    Awareness::Leaving& leaving = store->leaving;
+    uint8 const level = static_cast<uint8>(std::min<uint32>(bot->GetLevel(), 255));
+    TeamId const side = bot->GetTeamId();
+    Awareness::FindLeavePlace(botAI);
+
+    AwarenessRules::LeaveStepFacts facts;
+    facts.ground = Awareness::GroundAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                       level, side);
+    facts.sinceRiseSeconds = GetMSTimeDiffToNow(store->roseMs) / IN_MILLISECONDS;
+    facts.otherMap = bot->GetMapId() != store->roseMap;
+    facts.riseYards =
+        AwarenessRules::PlanarDistance(store->roseX, store->roseY, bot->GetPositionX(), bot->GetPositionY());
+    facts.hearthReady =
+        TestConstraints::HearthAllowed(botAI->testConstraints) &&
+        bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, false) && !bot->HasSpellCooldown(LEAVE_HEARTH_SPELL) &&
+        !bot->IsInCombat() && !bot->IsNonMeleeSpellCast(false) &&
+        Awareness::GroundAt(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, level, side) !=
+            DangerRules::Ground::Deadly;
+    facts.hearthCasts = leaving.hearthTries;
+    AwarenessRules::RecoverFacts recover;
+    bool const known = Awareness::RecoverFactsOf(botAI, recover);
+    facts.recovering = known && AwarenessRules::Recovering(recover);
+    facts.placeKnown = leaving.placeFound;
+    facts.walkFailed = leaving.walkBegun && botAI->rpgInfo.GetStatus() != RPG_TRAVEL;
+    facts.waitSeconds = leaving.waitStartMs ? GetMSTimeDiffToNow(leaving.waitStartMs) / IN_MILLISECONDS : 0;
+    facts.taken = botAI->HasGameClientMaster() || bot->InBattleground();
+    AwarenessRules::LeaveAnswer const answer = AwarenessRules::LeaveStep(facts);
+
+    // One row per change of step and one at the end; the value is the rise's age, the alternatives the ground where
+    // the bot stands (0 quiet, 1 passable, 2 deadly), its yards from the rise and the hearthstone's begun casts
+    WorldLogFormat::Alternatives const where = {{"ground", static_cast<float>(facts.ground)},
+                                                {"rise_yd", facts.riseYards},
+                                                {"casts", static_cast<float>(leaving.hearthTries)}};
+    float const since = static_cast<float>(facts.sinceRiseSeconds);
+    if (answer.act == AwarenessRules::LeaveAct::Done)
+    {
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "done", AwarenessRules::LeaveEndWord(answer.end),
+                           since, where);
+        leaving = Awareness::Leaving{};
+        return false;
+    }
+    // A begun cast of the stone runs out (or is broken) before any other step
+    if (leaving.lastAct == AwarenessRules::LeaveAct::Hearth && bot->IsNonMeleeSpellCast(false))
+        return true;
+    bool const changed = answer.act != leaving.lastAct;
+    leaving.lastAct = answer.act;
+    switch (answer.act)
+    {
+        case AwarenessRules::LeaveAct::Hearth:
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "hearth", "deadly", since, where);
+            // A try is counted whether the core begins the cast or not, so a refused stone cannot hold the bot
+            ++leaving.hearthTries;
+            // As a player's client does: off the mount and out of a form first (the stone's spell is refused in
+            // either, a druid's cat form after a fight among them); only on the ground, in the air it would be a fall
+            if (!bot->IsFlying() && !bot->IsInFlight())
+            {
+                if (bot->IsMounted())
+                    CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
+                if (NewRpgHelpers::RealShapeshift(bot))
+                    bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+            }
+            botAI->DoSpecificAction("hearthstone", Event(), true);
+            return true;
+        case AwarenessRules::LeaveAct::Walk:
+            if (leaving.walkBegun)
+                return false;  // the trip is held: the follower walks it
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "walk", "node", since, where);
+            leaving.walkBegun = true;
+            RpgStatus::Start(
+                botAI,
+                RpgStatus::TripTo(WorldPosition(leaving.placeMap, leaving.placeX, leaving.placeY, leaving.placeZ)),
+                "leave");
+            return true;
+        case AwarenessRules::LeaveAct::Wait:
+        {
+            if (changed)
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "wait",
+                                   leaving.walkBegun ? "walk_failed" : "no_place", since, where);
+            if (!leaving.waitStartMs)
+                leaving.waitStartMs = std::max<uint32>(getMSTime(), 1);
+            // At a clear point (recover's move); where the search finds none the bot waits where it is
+            AwarenessRules::PointAnswer const own =
+                AwarenessRules::JudgePoint(Awareness::Look(botAI), bot->GetPositionX(), bot->GetPositionY());
+            if (!own.clear)
+            {
+                AwarenessRules::SafePoint const safe =
+                    Awareness::FindSafePoint(botAI, *bot, AwarenessRules::RISE_YARDS);
+                if (safe.found && safe.clear && !IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) &&
+                    !IsDuplicateMove(safe.x, safe.y, safe.z))
+                    MoveTo(bot->GetMapId(), safe.x, safe.y, safe.z, false, false);
+            }
+            return true;
+        }
+        default:
+            return false;  // Yield: `recover` moves the bot to a clear point and feeds it
+    }
 }

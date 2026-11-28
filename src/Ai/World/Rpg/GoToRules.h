@@ -200,6 +200,7 @@ inline constexpr CauseRow CAUSES[] = {
     {"order", StatusEnd::Outcome::Ordered},
     {"stopped", StatusEnd::Outcome::Ordered},
     {"sick", StatusEnd::Outcome::Sick},
+    {"danger", StatusEnd::Outcome::Danger},  // awareness: a refused way (AW37b), the leaving after a rise (AW38b)
 };
 
 constexpr std::string_view ABORT_PREFIX = "abort:";

@@ -14,7 +14,8 @@
 namespace StatusEnd
 {
 // What happened, not a judgement. Interrupted: another status, the planner or a reset took the bot over. Ordered: a
-// GM, test or bridge order ended it. Sick: resurrection sickness ended it and the bot rests.
+// GM, test or bridge order ended it. Sick: resurrection sickness ended it and the bot rests. Danger: a risen bot gives
+// up its goal in ground it cannot survive or at its deaths in a row, and leaves (awareness AW38b, INTERFACE.md §3.6).
 enum class Outcome : std::uint8_t
 {
     Arrived,
@@ -24,9 +25,10 @@ enum class Outcome : std::uint8_t
     Abandoned,
     Interrupted,
     Ordered,
-    Sick
+    Sick,
+    Danger
 };
-constexpr std::uint32_t OUTCOME_COUNT = 8;
+constexpr std::uint32_t OUTCOME_COUNT = 9;
 }  // namespace StatusEnd
 
 #endif

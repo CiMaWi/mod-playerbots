@@ -24,6 +24,7 @@ class Corpse;
 class Player;
 class PlayerbotAI;
 class Unit;
+struct GraveyardStruct;
 struct Position;
 
 // The bot's picture of the units around it, filled from one grid visit (AwarenessRules.h holds the types and rules).
@@ -50,9 +51,10 @@ struct WalkCache
 };
 
 // AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (AwarenessRules::DeathKey), when
-// it began, the unclear clock, the healer's way once chosen and why, whether its grave had no healer (AW30b), and the
-// rule's last step with the facts the Rise row reads. Cleared at the rise and at a new death; not a memory of a place
-// (AW.1)
+// it began, the unclear clock, the healer's way once chosen and why, whether its grave had no healer (AW30b), the
+// rule's last step with the facts the Rise row reads, the progress test of its walks and its healer searches (AW33b),
+// the ground of its grave and the grave of its bound (AW38a). Cleared at the rise and at a new death; not a memory of
+// a place (AW.1)
 struct DeadMemo
 {
     std::uint32_t death = 0;
@@ -65,6 +67,30 @@ struct DeadMemo
     std::uint32_t lastMs = 0;         // 0: no step yet
     std::uint32_t holdRecheckMs = 0;  // world PvP's recheck while it holds the ghost (playerHold Wait)
     AwarenessRules::DeadFacts facts;
+    AwarenessRules::WalkWatch walk;  // AW33b: the walk under way and its window (WalkStalled)
+    bool healerSearched = false;     // a search ran within GRAVE_SEARCH_YARDS of the grave's point
+    std::int8_t healerFound = -1;    // what the last search at the grave found: -1 none yet, 0 no healer, 1 a healer
+    std::uint32_t groundGrave = 0;   // AW38a: the grave whose ground graveGround holds (0: none judged yet)
+    AwarenessRules::Ground graveGround = AwarenessRules::Ground::Quiet;
+    bool boundGraveChosen = false;  // AW38a: the bound's grave was chosen (boundGrave; 0: the game's)
+    std::uint32_t boundGrave = 0;
+};
+
+// AW38b: a leaving under way (INTERFACE.md §3.6): begun by a Leave of a bot that is not sick, ended by its Done and
+// by a death. The walk's place is searched once (FindLeavePlace); the counts are the step's (LeaveStepFacts)
+struct Leaving
+{
+    bool active = false;
+    bool searched = false;
+    bool placeFound = false;
+    std::uint32_t placeMap = 0;
+    float placeX = 0.0f;
+    float placeY = 0.0f;
+    float placeZ = 0.0f;
+    bool walkBegun = false;
+    std::uint32_t hearthTries = 0;
+    std::uint32_t waitStartMs = 0;
+    AwarenessRules::LeaveAct lastAct = AwarenessRules::LeaveAct::Yield;
 };
 
 // The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
@@ -101,6 +127,16 @@ struct Store
     DeadMemo dead;
     // AW37b: the last route the trigger `way danger` judged (DangerRules::WayDue)
     DangerRules::JudgedPair judged;
+    // AW38b: a rise not judged by the leaving yet (LeaveDue): set by the rise, ended by the judgement and by a death
+    bool leaveDue = false;
+    Leaving leaving;
+    // AW33b: the self-rise rule's last ask (one per tick), the first ask of a body whose death has no edge's stamp,
+    // and the self-resurrection it ordered (the Rise row's `self`); all ended by the rise and by the next death
+    std::uint32_t selfRiseAskMs = 0;
+    std::uint32_t selfRiseStartMs = 0;
+    std::uint32_t selfRiseOrderedMs = 0;
+    AwarenessRules::SelfRiseFacts selfRiseFacts;
+    AwarenessRules::SelfRiseAct selfRiseAct = AwarenessRules::SelfRiseAct::Wait;
 };
 
 // What is around the bot now, both sides; rebuilt first when it is older than its age (AwarenessRules::IsFresh)
@@ -139,12 +175,24 @@ AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& cent
 DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse);
 // The walk the last step named could not start: the same facts with corpseWalkFailed, asked once more
 DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI);
+// AW33b: a tick of the walk the last step named, to the target at x, y (the walk to the corpse, a point or the leader,
+// or to the grave): true when the ghost came less than WALK_PROGRESS_YARDS nearer over the last WALK_PROGRESS_SECONDS
+// (AwarenessRules::WatchWalk, WalkStalled), which the caller reports as the walk's failure
+bool WalkStalled(PlayerbotAI* botAI, AwarenessRules::WalkKind kind, float x, float y);
+// AW33b: the self-rise rule (AwarenessRules::SelfRiseStep) for a body that holds a self-resurrection: its place on its
+// own picture, the battleground, a player's bot and the seconds since the death; asked once per tick (`self resurrect`
+// and `auto release` both read it), the body's seconds into bodySeconds when given. Map thread
+AwarenessRules::SelfRiseAct SelfRise(PlayerbotAI* botAI, std::uint32_t* bodySeconds = nullptr);
+// AW33b: the bot sends the self-resurrection the rule ordered (its Rise row's word is `self`)
+void OrderSelfRise(PlayerbotAI* botAI);
 // AW9: the grave's facts the spirit healer action finds for a step of the healer's way or of the bound
 struct GraveFacts
 {
     bool known = false;          // the game's grave for where the ghost stands
     bool atGrave = false;        // on its map within reach of it
+    bool atGravePoint = false;   // AW33b: within GRAVE_SEARCH_YARDS of its point (planar), where the revive happens
     bool healerInRange = false;  // a living spirit healer found near it (searched at most every GHOST_HEALER_RETRY_MS)
+    bool looked = false;         // a search for the healer ran this tick (AW33b: the healer_wait row's `found`)
     bool searched = false;       // that search ran this tick within GRAVE_SEARCH_YARDS of the grave's point (AW30b)
     bool walkFailed = false;     // the walk to it could not start
     bool seen = false;           // a real player would see the teleport to it
@@ -154,6 +202,18 @@ struct GraveFacts
 DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave);
 // The return's memo of this bot, null before its first ask
 DeadMemo const* LastOfDead(PlayerbotAI* botAI);
+// AW38a: the grave of a persistent ghost's healer's way and of its bound. Before the bound the game's, the grave its
+// zone links nearest to where the ghost stands (where the release sent it, WU34); past the bound, chosen once for the
+// death, the nearest grave of the ghost's map its side may use (LoadGraveSides) whose ground is not deadly as the
+// revive leaves the bot (GraveGround), else the game's. Null without one. Map thread, after this death's NextOfDead
+GraveyardStruct const* GraveOf(PlayerbotAI* botAI);
+// AW38a: the grave's ground for the bot as the spirit healer's revive leaves it (DangerRules::JudgeGround at 50 %
+// health, sick where the bot pays for the revive at a level the sickness reaches), kept for the death per grave;
+// quiet without a grave
+AwarenessRules::Ground GraveGround(PlayerbotAI* botAI, GraveyardStruct const* grave);
+// AW38a: which side may use each grave (graveyard_zone: faction 0 both, else the faction's side), one query before the
+// world runs; read lock-free afterwards
+void LoadGraveSides();
 // A real player's order (the chat command `revive`): this death takes the healer's way
 void ChooseHealer(PlayerbotAI* botAI);
 // The deaths in a row of the bot's last death (INTERFACE.md §3.5), 1 at least
@@ -196,10 +256,18 @@ bool HandleDangerCommand(ChatHandler* handler, std::string_view rest);
 // healthy bot of this side and level. Lock-free, from any thread; before the fold no link counts and only the ends do
 DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRoute::Point const& start,
                               TravelRoute::Point const& goal, TeamId side, std::uint8_t level);
-// `playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe,..>]`: the way the search
-// answers for the bot now (its snapshot and record, as its trip would ask), WayOf and JudgeWay for the bot's own trip
-// and for an order; the legs and their deadly links (yards and deadly yards) in Playerbots.log. With expect= a
-// FIXTURE check line. No reply word is "refused" or "error": the scenario runner fails a bot on them
+// AW38c (INTERFACE.md §3.6), the bot's own map thread: the way on foot that the search answers now, from the bot to the
+// place, is quiet (DangerRules::QuietWay). False at the first line that fails: a store with folded links, the term on
+// and the graph ready; the bot's ground quiet (one lookup, no search otherwise); one search on foot (no stone, taxi,
+// transport, own flying or flight maps; the bot's record and the stuck edges); an answer of walk legs only; a quiet
+// way. PerfMonitor row "awareness quiet walk", one sample per search. It knows no sick bot: the safe areas ask it
+bool QuietWalk(PlayerbotAI* botAI, TravelRoute::Point const& goal);
+// `playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe|quietwalk|noquietwalk,..>]`:
+// the way the search answers for the bot now (its snapshot and record, as its trip would ask), WayOf and JudgeWay for
+// the bot's own trip and for an order, and the answer on foot (`walk quiet|unquiet|none`, QuietWalk's; the words
+// quietwalk and noquietwalk: quiet, and unquiet or none); the legs and their deadly links (yards and deadly yards) in
+// Playerbots.log. With expect= a FIXTURE check line. No reply word is "refused" or "error": the scenario runner fails
+// a bot on them
 bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // The trigger `way danger` (AW37b, INTERFACE.md §4.8): the bot's held trip has a route applied that was not judged
 // yet (DangerRules::WayDue). Two integer compares while no new route came; it makes no store
@@ -208,6 +276,20 @@ bool WayJudgeDue(PlayerbotAI* botAI);
 // refused way writes its goal to the record (DangerRules::RECORD_WORD), the `way` row and ends the status
 // (abort:danger); a least deadly one writes the row. A GM's order (`route go`: its place is named) is spared
 void JudgeTripWay(PlayerbotAI* botAI);
+// The trigger `leaving` (AW38b, INTERFACE.md §3.6): a rise the leaving has not judged yet, or a leaving under way. Two
+// flags of the store, set by OnRise and JudgeLeave, ended by the judgement, the leaving's Done and the next death
+bool LeaveDue(PlayerbotAI* botAI);
+// The leaving's walk is under way: its trip's goal word is `leave` (RpgStatus::TripGoal) and AW37b's refusal spares it
+bool LeaveWalks(PlayerbotAI* botAI);
+// The leaving's place, once per leaving: the nearest node of the travel graph (planar, within LEAVE_SEARCH_YARDS) that
+// is LEAVE_AWAY_YARDS or more from the rise, is no transport stop and whose ground is not deadly for the bot healthy
+void FindLeavePlace(PlayerbotAI* botAI);
+// Its action, on the bot's first tick alive in the non-combat engine (the core casts the sickness after the rise
+// hook): AwarenessRules::LeaveAtRise of the ground where the bot stands (judged for it healthy or sick), the row and
+// the bot. A Leave does AwarenessRules::LeaveEffectsOf in order: the held trip's goal to the record
+// (DangerRules::RECORD_WORD), the `leave` row, and for a bot that is not sick the end of its status with the outcome
+// danger (RpgStatus::Start of `rest`; the trip's abort abort:danger). A sick bot's status is the sickness rule's
+void JudgeLeave(PlayerbotAI* botAI);
 // `playerbots aw ways <alliance|horde> <level> | all`: from each capital of the side to every hub of the zones a bot
 // of that level plays, for a bot of the capital's race with the flight points the factory gives its level: the hubs
 // with no safe way (each deadly link with its yards, deadly yards and deciding facts), the zones cut off (one of the

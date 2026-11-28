@@ -7,7 +7,7 @@
 #ifndef PLAYERBOTS_STATUSENDRULES_H
 #define PLAYERBOTS_STATUSENDRULES_H
 
-// How an RPG status ends (consolidation CS14, R6), game-free: the eight outcomes of an end, the Status row's word of
+// How an RPG status ends (consolidation CS14, R6), game-free: the nine outcomes of an end, the Status row's word of
 // each, which status runs its own clean-up for which outcome, and the reset rule. The status core (RpgStatus::End)
 // carries the decisions out on the bot's map thread; tests/status-end-selftest.cpp checks every cell. No game types
 // here: the status numbers are kept as plain constants and the game side static_asserts them against RPG_*.
@@ -65,6 +65,8 @@ constexpr char const* Word(Outcome outcome)
             return "order";
         case Outcome::Sick:
             return "sick";
+        case Outcome::Danger:
+            return "danger";
     }
     return "";
 }
@@ -76,25 +78,27 @@ constexpr bool Judged(Outcome outcome)
     return outcome != Outcome::Interrupted && outcome != Outcome::Ordered && outcome != Outcome::Sick;
 }
 
-constexpr std::uint8_t OutcomeBit(Outcome outcome)
+// One bit per outcome: nine since AW38b's Danger, so 16 bits wide
+constexpr std::uint16_t OutcomeBit(Outcome outcome)
 {
-    return static_cast<std::uint8_t>(1u << static_cast<std::uint8_t>(outcome));
+    return static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(outcome));
 }
 
-constexpr std::uint8_t NO_OUTCOME = 0;
-constexpr std::uint8_t EVERY_OUTCOME = 0xFF;
+constexpr std::uint16_t NO_OUTCOME = 0;
+constexpr std::uint16_t EVERY_OUTCOME = static_cast<std::uint16_t>((1u << OUTCOME_COUNT) - 1);
+static_assert(OUTCOME_COUNT <= 16, "an outcome mask holds every outcome");
 
 // The clean-up runs at every end of a status that has one (only errands and travel do), except for today's gaps,
 // kept so that CS14 changes behaviour only where its plan names it. Errands: not on Interrupted (gap E1) or Ordered
 // (gap E2); a stuck errand walk cleans up (CS14d's change 1). Travel: not on Interrupted (gap T1).
-constexpr std::uint8_t ERRANDS_CLEAN_UP =
+constexpr std::uint16_t ERRANDS_CLEAN_UP =
     EVERY_OUTCOME & ~(OutcomeBit(Outcome::Interrupted) | OutcomeBit(Outcome::Ordered));
-constexpr std::uint8_t TRAVEL_CLEAN_UP = EVERY_OUTCOME & ~OutcomeBit(Outcome::Interrupted);
+constexpr std::uint16_t TRAVEL_CLEAN_UP = EVERY_OUTCOME & ~OutcomeBit(Outcome::Interrupted);
 
 // One row per status. durationIsNormalEnd: TimedOut is the status's normal end, not a failure to do its work.
 struct StatusRow
 {
-    std::uint8_t cleansUp;
+    std::uint16_t cleansUp;
     bool durationIsNormalEnd;
 };
 
@@ -299,6 +303,8 @@ constexpr char const* TripAbortSource(Outcome outcome)
             return "abort:order";
         case Outcome::Sick:
             return "abort:sick";
+        case Outcome::Danger:
+            return "abort:danger";
     }
     return "abort:abandoned";
 }

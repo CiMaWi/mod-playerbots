@@ -17,6 +17,9 @@ void UseFoodStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("recovering", {NextAction("recover", 14.0f)}));
     // AW37b: a trip's new route is judged before the follower walks it (awareness INTERFACE.md §4.8)
     triggers.push_back(new TriggerNode("way danger", {NextAction("way danger", 14.5f)}));
+    // AW38b: a risen bot judges once whether it leaves (INTERFACE.md §3.6), before the way, the recovery and the
+    // sickness rule (`new rpg status update` 11.0): a sick bot's trip goal is recorded before that rule ends the trip
+    triggers.push_back(new TriggerNode("leaving", {NextAction("leave danger", 15.0f)}));
     // Decided when the strategies are built; a master joining or leaving rebuilds them (ResetStrategies)
     if (Upkeep::FoodCheat(botAI))
     {

@@ -102,6 +102,9 @@ constexpr Set OFTEN = Set{1} << 32;
 // the bot's errand plan gets no profession offer and no tool shop offer: a held pool bot's inn trip is not replaced by
 // its profession's trainer or tool vendor (shared-tools ST27c)
 constexpr Set NOPROFESSION = Set{1} << 33;
+// a walk of the dead (to the corpse, a point, the leader or the grave) is taken as under way and the ghost is stopped:
+// it stands, so the walk's progress test decides (awareness AW33b)
+constexpr Set GHOSTSTALL = Set{1} << 34;
 constexpr Set FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -171,6 +174,9 @@ constexpr Row ROWS[] = {
      "route follower: a walk leg's rest is one teleport to its last waypoint, its rows a walk's"},
     {"often", Kind::Other, OFTEN, "often trigger (OftenTrigger::IsActive): fires at every check, no roll, no delay"},
     {"noprofession", Kind::Other, NOPROFESSION, "errand start: no profession offer and no tool shop offer in the plan"},
+    {"ghoststall", Kind::Other, GHOSTSTALL,
+     "find corpse and spirit healer: a walk of the dead is taken as under way with no move (its progress test "
+     "decides)"},
 };
 
 constexpr Set BitsOf(Kind kind)
@@ -366,6 +372,8 @@ inline std::int64_t DeathAgeSeconds(std::int64_t seconds, Set set)
 {
     return (set & AGEDEATH) ? seconds + AGED_DEATH_SECONDS : seconds;
 }
+// ghoststall, read where a walk of the dead is ordered (ReviveFromCorpseAction.cpp; nothing to apply or undo)
+inline bool GhostWalksStand(Set set) { return (set & GHOSTSTALL) != 0; }
 // passive, read by PlayerbotAI::DoNextAction before the engine's call (nothing to apply or undo): no combat, non-combat
 // or dead engine runs an action, so a test's patients and pullers stand while a script drives their health and threat
 inline bool ActsOnItsOwn(Set set) { return !(set & PASSIVE); }

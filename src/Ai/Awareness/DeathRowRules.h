@@ -31,17 +31,21 @@ constexpr WorldTravel::GhostReason RowCause(DeadReason cause)
             return WorldTravel::GhostReason::NoClearPoint;
         case DeadReason::WaitEnded:
             return WorldTravel::GhostReason::WaitEnded;
+        case DeadReason::DeadlyGround:
+            return WorldTravel::GhostReason::DeadlyGround;
         default:
             return WorldTravel::GhostReason::None;
     }
 }
 
-// The row of a step: a walk to the corpse or a point `corpse_walk/moving`; the wait without a clear point
-// `wait/no_clear_point`, and on a closed healer's way `wait/no_healer` (AW30b); the walk to the grave
-// `healer_walk/<cause>`; the wait at the grave `healer_wait/no_healer`; the wait while a player would see the teleport
-// `blocked/seen`; the teleport `teleport/<cause>` (`wait_ended` at the bound). No row for the other waits (an enemy
-// player's hold writes world PvP's, a dead leader none), the wait without a grave, the rise (its Rise row) and the
-// revives (the healer's revive writes `spirit_healer/<cause>`)
+// The row of a step: a walk to the corpse or a point `corpse_walk/moving`, to a point the bot holds on a closed
+// healer's way `corpse_walk/reached_holds` (AW38a); the wait without a clear point `wait/no_clear_point`, on a closed
+// healer's way `wait/no_healer` (AW30b) or `wait/grave_danger` (AW38a, the grave's deadly ground), for an enemy
+// player's hold `wait/player` (AW33b; world PvP writes its own rows beside it), for a walk that cannot start on a way
+// closed by danger `wait/no_path` (AW38a); the walk to the grave `healer_walk/<cause>`; the wait at the grave
+// `healer_wait/no_healer`; the wait while a player would see the teleport `blocked/seen`; the teleport
+// `teleport/<cause>` (`wait_ended` at the bound). No row for the wait beside a dead leader, the wait without a grave,
+// the rise (its Rise row) and the revives (the healer's revive writes `spirit_healer/<cause>`)
 constexpr WorldTravel::GhostWayResult DeathRowOf(DeadStep const& step, DeadReason healerReason)
 {
     using WorldTravel::GhostReason;
@@ -50,12 +54,19 @@ constexpr WorldTravel::GhostWayResult DeathRowOf(DeadStep const& step, DeadReaso
     {
         case DeadAct::WalkCorpse:
         case DeadAct::WalkPoint:
-            return {GhostWay::CorpseWalk, GhostReason::Moving};
+            return {GhostWay::CorpseWalk,
+                    step.reason == DeadReason::ReachedHolds ? GhostReason::ReachedHolds : GhostReason::Moving};
         case DeadAct::Wait:
             if (step.reason == DeadReason::NoClearPoint)
                 return {GhostWay::Wait, GhostReason::NoClearPoint};
             if (step.reason == DeadReason::NoHealer)
                 return {GhostWay::Wait, GhostReason::NoHealer};
+            if (step.reason == DeadReason::Player)
+                return {GhostWay::Wait, GhostReason::Player};
+            if (step.reason == DeadReason::NoPath)
+                return {GhostWay::Wait, GhostReason::NoPath};
+            if (step.reason == DeadReason::GraveDanger)
+                return {GhostWay::Wait, GhostReason::GraveDanger};
             return {};
         case DeadAct::WalkGrave:
             return {GhostWay::HealerWalk, RowCause(HealerCause(step, healerReason))};

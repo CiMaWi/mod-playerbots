@@ -1014,6 +1014,28 @@ bool Trades(Player* bot, Service const& service)
 
 static_assert(REP_HOSTILE == Upkeep::HUB_HOSTILE_RANK, "the hub's hostile rank is the core's REP_HOSTILE");
 
+// NR3: a hub is safe for the bot (Upkeep::HubSafe): not the other side's, a flight master or an innkeeper, no creature
+// member hostile to the bot by its reputation. Map thread: the reactions read the bot's reputation
+bool HubSafeFor(Player* bot, PlannerIndexes const& indexes, Hub const& hub)
+{
+    PlaceSide const other = bot->GetTeamId() == TEAM_ALLIANCE ? PlaceSide::Horde : PlaceSide::Alliance;
+    bool const otherSide = hub.side == other;
+    bool const flightOrInn = hub.Has(ServiceKind::FlightMaster) || hub.Has(ServiceKind::Innkeeper);
+    bool const hostile =
+        !otherSide && flightOrInn &&
+        std::any_of(
+            hub.members.begin(), hub.members.end(),
+            [bot, &indexes](uint32_t member)
+            {
+                Service const& service = indexes.services[member];
+                FactionTemplateEntry const* faction = service.mailbox || service.focus
+                                                          ? nullptr
+                                                          : sFactionTemplateStore.LookupEntry(service.factionTemplate);
+                return faction && Upkeep::HostileMember(static_cast<int32>(bot->GetFactionReactionTo(faction, bot)));
+            });
+    return Upkeep::HubSafe(otherSide, flightOrInn, hostile);
+}
+
 // NR3 (NR.4, Upkeep::SafeAreas): the safe areas a point lies in for this bot. The city and the low zone from the
 // point's zone and area; the hubs: every hub circle of the map that holds the point and is safe for the bot (not the
 // other side's, a flight master or an innkeeper, no creature member hostile to the bot by its reputation), or with
@@ -1041,39 +1063,21 @@ Upkeep::SafeAreas SafeAreasAt(Player* bot, PlannerIndexes const& indexes, uint32
                 areas.hubs.push_back(hub);
         return areas;
     }
-    PlaceSide const other = alliance ? PlaceSide::Horde : PlaceSide::Alliance;
     for (std::size_t i = 0; i < indexes.hubs.size(); ++i)
-    {
-        Hub const& hub = indexes.hubs[i];
-        if (!holds(hub))
-            continue;
-        bool const otherSide = hub.side == other;
-        bool const flightOrInn = hub.Has(ServiceKind::FlightMaster) || hub.Has(ServiceKind::Innkeeper);
-        bool const hostile =
-            !otherSide && flightOrInn &&
-            std::any_of(hub.members.begin(), hub.members.end(),
-                        [bot, &indexes](uint32_t member)
-                        {
-                            Service const& service = indexes.services[member];
-                            FactionTemplateEntry const* faction =
-                                service.mailbox || service.focus
-                                    ? nullptr
-                                    : sFactionTemplateStore.LookupEntry(service.factionTemplate);
-                            return faction &&
-                                   Upkeep::HostileMember(static_cast<int32>(bot->GetFactionReactionTo(faction, bot)));
-                        });
-        if (Upkeep::HubSafe(otherSide, flightOrInn, hostile))
+        if (holds(indexes.hubs[i]) && HubSafeFor(bot, indexes, indexes.hubs[i]))
             areas.hubs.push_back(static_cast<uint32_t>(i));
-    }
     return areas;
 }
 
-// NR3: the walk from a sick bot (its safe areas `here`) to a point stays in one safe area (Upkeep::SafeLeg on foot)
+// NR3: the walk from a sick bot (its safe areas `here`) to a point stays in one safe area (Upkeep::SafeLeg on foot);
+// the point is judged against the bot's hubs and the hubs its roads reach (awareness AW38c)
 bool SafeWalk(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, uint32 mapId, float x, float y,
               uint32 zoneId, uint32 areaId)
 {
+    std::vector<uint32_t> among = here.hubs;
+    among.insert(among.end(), here.roads.begin(), here.roads.end());
     return Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, here,
-                           SafeAreasAt(bot, indexes, mapId, x, y, zoneId, areaId, &here.hubs));
+                           SafeAreasAt(bot, indexes, mapId, x, y, zoneId, areaId, &among));
 }
 
 bool SafeWalk(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, Service const& stop)
@@ -1327,8 +1331,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
         std::optional<Upkeep::SafeAreas> sick;
         if (bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
         {
-            sick = SafeAreasAt(bot, *indexes, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                               bot->GetZoneId(), bot->GetAreaId(), nullptr);
+            sick = SafeAreasHere(bot, *indexes);
             situation.sickSafeHere = Upkeep::IsSafe(*sick);
             AreaTableEntry const* bindArea = sAreaTableStore.LookupEntry(bot->m_homebindAreaId);
             uint32 const bindZone = bindArea ? (bindArea->zone ? bindArea->zone : bindArea->ID) : 0;
@@ -1822,8 +1825,58 @@ void SituationChanged(PlayerbotAI* botAI)
 
 Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes)
 {
-    return SafeAreasAt(bot, indexes, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetZoneId(),
-                       bot->GetAreaId(), nullptr);
+    uint32 const mapId = bot->GetMapId();
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    Upkeep::SafeAreas areas = SafeAreasAt(bot, indexes, mapId, x, y, bot->GetZoneId(), bot->GetAreaId(), nullptr);
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return areas;
+    // Awareness AW38c: the roads. The hubs Upkeep::RoadAsked passes, nearest first (by their circle's edge), at most
+    // SICK_ROAD_HUBS of them asked, by one search each (Awareness::QuietWalk, to the member nearest the bot); a hub's
+    // safety, which reads reputations, only for the hubs the other facts pass
+    float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * bot->GetSpeed(MOVE_RUN);
+    std::vector<std::pair<float, uint32_t>> nearest;
+    for (std::size_t i = 0; i < indexes.hubs.size(); ++i)
+    {
+        Hub const& hub = indexes.hubs[i];
+        if (hub.mapId != mapId)
+            continue;
+        float const edge = std::hypot(hub.x - x, hub.y - y) - hub.radius;
+        bool const inOwnArea = (areas.city && (hub.zoneId == areas.city || hub.areaId == areas.city)) ||
+                               (areas.lowZone && hub.zoneId == areas.lowZone);
+        if (Upkeep::RoadAsked(true, edge <= 0.0f, inOwnArea, edge <= reach))
+            nearest.emplace_back(edge, static_cast<uint32_t>(i));
+    }
+    std::sort(nearest.begin(), nearest.end());
+    uint32_t asked = 0;
+    for (std::pair<float, uint32_t> const& entry : nearest)
+    {
+        if (asked >= Upkeep::SICK_ROAD_HUBS)
+            break;
+        uint32_t const index = entry.second;
+        Hub const& hub = indexes.hubs[index];
+        if (!Upkeep::RoadAsked(HubSafeFor(bot, indexes, hub), false, false, true))
+            continue;
+        Service const* goal = nullptr;
+        float goalYards = 0.0f;
+        for (uint32_t const member : hub.members)
+        {
+            Service const& service = indexes.services[member];
+            float const yards = std::hypot(service.x - x, service.y - y);
+            if (service.mapId == mapId && (!goal || yards < goalYards))
+            {
+                goal = &service;
+                goalYards = yards;
+            }
+        }
+        if (!goal)
+            continue;
+        ++asked;
+        if (Awareness::QuietWalk(botAI, {mapId, goal->x, goal->y, goal->z}))
+            areas.roads.push_back(index);
+    }
+    return areas;
 }
 
 bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,

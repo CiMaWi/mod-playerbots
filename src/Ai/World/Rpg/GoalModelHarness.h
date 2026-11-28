@@ -2200,6 +2200,60 @@ inline void SickSafeAreas(std::vector<Check>& checks)
             Top(elsewhere)->kind == GoalKind::Rest && Top(elsewhere)->forced,
         Summary(cooled) + " / " + Summary(elsewhere));
 
+    // Awareness AW38c, S1 to S5: a road, a safe hub that a quiet way on foot joins to the bot's place (a grave in the
+    // open country). The map thread asks a hub when RoadAsked passes it and adds it when the way the search answers is
+    // quiet (Awareness::QuietWalk); here that answer is the fact `quietWay`
+    std::uint32_t const roadHub = hubA.hubs.front();
+    auto const grave = [roadHub](bool quietWay, bool hubSafe, bool holdsBot, bool inOwnArea)
+    {
+        Upkeep::SafeAreas areas;
+        if (Upkeep::RoadAsked(hubSafe, holdsBot, inOwnArea, true) && quietWay)
+            areas.roads = {roadHub};
+        return areas;
+    };
+    Upkeep::SafeAreas const road = grave(true, true, false, false);
+    Situation const toHub = placed(away, road, hubA);
+    Ranked const roadErrand = Rank(outside, toHub);
+    Add(checks,
+        "S1 road: a grave with a road to hub H is safe, its word is road, a stop in H is a safe foot leg and the "
+        "sick gate passes the errand there",
+        Upkeep::IsSafe(road) && std::string(Upkeep::SafeAreaWord(road)) == "road" &&
+            Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, road, hubA) &&
+            Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, hubA, road) && Top(roadErrand) &&
+            Top(roadErrand)->kind == GoalKind::Errand && roadErrand.sickGoal && toHub.bags.repairer.safe,
+        Summary(roadErrand));
+    Situation const toOther = placed(away, road, hubB);
+    Ranked const otherHub = Rank(outside, toOther);
+    Add(checks, "S2 road: a stop in another hub is no safe foot leg; the bot rests",
+        !Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, road, hubB) && !toOther.bags.repairer.safe &&
+            !Has(otherHub, GoalKind::Errand) && Top(otherHub) && Top(otherHub)->kind == GoalKind::Rest,
+        Summary(otherHub));
+    Add(checks, "S3 road: two places that each have a road to H share nothing",
+        !Upkeep::ShareArea(road, road) && !Upkeep::SafeLeg(Upkeep::SafeLegKind::Foot, road, road), "");
+    Upkeep::SafeAreas const passable = grave(false, true, false, false);
+    Situation noRoad = placed(away, passable, hubA);
+    noRoad.sickHearthSafe = true;
+    Ranked const stoneIn = Rank(stone, noRoad);
+    Situation roadStone = toHub;
+    roadStone.sickHearthSafe = true;
+    Ranked const roadNoStone = Rank(stone, roadStone);
+    Add(checks,
+        "S4 road: without a road (the way passable) the grave is outside and the stone in is offered as today; with "
+        "the road the errand in H comes first",
+        !Upkeep::IsSafe(passable) && std::string(Upkeep::SafeAreaWord(passable)) == "outside" && Top(stoneIn) &&
+            Top(stoneIn)->kind == GoalKind::Errand && Top(stoneIn)->reason == SICK_HEARTH_REASON && Top(roadNoStone) &&
+            Top(roadNoStone)->kind == GoalKind::Errand && Top(roadNoStone)->reason != SICK_HEARTH_REASON,
+        Summary(stoneIn) + " / " + Summary(roadNoStone));
+    Add(checks,
+        "S5 road: RoadAsked is false for a hub that is not safe (a town of the other side), that holds the bot, that "
+        "lies in the bot's own area or beyond the walk's reach",
+        Upkeep::RoadAsked(Upkeep::HubSafe(false, true, false), false, false, true) &&
+            !Upkeep::RoadAsked(Upkeep::HubSafe(true, true, false), false, false, true) &&
+            !Upkeep::RoadAsked(true, true, false, true) && !Upkeep::RoadAsked(true, false, true, true) &&
+            !Upkeep::RoadAsked(true, false, false, false) && !Upkeep::IsSafe(grave(true, false, false, false)) &&
+            !Upkeep::IsSafe(grave(true, true, true, false)) && !Upkeep::IsSafe(grave(true, true, false, true)),
+        "");
+
     // A level 60 bot in its side's zone that ends at 20: the zone is safe, its errand runs there
     Snapshot old = sickBot(60);
     old.bagFree = 0;
