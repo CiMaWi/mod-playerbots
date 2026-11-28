@@ -713,6 +713,16 @@ public:
     // Playerbots.Skill.ExemptRealMasterBots 1 and a game-client master: the skill knobs and the tactic gate leave the
     // bot at full ability. Asks the master (not free) only while the option is on: call it after the cheap exits.
     bool IsSkillExempt();
+    // The work chain (questing WQ55): an event the bot waits for came (any thread; taken at its next update), and the
+    // action the engine ran in this pass
+    void RequestWake() { wakeRequested.store(true, std::memory_order_relaxed); }
+    void NoteExecuted(Action* action) { chainRan = action; }
+    // The watch's idle line (BotWatch): the wait to the next check, the part of it an action asked for, the action
+    // the engine ran last and when
+    uint32 CheckDelayMs() const { return nextAICheckDelay; }
+    uint32 HoldDelayMs() const { return holdDelay; }
+    Action* LastRan() const { return chainLast; }
+    uint32 LastRanMs() const { return chainLastMs; }
     // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
     // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
     // site: the caller, for the snap's trace line (13e-decide)
@@ -867,6 +877,14 @@ protected:
     lfg::LfgState lfgGroupState = lfg::LFG_STATE_NONE;
     ReactionEngine* reactionEngine = nullptr;
     bool inCombat = false;
+    // The work chain (questing WQ55; PlayerbotAIBase.h): the last update's moving flag (a move's end wakes the bot),
+    // a wake asked from any thread, the action the engine ran in this pass and the one that ran last before it
+    bool wasMoving = false;
+    std::atomic<bool> wakeRequested{false};
+    Action* chainRan = nullptr;
+    Action* chainLast = nullptr;
+    uint32 chainLastMs = 0;
+    void RunWorkChain(bool minimal);
     BotCheatMask cheatMask = BotCheatMask::none;
     Position jumpDestination = Position();
     bool spellInterruptRequested = false;

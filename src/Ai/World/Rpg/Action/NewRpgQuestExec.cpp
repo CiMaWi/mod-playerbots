@@ -75,6 +75,9 @@ constexpr float QUEST_ARRIVE_YARDS = 10.0f;                   // at the place
 constexpr uint32 QUEST_PLACE_LOOK_MS = 60 * IN_MILLISECONDS;  // at a place this long without a target: it is tried
 constexpr uint32 QUEST_PLACE_STAY_MS = 5 * MINUTE * IN_MILLISECONDS;  // at a place this long: the next area
 // The pursuit and walk clocks are QuestExecRules.h's. Trace rows written once per hold or walk (DoQuest::traced)
+// The time a bot takes to choose its next target (questing WQ55)
+constexpr uint32 TARGET_THINK_MIN_MS = 400;
+constexpr uint32 TARGET_THINK_MAX_MS = 1000;
 constexpr uint8 TRACED_ATTACK = 1;
 constexpr uint8 TRACED_WALK = 2;
 
@@ -83,6 +86,9 @@ void Trace(Player* bot, std::string_view choice, std::string_view reason, float 
            WorldLogFormat::Alternatives const& alternatives = {})
 {
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::QuestExec, choice, reason, value, alternatives, questId);
+    // A transition of the executor: its next step in the same check when this one took no time (questing WQ55)
+    if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot))
+        botAI->ChainOn();
 }
 
 // Whether the objective in this quest-log slot (0..3 creature or object, QUEST_OBJECTIVES_COUNT + i item i) still
@@ -342,7 +348,13 @@ bool NewRpgDoQuestAction::SeekHeld(NewRpgInfo::DoQuest& data)
                (!chain.foes.empty() && SeekTarget(data, QUEST_SCAN_YARDS)) || SeekUse(data, QUEST_SCAN_YARDS);
     }
     if (data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot))
-        return SeekTarget(data, QUEST_SCAN_YARDS);
+    {
+        if (!SeekTarget(data, QUEST_SCAN_YARDS))
+            return false;
+        // Choosing the next target takes a moment (questing WQ55): the bot goes for it at its next check, exactly then
+        botAI->SetThinkDelay(urand(TARGET_THINK_MIN_MS, TARGET_THINK_MAX_MS));
+        return true;
+    }
     return false;
 }
 

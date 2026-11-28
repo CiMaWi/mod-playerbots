@@ -42,6 +42,8 @@ namespace
 {
 // ItemLimitCategory.dbc's "Mana Gem": the mage's six conjured mana gems (and the unused 36799), nothing else
 constexpr uint32 MANA_GEM_LIMIT_CATEGORY = 4;
+// From the autostore requests to the bot's next check (questing WQ55)
+constexpr uint32 LOOT_TAKE_MS = 300;
 
 // Slots the stored loot newly takes; merging into a stack takes none
 float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
@@ -347,7 +349,8 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
         *packet << lootObject.guid;
         bot->GetSession()->QueuePacket(packet);
         // bot->GetSession()->HandleLootOpcode(packet);
-        botAI->SetNextCheckDelay(sPlayerbotAIConfig.LootDelay);
+        // The loot window's packet wakes the bot (questing WQ55); the loot delay is the longest wait for it
+        botAI->SetPollDelay(sPlayerbotAIConfig.LootDelay);
         return true;
     }
 
@@ -628,7 +631,8 @@ bool StoreLootAction::Execute(Event event)
         *packet << itemindex;
         bot->GetSession()->QueuePacket(packet);
         // bot->GetSession()->HandleAutostoreLootItemOpcode(packet);
-        botAI->SetNextCheckDelay(sPlayerbotAIConfig.LootDelay);
+        // Taking what fits takes a moment, not the loot delay (questing WQ55): the session stores the items first
+        botAI->SetThinkDelay(LOOT_TAKE_MS);
         ++autostored;
 
         if (proto->Quality > ITEM_QUALITY_NORMAL && !urand(0, 50) &&
@@ -650,6 +654,9 @@ bool StoreLootAction::Execute(Event event)
         EventLog::Emit(bot, EventLog::EventType::Inventory, "loot_left", leftItem, leftCopper);
 
     availableLoot->CompleteResponse(guid, gold, autostored, leftItem != 0);
+    // The nearest-loot answer (kept 500 ms) still names this corpse: the next check would pick it again and do
+    // nothing else (questing WQ55)
+    context->GetValue<LootObject>("nearest loot")->Reset();
     return true;
 }
 

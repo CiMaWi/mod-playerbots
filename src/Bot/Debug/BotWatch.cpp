@@ -15,9 +15,11 @@
 #include <string>
 #include <vector>
 
+#include "Action.h"
 #include "Bag.h"
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "DBCStores.h"
 #include "Item.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -32,7 +34,10 @@
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "StringFormat.h"
+#include "Timer.h"
+#include "World.h"
 #include "WorldLogFormat.h"
+#include "WorldLogStatus.h"
 #include "WorldSession.h"
 
 namespace
@@ -384,6 +389,123 @@ std::string StateOf(Player* watcher, Player* bot)
         differing, shown, held, watcher->GetMoney(), bot->GetMoney(), linesSent);
 }
 
+// The idle line: a watched bot that stands (alive, out of combat, no move, no cast, no flight) for IDLE_FIRST_S says
+// what its AI waits for, again every IDLE_AGAIN_S, and how long it stood when it goes on. To the watchers' chat and,
+// as a "[Watch]" line, to Playerbots.log
+constexpr uint32 IDLE_FIRST_S = 2;
+constexpr uint32 IDLE_AGAIN_S = 3;
+uint32 idleSinceMs = 0;
+uint32 idleNextS = 0;
+
+void IdleLine(Player* bot, std::vector<std::string>& lines)
+{
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
+    uint32 const nowMs = getMSTime();
+    bool const idle = botAI && bot->IsAlive() && !bot->IsInCombat() && !bot->isMoving() &&
+                      !bot->IsNonMeleeSpellCast(false) && !bot->IsInFlight();
+    std::string line;
+    if (!idle)
+    {
+        if (idleSinceMs && idleNextS > IDLE_FIRST_S)
+            line = Acore::StringFormat("~ went on after {} s", getMSTimeDiff(idleSinceMs, nowMs) / IN_MILLISECONDS);
+        idleSinceMs = 0;
+    }
+    else
+    {
+        if (!idleSinceMs)
+        {
+            idleSinceMs = nowMs ? nowMs : 1;
+            idleNextS = IDLE_FIRST_S;
+        }
+        uint32 const seconds = getMSTimeDiff(idleSinceMs, nowMs) / IN_MILLISECONDS;
+        if (seconds >= idleNextS)
+        {
+            idleNextS = seconds + IDLE_AGAIN_S;
+            Action* const last = botAI->LastRan();
+            BotState const state = botAI->GetState();
+            line = Acore::StringFormat(
+                "~ idle {} s: {} engine, status {}, next check in {:.1f} s ({:.1f} s asked), last action {} {:.1f} s "
+                "ago{}",
+                seconds, state == BOT_STATE_COMBAT ? "combat" : (state == BOT_STATE_DEAD ? "dead" : "non-combat"),
+                WorldLog::NewRpgStatusWord(static_cast<int32>(botAI->rpgInfo.GetStatus())),
+                botAI->CheckDelayMs() / 1000.0f, botAI->HoldDelayMs() / 1000.0f,
+                last ? last->getName() : std::string("none"),
+                last ? getMSTimeDiff(botAI->LastRanMs(), nowMs) / 1000.0f : 0.0f,
+                botAI->planner.pending ? ", plan asked" : "");
+        }
+    }
+    if (line.empty())
+        return;
+    LOG_INFO("playerbots", "[Watch] {} {}", bot->GetName(), line);
+    lines.push_back(std::move(line));
+}
+
+// "playerbots watch fresh <bot>": the online bot as its race and class are created (Player::Create's outfit, spells,
+// skills and money), at level 1 with nothing else: every item of its equipment, bags, bank and key ring is destroyed
+bool Fresh(Player* bot)
+{
+    PlayerInfo const* const info = sObjectMgr->GetPlayerInfo(bot->getRace(), bot->getClass());
+    if (!info)
+        return false;
+
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < CURRENCYTOKEN_SLOT_END; ++slot)
+        if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+
+    if (bot->GetLevel() != 1)
+        bot->GiveLevel(1);
+    bot->SetUInt32Value(PLAYER_XP, 0);
+    bot->SetMoney(sWorld->getIntConfig(CONFIG_START_PLAYER_MONEY));
+    bot->resetTalents(true);
+    std::vector<uint16> skills;
+    for (auto const& [skill, status] : bot->GetSkillStatusMap())
+        if (status.uState != SKILL_DELETED)
+            skills.push_back(static_cast<uint16>(skill));
+    for (uint16 const skill : skills)
+        bot->SetSkill(skill, 0, 0, 0);
+    bot->resetSpells();
+    bot->RemoveAllSpellCooldown();
+
+    // The outfit, as Player::Create gives it
+    if (CharStartOutfitEntry const* const outfit =
+            GetCharStartOutfitEntry(bot->getRace(), bot->getClass(), bot->getGender()))
+    {
+        for (int32 const itemId : outfit->ItemId)
+        {
+            ItemTemplate const* const proto = itemId > 0 ? sObjectMgr->GetItemTemplate(itemId) : nullptr;
+            if (!proto)
+                continue;
+            uint32 count = proto->BuyCount;
+            if (proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_FOOD)
+            {
+                if (proto->Spells[0].SpellCategory == SPELL_CATEGORY_FOOD)
+                    count = 4;
+                else if (proto->Spells[0].SpellCategory == SPELL_CATEGORY_DRINK)
+                    count = 2;
+                count = std::min(count, proto->GetMaxStackSize());
+            }
+            bot->StoreNewItemInBestSlots(itemId, count);
+        }
+    }
+    for (PlayerCreateInfoItem const& item : info->item)
+        bot->StoreNewItemInBestSlots(item.item_id, item.item_amount);
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        Item* const item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        uint16 dest = 0;
+        if (!item || bot->CanEquipItem(NULL_SLOT, dest, item, false) != EQUIP_ERR_OK)
+            continue;
+        bot->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+        bot->EquipItem(dest, item, true);
+    }
+
+    bot->UpdateSkillsForLevel();
+    bot->UpdateAllStats();
+    bot->SetFullHealth();
+    bot->SaveToDB(false, false);
+    return true;
+}
+
 std::vector<Player*> Watchers()
 {
     std::vector<Player*> watchers;
@@ -399,6 +521,7 @@ std::vector<Player*> Watchers()
 
 void End()
 {
+    idleSinceMs = 0;
     if (Player* bot = ObjectAccessor::FindConnectedPlayer(watchedGuid))
         EndViews(bot);
     watchedKey.store(0, std::memory_order_relaxed);
@@ -436,9 +559,11 @@ void BotWatch::Update(uint32 diff)
         return;
     tickTimer = 0;
 
-    std::vector<std::string> const lines = TakeThoughts();
+    std::vector<std::string> lines = TakeThoughts();
     Player* bot = ObjectAccessor::FindConnectedPlayer(watchedGuid);
     bool const there = bot && bot->IsInWorld() && !bot->IsBeingTeleported();
+    if (there)
+        IdleLine(bot, lines);
     for (Player* watcher : Watchers())
     {
         Prepare(watcher);
@@ -458,11 +583,26 @@ void BotWatch::Update(uint32 diff)
 bool BotWatch::HandleCommand(ChatHandler* handler, char const* args)
 {
     std::string name = args ? args : "";
+    std::string const second = name.find(' ') == std::string::npos ? "" : name.substr(name.find(' ') + 1);
     name = name.substr(0, name.find(' '));
+    if (name == "fresh")
+    {
+        std::string who = second.substr(0, second.find(' '));
+        Player* const bot = normalizePlayerName(who) ? ObjectAccessor::FindPlayerByName(who) : nullptr;
+        if (!bot || !GET_PLAYERBOT_AI(bot))
+            handler->PSendSysMessage("WATCH: fresh: no online bot named {}", who);
+        else if (!Fresh(bot))
+            handler->PSendSysMessage("WATCH: fresh: no creation data for {}", who);
+        else
+            handler->PSendSysMessage("WATCH: fresh: {} is a new race {} class {} character, level {}, {} copper", who,
+                                     bot->getRace(), bot->getClass(), bot->GetLevel(), bot->GetMoney());
+        return true;
+    }
+
     if (name.empty())
     {
         if (watchedName.empty())
-            handler->PSendSysMessage("WATCH: none (usage: playerbots watch <bot name>|off)");
+            handler->PSendSysMessage("WATCH: none (usage: playerbots watch <bot name>|off|fresh <bot name>)");
         else
         {
             Player* bot = ObjectAccessor::FindConnectedPlayer(watchedGuid);

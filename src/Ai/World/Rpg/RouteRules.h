@@ -36,8 +36,11 @@
 //   fly edge), so no route walks through a stop; a wait-point link that joins no stop (its ride is not in the graph)
 //   is taken by no route. A transport leg always has its ride
 // - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
-// - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
-//   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
+// - hearthstone: 10 s cast plus the remaining cooldown plus HEARTH_WORTH_SECONDS, from the bot's position to its bind
+//   point. The worth is what the stone could save later while it cools down again (a long way home, a way out of a
+//   dangerous place), not what it saves now (the user, 2026-11-28; questing WQ55): a route takes the stone only when
+//   it is that much shorter than the best route without it, as a flight's fare is weighed (FareSeconds). Only from
+//   the start: using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
 //   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
 // - an edge flagged by Stuck events costs Params::stuckPenalty times more, and is skipped after STUCK_SKIP_FLAGS
 // - the request's refused entries (Refusals: the live entries of the bot's record of failed attempts and the
@@ -80,11 +83,12 @@
 
 namespace TravelRoute
 {
-constexpr std::size_t TAXI_MASK_SIZE = 14;    // TaxiMaskSize (DBCStructure.h): 448 taxi nodes, PlayerTaxi's layout
-constexpr std::size_t END_NODES = 5;          // graph nodes the bot, the goal and the bind point connect to
-constexpr float DIRECT_YARDS = 100.0f;        // start and goal this close on one map may also be walked directly
-constexpr float SAME_WALK_YARDS = 10.0f;      // a walk off the graph with both ends this close to a refused one's
-constexpr float HEARTH_CAST_SECONDS = 10.0f;  // the hearthstone's cast
+constexpr std::size_t TAXI_MASK_SIZE = 14;      // TaxiMaskSize (DBCStructure.h): 448 taxi nodes, PlayerTaxi's layout
+constexpr std::size_t END_NODES = 5;            // graph nodes the bot, the goal and the bind point connect to
+constexpr float DIRECT_YARDS = 100.0f;          // start and goal this close on one map may also be walked directly
+constexpr float SAME_WALK_YARDS = 10.0f;        // a walk off the graph with both ends this close to a refused one's
+constexpr float HEARTH_CAST_SECONDS = 10.0f;    // the hearthstone's cast
+constexpr float HEARTH_WORTH_SECONDS = 300.0f;  // a ready hearthstone's worth: the route time its use must save
 constexpr std::uint32_t HEARTH_WAIT_CAP_MS = 3 * 60 * 1000;  // a cooldown longer than this is no hearth edge
 constexpr float FLIGHT_BOARDING_SECONDS = 5.0f;              // talking to the flight master, mounting and landing
 constexpr float FULL_PURSE_SECONDS = 3600.0f;  // at thrift 100, a fare of all one's money weighs an hour of travel
@@ -865,8 +869,9 @@ Result GraphSearch(TravelGraph const& graph, Request const& request, StuckEdges 
                                  : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS)
                 walkTo(vertex, target, false);
             if (vertex == source && hearth)
-                relax(source, bind, HEARTH_CAST_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f, NO_LINK,
-                      Step::Hearth, 0);
+                relax(source, bind,
+                      HEARTH_CAST_SECONDS + HEARTH_WORTH_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f,
+                      NO_LINK, Step::Hearth, 0);
             flyFrom(vertex);
             continue;
         }
