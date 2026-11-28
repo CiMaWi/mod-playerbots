@@ -87,6 +87,8 @@ public:
     bool Unmet(std::uint32_t nowMs, std::uint32_t points) const;
 
     bool NotedThisTick() const { return _thisTick; }
+    // The amount the tick's gate asked for (the scheduler's wait for the bot's energy)
+    std::uint32_t Amount() const { return _amount; }
     std::uint16_t Row() const { return _row; }
 
 private:

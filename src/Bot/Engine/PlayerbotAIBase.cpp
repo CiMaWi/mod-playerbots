@@ -6,6 +6,7 @@
 
 #include "PlayerbotAIBase.h"
 
+#include "BotEvents.h"
 #include "NaturalReaction.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
@@ -63,10 +64,13 @@ void PlayerbotAIBase::SetThinkDelay(uint32 delay)
     thinkDelay = true;
 }
 
-void PlayerbotAIBase::Wake()
+bool PlayerbotAIBase::WakeIn(uint32 delay)
 {
-    if (nextAICheckDelay > holdDelay)
-        nextAICheckDelay = holdDelay;
+    uint32 const next = BotEvents::WakeDelayMs(nextAICheckDelay, holdDelay, delay);
+    if (next >= nextAICheckDelay)
+        return false;
+    nextAICheckDelay = next;
+    return true;
 }
 
 void PlayerbotAIBase::IncreaseNextCheckDelay(uint32 delay)

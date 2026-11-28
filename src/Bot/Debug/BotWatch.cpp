@@ -424,11 +424,14 @@ void IdleLine(Player* bot, std::vector<std::string>& lines)
             Action* const last = botAI->LastRan();
             BotState const state = botAI->GetState();
             line = Acore::StringFormat(
-                "~ idle {} s: {} engine, status {}, next check in {:.1f} s ({:.1f} s asked), last action {} {:.1f} s "
-                "ago{}",
+                "~ idle {} s: {} engine, status {}, next check in {:.1f} s ({:.1f} s asked), last check by {}{}, last "
+                "action {} {:.1f} s ago{}",
                 seconds, state == BOT_STATE_COMBAT ? "combat" : (state == BOT_STATE_DEAD ? "dead" : "non-combat"),
                 WorldLog::NewRpgStatusWord(static_cast<int32>(botAI->rpgInfo.GetStatus())),
                 botAI->CheckDelayMs() / 1000.0f, botAI->HoldDelayMs() / 1000.0f,
+                BotEvents::CauseName(botAI->LastCause()),
+                botAI->LastCause() == BotEvents::Cause::Event ? " (" + BotEvents::Names(botAI->LastWokenBy()) + ")"
+                                                              : std::string(),
                 last ? last->getName() : std::string("none"),
                 last ? getMSTimeDiff(botAI->LastRanMs(), nowMs) / 1000.0f : 0.0f,
                 botAI->planner.pending ? ", plan asked" : "");

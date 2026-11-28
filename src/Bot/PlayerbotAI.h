@@ -15,6 +15,7 @@
 #include <unordered_set>
 
 #include "BankMailState.h"
+#include "BotEvents.h"
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
@@ -713,16 +714,18 @@ public:
     // Playerbots.Skill.ExemptRealMasterBots 1 and a game-client master: the skill knobs and the tactic gate leave the
     // bot at full ability. Asks the master (not free) only while the option is on: call it after the cheap exits.
     bool IsSkillExempt();
-    // The work chain (questing WQ55): an event the bot waits for came (any thread; taken at its next update), and the
+    // The scheduler (BotEvents.h): events that happened to the bot (any thread; its next update takes them), and the
     // action the engine ran in this pass
-    void RequestWake() { wakeRequested.store(true, std::memory_order_relaxed); }
+    void Notify(uint32 kinds) { events.fetch_or(kinds, std::memory_order_relaxed); }
     void NoteExecuted(Action* action) { chainRan = action; }
     // The watch's idle line (BotWatch): the wait to the next check, the part of it an action asked for, the action
-    // the engine ran last and when
+    // the engine ran last and when, and what brought the last check (its events for an event's)
     uint32 CheckDelayMs() const { return nextAICheckDelay; }
     uint32 HoldDelayMs() const { return holdDelay; }
     Action* LastRan() const { return chainLast; }
     uint32 LastRanMs() const { return chainLastMs; }
+    BotEvents::Cause LastCause() const { return lastCause; }
+    uint32 LastWokenBy() const { return lastWokenBy; }
     // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
     // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
     // site: the caller, for the snap's trace line (13e-decide)
@@ -877,13 +880,31 @@ protected:
     lfg::LfgState lfgGroupState = lfg::LFG_STATE_NONE;
     ReactionEngine* reactionEngine = nullptr;
     bool inCombat = false;
-    // The work chain (questing WQ55; PlayerbotAIBase.h): the last update's moving flag (a move's end wakes the bot),
-    // a wake asked from any thread, the action the engine ran in this pass and the one that ran last before it
+    // The scheduler (BotEvents.h): the events noted since the last update, the last update's moving and casting
+    // flags and victim (their edges are events), what will bring the next check and what brought the last one, the
+    // action the engine ran in this pass and the one that ran last before it
+    std::atomic<uint32> events{0};
     bool wasMoving = false;
-    std::atomic<bool> wakeRequested{false};
+    bool wasCasting = false;
+    ObjectGuid lastVictim;
+    uint32 wokenBy = 0;
+    uint32 lastWokenBy = 0;
+    BotEvents::Cause sleepCause = BotEvents::Cause::Fallback;
+    BotEvents::Cause lastCause = BotEvents::Cause::Fallback;
     Action* chainRan = nullptr;
     Action* chainLast = nullptr;
     uint32 chainLastMs = 0;
+    // The update's events and edges, turned into the wake they ask for
+    void TakeEvents(bool isCasting);
+    // The bot's reaction time to a surprise (0 where a reaction model or a real player's pace times it)
+    uint32 EventReactMs();
+    // The sleep after a check: to the first timer or the regular check (Sleep: the timers the bot's state gives)
+    void Sleep();
+    void SleepUntil(uint32 timerMs);
+    uint32 NextTimerMs();
+    // The bot's last action left it busy: a wait, a cast, a global cooldown, out of combat a move
+    bool TookTime();
+    bool GcdRunning(uint32* leftMs = nullptr);
     void RunWorkChain(bool minimal);
     BotCheatMask cheatMask = BotCheatMask::none;
     Position jumpDestination = Position();

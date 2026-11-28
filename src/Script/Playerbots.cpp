@@ -337,6 +337,7 @@ public:
         PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player);
         if (!botAI)
             return;
+        botAI->Notify(BotEvents::Kill);
         AiObjectContext* const context = botAI->GetAiObjectContext();
         bool const added = context->GetValue<LootObjectStack*>("available loot")->Get()->Add(killed->GetGUID());
         context->GetValue<LootObject>("nearest loot")->Reset();
@@ -952,6 +953,7 @@ void AddPlayerbotsScripts()
     AddWorldPvpScripts();
     AddGhostWaitScripts();
     AddCcTacticScripts(pvpTestHooks);
+    AddBotEventScripts();
     AddItemUsableScripts();
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();

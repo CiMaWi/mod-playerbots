@@ -28,14 +28,15 @@ public:
     void SetActionDuration(uint32 duration);
     void ResetActionDuration();
     bool IsActionDurationActive() const { return nextAICheckDelay > 0; }
-    // The work chain (questing WQ55): out of combat a bot's work is driven by events, not by the regular check alone.
-    // A wait for an event of at most this long: Wake() ends it
+    // The scheduler (BotEvents.h): a bot's AI looks when an event, a timer or the regular check wakes it.
+    // A wait for an event of at most this long: a wake ends it
     void SetPollDelay(uint32 delay);
     // The next check exactly then (a chosen time to think): the regular check's delay does not lengthen it
     void SetThinkDelay(uint32 delay);
-    // An awaited event came: the next check as soon as the delay an action asked for is over (at once when the bot
-    // only waits for its regular check)
-    void Wake();
+    // An event came: the next check this long from now, never before the wait an action asked for is over and
+    // never later than the check already due. True when it brought the check forward
+    bool WakeIn(uint32 delay);
+    void Wake() { WakeIn(0); }
     // A step that took no time: the same check goes on with the next step (PlayerbotAI::UpdateAI's bounded loop)
     void ChainOn() { chainOn = true; }
     // The delay YieldThread last set, its stagger included
