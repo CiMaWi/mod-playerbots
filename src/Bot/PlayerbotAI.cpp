@@ -676,6 +676,21 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         inCombat = false;
     }
 
+    // A bot that eats or drinks stands up once what its meal restores is full (the user, 2026-11-28): the meal's wait
+    // is its longest time. Standing up ends the meal's aura
+    if (holdDelay && !inCombat && bot->IsSitState())
+    {
+        bool const eats = bot->HasAuraType(SPELL_AURA_MOD_REGEN) || bot->HasAuraType(SPELL_AURA_OBS_MOD_HEALTH);
+        bool const drinks =
+            bot->HasAuraType(SPELL_AURA_MOD_POWER_REGEN) || bot->HasAuraType(SPELL_AURA_OBS_MOD_POWER);
+        if ((eats || drinks) && (!eats || bot->IsFullHealth()) &&
+            (!drinks || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA)))
+        {
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+            ResetActionDuration();
+        }
+    }
+
     // The work chain's wake-ups (questing WQ55): out of combat the end of a move and an awaited packet (a loot
     // window) bring the next check at once instead of at the regular check
     bool const moving = bot->isMoving();

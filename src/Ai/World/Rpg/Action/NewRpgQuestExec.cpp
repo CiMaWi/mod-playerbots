@@ -305,9 +305,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         return true;
     }
 
-    // At the place: roam inside its area (the spawns' spread, 8 to 40 yd), so the bot meets the area's targets and
-    // does not drift off to the next camp
-    return RoamInPlace(data.pos, data.roam);
+    // At the place without a target: the bot stands and waits (the user, 2026-11-28: the random roam looked broken;
+    // a natural one comes later)
+    return false;
 }
 
 bool NewRpgDoQuestAction::EngageHeld(NewRpgInfo::DoQuest& data)
@@ -434,10 +434,11 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
             return true;
         }
     }
-    // To the place (travel's walk), then round it: the field's targets come into sight
+    // To the place (travel's walk); there the bot stands and waits (the user, 2026-11-28), and the order's dry end
+    // gives the choice back to the planner
     if (!run.arrivedAt)
         return WalkOn(data, data.pos, bot->GetDistance(data.pos), false, 0, QUEST_ARRIVE_YARDS);
-    return RoamInPlace(data.pos, data.roam);
+    return false;
 }
 
 bool NewRpgDoQuestAction::LookOrder(NewRpgInfo::DoQuest& data)
