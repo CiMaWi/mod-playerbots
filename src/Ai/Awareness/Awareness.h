@@ -256,10 +256,18 @@ bool HandleDangerCommand(ChatHandler* handler, std::string_view rest);
 // healthy bot of this side and level. Lock-free, from any thread; before the fold no link counts and only the ends do
 DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRoute::Point const& start,
                               TravelRoute::Point const& goal, TeamId side, std::uint8_t level);
-// `playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe,..>]`: the way the search
-// answers for the bot now (its snapshot and record, as its trip would ask), WayOf and JudgeWay for the bot's own trip
-// and for an order; the legs and their deadly links (yards and deadly yards) in Playerbots.log. With expect= a
-// FIXTURE check line. No reply word is "refused" or "error": the scenario runner fails a bot on them
+// AW38c (INTERFACE.md §3.6), the bot's own map thread: the way on foot that the search answers now, from the bot to the
+// place, is quiet (DangerRules::QuietWay). False at the first line that fails: a store with folded links, the term on
+// and the graph ready; the bot's ground quiet (one lookup, no search otherwise); one search on foot (no stone, taxi,
+// transport, own flying or flight maps; the bot's record and the stuck edges); an answer of walk legs only; a quiet
+// way. PerfMonitor row "awareness quiet walk", one sample per search. It knows no sick bot: the safe areas ask it
+bool QuietWalk(PlayerbotAI* botAI, TravelRoute::Point const& goal);
+// `playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe|quietwalk|noquietwalk,..>]`:
+// the way the search answers for the bot now (its snapshot and record, as its trip would ask), WayOf and JudgeWay for
+// the bot's own trip and for an order, and the answer on foot (`walk quiet|unquiet|none`, QuietWalk's; the words
+// quietwalk and noquietwalk: quiet, and unquiet or none); the legs and their deadly links (yards and deadly yards) in
+// Playerbots.log. With expect= a FIXTURE check line. No reply word is "refused" or "error": the scenario runner fails
+// a bot on them
 bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // The trigger `way danger` (AW37b, INTERFACE.md §4.8): the bot's held trip has a route applied that was not judged
 // yet (DangerRules::WayDue). Two integer compares while no new route came; it makes no store

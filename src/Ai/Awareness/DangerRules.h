@@ -752,6 +752,13 @@ inline bool Refuses(DangerPart const& part)
     return part.goal == Ground::Deadly || (part.start != Ground::Deadly && part.deadlyLinks > 0);
 }
 
+// AW38c (§3.6): quiet from end to end. Quiet is the same ground for a healthy and for a sick bot (§4.2, lines 1 and
+// 2), and for a sick bot all other ground is deadly; a link quiet for the level is never deadly (Q1)
+constexpr bool QuietWay(DangerPart const& part)
+{
+    return part.start == Ground::Quiet && part.goal == Ground::Quiet && part.unquietLinks == 0;
+}
+
 enum class WayVerdict : std::uint8_t
 {
     Clear,

@@ -5534,7 +5534,7 @@ void TestGroundGenerated()
     std::uint32_t const seed = g.state;
     constexpr int CASES = 3000;
     std::printf("AW36b ground: %d generated sets, seed %u\n", CASES, seed);
-    int g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0, g8 = 0, g10 = 0, h3 = 0;
+    int g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0, g8 = 0, g10 = 0, h3 = 0, q2 = 0;
     for (int i = 0; i < CASES; ++i)
     {
         // G1: total over raw facts the build never writes (a count at level 0, levels to 255, health above 100)
@@ -5552,6 +5552,11 @@ void TestGroundGenerated()
             Ground const b = JudgeGround(raw, static_cast<std::uint8_t>(level), rawCondition);
             if (DangerOf(a) > DangerOf(Ground::Deadly) || a != b)
                 Count(g1, "G1 total", seed, i);
+            // Q2 (AW38c): quiet for the sick bot exactly when quiet for the healthy one, over every fact and level
+            for (DangerRules::CellFacts const& facts : {raw, DangerRules::CellFacts{}})
+                if ((JudgeGround(facts, static_cast<std::uint8_t>(level), DangerRules::SICK) == Ground::Quiet) !=
+                    (JudgeGround(facts, static_cast<std::uint8_t>(level), DangerRules::HEALTHY) == Ground::Quiet))
+                    Count(q2, "Q2 quiet sick and healthy", seed, i);
         }
 
         std::vector<Member> const set = GenSet(g, i % 2 == 0);
@@ -5622,6 +5627,8 @@ void TestGroundGenerated()
             // G7: less health, the sick bot, quiet in every condition
             Ground const sickHere = JudgeGround(facts, bot, sick);
             Ground const notSickHere = JudgeGround(facts, bot, notSick);
+            if ((JudgeGround(facts, bot, DangerRules::SICK) == Ground::Quiet) != (healthy == Ground::Quiet))
+                Count(q2, "Q2 quiet sick and healthy", seed, i);
             if (DangerOf(JudgeGround(facts, bot, DangerRules::Condition{lower, condition.sick})) < DangerOf(here) ||
                 sickHere == Ground::Passable || (sickHere == Ground::Quiet) != (notSickHere == Ground::Quiet) ||
                 (healthy == Ground::Quiet) != (notSickHere == Ground::Quiet))
@@ -5674,6 +5681,7 @@ void TestGroundGenerated()
     Check(!g8, "G8: quiet exactly when every creature is 15 or more below, and then each reaches 5 yd");
     Check(!g10, "G10: deadly exactly below DeadlyBelow, quiet exactly from PassableBelow, levels 1 to 80");
     Check(!h3, "H3: a merge does not depend on its order and is never less dangerous than either");
+    Check(!q2, "Q2: JudgeGround answers Quiet with SICK exactly when it does with HEALTHY, for all facts and levels");
 }
 
 // A generated cell and side of the table: layers in order of height, more than the reach apart (H2 by construction)
@@ -6453,6 +6461,38 @@ void TestWayRules()
               DangerRules::JudgeWay(into, true) == WayVerdict::LeastDeadly &&
               DangerRules::JudgeWay(DangerRules::DangerPart{}, false) == WayVerdict::Clear,
           "way rules: §4.5's table (a deadly link, a way out, a deadly goal, a clear way)");
+
+    // Q1 (AW38c): a quiet way has both ends quiet and no link that is not quiet; over every end, count of links that
+    // are not quiet and of deadly links as the fold makes them (a deadly link is never quiet for the level)
+    int q1 = 0;
+    int quietWays = 0;
+    for (int start = 0; start < 3; ++start)
+        for (int goal = 0; goal < 3; ++goal)
+            for (int unquiet : {0, 1, 3})
+                for (int deadly = 0; deadly <= unquiet; ++deadly)
+                {
+                    DangerRules::DangerPart part;
+                    part.start = static_cast<Ground>(start);
+                    part.goal = static_cast<Ground>(goal);
+                    part.unquietLinks = static_cast<std::uint16_t>(unquiet);
+                    part.deadlyLinks = static_cast<std::uint16_t>(deadly);
+                    bool const quiet = DangerRules::QuietWay(part);
+                    quietWays += quiet;
+                    bool const expected = part.start == Ground::Quiet && part.goal == Ground::Quiet && unquiet == 0;
+                    q1 += quiet != expected || (quiet && (part.deadlyLinks || DangerRules::Refuses(part) ||
+                                                          DangerRules::JudgeWay(part, false) != WayVerdict::Clear));
+                }
+    DangerRules::DangerPart oneLink;
+    oneLink.unquietLinks = 1;
+    DangerRules::DangerPart passableEnd;
+    passableEnd.goal = Ground::Passable;
+    DangerRules::DangerPart passableStart;
+    passableStart.start = Ground::Passable;
+    Check(!q1 && quietWays == 1 && DangerRules::QuietWay(DangerRules::DangerPart{}) &&
+              !DangerRules::QuietWay(oneLink) && !DangerRules::QuietWay(passableEnd) &&
+              !DangerRules::QuietWay(passableStart),
+          "Q1: a quiet way has no deadly link and is not refused; one link that is not quiet, or an end that is not "
+          "quiet, makes no quiet way");
 }
 
 constexpr float RUN_SPEED = 7.0f;  // the snapshot's default run speed, yd/s
@@ -6709,6 +6749,7 @@ void TestWayTerm()
     std::printf("AW37a ways: %d generated graphs, %d ways each, seed %u%s\n", CASES, PAIRS, seed, "");
     int graphs = 0, fold = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0, r7 = 0, r8 = 0, r9 = 0, walks = 0;
     int deadlyAnswers = 0, refused = 0, outOf = 0, clear = 0, deadlyGoals = 0, risen = 0, ways = 0;
+    int q1 = 0, quietWays = 0, unquietWays = 0;
     for (int i = 0; i < CASES; ++i)
     {
         TravelGraph graph;
@@ -6829,6 +6870,19 @@ void TestWayTerm()
                     (verdict == DangerRules::WayVerdict::Clear) != (!part.deadlyLinks && part.goal != Ground::Deadly))
                     Count(r9, "R9 the verdict", seed, i);
             }
+            // Q1 (AW38c) on the fold's own links: a quiet way has no deadly link and is not refused, and a way with
+            // a link not quiet for the level (level < passableBelow) or an end not quiet is none
+            bool linkUnquiet = false;
+            for (std::uint32_t const index : priced.links)
+                if (DangerRules::LinkDanger const* link = folded.LinkOf(index, side))
+                    linkUnquiet = linkUnquiet || level < link->passableBelow;
+            bool const quietWay = DangerRules::QuietWay(part);
+            if ((quietWay && (part.deadlyLinks || refuses)) ||
+                (quietWay && (linkUnquiet || part.start != Ground::Quiet || part.goal != Ground::Quiet)) ||
+                (!quietWay && !linkUnquiet && part.start == Ground::Quiet && part.goal == Ground::Quiet))
+                Count(q1, "Q1 a quiet way", seed, i);
+            quietWays += quietWay;
+            unquietWays += !quietWay;
             deadlyAnswers += part.deadlyLinks > 0;
             refused += refuses;
             outOf += part.start == Ground::Deadly && part.deadlyLinks && !refuses;
@@ -6873,6 +6927,10 @@ void TestWayTerm()
     Check(!r7, "R7: a way out of deadly ground is not refused unless its goal is deadly");
     Check(!r8, "R8: a way kept at a level is kept at every higher one (from ground not deadly for it)");
     Check(!r9, "R9: Refused exactly when Refuses and not spared, Clear exactly with no deadly link nor goal");
+    std::printf("  Q1: %d quiet ways, %d not quiet\n", quietWays, unquietWays);
+    Check(!q1 && quietWays > 0 && unquietWays > 0,
+          "Q1: on folded links a quiet way has no deadly link and is not refused, and it is quiet exactly when both "
+          "ends and every link are quiet for the level");
     Check(deadlyAnswers > 0 && refused > 0 && outOf > 0 && clear > 0 && deadlyGoals > 0 && risen > 0,
           "way cases: deadly answers, refusals, ways out, clear ways, deadly goals and a refusal a level outgrows");
 }

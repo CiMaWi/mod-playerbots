@@ -120,7 +120,9 @@ void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // names the safe area the bot stands in (Upkeep::SafeAreaWord). O(1) but at the edge
 void NoteSickOpen(PlayerbotAI* botAI, bool open);
 // NR3 (NR.4), map thread: the safe areas a sick bot stands in, and whether its walk to a place stays in one of them
-// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start
+// (Upkeep::SafeLeg on foot; the place's zone and area from the map). For a sick bot's trip, a few stops per start.
+// The bot's own areas carry its roads (awareness AW38c): at most Upkeep::SICK_ROAD_HUBS route searches a call
+// (Awareness::QuietWalk), so only a sick bot's code calls it: the fill, the errand start and the sick_area row
 Upkeep::SafeAreas SafeAreasHere(Player* bot, PlannerIndexes const& indexes);
 bool SafeWalkTo(Player* bot, PlannerIndexes const& indexes, Upkeep::SafeAreas const& here, std::uint32_t mapId, float x,
                 float y, float z);

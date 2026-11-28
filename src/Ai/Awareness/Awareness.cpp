@@ -2281,7 +2281,8 @@ void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
 namespace
 {
 constexpr char const* WAY_USAGE =
-    "Usage: .playerbots aw way <bot> <map> <x> <y> <z> [expect=<clear|least|routed|safe|nosafe,..>]";
+    "Usage: .playerbots aw way <bot> <map> <x> <y> <z> "
+    "[expect=<clear|least|routed|safe|nosafe|quietwalk|noquietwalk,..>]";
 constexpr char const* WAYS_USAGE = "Usage: .playerbots aw ways <alliance|horde> <level 1..80> | all";
 constexpr char const* TERM_USAGE = "Usage: .playerbots aw term <off|on>";
 // `aw ways`: each band's lines in the reply (Playerbots.log has every line); `all` asks these levels for both sides
@@ -2737,6 +2738,67 @@ DangerRules::DangerPart WayOf(std::span<TravelRoute::Leg const> legs, TravelRout
     return DangerRules::WayDanger(*known, walks, PlaceOf(start), PlaceOf(goal), SideIndex(side), level);
 }
 
+namespace
+{
+// AW38c (INTERFACE.md §3.6): the walk on foot the search answers now, from the bot to a place. None: no store with
+// folded links, the term off, the graph not ready, no answer, or a leg that is no walk; Unquiet: the bot's ground or
+// the way is not quiet; Quiet: QuietWay
+enum class FootWay : std::uint8_t
+{
+    None,
+    Unquiet,
+    Quiet
+};
+
+char const* FootWord(FootWay way)
+{
+    return way == FootWay::Quiet ? "quiet" : way == FootWay::Unquiet ? "unquiet" : "none";
+}
+
+// QuietWalk's lines in their order, the first that fails answers. The search is asked as the bot's trip asks it
+// (NewRpgTravelAction::RequestRoute: its snapshot, the live entries of its record, the stuck edges, the configured
+// params) but on foot: no stone, no taxi, no transport, no own flying and no flight maps (contract C3). Map thread
+FootWay FootWayOf(PlayerbotAI* botAI, TravelRoute::Point const& goal)
+{
+    DangerRules::Known const* const known = DangerRules::Published();
+    TravelGraph const& graph = TravelGraph::Instance();
+    // Without links no link counts, and every way would read quiet
+    if (!known || known->links.empty() || !DangerRules::TermOn() || !graph.IsReady())
+        return FootWay::None;
+    Player* bot = botAI->GetBot();
+    TeamId const side = bot->GetTeamId();
+    std::uint8_t const level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    // Quiet ground is the same for a sick bot (Q2): one lookup, and a bot on other ground asks no search (AW.29)
+    if (GroundAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), level, side) !=
+        DangerRules::Ground::Quiet)
+        return FootWay::Unquiet;
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness quiet walk", nullptr) : nullptr;
+    TravelRoute::Snapshot snapshot = TravelRoute::FillSnapshot(bot, 0);
+    snapshot.hasHearthstone = false;
+    snapshot.allowTransport = false;
+    snapshot.knownTaxi.fill(0);
+    snapshot.flyOutland = snapshot.flyNorthrend = false;
+    snapshot.flySpeed = 0.0f;
+    TravelRoute::Request request{snapshot, goal};
+    request.refused = FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime());
+    static TravelRoute::StuckEdges const noStuck{};
+    std::shared_ptr<TravelRoute::StuckEdges const> const stuck = TravelRoute::StuckBook::Instance().Current();
+    TravelRoute::Params params = TravelRoute::ConfiguredParams();
+    params.flightMaps = nullptr;
+    TravelRoute::Result const result = TravelRoute::Search(graph, request, stuck ? *stuck : noStuck, params);
+    if (pmo)
+        pmo->finish();
+    if (!result.ok || std::any_of(result.legs.begin(), result.legs.end(),
+                                  [](TravelRoute::Leg const& leg) { return leg.type != TravelRoute::LegType::Walk; }))
+        return FootWay::None;
+    return DangerRules::QuietWay(WayOf(result.legs, snapshot.position, goal, side, level)) ? FootWay::Quiet
+                                                                                           : FootWay::Unquiet;
+}
+}  // namespace
+
+bool QuietWalk(PlayerbotAI* botAI, TravelRoute::Point const& goal) { return FootWayOf(botAI, goal) == FootWay::Quiet; }
+
 bool WayJudgeDue(PlayerbotAI* botAI)
 {
     HeldTrip const* const trip = botAI->GetTravel().Trip();
@@ -2922,7 +2984,8 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     std::vector<std::string_view> expect;
     if (!words.empty() && words.back().substr(0, 7) == "expect=")
     {
-        if (!ParseExpect(words.back().substr(7), expect, {"clear", "least", "routed", "safe", "nosafe"}))
+        if (!ParseExpect(words.back().substr(7), expect,
+                         {"clear", "least", "routed", "safe", "nosafe", "quietwalk", "noquietwalk"}))
         {
             handler->SendErrorMessage(WAY_USAGE);
             return false;
@@ -2969,6 +3032,9 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     DangerRules::WayVerdict const own = DangerRules::JudgeWay(part, false);
     DangerRules::WayVerdict const order = DangerRules::JudgeWay(part, true);
     bool const refuses = DangerRules::Refuses(part);
+    // AW38c: the answer on foot, as a sick bot's safe areas ask it (QuietWalk); `quietwalk` and `noquietwalk` (unquiet
+    // or none: no road) are the fixture's words
+    FootWay const foot = FootWayOf(botAI, request.goal);
     std::size_t walks = 0;
     DangerRules::Known const* const known = DangerRules::Published();
     for (std::size_t i = 0; i < legs.size(); ++i)
@@ -3006,13 +3072,13 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     std::string const line = Acore::StringFormat(
         "AW way {}: {} level {} map {} {:.0f} {:.0f} {:.0f} -> map {} {:.0f} {:.0f} {:.0f}: {}, {} legs, {:.0f} s "
         "(penalty {:.0f} s), {} walk links | deadly {} links {:.0f} yd, fights {}, unquiet {}, start {} goal {} | "
-        "safe {}, own {}, order {} | term {} | search {} us",
+        "safe {}, own {}, order {} | walk {} | term {} | search {} us",
         bot->GetName(), SideWord(SideIndex(side)), level, snapshot.position.mapId, snapshot.position.x,
         snapshot.position.y, snapshot.position.z, *map, *gx, *gy, *gz,
         result.ok ? "ok" : TravelRoute::FailureWord(result.failure), result.legs.size(), result.totalSeconds,
         part.penaltySeconds, walks, part.deadlyLinks, part.deadlyYards, part.fights, part.unquietLinks,
         GroundWord(part.start), GroundWord(part.goal), refuses ? "no" : "yes", VerdictWord(own), VerdictWord(order),
-        DangerRules::TermOn() ? "on" : "off", micros);
+        FootWord(foot), DangerRules::TermOn() ? "on" : "off", micros);
     LOG_INFO("playerbots", "{}", line);
     if (expect.empty())
     {
@@ -3022,12 +3088,14 @@ bool HandleWayCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view
     std::string missed;
     for (std::string_view const word : expect)
     {
-        bool const holds = !result.ok         ? false
-                           : word == "clear"  ? own == DangerRules::WayVerdict::Clear
-                           : word == "least"  ? own == DangerRules::WayVerdict::LeastDeadly
-                           : word == "safe"   ? !refuses
-                           : word == "nosafe" ? refuses
-                                              : true;  // routed
+        bool const holds = word == "quietwalk"     ? foot == FootWay::Quiet
+                           : word == "noquietwalk" ? foot != FootWay::Quiet
+                           : !result.ok            ? false
+                           : word == "clear"       ? own == DangerRules::WayVerdict::Clear
+                           : word == "least"       ? own == DangerRules::WayVerdict::LeastDeadly
+                           : word == "safe"        ? !refuses
+                           : word == "nosafe"      ? refuses
+                                                   : true;  // routed
         if (!holds)
             missed += Acore::StringFormat("{}{}", missed.empty() ? "" : ",", word);
     }

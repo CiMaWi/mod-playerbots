@@ -192,6 +192,9 @@ struct SafeAreas
     uint32_t city = 0;           // the own capital or sanctuary the place lies in: the zone's id, or a sanctuary area's
     uint32_t lowZone = 0;        // the own side's low zone the place lies in
     std::vector<uint32_t> hubs;  // the safe hubs whose circle holds the place (planner hub indices)
+    // Awareness AW38c: the safe hubs a quiet way on foot joins to the place (planner hub indices). Only the bot's own
+    // place has any (Planner::SafeAreasHere, Awareness::QuietWalk)
+    std::vector<uint32_t> roads;
 };
 
 // The city a place lies in: its zone when that is an own capital or a sanctuary, else its area when that alone is one
@@ -217,22 +220,43 @@ constexpr bool HubSafe(bool otherSide, bool flightOrInn, bool hostileMember)
     return !otherSide && flightOrInn && !hostileMember;
 }
 
-inline bool IsSafe(SafeAreas const& place) { return place.city || place.lowZone || !place.hubs.empty(); }
-
-// The world log's word for where a sick bot was handed over (the upkeep row sick_area): the city first, then a hub,
-// then a low zone; `outside` in none
-inline char const* SafeAreaWord(SafeAreas const& place)
+// Awareness AW38c: a hub asked for a road from the bot's place is safe for it, does not hold the bot, lies outside the
+// bot's own city and low zone (there it adds nothing) and has its circle within the errand walk's reach. The bot's
+// sickness is the caller's. The nearest SICK_ROAD_HUBS of those are asked (tuning: one route search each)
+constexpr bool RoadAsked(bool hubSafe, bool holdsBot, bool inOwnArea, bool withinReach)
 {
-    return place.city ? "city" : !place.hubs.empty() ? "hub" : place.lowZone ? "low_zone" : "outside";
+    return hubSafe && !holdsBot && !inOwnArea && withinReach;
+}
+constexpr uint32_t SICK_ROAD_HUBS = 3;
+
+inline bool IsSafe(SafeAreas const& place)
+{
+    return place.city || place.lowZone || !place.hubs.empty() || !place.roads.empty();
 }
 
-// Two places lie in one safe area: the same city, the same low zone or a hub circle holding both
+// The world log's word for where a sick bot was handed over (the upkeep row sick_area): the city first, then a hub,
+// then a low zone, then a road; `outside` in none
+inline char const* SafeAreaWord(SafeAreas const& place)
+{
+    return place.city             ? "city"
+           : !place.hubs.empty()  ? "hub"
+           : place.lowZone        ? "low_zone"
+           : !place.roads.empty() ? "road"
+                                  : "outside";
+}
+
+// Two places lie in one safe area: the same city, the same low zone or a hub circle holding both, or a hub circle
+// holding one that a road joins to the other. Two places that each have a road to one hub share nothing
 inline bool ShareArea(SafeAreas const& a, SafeAreas const& b)
 {
     if ((a.city && a.city == b.city) || (a.lowZone && a.lowZone == b.lowZone))
         return true;
-    return std::any_of(a.hubs.begin(), a.hubs.end(),
-                       [&b](uint32_t hub) { return std::find(b.hubs.begin(), b.hubs.end(), hub) != b.hubs.end(); });
+    auto const anyIn = [](std::vector<uint32_t> const& some, std::vector<uint32_t> const& other)
+    {
+        return std::any_of(some.begin(), some.end(), [&other](uint32_t hub)
+                           { return std::find(other.begin(), other.end(), hub) != other.end(); });
+    };
+    return anyIn(a.hubs, b.hubs) || anyIn(a.roads, b.hubs) || anyIn(a.hubs, b.roads);
 }
 
 // The legs of a sick bot's route. A leg on foot starts and ends in one safe area; a flight or a transport joins two
