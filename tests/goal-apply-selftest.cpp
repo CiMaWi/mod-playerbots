@@ -3238,6 +3238,70 @@ int main()
         Check(fresh && nextFree && MayStart(route, routeKey, LOG),
               "the mark does not carry into the next run (blocked goal stays blocked, the next one gains and is "
               "free); a route's run never stalls, its order fails instead (FailsOrder)");
+
+        // Landing K beside questing WQ42 (EndInPlace): an order ended by danger is an end as any other for the route's
+        // count. A bot that gives up three orders in a row within IN_PLACE_YD of where the first began (it rose there
+        // each time, or three ways from one spot were refused) closes three cells with the outcome danger, and the
+        // third end fails the route's goal with questing's row abandoned/in_place; an end elsewhere counts anew. The
+        // calls in the order of RpgStatus::End: Planner::OnOrderFailed (the cell, then the count), then OnStatusEnd
+        constexpr std::uint32_t NOW = 2000;
+        std::vector<QuestOrder> orders;
+        for (std::int32_t cell = 0; cell < 8; ++cell)
+            orders.push_back(
+                OrderAt(cell * 3, 0, QuestOrderWord::Field, {{static_cast<std::uint32_t>(cell + 1), 0, 3}}));
+        std::uint64_t const hubRoute =
+            GoalKey(Typed(GoalKind::Quest, Goals::TargetType::Route, Goals::ROUTE_REASON, 0), Executor::Route, 40);
+        BotSpot const rise{0, 100.0f, 100.0f};
+        BotSpot const elsewhere{0, 130.0f, 100.0f};
+        auto const onRoute = [&orders, hubRoute]()
+        {
+            BotGoals goals;
+            goals.slot.Set(GoalOf(GoalKind::Quest, 1, Source::Planner));
+            TakePlan(goals, RouteOf(orders), 1000);
+            BeginRun(goals, hubRoute, LOG);
+            return goals;
+        };
+        auto const leaves = [](BotGoals& goals, BotSpot const& begun, BotSpot const& ended, std::vector<StallRow>& rows)
+        {
+            std::vector<std::uint64_t> const closed = ClosedCells(goals, LOG, NOW, BLOCK);
+            RouteNext const next = NextOrder(goals, [](QuestOrderNeed const&) { return true; }, closed);
+            if (next.step != RouteStep::Order)
+                return;
+            QuestOrder const order = *next.order;
+            NoteRouteStart(goals, begun, LOG);
+            bool const route = IsRouteOrder(goals, order);
+            if (FailsOrder(Outcome::Danger) && FailRouteOrder(goals, order, Outcome::Danger, "danger", LOG, NOW, BLOCK))
+                rows.push_back(*std::exchange(goals.stallRow, std::nullopt));
+            if (route && EndInPlace(goals, ended, LOG, NOW, BLOCK))
+                rows.push_back(*std::exchange(goals.stallRow, std::nullopt));
+            NoteStatusEnd(goals, Outcome::Danger, false, "danger");
+        };
+        BotGoals looped = onRoute();
+        std::vector<StallRow> rows;
+        leaves(looped, rise, rise, rows);
+        leaves(looped, rise, rise, rows);
+        bool const afterTwo = looped.run.running && looped.run.danger && rows.size() == 2 &&
+                              GoalApply::MayStart(looped, hubRoute, LOG, NOW, BLOCK);
+        leaves(looped, rise, rise, rows);
+        bool const failed = !looped.run.running && !GoalApply::MayStart(looped, hubRoute, LOG, NOW, BLOCK) &&
+                            rows.size() == 4 && rows[0].outcome == Outcome::Danger &&
+                            rows[1].outcome == Outcome::Danger && rows[2].outcome == Outcome::Danger &&
+                            std::string(rows[2].note) == "danger" && rows[3].outcome == Outcome::Abandoned &&
+                            std::string(rows[3].note) == IN_PLACE_WORD;
+        start(looped, GoalKind::Grind, NEXT);
+        bool const clean = looped.run.running && looped.run.key == NEXT && !looped.run.danger;
+        BotGoals moved = onRoute();
+        std::vector<StallRow> movedRows;
+        leaves(moved, rise, rise, movedRows);
+        leaves(moved, rise, rise, movedRows);
+        leaves(moved, rise, elsewhere, movedRows);
+        bool const anew = moved.run.running && movedRows.size() == 3 && moved.inPlace.count == 0 &&
+                          GoalApply::MayStart(moved, hubRoute, LOG, NOW, BLOCK);
+        Check(afterTwo && failed && clean && anew,
+              "a route's orders ended by danger count as ends in place (WQ42): two leave the route going, the third "
+              "within 10 yd of where the first began fails its goal with the row abandoned/in_place after three cell "
+              "rows danger, and the next run starts without the mark; a third end 30 yd away counts anew (mutants: "
+              "Danger out of FailsOrder, the mark kept by EndInPlace's end)");
     }
 
     // WT63e: the planner's bag order buys once (WT63c review: an order bought at every stop) and alone
