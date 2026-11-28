@@ -8,6 +8,7 @@
 
 #include "Awareness.h"
 #include "CellImpl.h"
+#include "CheckMountStateAction.h"
 #include "Corpse.h"
 #include "DeathRowRules.h"
 #include "Event.h"
@@ -16,6 +17,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "MapMgr.h"
+#include "NewRpgHelpers.h"
 #include "NewRpgStatusEnd.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -718,6 +720,15 @@ bool LeaveDangerAction::Step()
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Leave, "hearth", "deadly", since, where);
             // A try is counted whether the core begins the cast or not, so a refused stone cannot hold the bot
             ++leaving.hearthTries;
+            // As a player's client does: off the mount and out of a form first (the stone's spell is refused in
+            // either, a druid's cat form after a fight among them); only on the ground, in the air it would be a fall
+            if (!bot->IsFlying() && !bot->IsInFlight())
+            {
+                if (bot->IsMounted())
+                    CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
+                if (NewRpgHelpers::RealShapeshift(bot))
+                    bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+            }
             botAI->DoSpecificAction("hearthstone", Event(), true);
             return true;
         case AwarenessRules::LeaveAct::Walk:
