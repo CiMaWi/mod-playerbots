@@ -233,6 +233,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (auto const* gather = std::get_if<NewRpgInfo::DoGather>(&info.data))
         Planner::NoteGatherSpan(gather->span, gather->spanStartMs);
     RpgStatusCore::Replace(botAI, info, std::move(next), {outcome, endWord});
+    info.picked = word && std::string_view(word) == "pick";
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
     // A status ended or began: what follows runs in the same check (questing WQ55)
     botAI->ChainOn();

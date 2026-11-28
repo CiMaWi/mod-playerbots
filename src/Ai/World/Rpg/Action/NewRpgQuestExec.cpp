@@ -735,9 +735,14 @@ void NewRpgDoQuestAction::ResetWalk(NewRpgInfo::DoQuest& data)
 void NewRpgDoQuestAction::ClearTarget(NewRpgInfo::DoQuest& data)
 {
     if (!data.targetGuid.IsEmpty())
+    {
         if (Unit* unit = botAI->GetUnit(data.targetGuid))
             if (!unit->IsAlive())
                 AI_VALUE(LootObjectStack*, "available loot")->Add(data.targetGuid);
+        // A target let go: the next look is due at once. The seek's interval would make the check's next pass (the
+        // work chain) walk to the place as if a look had found nothing
+        data.lastScan = 0;
+    }
     data.targetGuid = ObjectGuid::Empty;
     data.targetPos = WorldPosition();
     data.engagedMs = 0;

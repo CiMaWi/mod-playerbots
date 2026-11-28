@@ -273,6 +273,8 @@ struct NewRpgInfo
     };
 
     uint32 startT{0};  // start timestamp of the current status
+    // The current status came from the weighted pick (RpgStatus::Start's word "pick")
+    bool picked{false};
     // The spawn points the bot took or found empty lately (professions WR13d): it outlives the gather status, so the
     // next circuit's plan and lap skip them until their respawn (GatherMemoryState.h)
     Gather::Memory gatherMemory;
