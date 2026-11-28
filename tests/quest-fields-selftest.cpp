@@ -885,7 +885,9 @@ void Colours()
     constexpr std::uint32_t MOB = 320;
     auto const quest = [](std::uint32_t id, std::int32_t level)
     {
-        QuestRecord record = MakeQuest(id, 1000, {MakeObjective(ObjectiveKind::Kill, MOB, 10, 0)});
+        // each of standard size for its level: the game's XP grows with the quest's level
+        QuestRecord record = MakeQuest(id, static_cast<std::uint32_t>(Take::LevelXp(level)),
+                                       {MakeObjective(ObjectiveKind::Kill, MOB, 10, 0)});
         record.level = level;
         return record;
     };
@@ -903,13 +905,15 @@ void Colours()
     };
     Check(worth(72) < 0.0f, "colours: a red quest gives no need");
     Check(worth(70) > 0.0f && std::fabs(worth(71) - 0.3f * worth(70)) < 1e-4f * worth(70),
-          "colours: an orange quest counts 0.3 of a yellow one");
-    Check(std::fabs(worth(73) - worth(71)) < 1e-4f * worth(70), "colours: a green quest counts as an orange one");
+          "colours: an orange quest counts 0.3 of a yellow one of its size");
+    Check(std::fabs(worth(73) - worth(71)) < 1e-4f * worth(70),
+          "colours: a green quest counts as an orange one of its size");
     std::vector<QuestSlot> const ready = {{72, Circuit::SLOT_COMPLETE, {}}};
     Check(Needs(index, ready, 0, at20, ALONE).empty(), "colours: a ready red quest waits too");
     Check(Needs(index, log, 0, Pricing{}, ALONE).size() == 4, "colours: no bot level, no colour");
-    Check(QuestWorth(index.quests[1], at20) == 0.3f * QuestWorth(index.quests[1], Pricing{}),
-          "colours: the quest's worth carries the share");
+    Check(std::fabs(QuestWorth(index.quests[1], at20) - 0.3f * Take::LevelXp(20)) < 0.01f &&
+              QuestWorth(index.quests[1], Pricing{}) == Take::LevelXp(24),
+          "colours: an orange quest's worth is 0.3 of its size at the bot's level; no bot level, the quest's own XP");
 }
 
 // Needed targets far above the bot: never ranked, listed as too risky; a little above: ranked at a lower worth

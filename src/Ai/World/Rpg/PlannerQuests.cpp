@@ -993,6 +993,16 @@ void StartQuestIndex()
     if (!questState.compare_exchange_strong(expected, QuestIndexState::Building))
         return;  // once: quest data is static after startup (WT.12)
 
+    // questing-2 QS.6: the plan's copy of the standard quest XP per level (Take::LEVEL_XP) is the server's table
+    for (std::size_t level = 1; level <= Take::LEVEL_XP.size(); ++level)
+    {
+        QuestXPEntry const* entry = sQuestXPStore.LookupEntry(static_cast<uint32>(level));
+        if (entry && entry->Exp[Take::LEVEL_XP_COLUMN] == Take::LEVEL_XP[level - 1])
+            continue;
+        LOG_ERROR("playerbots", "Planner quests: Take::LEVEL_XP differs from QuestXP.dbc at level {}", level);
+        break;
+    }
+
     auto const gatherStart = std::chrono::steady_clock::now();
     // WT33b: the floors are read here on the world thread (a startup query, as the gather's WorldDatabase reads) and
     // dropped after the gather: the index carries them

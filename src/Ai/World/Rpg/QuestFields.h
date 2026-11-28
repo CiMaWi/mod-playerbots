@@ -151,13 +151,15 @@ inline float UnlockBonusOf(Pricing const& pricing, std::uint32_t quest)
     return it != pricing.unlockBonus.end() && it->first == quest ? it->second : 0.0f;
 }
 
-// The quest's worth as the circuit prices it (Circuit's Value): its reward, by its colour for the bot
-// (Take::ColourShare, questing-2 QS.6)
+// The quest's worth as the circuit prices it (Circuit's Value): its XP and money as the plan counts them for the bot
+// (Take::RewardShare: the quest's size at the bot's level, by its colour; questing-2 QS.6), the class quest's bonus
+// by its colour
 inline float QuestWorth(QuestRecord const& quest, Pricing const& pricing)
 {
-    return ((static_cast<float>(quest.xpBase) + UnlockBonusOf(pricing, quest.id)) * pricing.weights.xp +
-            static_cast<float>(std::max(quest.copperReward, 0)) * pricing.weights.copper) *
-           Take::ColourShare(Take::ColourOf(quest, pricing.level));
+    float const reward = Take::RewardShare(quest, pricing.level);
+    float const bonus = UnlockBonusOf(pricing, quest.id) * Take::ColourShare(Take::ColourOf(quest, pricing.level));
+    return (static_cast<float>(quest.xpBase) * reward + bonus) * pricing.weights.xp +
+           static_cast<float>(std::max(quest.copperReward, 0)) * reward * pricing.weights.copper;
 }
 
 namespace Detail

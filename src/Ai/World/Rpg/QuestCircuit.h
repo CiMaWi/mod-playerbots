@@ -807,12 +807,14 @@ private:
         return it != bonus.end() && it->first == quest ? it->second : 0.0f;
     }
 
-    // By the quest's colour for the bot (Take::ColourShare, questing-2 QS.6)
+    // The quest's XP and money as the plan counts them for the bot (Take::RewardShare: the quest's size at the bot's
+    // level, by its colour; questing-2 QS.6), the class quest's bonus by its colour
     float Value(QuestRecord const& quest) const
     {
-        return ((static_cast<float>(quest.xpBase) + UnlockBonus(quest.id)) * _weights.xp +
-                static_cast<float>(std::max(quest.copperReward, 0)) * _weights.copper) *
-               Take::ColourShare(Take::ColourOf(quest, _bot.level));
+        float const reward = Take::RewardShare(quest, _bot.level);
+        float const bonus = UnlockBonus(quest.id) * Take::ColourShare(Take::ColourOf(quest, _bot.level));
+        return (static_cast<float>(quest.xpBase) * reward + bonus) * _weights.xp +
+               static_cast<float>(std::max(quest.copperReward, 0)) * reward * _weights.copper;
     }
 
     QuestStatSummary const* Stats(std::uint32_t quest) const

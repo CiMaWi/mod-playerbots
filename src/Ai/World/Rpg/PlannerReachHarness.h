@@ -96,6 +96,8 @@ constexpr std::size_t ENEMY = 2;
 constexpr std::size_t BLOCKED = 3;
 constexpr std::size_t FAR = 4;
 constexpr std::size_t ISLAND = 5;
+constexpr std::uint32_t LATE_QUEST = SEA_QUESTS + 90;
+constexpr std::int32_t LATE_QUEST_LEVEL = 28;
 
 struct SeaWorld
 {
@@ -162,6 +164,11 @@ inline SeaWorld Build()
     record.raceMask = HORDE_RACES;
     record.prevAny = {static_cast<std::int32_t>(CLASS_PREV)};
     gather.quests.push_back(std::move(record));
+    // A late quest handed in at that giver: yellow for the bot of case 3, which is past the far zone
+    QuestRecord late = quest(LATE_QUEST, FAR_MAP, classX + 70.0f, BOT_Y - 30.0f, classGiver);
+    late.level = LATE_QUEST_LEVEL;
+    late.minLevel = LATE_QUEST_LEVEL - 4;
+    gather.quests.push_back(std::move(late));
     SeaWorld world{
         ClassQuests::Joined(QuestIndex::Build(std::move(gather))), PlannerIndexes::Build(std::move(services)), {}};
     for (SeaCamp const& camp : SEA_CAMPS)
@@ -383,9 +390,9 @@ inline void Cases(std::vector<Check>& checks, SeaWorld const& world, TravelGraph
         "hubs " + Names(world, both.filled.hubs) + "; " + GoalHarness::Summary(both.plan.ranked));
 
     // 3) The only fitting zone lies behind no link: no_route, no next zone, and the bot keeps its other goals (a
-    // delivery across the sea)
+    // delivery across the sea: the late quest, yellow for the bot; the far camp's own would be grey and no goal)
     Snapshot stuck = BotAt(HOME, 30, 0);
-    Carry(stuck, QuestOf(FAR));
+    Carry(stuck, LATE_QUEST);
     Run const blocked = Plan(world, graph, stuck, true, ROUTE_SEARCHES_PER_JOB);
     std::vector<CircuitLog::Row> const rows = CircuitLog::PlanRows(blocked.plan.routeGaps);
     Add(checks, "reach 3: the only fitting zone behind no link is no option, counted no_route; other goals stay",

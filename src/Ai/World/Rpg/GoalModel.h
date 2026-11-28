@@ -1732,8 +1732,12 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
         }
         if (!best)
             continue;
-        best->xp = static_cast<float>(record->xpBase);
-        best->copper = static_cast<float>(std::max(record->copperReward, 0));
+        // as the plan counts them (Take::RewardShare, questing-2 QS.6); a red quest's turn-in waits for levels
+        if (Take::IsRed(*record, bot.level))
+            continue;
+        float const reward = Take::RewardShare(*record, bot.level);
+        best->xp = static_cast<float>(record->xpBase) * reward;
+        best->copper = static_cast<float>(std::max(record->copperReward, 0)) * reward;
         deliveries.push_back(*best);
     }
     return deliveries;
@@ -1871,6 +1875,7 @@ inline ClassQuests::Route ClassQuestRoute(Snapshot const& bot, CircuitContext co
     QuestRecord const* record = context.quests ? context.quests->Find(quest) : nullptr;
     if (!record)
         return ClassQuests::Route::No;
+    float const reward = Take::RewardShare(*record, bot.level);  // as the plan counts them (questing-2 QS.6)
     bool unknown = false;
     for (std::uint32_t const index : record->givers)
     {
@@ -1903,8 +1908,8 @@ inline ClassQuests::Route ClassQuestRoute(Snapshot const& bot, CircuitContext co
                              giver.camp,
                              place,
                              minutes,
-                             static_cast<float>(record->xpBase),
-                             static_cast<float>(std::max(record->copperReward, 0)),
+                             static_cast<float>(record->xpBase) * reward,
+                             static_cast<float>(std::max(record->copperReward, 0)) * reward,
                              0.0f};
     }
     if (best)

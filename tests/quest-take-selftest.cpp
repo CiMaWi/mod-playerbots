@@ -379,6 +379,29 @@ void Colours()
     eight.level = 8;
     Check(Take::ColourOf(seven, 3) == Take::Colour::Orange && Take::ColourOf(eight, 3) == Take::Colour::Red,
           "level 3: a level 7 quest is orange, a level 8 quest red");
+    // The reward without its level: a quest of standard size counts what one of the bot's own level gives, whatever
+    // its level, so an orange quest and a green one of one size count the same
+    Check(Take::LevelXp(10) == 840.0f && Take::LevelXp(14) == 980.0f && Take::LevelXp(5) == 450.0f &&
+              Take::LevelXp(0) == 80.0f && Take::LevelXp(200) == 22050.0f,
+          "the standard quest XP of a level, levels outside the table at its ends");
+    QuestRecord orange;
+    orange.level = 14;
+    QuestRecord green;
+    green.level = 6;
+    QuestRecord own;
+    own.level = 10;
+    float const counted[] = {Take::LevelXp(14) * Take::RewardShare(orange, 10),
+                             Take::LevelXp(6) * Take::RewardShare(green, 10),
+                             Take::LevelXp(10) * Take::RewardShare(own, 10)};
+    Check(std::abs(counted[0] - 252.0f) < 0.01f && std::abs(counted[1] - 252.0f) < 0.01f && counted[2] == 840.0f,
+          "level 10: standard quests of level 14 and of level 6 count 252 XP each, one of level 10 counts 840");
+    Check(Take::LevelFactor(orange, 0) == 1.0f && Take::RewardShare(orange, 0) == 1.0f,
+          "no bot level: the reward as the quest gives it");
+    QuestRecord scaling;
+    scaling.level = -1;
+    scaling.minLevel = 20;
+    Check(Take::LevelFactor(scaling, 20) == 1.0f && Take::LevelFactor(scaling, 30) == Take::LevelXp(30) / 1550.0f,
+          "a quest without a level: valued at its minimum level, counted at the bot's");
 }
 
 void GeneratedCases(std::uint32_t seed)
