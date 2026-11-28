@@ -133,7 +133,8 @@ std::vector<Planner::QuestFields::Need> LogNeeds(Player* bot, Planner::QuestInde
     std::vector<Planner::QuestSlot> slots;
     slots.reserve(bot->GetQuestLogSize());
     Planner::FillSlots(bot, slots);
-    Planner::QuestFields::Pricing const pricing{};
+    Planner::QuestFields::Pricing pricing{};
+    pricing.level = bot->GetLevel();  // a quest that is red for the bot gives no need (questing-2 QS.6)
     Group const* group = bot->GetGroup();
     std::shared_ptr<Planner::QuestLog::Record const> const record =
         NewRpgHelpers::OrderRecord(GET_PLAYERBOT_AI(bot), bot);

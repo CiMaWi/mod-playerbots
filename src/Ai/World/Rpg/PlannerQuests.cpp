@@ -72,7 +72,6 @@ static_assert(QuestType::ELITE == QUEST_TYPE_ELITE && QuestType::PVP == QUEST_TY
                   QuestType::RAID_25 == QUEST_TYPE_RAID_25,
               "the planner's quest types are the core's");
 static_assert(POI_FIRST_ITEM == QUEST_OBJECTIVES_COUNT, "item POIs follow the creature or object slots");
-static_assert(Circuit::MAX_LEVELS_ABOVE == QUEST_MAX_LEVELS_ABOVE_BOT, "the circuit's level limit is today's");
 static_assert(Circuit::SLOT_COMPLETE == static_cast<uint32>(QUEST_STATE_COMPLETE),
               "the circuit reads the log slot's complete flag");
 

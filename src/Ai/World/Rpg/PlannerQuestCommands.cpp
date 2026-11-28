@@ -283,8 +283,7 @@ std::vector<uint32> FarQuests(QuestIndex const& quests, CircuitPlace const& plac
         if (ids.size() >= count)
             break;
         bool const isGrey = Take::IsGrey(quest, place.level);
-        bool const above =
-            Circuit::QuestLevel(quest, place.level) > static_cast<int32>(place.level) + Circuit::MAX_LEVELS_ABOVE;
+        bool const above = Take::IsRed(quest, place.level);
         if (quest.level <= 0 || isGrey != grey || above || quest.exclusiveGroup ||
             (quest.flags & (Circuit::REPEAT_FLAGS | Circuit::GROUP_FLAGS | Circuit::INSTANCE_FLAGS)) ||
             std::binary_search(hub.begin(), hub.end(), quest.id) ||

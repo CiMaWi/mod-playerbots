@@ -42,7 +42,6 @@ namespace Planner
 namespace Circuit
 {
 // All values are estimates [E] that WT14/WT17 tune
-constexpr std::int32_t MAX_LEVELS_ABOVE = Take::MAX_LEVELS_ABOVE;
 constexpr std::size_t LOG_RESERVE = 2;          // free log slots kept, as today's drop pass keeps them
 constexpr float HUB_GIVER_YARDS = 120.0f;       // the quest givers this near the bot make its hub
 constexpr float FAR_YARDS = 4000.0f;            // objectives farther from the hub (about a zone's width) belong
@@ -181,7 +180,7 @@ enum class SkipReason : std::uint8_t
     InLog,
     Repeatable,
     Refused,  // the executor refuses it for the side, or it is listed as impossible
-    TooHigh,
+    Red,      // red for the bot (Take::ColourOf)
     Grey,
     Instance,    // dungeon, raid or PvP
     Solo,        // elite or group quest while solo
@@ -195,8 +194,8 @@ enum class SkipReason : std::uint8_t
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(SkipReason::Count)> SKIP_NAMES = {
-    "rewarded", "in log",    "repeatable", "refused", "too high", "grey",    "instance", "elite/group solo",
-    "game",     "exclusive", "breadcrumb", "risky",   "no area",  "too far", "log full"};
+    "rewarded", "in log",    "repeatable", "refused", "red",     "grey",    "instance", "elite/group solo",
+    "game",     "exclusive", "breadcrumb", "risky",   "no area", "too far", "log full"};
 
 enum class AbandonReason : std::uint8_t
 {
@@ -236,8 +235,8 @@ inline SkipReason SkipOf(Take::Reason reason)
             return SkipReason::InLog;
         case Take::Reason::Repeatable:
             return SkipReason::Repeatable;
-        case Take::Reason::TooHigh:
-            return SkipReason::TooHigh;
+        case Take::Reason::Red:
+            return SkipReason::Red;
         case Take::Reason::GivenUp:  // the circuit passes no given-up list
         case Take::Reason::Impossible:
         case Take::Reason::Unsupported:
@@ -808,10 +807,12 @@ private:
         return it != bonus.end() && it->first == quest ? it->second : 0.0f;
     }
 
+    // By the quest's colour for the bot (Take::ColourShare, questing-2 QS.6)
     float Value(QuestRecord const& quest) const
     {
-        return (static_cast<float>(quest.xpBase) + UnlockBonus(quest.id)) * _weights.xp +
-               static_cast<float>(std::max(quest.copperReward, 0)) * _weights.copper;
+        return ((static_cast<float>(quest.xpBase) + UnlockBonus(quest.id)) * _weights.xp +
+                static_cast<float>(std::max(quest.copperReward, 0)) * _weights.copper) *
+               Take::ColourShare(Take::ColourOf(quest, _bot.level));
     }
 
     QuestStatSummary const* Stats(std::uint32_t quest) const
@@ -1112,6 +1113,7 @@ private:
         for (LogQuest const& quest : _log)
         {
             if (Abandoned(quest.slot.quest) || Contains(_context.givenUp, quest.slot.quest) ||
+                Take::IsRed(*quest.record, _bot.level) ||  // held, and waits for the bot's levels (QS.6)
                 (!(quest.slot.state & SLOT_COMPLETE) && Waits(*quest.record)))
                 continue;
             Placement placement = Locate(*quest.record, &quest.slot);

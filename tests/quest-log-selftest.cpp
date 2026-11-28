@@ -610,7 +610,8 @@ bool LogDrops(QuestRecord const& quest, Log const& log, bool ready)
 // The rules before WQ34, put back as mutants: the invariants must catch each (the step's exit)
 namespace Old
 {
-constexpr std::int32_t ITEM_BAND = 10;  // QuestAction::GREY_QUEST_LEVEL_BAND
+constexpr std::int32_t ITEM_BAND = 10;         // QuestAction::GREY_QUEST_LEVEL_BAND
+constexpr std::int32_t FREE_LEVELS_ABOVE = 3;  // upstream's QUEST_MAX_LEVELS_ABOVE_BOT (IsQuestCapableDoing)
 
 bool Grey4(QuestRecord const& quest, State const& state)
 {
@@ -641,7 +642,7 @@ bool PathAccepts(Path path, QuestRecord const& quest, Log const& log, Ids const&
         case Path::FreeGiver:
             return game && !Grey4(quest, state) && !(quest.flags & Take::REPEAT_FLAGS) &&
                    !(quest.flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) &&
-                   level <= static_cast<std::int32_t>(state.level) + Take::MAX_LEVELS_ABOVE &&
+                   level <= static_cast<std::int32_t>(state.level) + FREE_LEVELS_ABOVE &&
                    !RefusedFor(quest, SideOfRace(state.race));
         case Path::Item:
             return game && static_cast<std::int32_t>(state.level) <= level + ITEM_BAND;

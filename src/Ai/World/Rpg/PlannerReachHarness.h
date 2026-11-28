@@ -394,8 +394,9 @@ inline void Cases(std::vector<Check>& checks, SeaWorld const& world, TravelGraph
         "hubs " + Names(world, blocked.filled.hubs) + "; rows" + RowText(rows) + "; " +
             GoalHarness::Summary(blocked.plan.ranked));
 
-    // 4) A complete quest whose ender is across the sea: the turn-in priced by its route; no cost, no option
-    Snapshot carrier = BotAt(HOME, 15, 0);
+    // 4) A complete quest whose ender is across the sea: the turn-in priced by its route; no cost, no option. The
+    // carrier's level makes the far camp's quest yellow: a red one waits in the log (questing-2 QS.6)
+    Snapshot carrier = BotAt(HOME, 19, 0);
     Carry(carrier, QuestOf(FAR));
     Run const sea = Plan(world, graph, carrier, true, ROUTE_SEARCHES_PER_JOB);
     Run const seaBare = Plan(world, graph, carrier, true, 0);

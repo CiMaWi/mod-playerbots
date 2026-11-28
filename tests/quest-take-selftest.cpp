@@ -8,7 +8,7 @@
 // with one case per reason word and the order of the rules, then generated bots, quests and game answers (the seed is
 // printed; argv[1] replays it) checked against the invariants: the game's answer decides (Facts::takeable, the core's
 // CanTakeQuest on the bot's map thread): a quest May allows is in it, and a quest in it is taken unless one of the
-// plan's own rules (rewarded, in the log, given up, listed, repeatable, refused for the side, too high, grey, kind,
+// plan's own rules (rewarded, in the log, given up, listed, repeatable, refused for the side, red, grey, kind,
 // elite or group, a breadcrumb to an answered target) leaves it; the plan's own rules hold whatever the answer; the
 // same input gives the same answer; the circuit's skip for every reason. A quest that needs a skill the bot lacks is
 // not in the answer, and the plan holds no copy of the game's rule: a quest of a higher minimum level, another race or
@@ -166,7 +166,8 @@ void Table()
     add("listed and in the log", "in_log", [](QuestRecord& q) { q.impossible = "data"; }, InLog({QUEST}));
     add("refused for the other side", "yes", [](QuestRecord& q) { q.refused[1] = 1; });
     add("3 levels above", "yes", [](QuestRecord& q) { q.level = 23; });
-    add("4 levels above", "too_high", [](QuestRecord& q) { q.level = 24; });
+    add("4 levels above (orange)", "yes", [](QuestRecord& q) { q.level = 24; });
+    add("5 levels above (red)", "red", [](QuestRecord& q) { q.level = 25; });
     add("6 levels below", "yes", [](QuestRecord& q) { q.level = 14; });  // the game's grey level at 20 is 13 (WQ34)
     add("7 levels below", "grey", [](QuestRecord& q) { q.level = 13; });
     add("dungeon", "kind", [](QuestRecord& q) { q.flags = QuestFlag::DUNGEON; });
@@ -192,7 +193,7 @@ void Table()
     add("in the log and rewarded", "done", same, Lists{{QUEST}, {QUEST}, {}, {QUEST}});
     add("given up and daily", "given_up", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, GaveUp({QUEST}));
     add("daily left out of the answer", "repeatable", [](QuestRecord& q) { q.flags = QuestFlag::DAILY; }, Answered({}));
-    add("refused and too high", "unsupported",
+    add("refused and red", "unsupported",
         [](QuestRecord& q)
         {
             q.refused[0] = 1;
@@ -225,8 +226,8 @@ void Table()
     for (std::size_t i = 0; i < seen.size(); ++i)
         Check(seen[i], std::string("table: no case for ") + Take::WORDS[i]);
     std::array<std::string, static_cast<std::size_t>(Reason::Count)> const words = {
-        "done",     "in_log", "given_up", "impossible",  "repeatable", "unsupported",
-        "too_high", "grey",   "kind",     "elite_group", "game",       "breadcrumb"};
+        "done", "in_log", "given_up", "impossible",  "repeatable", "unsupported",
+        "red",  "grey",   "kind",     "elite_group", "game",       "breadcrumb"};
     for (std::size_t i = 0; i < words.size(); ++i)
         Check(words[i] == Take::WORDS[i], std::string("word ") + std::to_string(i) + ": " + Take::WORDS[i]);
 }
@@ -268,7 +269,7 @@ void Skips()
         {Reason::Impossible, "refused"},
         {Reason::Repeatable, "repeatable"},
         {Reason::Unsupported, "refused"},
-        {Reason::TooHigh, "too high"},
+        {Reason::Red, "red"},
         {Reason::Grey, "grey"},
         {Reason::Kind, "instance"},
         {Reason::EliteGroup, "elite/group solo"},
@@ -337,7 +338,7 @@ bool OwnRuleLeaves(QuestRecord const& quest, Take::Facts const& bot, Lists const
     return Take::Holds(lists.rewarded, quest.id) || Take::Holds(lists.inLog, quest.id) ||
            Take::Holds(lists.givenUp, quest.id) || !quest.impossible.empty() ||
            (quest.flags & (QuestFlag::DAILY | QuestFlag::WEEKLY | QuestFlag::REPEATABLE | QuestFlag::SEASONAL)) ||
-           (side < SIDES && quest.refused[side]) || level > static_cast<std::int32_t>(bot.level) + 3 ||
+           (side < SIDES && quest.refused[side]) || level >= static_cast<std::int32_t>(bot.level) + 5 ||
            (quest.level > 0 && quest.level <= GameGrey(bot.level)) ||
            (quest.flags & (QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP)) ||
            ((quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP)) && !bot.eliteGroup);
@@ -345,6 +346,41 @@ bool OwnRuleLeaves(QuestRecord const& quest, Take::Facts const& bot, Lists const
 
 // Generated bots and game answers against every generated quest. The answers are drawn apart from the quests' limits,
 // so they hold quests a copy of the game's rule would refuse and leave out quests it would allow
+// questing-2 QS.6: the colour of a quest for a bot of level 20 (the game's grey level there is 13) and its share
+void Colours()
+{
+    struct Row
+    {
+        std::int32_t level;
+        Take::Colour colour;
+        float share;
+    };
+    Row const rows[] = {
+        {30, Take::Colour::Red, 0.0f},    {25, Take::Colour::Red, 0.0f},    {24, Take::Colour::Orange, 0.3f},
+        {23, Take::Colour::Orange, 0.3f}, {22, Take::Colour::Yellow, 1.0f}, {20, Take::Colour::Yellow, 1.0f},
+        {18, Take::Colour::Yellow, 1.0f}, {17, Take::Colour::Green, 0.3f},  {14, Take::Colour::Green, 0.3f},
+        {13, Take::Colour::Grey, 0.0f},   {1, Take::Colour::Grey, 0.0f},    {-1, Take::Colour::Yellow, 1.0f}};
+    for (Row const& row : rows)
+    {
+        QuestRecord quest;
+        quest.level = row.level;
+        Take::Colour const colour = Take::ColourOf(quest, 20);
+        Check(colour == row.colour, "colour of a level " + std::to_string(row.level) + " quest at 20");
+        Check(Take::ColourShare(colour) == row.share, "share of a level " + std::to_string(row.level) + " quest");
+        Check(Take::IsRed(quest, 20) == (row.colour == Take::Colour::Red), "red is the colour's");
+    }
+    QuestRecord high;
+    high.level = 60;
+    Check(Take::ColourOf(high, 0) == Take::Colour::Yellow, "no bot level: no colour is asked");
+    // A level 3 bot in a start area: no grey line yet, a level 7 quest is orange, a level 8 quest red
+    QuestRecord seven;
+    seven.level = 7;
+    QuestRecord eight;
+    eight.level = 8;
+    Check(Take::ColourOf(seven, 3) == Take::Colour::Orange && Take::ColourOf(eight, 3) == Take::Colour::Red,
+          "level 3: a level 7 quest is orange, a level 8 quest red");
+}
+
 void GeneratedCases(std::uint32_t seed)
 {
     std::mt19937 rng(seed);
@@ -427,6 +463,7 @@ int main(int argc, char** argv)
     Table();
     Skips();
     GameAnswer();
+    Colours();
     GeneratedCases(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

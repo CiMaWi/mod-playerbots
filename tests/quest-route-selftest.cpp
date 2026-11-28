@@ -1253,7 +1253,7 @@ void GoalRoutes(std::uint32_t seed)
         std::string const where = "log " + std::to_string(logIndex);
 
         // The same route from the needs as this test states them
-        Pricing const pricing{context.weights, {}};
+        Pricing const pricing{context.weights, {}, 0.0f, bot.level};
         std::vector<Need> needs = Needs(w.index, w.log, bot.team, pricing, bot.groupSize);
         std::vector<std::uint32_t> inLog;
         for (QuestSlot const& slot : w.log)

@@ -323,7 +323,7 @@ void BuildBarrens(World& w)
     q.type = QuestType::PVP;
     w.Kill(q, 5106, 5, KALIMDOR, BARRENS_E);
     w.Add(q, CROSSROADS_GIVER, CROSSROADS_GIVER);
-    q = World::Make(309, 26, 2500);
+    q = World::Make(309, 27, 2500);  // red for the level 22 bot (questing-2 QS.6)
     q.minLevel = 22;
     w.Kill(q, 5104, 10, KALIMDOR, BARRENS_SW);
     w.Add(q, CROSSROADS_GIVER, CROSSROADS_GIVER);
@@ -736,17 +736,17 @@ int main()
     fullTurnIn.expect.moveCamp = NO_CAMP;
     Run(fullTurnIn, false);
 
-    // A log of 20 far quests (another map, each worth 1200; WT14 fix): the hub's quests push the five cheapest out,
-    // the carried 117 (a delivery worth 100) pushes none out and waits at the hub for log space
+    // A log of 20 far quests (another map; WT14 fix): the hub's quests push the five cheapest out. Since questing-2
+    // QS.6 the far quests, level 22 and red for the level 12 bot, are worth nothing to it: the carried 117 (a
+    // delivery worth 100) pushes one more out. Its test against quests of worth is the dear delivery's below
     CircuitHarness::Scenario cheapDelivery{
         "goldshire-12-full-log-cheap-delivery", Bot(12, HUMAN, WARRIOR, 0, EASTERN, GOLDSHIRE), base, {}};
     cheapDelivery.bot.rewardedQuests = {113, 120};
     for (std::uint32_t id = 350; id < 370; ++id)
         cheapDelivery.bot.quests.push_back(Slot(id));
     cheapDelivery.expect.exactTake = true;
-    cheapDelivery.expect.take = {101, 102, 103, 104, 105, 110, 114, 124};
-    cheapDelivery.expect.notTake = {117};
-    CircuitHarness::ExactAbandon(cheapDelivery.expect, {350, 351, 352, 353, 354});
+    cheapDelivery.expect.take = {101, 102, 103, 104, 105, 110, 114, 117, 124};
+    CircuitHarness::ExactAbandon(cheapDelivery.expect, {350, 351, 352, 353, 354, 355});
     Run(cheapDelivery, false);
 
     // The same hub with 30 far quests in a log without a limit (questing WQ40, WQ.46 item 1): the hub's quests and

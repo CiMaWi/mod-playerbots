@@ -16,17 +16,18 @@
 
 #include "QuestIndex.h"
 
-// Whether a bot may take a quest now (questing WQ17a, decisions WQ.21 and WQ.43): one rule set for the circuit, the
-// plan's needs and the accept at a giver, so they cannot disagree. WQ41 (decision WQ.47): the game decides what it
-// allows (level, race, class, previous quests, exclusive groups, breadcrumbs, skills, standings, holidays): its answer
-// is a fact, the core's CanTakeQuest asked on the bot's map thread (Snapshot::takeable, PlannerService.cpp
-// FillTakeable; a live accept asks it for its one quest). The rules here are the plan's own choices. Pure: the quest's
-// record and plain facts of the bot; no game object, no config, no state. tests/quest-take-selftest.cpp checks it
+// Whether the plan takes a quest now (questing WQ17a, decisions WQ.21 and WQ.43): one rule set for the circuit and the
+// plan's needs. The accept at a giver the bot stands at is the log's (QuestLogRules.h Accepts) and has no level rule:
+// a bot takes what it comes across, and this rule decides what it walks for (questing-2 QS.6). WQ41 (decision WQ.47):
+// the game decides what it allows (level, race, class, previous quests, exclusive groups, breadcrumbs, skills,
+// standings, holidays): its answer is a fact, the core's CanTakeQuest asked on the bot's map thread
+// (Snapshot::takeable, PlannerService.cpp FillTakeable; a live accept asks it for its one quest). The rules here are
+// the plan's own choices. Pure: the quest's record and plain facts of the bot; no game object, no config, no state.
+// tests/quest-take-selftest.cpp checks it
 namespace Planner
 {
 namespace Take
 {
-constexpr std::int32_t MAX_LEVELS_ABOVE = 3;  // QUEST_MAX_LEVELS_ABOVE_BOT (QuestLevelRules.h), as today
 constexpr std::uint16_t INSTANCE_FLAGS = QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP;
 constexpr std::uint16_t GROUP_FLAGS = QuestFlag::ELITE | QuestFlag::GROUP;
 constexpr std::uint16_t REPEAT_FLAGS =
@@ -41,7 +42,7 @@ enum class Reason : std::uint8_t
     Impossible,  // WQ38: on the list of quests known to be impossible (QuestRecord::impossible)
     Repeatable,
     Unsupported,  // the executor refuses a work of it for the bot's side (QuestRecord::refused)
-    TooHigh,      // more than MAX_LEVELS_ABOVE above the bot
+    Red,          // red for the bot (ColourOf): the plan neither walks to take it nor works it
     Grey,
     Kind,        // dungeon, raid or PvP
     EliteGroup,  // elite or group quest while the caller allows none
@@ -50,8 +51,8 @@ enum class Reason : std::uint8_t
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Reason::Count)> WORDS = {
-    "done",     "in_log", "given_up", "impossible",  "repeatable", "unsupported",
-    "too_high", "grey",   "kind",     "elite_group", "game",       "breadcrumb"};
+    "done", "in_log", "given_up", "impossible",  "repeatable", "unsupported",
+    "red",  "grey",   "kind",     "elite_group", "game",       "breadcrumb"};
 
 inline char const* Word(Reason reason) { return WORDS[static_cast<std::size_t>(reason)]; }
 
@@ -99,6 +100,57 @@ inline bool IsGrey(QuestRecord const& quest, std::uint8_t level)
     return quest.level > 0 && quest.level <= GrayLevel(level);
 }
 
+// questing-2 QS.6: the game's colour of a quest for a bot of this level, as the client's quest log shows it: what the
+// game says of its difficulty and of its use. Red is 5 levels or more above the bot, orange 3 or 4, yellow within 2,
+// green below that down to the grey line (IsGrey). A quest without a level is of the bot's own: yellow. No bot
+// level (0): no colour is asked, yellow
+enum class Colour : std::uint8_t
+{
+    Grey,
+    Green,
+    Yellow,
+    Orange,
+    Red
+};
+constexpr std::int32_t RED_LEVELS_ABOVE = 5;
+constexpr std::int32_t ORANGE_LEVELS_ABOVE = 3;
+constexpr std::int32_t YELLOW_LEVELS_BELOW = 2;
+
+inline Colour ColourOf(QuestRecord const& quest, std::uint8_t level)
+{
+    if (quest.level <= 0 || !level)
+        return Colour::Yellow;
+    std::int32_t const above = quest.level - static_cast<std::int32_t>(level);
+    if (above >= RED_LEVELS_ABOVE)
+        return Colour::Red;
+    if (above >= ORANGE_LEVELS_ABOVE)
+        return Colour::Orange;
+    if (above >= -YELLOW_LEVELS_BELOW)
+        return Colour::Yellow;
+    return IsGrey(quest, level) ? Colour::Grey : Colour::Green;
+}
+
+// The share of a quest's worth the plan counts, by its colour (the user, QS.6): yellow is what a bot works; green
+// (easy, little gained) and orange (a dare) are worth the same small share, so they are done beside yellow ones or
+// when nothing yellow is left; red and grey are worth nothing. A tuning value [E]
+constexpr float SIDE_COLOUR_SHARE = 0.3f;
+
+constexpr float ColourShare(Colour colour)
+{
+    switch (colour)
+    {
+        case Colour::Yellow:
+            return 1.0f;
+        case Colour::Green:
+        case Colour::Orange:
+            return SIDE_COLOUR_SHARE;
+        default:
+            return 0.0f;
+    }
+}
+
+inline bool IsRed(QuestRecord const& quest, std::uint8_t level) { return ColourOf(quest, level) == Colour::Red; }
+
 // The plan's own rules, without the game's answer: the circuit asks these alone of a quest its own turn-ins unlock,
 // which the answer, taken before them, cannot hold (QuestCircuit.h Takeable)
 inline std::optional<Reason> Own(QuestRecord const& quest, Facts const& bot)
@@ -115,8 +167,8 @@ inline std::optional<Reason> Own(QuestRecord const& quest, Facts const& bot)
         return Reason::Repeatable;
     if (RefusedFor(quest, SideOfRace(bot.race)))
         return Reason::Unsupported;
-    if (QuestLevel(quest, bot.level) > static_cast<std::int32_t>(bot.level) + MAX_LEVELS_ABOVE)
-        return Reason::TooHigh;
+    if (IsRed(quest, bot.level))
+        return Reason::Red;
     if (IsGrey(quest, bot.level))
         return Reason::Grey;
     if (quest.flags & INSTANCE_FLAGS)

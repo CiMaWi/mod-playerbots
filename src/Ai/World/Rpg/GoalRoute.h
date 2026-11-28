@@ -81,7 +81,7 @@ inline Goals::RoutePlan Build(FieldMap const& map, Snapshot const& bot, CircuitC
     QuestIndex const& index = *context.quests;
     float const questItemShare =  // questing WQ44
         bot.bagSlots ? static_cast<float>(std::min(bot.questItemSlots, bot.bagSlots)) / bot.bagSlots : 0.0f;
-    QuestFields::Pricing const pricing{context.weights, context.unlockBonus, questItemShare};
+    QuestFields::Pricing const pricing{context.weights, context.unlockBonus, questItemShare, bot.level};
     std::vector<QuestFields::Need> needs =
         QuestFields::Needs(index, bot.quests, bot.team, pricing, bot.groupSize, situation.givenUpQuests);
 

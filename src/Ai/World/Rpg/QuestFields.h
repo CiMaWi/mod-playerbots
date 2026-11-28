@@ -140,6 +140,7 @@ struct Pricing
     CircuitWeights weights{};
     std::span<std::pair<std::uint32_t, float> const> unlockBonus{};  // (quest, bonus XP), sorted
     float questItemShare{0.0f};  // questing WQ44: share of the general bag slots holding a quest item, 0 to 1
+    std::uint8_t level{0};       // questing-2 QS.6: the bot's level, for the quests' colour; 0: no colour is asked
 };
 
 inline float UnlockBonusOf(Pricing const& pricing, std::uint32_t quest)
@@ -150,11 +151,13 @@ inline float UnlockBonusOf(Pricing const& pricing, std::uint32_t quest)
     return it != pricing.unlockBonus.end() && it->first == quest ? it->second : 0.0f;
 }
 
-// The quest's worth as the circuit prices it (Circuit's Value)
+// The quest's worth as the circuit prices it (Circuit's Value): its reward, by its colour for the bot
+// (Take::ColourShare, questing-2 QS.6)
 inline float QuestWorth(QuestRecord const& quest, Pricing const& pricing)
 {
-    return (static_cast<float>(quest.xpBase) + UnlockBonusOf(pricing, quest.id)) * pricing.weights.xp +
-           static_cast<float>(std::max(quest.copperReward, 0)) * pricing.weights.copper;
+    return ((static_cast<float>(quest.xpBase) + UnlockBonusOf(pricing, quest.id)) * pricing.weights.xp +
+            static_cast<float>(std::max(quest.copperReward, 0)) * pricing.weights.copper) *
+           Take::ColourShare(Take::ColourOf(quest, pricing.level));
 }
 
 namespace Detail
@@ -365,7 +368,8 @@ inline bool UsesPlaces(FieldMap const& map, Need const& need)
 // in what it holds complete. Of an open quest none: one the capability table refuses for the bot's side, a listed one
 // (WQ38) and an elite, group or instance quest for a bot alone (groupSize 1 or less). A slot of a quest the index
 // lacks is passed over. The more quest items the bot carries, the more a hand-in and a quest's only open objective
-// are worth (QUEST_ITEM_PULL, questing WQ44)
+// are worth (QUEST_ITEM_PULL, questing WQ44). A quest that is red for the bot (Take::ColourOf, pricing.level) gives
+// none, its hand-in neither: it is held and waits for the bot's levels (questing-2 QS.6)
 inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot const> log, std::uint8_t team,
                                Pricing const& pricing, std::uint32_t groupSize,
                                std::span<std::uint32_t const> givenUp = {})
@@ -375,7 +379,7 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
     for (QuestSlot const& slot : log)
     {
         QuestRecord const* quest = slot.quest ? index.Find(slot.quest) : nullptr;
-        if (!quest || Take::Holds(givenUp, quest->id))
+        if (!quest || Take::Holds(givenUp, quest->id) || Take::IsRed(*quest, pricing.level))
             continue;
         QuestShares const shares = SharesOf(*quest, pricing);
         if (slot.state & Circuit::SLOT_COMPLETE)

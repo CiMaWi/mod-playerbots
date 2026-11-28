@@ -878,6 +878,40 @@ void TwoSources()
           "two sources at 60 % and 10 %: 2.2 items in ten minutes");
 }
 
+// questing-2 QS.6: a held quest by its colour for the bot: a red one gives no need, its hand-in neither; an orange
+// and a green one count a share of their worth; without a bot level no colour is asked
+void Colours()
+{
+    constexpr std::uint32_t MOB = 320;
+    auto const quest = [](std::uint32_t id, std::int32_t level)
+    {
+        QuestRecord record = MakeQuest(id, 1000, {MakeObjective(ObjectiveKind::Kill, MOB, 10, 0)});
+        record.level = level;
+        return record;
+    };
+    QuestIndex const index = FixedIndex({quest(70, 20), quest(71, 24), quest(72, 25), quest(73, 16)}, SourceGather{});
+    std::vector<QuestSlot> const log = {{70, 0, {}}, {71, 0, {}}, {72, 0, {}}, {73, 0, {}}};
+    Pricing at20{};
+    at20.level = 20;
+    std::vector<Need> const needs = Needs(index, log, 0, at20, ALONE);
+    auto const worth = [&](std::uint32_t id) -> float
+    {
+        for (Need const& need : needs)
+            if (need.quest == id)
+                return need.worthPerCredit;
+        return -1.0f;
+    };
+    Check(worth(72) < 0.0f, "colours: a red quest gives no need");
+    Check(worth(70) > 0.0f && std::fabs(worth(71) - 0.3f * worth(70)) < 1e-4f * worth(70),
+          "colours: an orange quest counts 0.3 of a yellow one");
+    Check(std::fabs(worth(73) - worth(71)) < 1e-4f * worth(70), "colours: a green quest counts as an orange one");
+    std::vector<QuestSlot> const ready = {{72, Circuit::SLOT_COMPLETE, {}}};
+    Check(Needs(index, ready, 0, at20, ALONE).empty(), "colours: a ready red quest waits too");
+    Check(Needs(index, log, 0, Pricing{}, ALONE).size() == 4, "colours: no bot level, no colour");
+    Check(QuestWorth(index.quests[1], at20) == 0.3f * QuestWorth(index.quests[1], Pricing{}),
+          "colours: the quest's worth carries the share");
+}
+
 // Needed targets far above the bot: never ranked, listed as too risky; a little above: ranked at a lower worth
 void TooHigh()
 {
@@ -1418,6 +1452,7 @@ int main(int argc, char** argv)
     MomentTen();
     TwoSources();
     TooHigh();
+    Colours();
     Kinds();
     GeneratedLogs(seed);
     Steps();
