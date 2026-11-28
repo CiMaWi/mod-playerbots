@@ -301,7 +301,7 @@ inline Run Plan(SeaWorld const& world, TravelGraph const& graph, Snapshot bot, b
         context.travel = RouteCost::Hook(run.cost);
     }
     live.here.hub = NO_HUB;
-    run.plan = PlanGoals(bot, context, GoalHarness::Reserved(live, bot.level));
+    run.plan = PlanGoals(TakeFixture::Answered(bot, context), context, GoalHarness::Reserved(live, bot.level));
     run.filled = live;
     GoalHarness::Filled(bot, context, run.filled);
     run.deliveries = Deliveries(bot, context, run.plan.circuit, bot.runSpeed);

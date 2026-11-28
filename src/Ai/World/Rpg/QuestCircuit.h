@@ -42,7 +42,6 @@ namespace Planner
 namespace Circuit
 {
 // All values are estimates [E] that WT14/WT17 tune
-constexpr std::uint32_t GREY_DIFF = Take::GREY_DIFF;  // the take rules' (QuestTakeRules.h)
 constexpr std::int32_t MAX_LEVELS_ABOVE = Take::MAX_LEVELS_ABOVE;
 constexpr std::size_t LOG_RESERVE = 2;          // free log slots kept, as today's drop pass keeps them
 constexpr float HUB_GIVER_YARDS = 120.0f;       // the quest givers this near the bot make its hub
@@ -170,7 +169,9 @@ struct CircuitContext
     std::vector<std::uint32_t> protectedQuests;  // never abandoned: a group's or the bridge's goal (WT16 fills)
     std::vector<std::pair<std::uint32_t, float>> unlockBonus;  // (quest, bonus XP), sorted: class quests (WU20a)
     std::vector<QuestProgress> progress;
-    std::uint32_t greyDiff{Circuit::GREY_DIFF};
+    // Sorted: the bot's given-up quests (QuestLog::Record::givenUp, a failed hand-in too, WQ34): a held one is never
+    // worked or turned in, it waits in the log until it is grey; none is taken
+    std::vector<std::uint32_t> givenUp;
     TravelCost travel;  // moving on; empty = straight yards at the run speed (same map only)
 };
 
@@ -179,14 +180,14 @@ enum class SkipReason : std::uint8_t
     Rewarded,
     InLog,
     Repeatable,
-    Limits,  // race, class or maximum level
+    Refused,  // the executor refuses it for the side, or it is listed as impossible
     TooHigh,
     Grey,
-    Instance,  // dungeon, raid or PvP
-    Solo,      // elite or group quest while solo
-    Prerequisite,
-    Exclusive,
-    Breadcrumb,  // its target is done or takeable
+    Instance,    // dungeon, raid or PvP
+    Solo,        // elite or group quest while solo
+    Game,        // WQ41: not in the game's answer (Snapshot::takeable)
+    Exclusive,   // another quest of its exclusive group is chosen here
+    Breadcrumb,  // the game lets the bot take its target now
     Risky,
     NoArea,
     TooFar,
@@ -194,9 +195,8 @@ enum class SkipReason : std::uint8_t
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(SkipReason::Count)> SKIP_NAMES = {
-    "rewarded",         "in log",       "repeatable", "race/class/max level", "too high", "grey",    "instance",
-    "elite/group solo", "prerequisite", "exclusive",  "breadcrumb",           "risky",    "no area", "too far",
-    "log full"};
+    "rewarded", "in log",    "repeatable", "refused", "too high", "grey",    "instance", "elite/group solo",
+    "game",     "exclusive", "breadcrumb", "risky",   "no area",  "too far", "log full"};
 
 enum class AbandonReason : std::uint8_t
 {
@@ -225,7 +225,7 @@ constexpr std::array<char const*, static_cast<std::size_t>(MoveReason::Count)> M
 
 inline char const* SkipName(SkipReason reason) { return SKIP_NAMES[static_cast<std::size_t>(reason)]; }
 
-// The circuit's skip for a take rule's reason (QuestTakeRules.h): its skip names and log rows stay as before WQ17a
+// The circuit's skip for a take rule's reason (QuestTakeRules.h)
 inline SkipReason SkipOf(Take::Reason reason)
 {
     switch (reason)
@@ -236,24 +236,20 @@ inline SkipReason SkipOf(Take::Reason reason)
             return SkipReason::InLog;
         case Take::Reason::Repeatable:
             return SkipReason::Repeatable;
-        case Take::Reason::Level:
         case Take::Reason::TooHigh:
             return SkipReason::TooHigh;
         case Take::Reason::GivenUp:  // the circuit passes no given-up list
         case Take::Reason::Impossible:
-        case Take::Reason::Limits:
         case Take::Reason::Unsupported:
-            return SkipReason::Limits;
+            return SkipReason::Refused;
         case Take::Reason::Grey:
             return SkipReason::Grey;
         case Take::Reason::Kind:
             return SkipReason::Instance;
         case Take::Reason::EliteGroup:
             return SkipReason::Solo;
-        case Take::Reason::Prerequisite:
-            return SkipReason::Prerequisite;
-        case Take::Reason::Exclusive:
-            return SkipReason::Exclusive;
+        case Take::Reason::Game:
+            return SkipReason::Game;
         case Take::Reason::Breadcrumb:
             return SkipReason::Breadcrumb;
         case Take::Reason::Count:
@@ -666,14 +662,6 @@ private:
         std::sort(_logIds.begin(), _logIds.end());
         std::sort(_log.begin(), _log.end(),
                   [](LogQuest const& a, LogQuest const& b) { return a.slot.quest < b.slot.quest; });
-        for (LogQuest const& quest : _log)
-            if (quest.record->exclusiveGroup > 0)
-                _takenGroups.push_back(quest.record->exclusiveGroup);
-        for (std::uint32_t const id : _rewarded)
-            if (QuestRecord const* record = _quests.Find(id))
-                if (record->exclusiveGroup > 0)
-                    _takenGroups.push_back(record->exclusiveGroup);
-        std::sort(_takenGroups.begin(), _takenGroups.end());
     }
 
     void FindHub()
@@ -698,21 +686,41 @@ private:
 
     bool Rewarded(std::uint32_t id) const { return Contains(_rewarded, id); }
 
-    // Whether the bot may take the quest now (the take rules, QuestTakeRules.h); the first rule it fails
+    // Whether the bot may take the quest (the take rules, QuestTakeRules.h); the first rule it fails. Now: with the
+    // game's answer (WQ41). A quest this circuit's turn-ins unlock (the index's links, while PredictTurnIns holds) is
+    // not in the answer yet: the plan's own rules decide it, the accept at its giver stays the authority
     std::optional<SkipReason> Takeable(QuestRecord const& quest) const
     {
         Take::Facts const facts{.race = _bot.race,
-                                .cls = _bot.cls,
                                 .level = _bot.level,
-                                .greyDiff = _context.greyDiff,
                                 .eliteGroup = _bot.groupSize > 1,
                                 .rewarded = _rewarded,
                                 .inLog = _logIds,
-                                .givenUp = {},
-                                .takenGroups = _takenGroups};
-        if (std::optional<Take::Reason> const why = Take::May(quest, facts, _quests))
-            return SkipOf(*why);
-        return std::nullopt;
+                                .givenUp = _context.givenUp,
+                                .takeable = _bot.takeable};
+        std::optional<Take::Reason> const why = Take::May(quest, facts);
+        if (!why || (*why == Take::Reason::Game && Contains(_unlocked, quest.id)))
+            return std::nullopt;
+        return SkipOf(*why);
+    }
+
+    // The bot once this circuit's turn-ins are done (FollowUps, MoveOn): the rewarded quests after them and the quests
+    // they unlock; EndPrediction gives the rewarded quests back
+    void PredictTurnIns()
+    {
+        _rewarded = RewardedAfter();
+        _unlocked.clear();
+        for (CircuitTurnIn const& turnIn : _plan.turnIns)
+            for (std::uint32_t const next : _quests.Unlocks(turnIn.quest))
+                _unlocked.push_back(next);
+        std::sort(_unlocked.begin(), _unlocked.end());
+        _unlocked.erase(std::unique(_unlocked.begin(), _unlocked.end()), _unlocked.end());
+    }
+
+    void EndPrediction(std::vector<std::uint32_t> const& rewarded)
+    {
+        _rewarded = rewarded;
+        _unlocked.clear();
     }
 
     bool HasSkill(std::uint16_t id) const
@@ -723,7 +731,7 @@ private:
         return false;
     }
 
-    bool IsGrey(QuestRecord const& quest) const { return Take::IsGrey(quest, _bot.level, _context.greyDiff); }
+    bool IsGrey(QuestRecord const& quest) const { return Take::IsGrey(quest, _bot.level); }
 
     // The quest's remaining objectives at their area nearest the hub, its nearest ender and its action time
     Placement Locate(QuestRecord const& quest, QuestSlot const* slot) const
@@ -864,8 +872,13 @@ private:
         return (quest.flags & (GROUP_FLAGS | INSTANCE_FLAGS)) && _bot.groupSize <= 1;
     }
 
-    // WQ38: a listed quest is never worked; it waits in the log as one that needs a group does
-    bool Waits(QuestRecord const& quest) const { return NeedsGroup(quest) || Listed(quest); }
+    // WQ38: a listed quest is never worked; it waits in the log as one that needs a group does. WQ34: so does one the
+    // executor refuses for the bot's side, which the log's accept may take (QuestFields::Needs gives it no need either)
+    bool Waits(QuestRecord const& quest) const
+    {
+        return NeedsGroup(quest) || Listed(quest) || RefusedFor(quest, _bot.team) ||
+               Contains(_context.givenUp, quest.id);
+    }
 
     void Skip(std::uint32_t quest, SkipReason reason) { _plan.skipped.push_back({quest, reason}); }
 
@@ -1018,9 +1031,14 @@ private:
             Reason("skip " + std::to_string(skip.quest) + ": " + SkipName(skip.reason));
     }
 
-    // The log's free slots after its abandons and `more` abandons still to come, keeping LOG_RESERVE free
+    // The log's free slots after its abandons and `more` abandons still to come, keeping LOG_RESERVE free. A log
+    // without a limit (questing WQ40: every bot the planner leads) always has room, so for it no quest is left for
+    // log space, none is pushed out and no move waits for a slot: the rules below are a client's log's
+    static constexpr std::size_t ALWAYS_ROOM = std::numeric_limits<std::size_t>::max() / 2;
     std::size_t FreeSlots(std::size_t more = 0) const
     {
+        if (_bot.noLogLimit)
+            return ALWAYS_ROOM;
         std::size_t const used = _logIds.size() - std::min(_logIds.size(), _abandoned.size() + more);
         return QUEST_LOG_SLOTS > used + LOG_RESERVE ? QUEST_LOG_SLOTS - used - LOG_RESERVE : 0;
     }
@@ -1036,7 +1054,7 @@ private:
         std::size_t freed = 0;  // complete log quests turned in on a loop from here
         for (LogQuest const& quest : _log)
             if ((quest.slot.state & SLOT_COMPLETE) && !Abandoned(quest.slot.quest) &&
-                TurnsInHere(Locate(*quest.record, &quest.slot)))
+                !Contains(_context.givenUp, quest.slot.quest) && TurnsInHere(Locate(*quest.record, &quest.slot)))
                 ++freed;
         if (wanted.size() <= FreeSlots() + freed)
             return;
@@ -1087,13 +1105,14 @@ private:
     }
 
     // Log quests join the circuit when what is left of them lies in reach and the bot can do it now. A quest with
-    // nothing left to do whose ender is at another hub is carried there, never walked to from here
+    // nothing left to do whose ender is at another hub is carried there, never walked to from here. A given-up quest
+    // never joins (WQ34: it waits in the log until it is grey); a listed or group quest joins only to be handed in
     void AddLogMembers()
     {
         for (LogQuest const& quest : _log)
         {
-            if (Abandoned(quest.slot.quest) || Listed(*quest.record) ||
-                (!(quest.slot.state & SLOT_COMPLETE) && NeedsGroup(*quest.record)))
+            if (Abandoned(quest.slot.quest) || Contains(_context.givenUp, quest.slot.quest) ||
+                (!(quest.slot.state & SLOT_COMPLETE) && Waits(*quest.record)))
                 continue;
             Placement placement = Locate(*quest.record, &quest.slot);
             if (!WorkHere(placement))
@@ -1470,7 +1489,7 @@ private:
             return;
         std::vector<std::uint32_t> const saved = _rewarded;
         std::vector<std::uint32_t> const savedLog = _logIds;
-        _rewarded = RewardedAfter();
+        PredictTurnIns();
         for (CircuitTurnIn const& turnIn : _plan.turnIns)
             _logIds.erase(std::remove(_logIds.begin(), _logIds.end(), turnIn.quest), _logIds.end());
         for (CircuitTurnIn const& turnIn : _plan.turnIns)
@@ -1490,7 +1509,7 @@ private:
                     }
             }
         std::sort(_plan.followUps.begin(), _plan.followUps.end());
-        _rewarded = saved;
+        EndPrediction(saved);
         _logIds = savedLog;
     }
 
@@ -1546,7 +1565,7 @@ private:
         if (!_plan.followUps.empty())
             return;
         std::vector<std::uint32_t> const saved = _rewarded;
-        _rewarded = RewardedAfter();
+        PredictTurnIns();
         bool dry = true;
         for (auto const& [id, giver] : _offered)
         {
@@ -1566,7 +1585,7 @@ private:
             dry = false;  // quests to do here, taken now or in the log
         if (!dry)
         {
-            _rewarded = saved;
+            EndPrediction(saved);
             return;
         }
         bool const full = LogFullAfter();
@@ -1626,7 +1645,7 @@ private:
                     ? (best.reason == MoveReason::Nowhere ? ": " + NowhereWhy(full, tally) : std::string())
                     : " to camp " + std::to_string(best.camp) + " (zone " + std::to_string(best.zone) + ", quest " +
                           std::to_string(best.quest) + "), " + std::to_string(static_cast<int>(best.seconds)) + " s"));
-        _rewarded = saved;
+        EndPrediction(saved);
     }
 
     // The log has no slot for another quest after this trip: the takes fill its free slots and no turn-in frees one
@@ -1775,7 +1794,7 @@ private:
     std::vector<std::uint32_t> _logIds;
     std::vector<std::uint32_t> _unindexed;  // log quests without an index record
     std::vector<LogQuest> _log;
-    std::vector<std::int32_t> _takenGroups;
+    std::vector<std::uint32_t> _unlocked;  // the quests the turn-ins unlock, while PredictTurnIns holds (sorted)
     std::vector<std::pair<std::uint32_t, std::uint32_t>> _offered;
     std::vector<std::uint32_t> _abandoned;
     std::vector<Member> _members;

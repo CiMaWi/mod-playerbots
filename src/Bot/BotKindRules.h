@@ -41,6 +41,14 @@ inline bool MasterCounts(MasterKind master)
 // A and B and not C: a persistent bot nobody at a game client leads keeps what it owns (upkeep, bank, mail, planner)
 inline bool KeepsPossessions(bool persistentBot, MasterKind master) { return persistentBot && !MasterCounts(master); }
 
+// A bot no game client ever plays (questing WQ40, WQ.46 item 1): a character of a random-bot account in a living world
+// whose session has no client. Read when the character loads, before it has an AI; no master and no test's hold
+// changes it, so a bot that once held more quests than a client's log gets the same answer at every later login
+inline bool NoClientPlays(bool livingWorld, bool randomBotAccount, bool headlessSession)
+{
+    return livingWorld && randomBotAccount && headlessSession;
+}
+
 // What the ladder role (Playerbots.Ladder.Role) decides about bot arena teams and PvP gear
 struct ArenaRoleValues
 {

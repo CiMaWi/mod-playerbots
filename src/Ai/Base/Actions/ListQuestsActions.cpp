@@ -69,7 +69,7 @@ uint32 ListQuestsAction::ListQuests(bool completed, bool silent, QuestTravelDeta
         target = context->GetValue<TravelTarget*>("travel target")->Get();
 
     uint32 count = 0;
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < bot->GetQuestLogSize(); ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
         if (!questId)

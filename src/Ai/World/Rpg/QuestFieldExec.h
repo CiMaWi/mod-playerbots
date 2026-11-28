@@ -41,8 +41,9 @@ constexpr float MAX_MINUTES = 24.0f * 60.0f;  // a stay or walk longer than this
 constexpr std::uint32_t MS_PER_MINUTE = 60 * 1000;
 constexpr std::uint32_t ROW_COUNT_MAX = 0xFFF;  // the QuestOrder row's credits and minutes, 12 bits each
 constexpr std::uint64_t ROW_CELL_MASK = 0x3FF;  // and its cell, 10 bits a coordinate
-constexpr float WAY_MINUTES = 5.0f;  // WQ20: a way's stay, the slack for the work on the way: a way that does not
-                                     // arrive ends `time` after twice its walk plus this
+constexpr float WAY_MINUTES = 5.0f;    // WQ20: a way's stay, the slack for the work on the way: a way that does not
+                                       // arrive ends `time` after twice its walk plus this
+constexpr float CLOSER_YARDS = 10.0f;  // WQ43: nearer the aim than ever by this much restarts the walk's bound
 
 // What a look found for an open need: a creature (its own level) or an object, where it stands
 struct Candidate
@@ -68,6 +69,37 @@ struct PickAsk
 
 // A game time as the run keeps it: 0 means "not yet", so a stamp taken at 0 is 1
 inline std::uint32_t Stamp(std::uint32_t now) { return now ? now : 1; }
+
+// WQ43 (L4): the bot's distance to its aim before the arrival, each executor tick (DoOrder). The first distance, and
+// one at least CLOSER_YARDS below the best so far, becomes the best and restarts the walk's bound (End): a bot that
+// still closes on its aim between its fights is not stuck. The best falls by a step at each restart and only a new aim
+// (at a count of the log) forgets it, so a bot that never arrives restarts the bound a bounded number of times
+inline void NoteCloser(QuestOrderRun& run, float yards, std::uint32_t now)
+{
+    if (run.arrivedAt || (run.closerAt && yards > run.bestYards - CLOSER_YARDS))
+        return;
+    run.bestYards = yards;
+    run.closerAt = Stamp(now);
+}
+
+// Whether the order counts the log again (the executor's tick, NoteOrderCredits): a quest it works turned complete or
+// left the log (worked(quest): its status is neither incomplete nor failed; a failed one keeps its objectives open, so
+// it is not counted each tick). A take's need closes at the counts the takes start. WQ43 (L2): an open hand-in whose
+// quest left the log without its reward (gone(quest)) counts again too, so its stale need closes: the quest is in no
+// NoEnderQuests and the order gives up no quest the bot no longer holds
+template <typename Worked, typename Gone>
+bool CountAgain(std::span<QuestOrderOpen const> open, Worked const& worked, Gone const& gone)
+{
+    return std::any_of(open.begin(), open.end(),
+                       [&](QuestOrderOpen const& need)
+                       {
+                           if (need.objective == QuestFields::TAKE)
+                               return false;
+                           if (need.objective == QuestFields::HAND_IN)
+                               return need.left > 0 && gone(need.quest);
+                           return worked(need.quest);
+                       });
+}
 
 inline std::uint32_t MinutesMs(float minutes)
 {
@@ -111,11 +143,50 @@ inline bool OnOrder(QuestOrder const& order, PickAsk const& ask, std::uint32_t m
            (ask.onWay && mapId == order.mapId && Detour(ask.x, ask.y, x, y, order.x, order.y, order.allowanceYards));
 }
 
-// Whether a candidate is one the order takes: its need open, within reach, in the field or on the way (OnOrder)
+// questing WQ33: a held target whose stand point or walk is refused (its pass-over `walk`: no stand point the mesh
+// carries, or a walk that gains nothing) counts against its need, not the target: the STAND_REFUSALS-th closes the
+// need, which no target is held for again, and that need's quest is given up with NO_STAND (one failure row). A lone
+// quest's executor (no order) counts its one need so and ends its status. A credit of the need (CarryRefusals) or an
+// act at one of its targets (StandWorked) clears the count; a closed need stays closed while its order runs
+constexpr std::uint8_t STAND_REFUSALS = 3;
+constexpr char const* NO_STAND = "no_stand";
+
+// One refusal of a need's count: true when it is the one that closes the need (once; a closed count stays closed)
+inline bool StandRefused(std::uint8_t& refusals)
+{
+    if (refusals >= STAND_REFUSALS)
+        return false;
+    return ++refusals == STAND_REFUSALS;
+}
+
+inline bool StandClosed(std::uint8_t refusals) { return refusals >= STAND_REFUSALS; }
+
+// An act at a target of the need (an attack, a use, a loot): the count starts again, unless the need is closed
+inline void StandWorked(std::uint8_t& refusals)
+{
+    if (!StandClosed(refusals))
+        refusals = 0;
+}
+
+// A refusal on an order: true when it closes the need and no other need of its quest closed before (the failure row
+// is the quest's, once per order)
+inline bool RefuseNeed(std::span<QuestOrderOpen> open, std::size_t need)
+{
+    if (need >= open.size() || !StandRefused(open[need].refusals))
+        return false;
+    for (std::size_t at = 0; at < open.size(); ++at)
+        if (at != need && open[at].quest == open[need].quest && StandClosed(open[at].refusals))
+            return false;
+    return true;
+}
+
+// Whether a candidate is one the order takes: its need open and not closed (WQ33), within reach, in the field or on
+// the way (OnOrder)
 inline bool Takes(Candidate const& candidate, std::span<QuestOrderOpen const> open, QuestOrder const& order,
                   PickAsk const& ask)
 {
     return candidate.need < open.size() && open[candidate.need].left > 0 &&
+           !StandClosed(open[candidate.need].refusals) &&
            (candidate.kind == FieldKind::Object || LevelWithinReach(candidate.level, ask.level, ask.caution)) &&
            OnOrder(order, ask, candidate.mapId, candidate.x, candidate.y);
 }
@@ -177,9 +248,10 @@ inline std::uint32_t NpcSlackMs(QuestOrder const& order) { return order.word == 
 
 // A newer order first; then the plan's end (done: an order that expects needs and has none open; arrived: a way at its
 // place once it holds no target, WQ20b); then the stay (from the arrival; without one, twice the planned walk plus the
-// stay from the start or the last count of the log, WQ20b: a bot that earns on the way is working, not stuck, and the
-// counts are finite, so every order ends); then the look time without a find at the place: no_ender while an expected
-// hand-in is open (WQ19b), else dry
+// stay from the start, the last count of the log or (WQ43, L4) the last new best distance to the aim, NoteCloser: a bot
+// that earns on the way or still closes on its aim is working, not stuck; the counts are finite and each new best is
+// CLOSER_YARDS nearer, so every order ends, one bound after it last counted or came nearer); then the look time
+// without a find at the place: no_ender while an expected hand-in is open (WQ19b), else dry
 inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t now, bool finding)
 {
     if (run.replaced)
@@ -195,7 +267,9 @@ inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t 
             return std::nullopt;
         float const bound = std::min(WALK_SLACK * order.walkMinutes + order.minutes, MAX_MINUTES);
         // the start counts the log, so its count is the start's stamp until a credit comes
-        std::uint32_t const walked = now - (run.lastCount ? run.lastCount : run.startedAt);
+        std::uint32_t walked = now - (run.lastCount ? run.lastCount : run.startedAt);
+        if (run.closerAt)
+            walked = std::min(walked, now - run.closerAt);
         if (walked >= MinutesMs(bound) + NpcSlackMs(order))
             return QuestOrderEnd::Time;
         return std::nullopt;
@@ -245,6 +319,16 @@ inline std::vector<QuestOrderOpen> Open(std::span<QuestFields::Need const> needs
         if (need.left)
             open.push_back({need.quest, need.objective, need.left});
     return open;
+}
+
+// WQ33: a recount of the needs keeps each need's refusals from the count before while it gained no credit (its credits
+// left the same); a credit clears them
+inline void CarryRefusals(std::span<QuestOrderOpen const> before, std::span<QuestOrderOpen> after)
+{
+    for (QuestOrderOpen& need : after)
+        for (QuestOrderOpen const& was : before)
+            if (was.quest == need.quest && was.objective == need.objective)
+                need.refusals = was.left == need.left ? was.refusals : 0;
 }
 
 // Whether one of a need's sources (a creature, an object; a hand-in's enders) has a row in the given cells
@@ -354,10 +438,11 @@ bool NeedOpen(std::span<QuestOrderOpen const> open, QuestOrderNeed const& need, 
 }
 
 // WQ18b: the end the executor names when End finds one. A hand-in the bags refuse (bagsRefuse(quest): the quest is
-// ready and only the room for its reward is missing) is no failed hand-in: its need closes, so it gets no failure row
+// ready and only the room for its reward is missing; since WQ43 the bot makes room at the ender, so this is left only
+// when nothing it may destroy covers the reward) is no failed hand-in: its need closes, so it gets no failure row
 // (NoEnderQuests) and the log upkeep keeps the ready quest (QuestLogRules' Abandon drops a ready quest only for a
 // failed hand-in on record). When every expected hand-in still open is such a one, no_ender becomes `bags` (ends by
-// the clock, no row: the bot makes room and comes back); one its ender failed keeps no_ender, with a row for it alone
+// the clock, no row: the bot comes back with room); one its ender failed keeps no_ender, with a row for it alone
 // WQ18b part 4: no_ender is said at the ender. A hand-in whose ender stands elsewhere in the order's field
 // (elsewhere(quest): EnderElsewhere; the order looked at another NPC) did not fail either: its need closes, it gets no
 // row and the quest stays for the route's next order. With none left the look found nothing where the bot stands: dry
@@ -523,8 +608,8 @@ inline bool AtGiver(std::span<NpcSpot const> spots, std::uint32_t quest, float x
 // WQ18c (WQ.44 item 2): the planned takes an order's end gives up, one cannot_take give-up each, written in one place
 // (QuestGiveUp::OrderEnded): the expected takes still open when an end that gives them up (GivesUpTakes) comes after
 // the arrival, while the bot stands at the quest's giver (atGiver) and the take test still allows the quest
-// (mayTake: a full log, a grey quest or one given up is no refusal of the giver). A giver that does not offer the
-// quest and a game that refuses its accept end alike: the take stays open and the order ends there. Once per quest
+// (mayTake: a full log, a grey quest, one given up or one the game refuses, WQ41, is no refusal of the giver). A giver
+// that does not offer the quest leaves the take open and the order ends there. Once per quest
 template <typename AtGiverOf, typename MayTake>
 std::vector<std::uint32_t> RefusedTakes(QuestOrderRun const& run, QuestOrderEnd end, AtGiverOf const& atGiver,
                                         MayTake const& mayTake)

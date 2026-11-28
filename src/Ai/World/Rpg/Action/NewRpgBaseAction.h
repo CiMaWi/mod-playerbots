@@ -109,6 +109,8 @@ protected:
     bool InteractWithNpcOrGameObjectForQuest(ObjectGuid guid);
     bool IsWithinInteractionDist(Object* object);
     uint32 BestRewardIndex(Quest const* quest);
+    // questing WQ43: room before a hand-in; true when the quest's reward fits now
+    bool MakeRoomForHandIn(Quest const* quest);
 
     /* QUEST RELATED ACTION */
     bool SearchQuestGiverAndAcceptOrReward();

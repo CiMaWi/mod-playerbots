@@ -18,6 +18,7 @@
 
 #include "QuestCircuit.h"
 #include "QuestCircuitLog.h"
+#include "QuestTakeFixture.h"
 
 // The circuit planner's scenario runner (travel plan WT13b): one line per check. Shared by the offline selftest
 // (tests/quest-circuit-selftest.cpp, synthetic worlds with exact expectations) and `playerbots planner circuit
@@ -198,15 +199,14 @@ inline double Percentile(std::vector<double> values, double share)
 }
 
 // Whether a taken quest is one the bot may take: limits, levels, solo rules (the real-data check)
-inline bool FitsBot(QuestRecord const& quest, Snapshot const& bot, std::uint32_t greyDiff)
+inline bool FitsBot(QuestRecord const& quest, Snapshot const& bot)
 {
     std::int32_t const level = Circuit::QuestLevel(quest, bot.level);
     bool const solo = bot.groupSize <= 1;
     return Eligible(quest, bot.race, bot.cls, bot.level) &&
            level <= static_cast<std::int32_t>(bot.level) + Circuit::MAX_LEVELS_ABOVE &&
-           static_cast<std::int32_t>(bot.level) <= level + static_cast<std::int32_t>(greyDiff) &&
-           !(quest.flags & Circuit::INSTANCE_FLAGS) && !(quest.flags & Circuit::REPEAT_FLAGS) &&
-           !(solo && (quest.flags & Circuit::GROUP_FLAGS));
+           !Take::IsGrey(quest, bot.level) && !(quest.flags & Circuit::INSTANCE_FLAGS) &&
+           !(quest.flags & Circuit::REPEAT_FLAGS) && !(solo && (quest.flags & Circuit::GROUP_FLAGS));
 }
 
 // The bot after the plan's loop, standing at the camp it moves on to: abandons and turn-ins leave the log, the turn-ins
@@ -232,7 +232,16 @@ inline Snapshot AfterMove(Snapshot bot, CircuitPlan const& plan, QuestIndex cons
     for (CircuitTake const& take : plan.take)
         if (std::find(gone.begin(), gone.end(), take.quest) == gone.end())
             bot.quests.push_back({take.quest, take.carried ? Circuit::SLOT_COMPLETE : 0u, {}});
+    TakeFixture::Answer(bot, quests);
     return bot;
+}
+
+// The scenario with the game's answer its bot would get (TakeFixture, WQ41b): the fixtures' bots are no players
+inline Scenario Answered(Scenario scenario)
+{
+    if (scenario.context.quests)
+        TakeFixture::Answer(scenario.bot, *scenario.context.quests);
+    return scenario;
 }
 
 // No walking in circles (review 4) and no wandering (review 5): follow the plan's moves from camp to camp, planning
@@ -291,8 +300,9 @@ inline Check Arrival(Scenario const& scenario, CircuitPlan const& plan, bool ful
                                IdList(AbandonedIds(there))};
 }
 
-inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
+inline Report RunScenario(Scenario const& input, std::uint32_t timingRuns)
 {
+    Scenario const scenario = Answered(input);
     Report report;
     std::string const& name = scenario.name;
     Expect const& expect = scenario.expect;
@@ -331,7 +341,7 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
     for (CircuitTake const& take : plan.take)
     {
         QuestRecord const* record = quests.Find(take.quest);
-        if (!record || !FitsBot(*record, scenario.bot, scenario.context.greyDiff))
+        if (!record || !FitsBot(*record, scenario.bot))
         {
             fits = false;
             misfits += " " + std::to_string(take.quest);
@@ -348,7 +358,7 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
     std::size_t const left =
         static_cast<std::size_t>(std::count_if(plan.skipped.begin(), plan.skipped.end(), [](CircuitSkip const& skip)
                                                { return skip.reason == SkipReason::LogFull; }));
-    Add(report, name, taken.empty() || after <= limit,
+    Add(report, name, taken.empty() || after <= limit || scenario.bot.noLogLimit,
         "log " + std::to_string(before) + " -> " + std::to_string(after) + " quests (" +
             std::to_string(abandoned.size()) + " abandoned, " + std::to_string(taken.size()) + " taken), limit " +
             std::to_string(limit));
@@ -456,7 +466,7 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
         std::string("the plan acts here or moves on (move ") + MoveName(plan.moveOn.reason) + ")");
     // A move leads where the bot acts on arrival; a log still full after this trip moves on only to deliver or to
     // where a slot frees (review 4, finding 1; review 5, findings 1 and 2)
-    bool const fullAfter = after >= limit + plan.turnIns.size();
+    bool const fullAfter = !scenario.bot.noLogLimit && after >= limit + plan.turnIns.size();
     report.checks.push_back(Arrival(scenario, plan, fullAfter));
     report.checks.push_back(FollowMoves(scenario, plan));
 
@@ -487,8 +497,9 @@ inline Report RunScenario(Scenario const& scenario, std::uint32_t timingRuns)
 }
 
 // Bad positions are rejected at once; a missing run speed takes the default; the log's order does not matter
-inline std::vector<Check> GuardChecks(Scenario const& base)
+inline std::vector<Check> GuardChecks(Scenario const& input)
 {
+    Scenario const base = Answered(input);
     std::vector<Check> checks;
     for (float const bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
     {

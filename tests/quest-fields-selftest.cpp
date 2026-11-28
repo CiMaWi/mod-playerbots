@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "QuestFields.h"
+#include "QuestTakeFixture.h"
 
 using namespace Planner;
 using namespace Planner::QuestFields;
@@ -410,13 +411,14 @@ World Generate(Gen& gen)
 }
 
 // The needs a quest's slot must give, worked out again from the step's text
-// WQ38: a listed quest gives nothing; an elite, group or instance quest only its ready hand-in to a lone bot
+// WQ34: a ready quest gives its hand-in, whatever its kind; an open one that is refused or listed (WQ38) gives nothing,
+// an open elite, group or instance quest nothing to a lone bot
 std::size_t ExpectedNeeds(QuestRecord const& quest, QuestSlot const& slot, std::uint8_t team, std::uint32_t groupSize)
 {
-    if (quest.refused[team] || !quest.impossible.empty())
-        return 0;
     if (slot.state & Circuit::SLOT_COMPLETE)
         return 1;
+    if (quest.refused[team] || !quest.impossible.empty())
+        return 0;
     bool const waits =
         (quest.flags & (QuestFlag::ELITE | QuestFlag::GROUP | QuestFlag::DUNGEON | QuestFlag::RAID | QuestFlag::PVP)) !=
         0;
@@ -533,7 +535,7 @@ void GeneratedLogs(std::uint32_t seed)
     Gen gen{std::mt19937(seed)};
     Pricing const pricing{};
     Invariant emptyLog{"the needs of an empty log are empty"};
-    Invariant perQuest{"a refused quest gives none, a ready one one hand-in, an open one a need per open objective"};
+    Invariant perQuest{"a ready quest gives one hand-in, a refused open one none, an open one a need per objective"};
     Invariant needShape{"every need has a count left, a finite worth per credit, its seconds, chances in (0, 1]"};
     Invariant zeroField{"a field with no open need is worth 0"};
     Invariant zeroNeed{"a need whose count left is 0 adds nothing"};
@@ -570,8 +572,7 @@ void GeneratedLogs(std::uint32_t seed)
                     handIns += need.kind == NeedKind::HandIn ? 1 : 0;
                 }
             std::size_t const expected = quest ? ExpectedNeeds(*quest, slot, w.team, w.groupSize) : 0;
-            bool const ready =
-                quest && !quest->refused[w.team] && quest->impossible.empty() && (slot.state & Circuit::SLOT_COMPLETE);
+            bool const ready = quest && (slot.state & Circuit::SLOT_COMPLETE);
             perQuest.Note(mine == expected && handIns == (ready ? 1u : 0u), logIndex,
                           "quest " + std::to_string(slot.quest) + ": " + std::to_string(mine) + " needs, expected " +
                               std::to_string(expected));
@@ -1102,14 +1103,13 @@ void PlacesAndTakes()
     QuestIndex const built = QuestIndex::Build(gather);
     std::vector<std::uint32_t> const candidates = TakeCandidates(built, MAP_A, Mid(0), Mid(0), 200.0f);
     std::array<std::uint32_t, 1> const inLog = {112};
-    std::vector<std::int32_t> const groups = TakenGroups(built, inLog, {});
+    std::vector<std::uint32_t> const answer = TakeFixture::Answer(built, HUMAN, 1, 10, {}, inLog);
     Take::Facts facts;
     facts.race = HUMAN;
-    facts.cls = 1;
     facts.level = 10;
     facts.eliteGroup = true;
     facts.inLog = inLog;
-    facts.takenGroups = groups;
+    facts.takeable = answer;
     std::vector<Need> const takes = TakeNeeds(built, facts, MAP_A, candidates, Pricing{});
     Check(candidates == std::vector<std::uint32_t>{110, 111, 112, 115} && takes.size() == 1 && takes[0].quest == 110 &&
               takes[0].kind == NeedKind::Take && takes[0].sources.size() == 1 && takes[0].sources[0].entry == 750 &&
@@ -1134,9 +1134,10 @@ void PlacesAndTakes()
         wide.relations.push_back({200 + i, 800 + i, false, false});
     }
     QuestIndex const row = QuestIndex::Build(wide);
+    std::vector<std::uint32_t> const rowAnswer = TakeFixture::Answer(row, HUMAN, 1, 10, {}, {});
     Take::Facts roamer = facts;
     roamer.inLog = {};
-    roamer.takenGroups = {};
+    roamer.takeable = rowAnswer;
     std::vector<std::uint32_t> const close = TakeCandidates(row, MAP_A, Mid(0), Mid(0), 150.0f);
     std::vector<std::uint32_t> const far =
         FarTakeCandidates(row, roamer, MAP_A, Mid(0), Mid(0), 150.0f, close, Pricing{});
@@ -1160,8 +1161,11 @@ void PlacesAndTakes()
     hub.entry = 900;
     crowded.places.push_back(hub);
     QuestIndex const busy = QuestIndex::Build(crowded);
+    std::vector<std::uint32_t> const busyAnswer = TakeFixture::Answer(busy, HUMAN, 1, 10, {}, {});
+    Take::Facts busyRoamer = roamer;
+    busyRoamer.takeable = busyAnswer;
     std::vector<std::uint32_t> const capped =
-        FarTakeCandidates(busy, roamer, MAP_A, Mid(0), Mid(0), 150.0f, {}, Pricing{});
+        FarTakeCandidates(busy, busyRoamer, MAP_A, Mid(0), Mid(0), 150.0f, {}, Pricing{});
     Check(capped.size() == FAR_TAKES,
           "far takes: a far place that gives more quests than FAR_TAKES gives at most FAR_TAKES (mutant: the cap "
           "inside a place removed)");
@@ -1169,8 +1173,9 @@ void PlacesAndTakes()
 
 // WQ17b: the generated worlds again (their own stream of the seed) with givers, the take rules' fields and objective
 // places added: the shares, the takes, the places and ordinary hostiles over every log
-// WQ38: a quest on the list of impossible quests gives no need, its ready hand-in neither; an elite, group or dungeon
-// quest gives a lone bot no objective need (its ready hand-in, which a lone bot can do, stays) and a party all of them
+// WQ38, WQ34: a quest on the list of impossible quests gives no objective need; an elite, group or dungeon quest gives
+// a lone bot none and a party all of them; a ready quest of any of them gives its hand-in. A given-up quest gives none,
+// its ready hand-in neither (a failed hand-in is a give-up: no trip back to the ender)
 void ListedAndAlone()
 {
     constexpr std::uint32_t BOAR = 101;
@@ -1188,7 +1193,8 @@ void ListedAndAlone()
     std::vector<QuestSlot> const ready = {{40, Circuit::SLOT_COMPLETE, {}},
                                           {41, Circuit::SLOT_COMPLETE, {}},
                                           {42, Circuit::SLOT_COMPLETE, {}},
-                                          {43, Circuit::SLOT_COMPLETE, {}}};
+                                          {43, Circuit::SLOT_COMPLETE, {}},
+                                          {44, Circuit::SLOT_COMPLETE, {}}};
     auto const quests = [](std::vector<Need> const& needs)
     {
         std::vector<std::uint32_t> ids;
@@ -1202,9 +1208,14 @@ void ListedAndAlone()
           "listed and alone: a bot in a group of two works the elite, group and dungeon quests too, never the listed");
     std::vector<Need> const handIns = Needs(index, ready, 0, Pricing{}, ALONE);
     Check(
-        quests(handIns) == std::vector<std::uint32_t>{41, 42, 43} &&
+        quests(handIns) == std::vector<std::uint32_t>{40, 41, 42, 43, 44} &&
             std::all_of(handIns.begin(), handIns.end(), [](Need const& need) { return need.kind == NeedKind::HandIn; }),
-        "listed and alone: a lone bot hands in a ready flagged quest, a listed one not");
+        "listed and alone: a lone bot hands in every ready quest, a listed or flagged one too");
+    std::vector<std::uint32_t> const givenUp = {40, 42, 44};
+    Check(quests(Needs(index, open, 0, Pricing{}, 2, givenUp)) == std::vector<std::uint32_t>{41, 43},
+          "given up: a given-up quest gives no need");
+    Check(quests(Needs(index, ready, 0, Pricing{}, ALONE, givenUp)) == std::vector<std::uint32_t>{41, 43},
+          "given up: a given-up quest gives no hand-in");
 }
 
 void GeneratedSteps(std::uint32_t seed)
@@ -1283,16 +1294,16 @@ void GeneratedSteps(std::uint32_t seed)
                 givenUp.push_back(quest.id);
         }
         candidates.push_back(UNKNOWN_QUEST);
-        std::vector<std::int32_t> const groups = TakenGroups(w.index, inLog, rewarded);
+        std::vector<std::uint32_t> const answer =
+            TakeFixture::Answer(w.index, w.team ? ORC : HUMAN, 1, w.ask.level, rewarded, inLog);
         Take::Facts facts;
         facts.race = w.team ? ORC : HUMAN;
-        facts.cls = 1;
         facts.level = w.ask.level;
         facts.eliteGroup = gen.Chance(0.5f);
         facts.rewarded = rewarded;
         facts.inLog = inLog;
         facts.givenUp = givenUp;
-        facts.takenGroups = groups;
+        facts.takeable = answer;
         Take::Facts strict = facts;
         strict.eliteGroup = false;
         std::vector<Need> const takes = TakeNeeds(w.index, facts, w.ask.mapId, candidates, pricing);
@@ -1310,7 +1321,7 @@ void GeneratedSteps(std::uint32_t seed)
                 giver =
                     giver || (place.mapId == w.ask.mapId && !place.otherPhase && !(place.hostileTo & (1u << w.team)));
             }
-            std::optional<Take::Reason> const why = Take::May(quest, strict, w.index);
+            std::optional<Take::Reason> const why = Take::May(quest, strict);
             refusedCount += why ? 1 : 0;
             takeRule.Note(why ? mine == 0 : mine == (giver ? 1u : 0u), logIndex, "quest " + std::to_string(quest.id));
             if (std::binary_search(inLog.begin(), inLog.end(), quest.id))

@@ -638,7 +638,7 @@ Result JoinOnce(ActFacts const& act)
 // A quest of the bot's log (a title was looked up there; an id may name any quest) that the core lets it share.
 Refusal ShareCheck(ActFacts const& act)
 {
-    if (act.Bot->FindQuestSlot(act.QuestId) >= MAX_QUEST_LOG_SIZE)
+    if (act.Bot->FindQuestSlot(act.QuestId) >= act.Bot->GetQuestLogSize())
         return Refusal::UnknownName;
 
     return act.Bot->CanShareQuest(act.QuestId) ? Refusal::None : Refusal::CannotNow;
@@ -668,7 +668,7 @@ Result AcceptOnce(ActFacts const& act)
     offer << act.QuestId;
     AcceptQuestShareAction accept(act.Ai);
     accept.Execute(Event("accept quest share", offer, act.Partner));
-    return act.Bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
+    return act.Bot->FindQuestSlot(act.QuestId) < act.Bot->GetQuestLogSize() ? Result::Applied : Result::Failed;
 }
 
 bool InGroup(GroupRule rule, ActFacts const& act)
@@ -1440,7 +1440,7 @@ uint32_t IdNamed(std::vector<NameCandidate> const& candidates, std::string const
 std::vector<NameCandidate> LogQuests(Player* player)
 {
     std::vector<NameCandidate> candidates;
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    for (uint16 slot = 0; slot < player->GetQuestLogSize(); ++slot)
     {
         uint32 const questId = player->GetQuestSlotQuestId(slot);
         if (Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr)

@@ -10,6 +10,7 @@
 #include "ChatHelper.h"
 #include "Event.h"
 #include "ItemTemplate.h"
+#include "NewRpgHelpers.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "Playerbots.h"
@@ -218,6 +219,15 @@ bool QuestAction::CanAcceptQuest(Player* bot, Quest const* quest)
     if (!bot || !quest)
         return false;
 
+    // A bot the quest log's rule covers asks the one accept (questing WQ34, QuestLogRules.h): the game's answer, the
+    // game's grey line, no repeatable quest, no ended holiday, nothing it gave up
+    PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot);
+    if (NewRpgHelpers::KeepsLogRule(botAI))
+    {
+        NewRpgHelpers::LogAccept take(bot);
+        return take.Allows(quest);
+    }
+
     // Core eligibility: level/race/class/reputation/chain/conditions/...
     if (!bot->CanTakeQuest(quest, false))
         return false;
@@ -413,7 +423,7 @@ bool QuestItemPushResultAction::Execute(Event event)
     if (!proto)
         return false;
 
-    for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+    for (uint16 i = 0; i < bot->GetQuestLogSize(); ++i)
     {
         uint32 questId = bot->GetQuestSlotQuestId(i);
         if (!questId)

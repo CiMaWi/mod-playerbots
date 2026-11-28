@@ -104,6 +104,7 @@ struct NewRpgInfo
         uint8 useTries{0};     // WT35b: the framework's retriable refusals at the held use target, the last ask
         uint32 useAskedAt{0};  // and whether a timed use at it runs (its row ends it)
         bool usePending{false};
+        uint8 standRefusals{0};  // questing WQ33: a lone quest's refused stand points or walks (QuestFieldExec.h)
         // questing WQ19a: set, the bot is on an order (QuestOrderTypes.h): the executor works each open need of the log
         // it finds at the order's place, and the order's own end ends it (QuestFieldExec.h); questId, objectiveIdx,
         // place and work above hold the need picked last

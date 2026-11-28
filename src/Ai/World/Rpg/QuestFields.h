@@ -50,6 +50,9 @@ constexpr float HAND_IN_SHARE = 0.5f;
 constexpr float CREDITS_SHARE = 1.0f - TAKE_SHARE - HAND_IN_SHARE;
 static_assert(HAND_IN_SHARE > CREDITS_SHARE && TAKE_SHARE < HAND_IN_SHARE && CREDITS_SHARE > 0.0f);
 constexpr float TAKE_SECONDS = Circuit::TURNIN_SECONDS;  // at a giver, as a hand-in at an ender
+// questing WQ44 (WQ.46 item 6), a tuning value: until the planner weighs bag space, bags full of quest items raise
+// the worth of a hand-in and of a quest's only open objective by this share
+constexpr float QUEST_ITEM_PULL = 1.0f;
 
 // WQ17b (PLAN 3.10 part 3): a cell of a field whose lowest hostile lies beyond the bot's reach, that holds no needed
 // creature beyond reach and at most this share of the field's hostiles (a lone rare), counts its hostiles to the elite
@@ -136,6 +139,7 @@ struct Pricing
 {
     CircuitWeights weights{};
     std::span<std::pair<std::uint32_t, float> const> unlockBonus{};  // (quest, bonus XP), sorted
+    float questItemShare{0.0f};  // questing WQ44: share of the general bag slots holding a quest item, 0 to 1
 };
 
 inline float UnlockBonusOf(Pricing const& pricing, std::uint32_t quest)
@@ -355,23 +359,28 @@ inline bool UsesPlaces(FieldMap const& map, Need const& need)
                         [&map](NeedSource const& source) { return !map.CellsOf(source.kind, source.entry).empty(); });
 }
 
-// Every open objective of the log as a need, and a ready quest as its hand-in. A quest the capability table refuses for
-// the bot's side gives none; a slot of a quest the index lacks is passed over. WQ38: a listed quest gives none, its
-// hand-in neither; an elite, group or instance quest gives a bot alone (groupSize 1 or less) no objective need and
-// waits in the log, its ready hand-in, which a lone bot can do, stays
+// What a held quest is worth (WQ34, decision WQ.46; the log keeps it until it is grey): every open objective of the log
+// as a need, and a ready quest as its hand-in. A given-up quest (givenUp, sorted: QuestLog::Record::givenUp, a failed
+// hand-in too) gives none, its hand-in neither. A ready quest gives its hand-in, whatever its kind: a lone bot can hand
+// in what it holds complete. Of an open quest none: one the capability table refuses for the bot's side, a listed one
+// (WQ38) and an elite, group or instance quest for a bot alone (groupSize 1 or less). A slot of a quest the index
+// lacks is passed over. The more quest items the bot carries, the more a hand-in and a quest's only open objective
+// are worth (QUEST_ITEM_PULL, questing WQ44)
 inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot const> log, std::uint8_t team,
-                               Pricing const& pricing, std::uint32_t groupSize)
+                               Pricing const& pricing, std::uint32_t groupSize,
+                               std::span<std::uint32_t const> givenUp = {})
 {
     std::vector<Need> needs;
+    float const pull = 1.0f + QUEST_ITEM_PULL * pricing.questItemShare;
     for (QuestSlot const& slot : log)
     {
         QuestRecord const* quest = slot.quest ? index.Find(slot.quest) : nullptr;
-        if (!quest || RefusedFor(*quest, team) || Listed(*quest))
+        if (!quest || Take::Holds(givenUp, quest->id))
             continue;
         QuestShares const shares = SharesOf(*quest, pricing);
         if (slot.state & Circuit::SLOT_COMPLETE)
         {
-            Need need{quest->id, HAND_IN, NeedKind::HandIn, {}, 1, shares.handIn, Circuit::TURNIN_SECONDS, {}};
+            Need need{quest->id, HAND_IN, NeedKind::HandIn, {}, 1, shares.handIn * pull, Circuit::TURNIN_SECONDS, {}};
             for (std::uint32_t const at : quest->enders)
                 if (at < index.places.size())
                     Detail::AddSource(need.sources, index.places[at].isObject ? FieldKind::Object : FieldKind::Creature,
@@ -379,8 +388,10 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
             needs.push_back(std::move(need));
             continue;
         }
-        if ((quest->flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) && groupSize <= 1)
+        if (RefusedFor(*quest, team) || Listed(*quest) ||
+            ((quest->flags & (Take::GROUP_FLAGS | Take::INSTANCE_FLAGS)) && groupSize <= 1))
             continue;
+        std::size_t const first = needs.size();
         for (std::uint32_t at = 0; at < QuestExec::ObjectiveCount(*quest); ++at)
         {
             if (!Detail::Worked(*quest, at))
@@ -393,6 +404,8 @@ inline std::vector<Need> Needs(QuestIndex const& index, std::span<QuestSlot cons
             needs.push_back({quest->id, at, kind, Detail::SourcesOf(index, *quest, at, kind), left, shares.perCredit,
                              Detail::SecondsOf(objective), Detail::PlacesOf(objective, team)});
         }
+        if (needs.size() == first + 1)  // one objective from complete
+            needs.back().worthPerCredit *= pull;
     }
     return needs;
 }
@@ -432,23 +445,9 @@ inline std::vector<std::uint32_t> TakeCandidates(QuestIndex const& index, std::u
     return ids;
 }
 
-// WQ17b: the exclusive groups of the log's and the rewarded quests, ascending (Take::Facts::takenGroups; the circuit
-// builds its own the same way)
-inline std::vector<std::int32_t> TakenGroups(QuestIndex const& index, std::span<std::uint32_t const> inLog,
-                                             std::span<std::uint32_t const> rewarded)
-{
-    std::vector<std::int32_t> groups;
-    for (std::span<std::uint32_t const> const ids : {inLog, rewarded})
-        for (std::uint32_t const id : ids)
-            if (QuestRecord const* record = index.Find(id))
-                if (record->exclusiveGroup > 0)
-                    groups.push_back(record->exclusiveGroup);
-    std::sort(groups.begin(), groups.end());
-    return groups;
-}
-
-// WQ17b: every candidate quest the take rules allow the bot (Take::May, no elite or group quest: WQ.43 point 3) as a
-// need at its givers on the map. A separate list from the log's Needs; a caller ranking both concatenates them
+// WQ17b: every candidate quest the take rules allow the bot (Take::May with the game's answer, WQ41; no elite or group
+// quest: WQ.43 point 3) as a need at its givers on the map. A separate list from the log's Needs; a caller ranking both
+// concatenates them
 inline std::vector<Need> TakeNeeds(QuestIndex const& index, Take::Facts const& facts, std::uint32_t mapId,
                                    std::span<std::uint32_t const> candidates, Pricing const& pricing)
 {
@@ -462,7 +461,7 @@ inline std::vector<Need> TakeNeeds(QuestIndex const& index, Take::Facts const& f
     for (std::uint32_t const id : ids)
     {
         QuestRecord const* quest = index.Find(id);
-        if (!quest || Take::May(*quest, bot, index))
+        if (!quest || Take::May(*quest, bot))
             continue;
         if (std::optional<Need> need = TakeNeed(index, *quest, team, pricing, mapId))
             needs.push_back(std::move(*need));
@@ -504,7 +503,7 @@ inline std::vector<std::uint32_t> FarTakeCandidates(QuestIndex const& index, Tak
                 std::find(ids.begin(), ids.end(), id) != ids.end())
                 continue;
             QuestRecord const* quest = index.Find(id);
-            if (!quest || Take::May(*quest, bot, index) || !TakeNeed(index, *quest, team, pricing, mapId))
+            if (!quest || Take::May(*quest, bot) || !TakeNeed(index, *quest, team, pricing, mapId))
                 continue;
             ids.push_back(id);
         }

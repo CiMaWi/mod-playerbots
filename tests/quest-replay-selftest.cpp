@@ -795,7 +795,6 @@ int RouteReplay(Fixture const& f)
         ask.team = 0;
         ask.stayMinutes = 5.0f;
         ask.pricing = rw.pricing;
-        ask.freeSlots = QUEST_LOG_SLOTS - std::min(QUEST_LOG_SLOTS, held.log.size());
         ask.walk = [](float fromX, float fromY, float toX, float toY) -> std::optional<float>
         {
             if (std::hypot(toX - REFUSED_X, toY - REFUSED_Y) < REFUSED_YARDS)

@@ -26,6 +26,9 @@ void LoadLivingWorld();
 // False without an AI
 bool IsPersistentBot(Player* bot);
 bool KeepsPossessions(Player* bot);
+
+// BotKindRules::NoClientPlays for a character that is loading (PlayerScript::OnPlayerLoadFromDB): it needs no AI
+bool NoClientPlays(Player const* player);
 }  // namespace BotKind
 
 #endif

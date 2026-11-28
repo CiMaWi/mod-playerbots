@@ -250,7 +250,7 @@ void LootObject::Refresh(Player* bot, ObjectGuid lootGUID)
 
 bool LootObject::IsNeededForQuest(Player* bot, uint32 itemId)
 {
-    for (int qs = 0; qs < MAX_QUEST_LOG_SIZE; ++qs)
+    for (uint16 qs = 0; qs < bot->GetQuestLogSize(); ++qs)
     {
         uint32 questId = bot->GetQuestSlotQuestId(qs);
         if (questId == 0)
